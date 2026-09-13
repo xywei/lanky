@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lanky"
+version = "0.0.1"
+description = "Python for math you can check. A Lean-hosted proof language, shaped like mypy."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Xiaoyu Wei" }]
+keywords = ["lean", "mathlib", "proof", "theorem-proving", "formal-methods", "type-checking"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# PyPantograph (the Lean session driver) will go here once the Lean oracle lands.
+lean = []
+
+[project.urls]
+Homepage = "https://github.com/xywei/lanky"
+Repository = "https://github.com/xywei/lanky"
+
+[project.scripts]
+lanky = "lanky.cli:main"
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
