@@ -158,6 +158,35 @@ listed because it changes behaviour a reader could already have depended on.
   with `r` in `Fin[n]` still goes through), and a table applied outside its
   domain now makes the draw undecided rather than raising, so neither reading
   can call an ill-typed application a proof.
+- **Every level of a chained application is checked.** `f(0)(1)` for an
+  `f : Fn[Fin[1], Fn[Fin[1], Nat]]` was validated only at `f(0)`, because the
+  outer call's function is a call rather than a variable, so Lean proved the
+  reflexive statement over the erased total `Nat -> Nat -> Nat` while the
+  tester had no inner entry to compare; `check_applications` now walks the
+  declared type alongside the arguments and discharges each level against its
+  own `Fin` bound, and a chain longer than the type has arguments (which Lean
+  would not elaborate) is declined too.
+- **A refined family domain is declined rather than stripped to its base.**
+  `f: Fn[Fin[1] & False, Nat]` with `f(0) == f(0)` passed the bound check
+  against the base `Fin[1]` and became a reflexive Lean theorem, though the
+  domain is empty and the tester cannot tabulate it. The erasure keeps the
+  `Fin` bound as a guard and the refinement not at all, and the affine reading
+  of the binders cannot establish a predicate, so an application over a
+  refined domain raises `UnsupportedTerm`.
+- **The application check sees inside a binder's domain.** It visited only a
+  domain's `Fin` bound, so a refinement predicate such as
+  `i : Nat & (f(n) != f(n))` over an `f : Fn[Fin[n], Nat]` went unchecked and
+  handed Lean an impossible hypothesis about an erased point, from which it
+  proved `1 = 2`. Refinement predicates, `Fin` bounds and nested family types
+  are now all traversed under the binders they sit in, the predicates with
+  their own binder in scope because that is what they talk about.
+- **A short-circuiting quantifier restores the binder it shadowed.**
+  `all(any(i == 0 for i in Fin[1]) & (i < 2) for i in Fin[3])` evaluated to
+  `True`: `lanky.terms.LankyEvaluationMapper.assignments` restored the binding
+  only after its loop, which `map_exists` returned out of at the first witness,
+  so the outer `i < 2` was answered at the inner `i = 0`. The restoration is
+  now in a `finally` and the walk is closed explicitly on every exit path, so
+  the statement evaluates to `False` and the tester reports `REFUTED`.
 
 ### Notes
 

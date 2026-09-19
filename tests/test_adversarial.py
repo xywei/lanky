@@ -20,7 +20,7 @@ from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.test import TestOracle
 from lanky.prelude import Fin, Fn, Nat
-from lanky.terms import Forall, Undecided, Var, structurally_equal
+from lanky.terms import Exists, Forall, Undecided, Var, render, structurally_equal
 
 # {{{ a hypothesis no draw can satisfy
 
@@ -606,6 +606,43 @@ def test_a_family_applied_outside_its_domain_is_an_undecided_draw() -> None:
     assert result.status is Status.ASSUMED
     assert result.decided_by is None
     assert "outside the domain" in result.provenance["untested"]
+
+
+def test_a_shadowed_binder_does_not_survive_a_short_circuit() -> None:
+    """A nested quantifier that leaks its last point turns a false goal into a pass.
+
+    ``all(any(i == 0 for i in Fin[1]) & (i < 2) for i in Fin[3])`` is false at
+    ``i = 2``. The inner existential returns at its witness, and the binder
+    restoration used to sit after the loop it returned out of, so the outer
+    ``i < 2`` was answered at the inner ``i = 0`` and the tester reported the
+    statement as ``TESTED``.
+    """
+    i = Var("i")
+    shadowing = Forall(((i, Fin[3]),), Exists(((i, Fin[1]),), i == 0) & (i < 2))
+    fact = Fact(
+        id="theorem:shadowed_binder",
+        kind="theorem",
+        statement=render(shadowing),
+        term=Forall((), shadowing),
+    )
+    result = TestOracle(samples=5).establish(fact)
+    assert result is not None
+    assert result.status is Status.REFUTED
+    assert result.decided_by == "property-test"
+
+    # the same shape with nothing shadowed is unaffected
+    j = Var("j")
+    nested = Forall(((i, Fin[3]),), Exists(((j, Fin[3]),), j == i) & (i < 3))
+    unshadowed = TestOracle(samples=5).establish(
+        Fact(
+            id="theorem:unshadowed_binder",
+            kind="theorem",
+            statement=render(nested),
+            term=Forall((), nested),
+        )
+    )
+    assert unshadowed is not None
+    assert unshadowed.status is Status.TESTED
 
 
 def test_a_table_declines_a_point_it_does_not_have() -> None:

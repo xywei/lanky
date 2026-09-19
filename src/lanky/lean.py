@@ -39,6 +39,16 @@ against the bounds the ``Fin`` binders and the ``Nat`` sorts give, so
 through and anything the affine reading cannot settle is declined rather than
 assumed. Declining costs a proof at worst; assuming costs soundness.
 
+Three things follow from taking that seriously. An application chain is checked
+level by level: ``f(i)(j)`` for a family of families erases to ``f i j``, so
+``j`` has a domain to leave just as ``i`` does. Every expression a domain
+carries is walked too, under the binders it sits in, because a ``Fin`` bound, a
+nested family type and a refinement predicate are all elaborated by Lean the way
+a body is, and an impossible hypothesis about a point the statement has no value
+for proves anything. And a family whose *domain* is refined is declined where it
+is applied: the erasure keeps nothing of the refinement, and affine arithmetic
+over the binders cannot establish one.
+
 Two places where Lean's arithmetic is not Python's are worth knowing, because a
 statement that uses them means in Lean what Lean's operators mean and not what a
 sampled Python run would compute. Subtraction on ``Nat`` is truncated, so
@@ -541,45 +551,133 @@ def _fits(argument: Any, domain: FinType, scope: _Scope) -> bool:
     return lowest is not None and lowest >= 0
 
 
-def _application(expr: Any) -> tuple[str, Any] | None:
-    """``(family name, argument)`` for a one-argument application, or ``None``."""
-    if isinstance(expr, prim.Call) and isinstance(expr.function, Var | prim.Variable):
-        if len(expr.parameters) == 1:
-            return expr.function.name, expr.parameters[0]
-    if isinstance(expr, prim.Subscript) and isinstance(
-        expr.aggregate, Var | prim.Variable
-    ):
-        index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
-        if len(index) == 1:
-            return expr.aggregate.name, index[0]
-    return None
+def _spine(expr: Any) -> tuple[str, tuple[Any, ...]] | None:
+    """``(family name, arguments in order)`` for a chain of applications.
+
+    ``f(i)`` is one application and ``f(i)(j)`` is two, because a family whose
+    codomain is itself a family is applied again. The outer call's function is
+    then the inner call rather than a variable, so reading only the innermost
+    one would leave ``j`` unchecked while Lean, which sees the erased total
+    ``Nat → Nat → Nat``, is free to reason about it. A subscript is the same
+    application written differently, and a multi-argument call or a multi-index
+    subscript is the same chain again: both print as successive applications.
+    """
+    arguments: tuple[Any, ...] = ()
+    while True:
+        if isinstance(expr, prim.Call):
+            arguments = (*expr.parameters, *arguments)
+            expr = expr.function
+        elif isinstance(expr, prim.Subscript):
+            index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
+            arguments = (*index, *arguments)
+            expr = expr.aggregate
+        elif isinstance(expr, Var | prim.Variable):
+            return (expr.name, arguments) if arguments else None
+        else:
+            return None
+
+
+def _check_chain(
+    expr: Any,
+    name: str,
+    arguments: tuple[Any, ...],
+    family: FnType,
+    scope: _Scope,
+) -> None:
+    """Check every level of one application chain against its own domain.
+
+    The declared type is walked alongside the arguments, so ``f(i)(j)`` for an
+    ``f : Fn[Fin[n], Fn[Fin[m], Nat]]`` discharges ``i`` against ``Fin[n]`` and
+    ``j`` against ``Fin[m]``; a level whose domain is refined is declined
+    outright, because the erasure drops the refinement and affine arithmetic
+    over the binders cannot put it back.
+
+    Raises:
+        UnsupportedTerm: If a level cannot be shown to stay in bounds, if a
+            level's domain is refined, or if the chain applies the family more
+            times than its type has arguments.
+    """
+    current: Any = family
+    for argument in arguments:
+        base = current.base if isinstance(current, Refined) else current
+        if not isinstance(base, FnType):
+            raise UnsupportedTerm(
+                f"{render(expr)} applies {name} more times than its type "
+                f"({family}) has arguments, so the erased Lean function would "
+                "be given an argument it does not take"
+            )
+        domain = base.domain
+        if isinstance(domain, Refined):
+            raise UnsupportedTerm(
+                f"{render(expr)} applies {name} over the refined domain "
+                f"({domain}): a family prints as a total Nat function and its "
+                "bounds live in the guards, which carry nothing about a "
+                "refinement, and lanky discharges an argument by affine "
+                "arithmetic over the binders rather than by a solver, so it "
+                "cannot show that the argument is a point of the domain"
+            )
+        if isinstance(domain, FinType) and not _fits(argument, domain, scope):
+            raise UnsupportedTerm(
+                f"{render(expr)} applies {name} outside the domain it declares "
+                f"({domain}): lanky cannot show that {render(argument)} is a point "
+                f"of {domain}, and a family prints as a total Nat function, so Lean "
+                "would be reasoning about a value the statement does not have"
+            )
+        current = base.codomain
+
+
+def _check_domain(domain: Any, scope: _Scope, refined: _Scope) -> None:
+    """Check the applications in the expressions one binder domain carries.
+
+    A domain is not a pymbolic node, so the walk has to know how to open one,
+    and it has to: Lean elaborates a ``Fin`` bound, a family's domain and
+    codomain and a refinement's predicates exactly as it elaborates a body, so
+    an application in any of them is erased exactly as one in a body is. A
+    binder ``i : Nat & (f(n) != f(n))`` over an ``f : Fn[Fin[n], Nat]``
+    otherwise hands Lean an impossible hypothesis about a point the family does
+    not have, and anything follows from it.
+
+    The predicates are checked under ``refined``, which has the binder itself:
+    a refinement talks about its own variable, and the base's guard (``i < n``
+    for a ``Fin[n] & p``) is printed before the predicate and so stands as its
+    antecedent. Everything else is checked under ``scope``, the binders that
+    precede this one.
+    """
+    if isinstance(domain, Refined):
+        _check_domain(domain.base, scope, refined)
+        for prop in domain.props:
+            _check(prop, refined)
+        return
+    if isinstance(domain, FinType):
+        _check(domain.bound, scope)
+        return
+    if isinstance(domain, FnType):
+        # A refinement inside a family type refines the family's own index,
+        # which has no binder here, so there is no scope to add.
+        _check_domain(domain.domain, scope, scope)
+        _check_domain(domain.codomain, scope, scope)
 
 
 def _check(expr: Any, scope: _Scope) -> None:
     """Check every application below ``expr``, under the binders it sits in."""
     if isinstance(expr, Forall | Exists | Sum):
-        for _var, domain in expr.binders:
-            _check(getattr(domain, "bound", None), scope)
-        inner = scope.extended(expr.binders)
+        inner = scope
+        for var, domain in expr.binders:
+            preceding = inner
+            inner = inner.extended(((var, domain),))
+            _check_domain(domain, preceding, inner)
         _check(expr.body, inner)
         if expr.guard is not None:
             _check(expr.guard, inner)
         return
     if not isinstance(expr, prim.ExpressionNode):
         return
-    found = _application(expr)
+    found = _spine(expr)
     if found is not None:
-        name, argument = found
+        name, arguments = found
         family = scope.families.get(name)
-        domain = family.domain if family is not None else None
-        base = domain.base if isinstance(domain, Refined) else domain
-        if isinstance(base, FinType) and not _fits(argument, base, scope):
-            raise UnsupportedTerm(
-                f"{render(expr)} applies {name} outside the domain it declares "
-                f"({base}): lanky cannot show that {render(argument)} is a point "
-                f"of {base}, and a family prints as a total Nat function, so Lean "
-                "would be reasoning about a value the statement does not have"
-            )
+        if family is not None:
+            _check_chain(expr, name, arguments, family, scope)
     for child in init_args(expr):
         if isinstance(child, tuple):
             for item in child:
@@ -596,8 +694,15 @@ def check_applications(term: Any) -> None:
     statement's own binders declare is checked: a bare ``f(a)`` with no binder
     for ``f`` is an open term, and an open term is somebody else's statement.
 
+    Everywhere an application can hide is visited: the body, the guard, and the
+    expressions the binder domains carry, which are the ``Fin`` bounds, the
+    nested family types and the refinement predicates. Every level of a chained
+    application is checked against its own domain.
+
     Raises:
-        UnsupportedTerm: If an application cannot be shown to stay in bounds.
+        UnsupportedTerm: If an application cannot be shown to stay in bounds,
+            if the domain of the family it applies is refined, or if it applies
+            a family more times than its type has arguments.
     """
     _check(term, _Scope())
 

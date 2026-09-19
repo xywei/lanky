@@ -280,6 +280,135 @@ def test_an_open_term_has_no_domain_to_leave() -> None:
     check_applications(f(n + 100))
 
 
+@theorem
+def chained_in_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(0) == grid(0)(0):
+    """A family of families, applied twice and in bounds at both levels."""
+
+
+@theorem
+def _chained_out_of_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(1) == grid(0)(1):
+    """The same shape with the *outer* application one point past its domain.
+
+    ``grid(0)`` is a family over ``Fin[1]`` in lanky and a total ``Nat → Nat``
+    in Lean, so ``grid(0)(1)`` is a Lean tautology about a value the statement does
+    not have. The name is private so that the pytest plugin does not collect a
+    statement that decides nothing.
+    """
+
+
+@theorem
+def _applied_more_often_than_its_type(row: Fn[Fin[1], Nat]) -> row(0)(0) == row(0)(0):
+    """A family applied twice though its type takes one argument.
+
+    Printed it would be ``row 0 0`` for a ``row : Nat → Nat``, which Lean will
+    not elaborate, so the honest answer is to decline it here.
+    """
+
+
+def test_a_chained_application_is_checked_at_every_level() -> None:
+    """A family whose codomain is a family is applied again, and that counts.
+
+    Reading only the innermost call left the outer argument unchecked, while
+    the erasure of ``Fn[Fin[1], Fn[Fin[1], Nat]]`` to a total ``Nat → Nat →
+    Nat`` says nothing about it: Lean proved the reflexive statement and the
+    property tester had no entry to compare. Every level is now discharged
+    against its own ``Fin`` bound.
+    """
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(_chained_out_of_bounds.term)
+    with pytest.raises(UnsupportedTerm, match="Fin\\(1\\)"):
+        statement_of(_chained_out_of_bounds.term, "chained_out_of_bounds")
+    oracle = LeanOracle(session=LeanSession())
+    assert not oracle.can_establish(_chained_out_of_bounds.fact())
+    with pytest.raises(UnsupportedTerm, match="more times than its type"):
+        print_lean(_applied_more_often_than_its_type.term)
+
+
+def test_a_chained_application_in_bounds_still_prints() -> None:
+    """And the check costs a chain that stays in bounds nothing."""
+    check_applications(chained_in_bounds.term)
+    assert print_lean(chained_in_bounds.term) == (
+        "∀ grid : Nat → Nat → Nat, grid 0 0 = grid 0 0"
+    )
+
+
+@theorem
+def _over_a_refined_domain(fam: Fn[Fin[1] & False, Nat]) -> fam(0) == fam(0):
+    """A family over a domain a refinement empties, applied at ``0``.
+
+    ``Fin[1] & False`` has no points at all, so lanky has no value to compare
+    and the tester cannot even tabulate the family; stripping the refinement to
+    its base made ``0`` look like a point of it and turned the statement into a
+    reflexive Lean theorem over a total function.
+    """
+
+
+def test_a_refined_family_domain_is_declined() -> None:
+    """The erasure keeps the ``Fin`` bound as a guard and the refinement not at all.
+
+    Discharging the predicate would need a solver rather than the affine
+    reading of the binders this module does, so an application over a refined
+    domain is refused instead of approximated by its base.
+    """
+    with pytest.raises(UnsupportedTerm, match="refined domain"):
+        print_lean(_over_a_refined_domain.term)
+    with pytest.raises(UnsupportedTerm, match="refined domain"):
+        statement_of(_over_a_refined_domain.term, "over_a_refined_domain")
+    oracle = LeanOracle(session=LeanSession())
+    assert not oracle.can_establish(_over_a_refined_domain.fact())
+
+
+@theorem
+def _impossible_refinement(
+    m: Nat,
+    g: Fn[Fin[m], Nat],
+    k: Nat & (g(m) != g(m)),
+) -> 1 == 2:
+    """A binder refined by a proposition about a point ``g`` does not have.
+
+    ``g m`` is out of the declared domain, so lanky has no value for it, while
+    Lean reads the refinement as the hypothesis ``g m ≠ g m`` on a total
+    function and derives anything at all from it.
+    """
+
+
+def test_an_application_in_a_refinement_predicate_is_checked() -> None:
+    """A domain carries expressions, and Lean elaborates every one of them.
+
+    The checker used to visit only a domain's ``Fin`` bound, so an application
+    inside a refinement predicate was never discharged and an impossible
+    hypothesis about an erased point proved a false goal.
+    """
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(_impossible_refinement.term)
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        statement_of(_impossible_refinement.term, "impossible_refinement")
+    oracle = LeanOracle(session=LeanSession())
+    assert not oracle.can_establish(_impossible_refinement.fact())
+
+
+def test_a_refinement_whose_applications_are_in_bounds_still_prints() -> None:
+    """And a predicate that stays inside the domain goes through as before.
+
+    The predicate is checked with its own binder in scope, because that is what
+    it talks about and because the base's guard (``k < m``) is printed ahead of
+    it and stands as its antecedent.
+    """
+
+    @theorem
+    def refined_index(
+        m: Nat,
+        g: Fn[Fin[m], Nat],
+        k: Fin[m] & (g(k) == 0),
+    ) -> g(k) == 0:
+        """``g`` is applied at ``k``, which its own domain bounds."""
+
+    check_applications(refined_index.term)
+    assert print_lean(refined_index.term) == (
+        "∀ m : Nat, ∀ g : Nat → Nat, ∀ k : Nat, k < m → g k = 0 → g k = 0"
+    )
+
+
 def test_a_closed_boolean_statement_prints_as_a_proposition() -> None:
     """``-> 1 == 2`` is the Prop ``False``, not the ``Bool`` literal ``false``.
 
@@ -581,6 +710,51 @@ def test_lean_proves_a_family_applied_within_its_domain(lean_oracle: LeanOracle)
     proved = lean_oracle.establish(within_bounds.fact())
     assert proved.status is Status.PROVED
     assert proved.decided_by == "lean"
+
+
+def test_lean_proves_a_chained_application_within_its_domain(
+    lean_oracle: LeanOracle,
+) -> None:
+    """Checking every level of a chain must cost a chain in bounds nothing.
+
+    ``grid(0)(0)`` against a ``Fn[Fin[1], Fn[Fin[1], Nat]]`` is a point of
+    both domains, so the statement still reaches Lean and Lean still closes it.
+    """
+    proved = lean_oracle.establish(chained_in_bounds.fact())
+    assert proved.status is Status.PROVED
+    assert proved.decided_by == "lean"
+    assert "grid 0 0 = grid 0 0" in proved.provenance["lean_source"]
+
+
+def test_lean_is_never_asked_about_a_chained_application_out_of_bounds(
+    lean_oracle: LeanOracle,
+) -> None:
+    """And the level the old check skipped keeps the statement away from Lean."""
+    from lanky.check import establish
+
+    assert not lean_oracle.can_establish(_chained_out_of_bounds.fact())
+    fact = establish(_chained_out_of_bounds.fact())
+    assert fact.status is not Status.PROVED
+    assert "outside the domain" in fact.provenance["untested"]
+
+
+def test_lean_is_never_asked_about_a_refined_family_domain(
+    lean_oracle: LeanOracle,
+) -> None:
+    """Nor about a family whose domain a refinement may have emptied."""
+    assert not lean_oracle.can_establish(_over_a_refined_domain.fact())
+
+
+def test_lean_is_never_asked_about_an_impossible_refinement(
+    lean_oracle: LeanOracle,
+) -> None:
+    """Nor about a refinement that hypothesizes over an erased point.
+
+    ``g m ≠ g m`` is false for a lanky family, which has no value at ``m`` at
+    all, and is an ordinary hypothesis for the total function Lean sees; from
+    it Lean would close the goal ``1 = 2``.
+    """
+    assert not lean_oracle.can_establish(_impossible_refinement.fact())
 
 
 def test_lean_is_never_asked_about_an_application_out_of_bounds(

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import random
+from contextlib import closing
 
 import pytest
 
 from lanky.prelude import Fin, Fn, Nat
 from lanky.terms import (
     Comparison,
+    Exists,
     Forall,
     Scope,
     Sum,
@@ -16,6 +18,7 @@ from lanky.terms import (
     Undecided,
     Var,
     abs_,
+    binder_assignments,
     binders,
     evaluate,
     evaluate_annotations,
@@ -296,6 +299,40 @@ def test_a_sampled_universal_is_still_refutable() -> None:
     """A failing draw of a ``forall`` is a real counterexample, sampled or not."""
     assert evaluate(forall(x < 3 for x in Nat), {}, sort_sampler(random.Random(1), {})) is False
     assert evaluate(forall(x >= 0 for x in Nat), {}, sort_sampler(random.Random(1), {})) is True
+
+
+def test_a_short_circuiting_quantifier_restores_the_binder_it_shadowed() -> None:
+    """A witness ends the walk early, and the binding has to go back anyway.
+
+    ``all(any(i == 0 for i in Fin[1]) & (i < 2) for i in Fin[3])`` is false at
+    the outer ``i = 2``. The inner existential finds its witness at ``i = 0``
+    and returns there, so the restoration that used to sit after the loop was
+    never reached and the outer ``i < 2`` was answered at the inner ``0``: a
+    false statement passed.
+    """
+    i = Var("i")
+    j = Var("j")
+    shadowing = Forall(((i, Fin[3]),), Exists(((i, Fin[1]),), i == 0) & (i < 2))
+    assert render(shadowing) == "forall i in Fin(3). (exists i in Fin(1). i == 0) and i < 2"
+    assert evaluate(shadowing, {}) is False
+    # the same shape with nothing shadowed is unchanged
+    nested = Forall(((i, Fin[3]),), Exists(((j, Fin[3]),), j == i) & (i < 3))
+    assert evaluate(nested, {}) is True
+    assert evaluate(Forall(((i, Fin[3]),), Exists(((j, Fin[3]),), j == i) & (i < 2)), {}) is False
+
+
+def test_an_abandoned_walk_restores_the_binding_it_replaced() -> None:
+    """The restoration is in a ``finally``, so leaving the walk early is safe."""
+    context = {"i": 7}
+    with closing(binder_assignments(((Var("i"), Fin[3]),), context)) as walk:
+        for _ in walk:
+            break
+    assert context["i"] == 7
+    fresh: dict[str, object] = {}
+    with closing(binder_assignments(((Var("k"), Fin[3]),), fresh)) as walk:
+        for _ in walk:
+            break
+    assert "k" not in fresh
 
 
 def test_a_binderless_quantifier_renders_as_a_sequent() -> None:

@@ -41,6 +41,7 @@ import inspect
 import itertools
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import closing
 from fractions import Fraction
 from typing import Any, ClassVar
 
@@ -799,19 +800,32 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         raise ValueError(f"cannot enumerate the binder domain {domain!r}")
 
     def assignments(self, binder_list: Sequence[tuple[Var, Any]]) -> Iterator[None]:
-        """Bind every binder in turn, yielding once per assignment."""
+        """Bind every binder in turn, yielding once per assignment.
+
+        The restoration is in a ``finally`` because every consumer here
+        short-circuits: a ``forall`` stops at a counterexample and an
+        ``exists`` at a witness, and a walk that ends at the first ``yield``
+        never reaches code placed after the loop. A binder that shadows an
+        outer one of the same name would then leave the inner point behind,
+        and the rest of the enclosing statement would be evaluated at it: the
+        inner ``i`` of ``all(any(i == 0 for i in Fin[1]) & (i < 2) for i in
+        Fin[3])`` would answer the outer ``i < 2`` and turn a false statement
+        into a pass.
+        """
         if not binder_list:
             yield None
             return
         (var, domain), rest = binder_list[0], binder_list[1:]
         saved = self.context.get(var.name, _UNSET)
-        for point in self._points(domain):
-            self.context[var.name] = point
-            yield from self.assignments(rest)
-        if saved is _UNSET:
-            self.context.pop(var.name, None)
-        else:
-            self.context[var.name] = saved
+        try:
+            for point in self._points(domain):
+                self.context[var.name] = point
+                yield from self.assignments(rest)
+        finally:
+            if saved is _UNSET:
+                self.context.pop(var.name, None)
+            else:
+                self.context[var.name] = saved
 
     def _holds(self, expr: Any) -> bool:
         """Whether a guard holds under the current assignment."""
@@ -823,10 +837,16 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         Over a sampled domain a ``True`` is evidence rather than proof, which is
         exactly what the ``TESTED`` status means; a ``False`` is a real
         counterexample either way, so nothing here has to be held back.
+
+        The walk is closed explicitly on the way out. Leaving it to the
+        collector would work in CPython and rest on refcounting for something
+        that has to hold: until the walk is closed its ``finally`` has not run,
+        and the binding this quantifier replaced is still the inner point.
         """
-        for _ in self.assignments(expr.binders):
-            if self._holds(expr.guard) and not self.rec(expr.body):
-                return False
+        with closing(self.assignments(expr.binders)) as walk:
+            for _ in walk:
+                if self._holds(expr.guard) and not self.rec(expr.body):
+                    return False
         return True
 
     def map_exists(self, expr: Exists) -> Any:
@@ -837,9 +857,10 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
                 was sampled rather than enumerated, so "no witness among these
                 points" is not "no witness".
         """
-        for _ in self.assignments(expr.binders):
-            if self._holds(expr.guard) and self.rec(expr.body):
-                return True
+        with closing(self.assignments(expr.binders)) as walk:
+            for _ in walk:
+                if self._holds(expr.guard) and self.rec(expr.body):
+                    return True
         sampled = [
             domain for _var, domain in expr.binders if not self.is_exhaustive(domain)
         ]
@@ -853,11 +874,17 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         return False
 
     def map_lanky_sum(self, expr: Sum) -> Any:
-        """Add the body over the guarded domain."""
+        """Add the body over the guarded domain.
+
+        A reduction visits every point, so nothing short-circuits here; the
+        walk is still closed explicitly, because an exception raised in the
+        body leaves the loop the same way a witness does.
+        """
         total: Any = 0
-        for _ in self.assignments(expr.binders):
-            if self._holds(expr.guard):
-                total = total + self.rec(expr.body)
+        with closing(self.assignments(expr.binders)) as walk:
+            for _ in walk:
+                if self._holds(expr.guard):
+                    total = total + self.rec(expr.body)
         return total
 
     def map_abs(self, expr: Abs) -> Any:
@@ -879,8 +906,12 @@ def binder_assignments(
 ) -> Iterator[None]:
     """Yield once per assignment of ``binder_list``, binding them in ``context``.
 
-    The context is mutated in place and restored afterwards. This is what a
-    sampler uses to walk a quantified hypothesis point by point.
+    The context is mutated in place and restored afterwards, including when the
+    walk is abandoned part way: the restoration is in a ``finally``, so closing
+    the iterator puts back the bindings it replaced. A caller that breaks out
+    of the loop should close it (``contextlib.closing``) rather than leave that
+    to the collector. This is what a sampler uses to walk a quantified
+    hypothesis point by point.
     """
     yield from LankyEvaluationMapper(context, sampler).assignments(list(binder_list))
 
