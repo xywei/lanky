@@ -1,45 +1,73 @@
-"""Smoke tests for the placeholder release."""
+"""Smoke tests: the package imports, re-exports, and answers on the command line."""
 
 from __future__ import annotations
+
+import pytest
 
 import lanky
 from lanky import cli
 
 
 def test_version() -> None:
-    assert lanky.__version__ == "0.0.1"
+    assert lanky.__version__ == "0.1.0.dev0"
 
 
 def test_module_has_docstring() -> None:
     assert lanky.__doc__ and "Lean" in lanky.__doc__
 
 
-def test_cli_main(capsys) -> None:
-    assert cli.main() == 0
-    out = capsys.readouterr().out
-    assert "lanky" in out
-    assert lanky.__version__ in out
-    assert "work in progress: placeholder release" in out
-    assert "https://github.com/xywei/lanky" in out
+def test_the_package_re_exports_the_interface() -> None:
+    for name in (
+        "theorem",
+        "sum",
+        "forall",
+        "exists",
+        "Var",
+        "Scope",
+        "Fact",
+        "Status",
+        "Ledger",
+        "registry",
+        "Nat",
+        "Int",
+        "Real",
+        "Bool",
+        "Fin",
+        "Fn",
+        "Prop",
+        "__version__",
+    ):
+        assert hasattr(lanky, name), name
 
 
-def test_ledger_and_plugins_import() -> None:
-    from lanky.ledger import Fact, Status
-    from lanky.plugins import ENTRY_POINT_GROUPS, Executor, Oracle, Theory, Verb
-
-    assert {s.value for s in Status} == {
-        "tested",
-        "decided",
-        "proved",
-        "certified",
-        "assumed",
+def test_the_built_in_plugins_are_registered() -> None:
+    assert [theory.name for theory in lanky.registry.theories] == ["theorem"]
+    assert {oracle.name for oracle in lanky.registry.oracles} >= {
+        "lean",
+        "property-test",
     }
-    fact = Fact(statement="1 + 1 = 2", status=Status.ASSUMED, decided_by=None, provenance={})
-    assert fact.status is Status.ASSUMED
-    assert ENTRY_POINT_GROUPS == (
-        "lanky.theories",
-        "lanky.oracles",
-        "lanky.executors",
-        "lanky.verbs",
-    )
-    assert all(p is not None for p in (Theory, Oracle, Executor, Verb))
+
+
+def test_cli_version(capsys) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["--version"])
+    assert exit_info.value.code == 0
+    assert lanky.__version__ in capsys.readouterr().out
+
+
+def test_cli_check_is_a_verb(capsys) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "check" in capsys.readouterr().out
+
+
+def test_checking_the_worked_example() -> None:
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parent.parent / "examples" / "gauss.py"
+    ledger = lanky.check_path(example)
+    assert [fact.owner for fact in ledger] == ["gauss", "scan_monotone"]
+    # Every claim is established by someone. Which oracle depends on what is
+    # installed: with Lean present, scan_monotone is PROVED rather than TESTED.
+    established = {lanky.Status.TESTED, lanky.Status.DECIDED, lanky.Status.PROVED}
+    assert all(fact.status in established for fact in ledger)

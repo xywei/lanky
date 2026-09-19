@@ -25,12 +25,31 @@ coverage.xml
 htmlcov/
 .tox/
 .nox/
+.hypothesis/
 
 # Type checkers / linters
 .mypy_cache/
 .ruff_cache/
 .pyre/
 .pytype/
+
+# lanky's own scratch directory (ledgers, cached oracle answers)
+.lanky/
+
+# Lean. lean-interact clones and builds a REPL with lake on first use, and
+# LANKY_LEAN_CACHE_DIR may point it at a durable directory inside a checkout.
+# lake builds leave .lake/ and compiled .olean files behind.
+.lake/
+lake-packages/
+*.olean
+.lean_cache/
+lean_interact_cache/
+
+# Compiled artefacts. Nothing here is a C extension, but a target that compiles
+# and dynamically loads a kernel can leave object files behind.
+*.so
+*.o
+*.dylib
 
 # Editors / OS
 .idea/

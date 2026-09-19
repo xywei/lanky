@@ -16,6 +16,27 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
+    env:
+      # No Lean here, on purpose. The Lean oracle needs an elan toolchain plus a
+      # REPL that lean-interact builds with lake on first use. The v4.34.0 Linux
+      # toolchain is a 580 MB download that unpacks to about 2.9 GB, and the REPL
+      # build after it takes another minute and needs the network, so the step
+      # cannot fit the couple of minutes a lint-and-test job should cost. It
+      # would also not work: lean-interact 0.11.5 pins REPL rev v1.3.18, whose
+      # newest supported toolchain is v4.33.0-rc1, so a v4.34.0 install has no
+      # REPL to build against and the oracle would report itself unavailable
+      # anyway. Mathlib is out of scope either way.
+      #
+      # So the Lean tests skip cleanly and deterministically here: the dev sync
+      # below does not install the `lean` extra, and this variable makes the
+      # oracle a declared no-op even if a runner image ever ships `lean` on PATH.
+      # Everything the Lean oracle would prove is still checked by the weaker
+      # oracles, which is what the ledger's status column is for.
+      #
+      # To run the Lean tests locally instead:
+      #   uv sync --group dev --extra lean
+      #   uv run pytest -q
+      LANKY_LEAN_DISABLE: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -32,3 +53,6 @@ jobs:
 
       - name: Test
         run: uv run pytest -q
+
+      - name: Check the worked example
+        run: uv run lanky check examples/gauss.py
