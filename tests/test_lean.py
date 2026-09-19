@@ -205,6 +205,24 @@ def test_a_reduction_statement_is_declined_by_the_printer() -> None:
         gauss.lean()
 
 
+def test_a_binderless_statement_keeps_its_hypotheses() -> None:
+    """A theorem whose only parameters are hypotheses is still an implication.
+
+    Its term is a ``Forall`` with an empty binder tuple, and both the printer
+    and the statement arranger have to carry the guard: dropping it would print
+    a strictly stronger claim than the one that was written.
+    """
+    from lanky.terms import Forall, Var
+
+    term = Forall((), Var("p") > 0, Var("p") > 1)
+    assert print_lean(term) == "p > 1 → p > 0"
+
+    statement = statement_of(term, "binderless")
+    assert statement.binders == ()
+    assert statement.hypotheses == (("h0", "p > 1"),)
+    assert statement.goal == "p > 0"
+
+
 # }}}
 
 
@@ -318,8 +336,11 @@ def test_a_pinned_tactic_reaches_the_registered_oracle() -> None:
     from lanky.plugins import registry
 
     use_tactic(commutes, "omega")
+    # the pin is keyed by the fact id, which names the definition and not only
+    # the qualified name, so two same-named theorems cannot share a script
+    assert commutes.fact().id == commutes.fact_id
     pinned = [
-        oracle.tactics.get("theorem:commutes")
+        oracle.tactics.get(commutes.fact_id)
         for oracle in registry.oracles
         if isinstance(oracle, LeanOracle)
     ]
@@ -446,10 +467,11 @@ def test_checking_the_example_file_proves_the_scan(lean_oracle: LeanOracle) -> N
 
     example = Path(__file__).resolve().parent.parent / "examples" / "gauss.py"
     ledger = check_path(example)
-    assert ledger["theorem:scan_monotone"].status is Status.PROVED
-    assert ledger["theorem:scan_monotone"].decided_by == "lean"
+    by_owner = {fact.owner: fact for fact in ledger}
+    assert by_owner["scan_monotone"].status is Status.PROVED
+    assert by_owner["scan_monotone"].decided_by == "lean"
     # Gauss's sum is outside core Lean, so the property tester keeps it.
-    assert ledger["theorem:gauss"].status is Status.TESTED
+    assert by_owner["gauss"].status is Status.TESTED
 
 
 def test_the_printed_proposition_elaborates(lean_oracle: LeanOracle) -> None:

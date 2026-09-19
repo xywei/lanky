@@ -226,6 +226,12 @@ instead.
   `assumed`, rather than passing vacuously, and its provenance carries
   `untested` with the reason and `valid: 0`. Under `pytest` the same theorem is
   reported as skipped.
+- Write `def unwitnessed() -> any(x == 100 for x in Nat)` and check it. `Nat` is
+  sampled rather than enumerated, so no draw witnesses the statement, and no
+  draw refutes it either: the row reads `assumed`, its provenance says why, and
+  `lanky check` exits 0. Write the same shape over an index type,
+  `def enumerated(n: Nat) -> any(i == 0 for i in Fin[n + 1])`, and the domain is
+  walked rather than sampled, so that row reads `tested`.
 - `uv sync --group dev --extra lean` and watch a row change from `tested` to
   `proved`. The first run builds a Lean REPL, takes about a minute, and is
   cached in `$XDG_CACHE_HOME/lanky/lean-repl` (`~/.cache/lanky/lean-repl` by

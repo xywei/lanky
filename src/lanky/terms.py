@@ -63,6 +63,7 @@ __all__ = [
     "Subscript",
     "Sum",
     "SymbolicBoolError",
+    "Undecided",
     "Var",
     "binder_assignments",
     "binders",
@@ -86,6 +87,18 @@ class SymbolicBoolError(TypeError):
     is evaluated at concrete values (:func:`evaluate`). The one place where
     Python may ask is the ``if`` clause of a generator expression being traced
     for binders, where the question is answered by recording a guard.
+    """
+
+
+class Undecided(Exception):
+    """Raised when evaluation cannot answer a term from the points it was given.
+
+    The case that matters is an existential over a sampled domain. ``Fin[n]``
+    is enumerated, so ``any(...)`` over it is decided either way; ``Nat`` is
+    *sampled*, so a handful of draws that produce no witness say nothing at all
+    about whether one exists. Answering ``False`` there would turn a true
+    statement into a counterexample, so evaluation declines instead, and the
+    property tester drops the draw rather than counting it as evidence.
     """
 
 
@@ -748,6 +761,14 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     type says how (``points(evaluate)``); anything else, a sort such as ``Nat``
     with no finite extent, is handed to ``sampler``, which is how the property
     tester tests a statement about all naturals.
+
+    The two kinds of domain are not equally informative, and the difference is
+    the whole reason :class:`Undecided` exists. An enumerated domain is the
+    domain, so both quantifiers are decided over it. A sampled domain is a
+    handful of points out of infinitely many, and only one of the two answers
+    survives that: a ``forall`` that fails at a drawn point really is false
+    there, but an ``exists`` that finds no witness among four draws has learned
+    nothing, so it declines rather than answering ``False``.
     """
 
     def __init__(
@@ -758,6 +779,15 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         super().__init__(context)
         self.context: dict[str, Any] = context
         self.sampler = sampler
+
+    @staticmethod
+    def is_exhaustive(domain: Any) -> bool:
+        """Whether walking this domain visits every one of its points.
+
+        An index type with a bound answers ``points``, so its extent is the
+        whole domain; anything else is sampled.
+        """
+        return getattr(domain, "points", None) is not None
 
     def _points(self, domain: Any) -> Iterable[Any]:
         """The concrete points of one binder domain."""
@@ -788,17 +818,38 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         return expr is None or bool(self.rec(expr))
 
     def map_forall(self, expr: Forall) -> Any:
-        """True when the body holds at every point of the guarded domain."""
+        """True when the body holds at every point of the guarded domain.
+
+        Over a sampled domain a ``True`` is evidence rather than proof, which is
+        exactly what the ``TESTED`` status means; a ``False`` is a real
+        counterexample either way, so nothing here has to be held back.
+        """
         for _ in self.assignments(expr.binders):
             if self._holds(expr.guard) and not self.rec(expr.body):
                 return False
         return True
 
     def map_exists(self, expr: Exists) -> Any:
-        """True when the body holds somewhere in the guarded domain."""
+        """True when the body holds somewhere in the guarded domain.
+
+        Raises:
+            Undecided: If no witness turned up and at least one binder domain
+                was sampled rather than enumerated, so "no witness among these
+                points" is not "no witness".
+        """
         for _ in self.assignments(expr.binders):
             if self._holds(expr.guard) and self.rec(expr.body):
                 return True
+        sampled = [
+            domain for _var, domain in expr.binders if not self.is_exhaustive(domain)
+        ]
+        if sampled:
+            names = ", ".join(str(domain) for domain in sampled)
+            raise Undecided(
+                f"no witness was drawn for {render(expr)}, and {names} is "
+                "sampled rather than enumerated, so the statement is undecided "
+                "here rather than false"
+            )
         return False
 
     def map_lanky_sum(self, expr: Sum) -> Any:
@@ -843,6 +894,11 @@ def evaluate(
 
     A proposition evaluates to a ``bool``, which is what makes an annotation
     double as a property test.
+
+    Raises:
+        Undecided: If an existential over a domain ``sampler`` supplied found no
+            witness. Sampled points are not the domain, so there is no ``False``
+            to return, and the caller drops the draw instead.
     """
     if not isinstance(expr, prim.ExpressionNode):
         return expr
@@ -963,7 +1019,17 @@ def _render(expr: Any, outer: int) -> str:
     if isinstance(expr, Var | prim.Variable):
         return expr.name
     if isinstance(expr, Forall | Exists):
-        word = "forall" if isinstance(expr, Forall) else "exists"
+        universal = isinstance(expr, Forall)
+        if not expr.binders:
+            # A closed statement with hypotheses and no variables. There is
+            # nothing to quantify, so it reads as the sequent it is rather than
+            # as "forall nothing".
+            if expr.guard is None:
+                return _render(expr.body, outer)
+            joiner = " |- " if universal else " and "
+            text = f"{_render(expr.guard, _OR + 1)}{joiner}{_render(expr.body, _OR + 1)}"
+            return _parens(text, _OR, outer)
+        word = "forall" if universal else "exists"
         guard = f" where {_render(expr.guard, _OR)}" if expr.guard is not None else ""
         text = f"{word} {_binders_text(expr)}{guard}. {_render(expr.body, _OR)}"
         return _parens(text, _OR, outer)

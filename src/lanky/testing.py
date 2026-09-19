@@ -20,7 +20,15 @@ turns ``off(0) == 0`` and ``all(off(r + 1) == off(r) + cnt(r) for r in Fin[n])``
 into an actual prefix sum, and the theorem about it gets tested rather than
 vacuously passed. Whatever the assignment pass does not match is still filtered,
 and the report says how many draws survived, so a vacuous test is visible rather
-than reported as a pass.
+than reported as a pass. An assignment has to land inside the family's codomain
+(:func:`in_sort`): a hypothesis that demands ``f(0) == -1`` of an
+``Fn[Fin[1], Nat]`` is unsatisfiable rather than a licence to put ``-1`` into the
+draw, so the draw is dropped instead.
+
+A draw that the statement cannot be answered at is dropped the same way. That is
+what an existential over a sampled domain does when no draw witnesses it
+(:class:`~lanky.terms.Undecided`): four points out of ``Nat`` finding no witness
+is not a refutation, so the draw counts as neither evidence nor counterexample.
 """
 
 from __future__ import annotations
@@ -33,13 +41,21 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky.prelude import FinType, FnType, Refined, Sort
-from lanky.terms import Forall, binder_assignments, evaluate, free_variables
+from lanky.terms import (
+    Forall,
+    Undecided,
+    binder_assignments,
+    evaluate,
+    free_variables,
+    render,
+)
 
 __all__ = [
     "SkipSample",
     "Table",
     "TestReport",
     "check",
+    "in_sort",
     "sample_value",
     "sampling_order",
 ]
@@ -143,6 +159,51 @@ def sample_value(
     raise SkipSample(f"no sampler for {sort!r}")
 
 
+def in_sort(value: Any, sort: Any, context: dict[str, Any]) -> bool:
+    """Whether ``value`` is an inhabitant of ``sort`` at the sizes in ``context``.
+
+    This is the counterpart of :func:`sample_value`, and it exists because the
+    sampler is not the only thing that puts a value into a draw: a definitional
+    hypothesis *assigns* one (see :func:`satisfy_hypotheses`), and an assignment
+    that lands outside the declared sort would make the draw a counterexample to
+    a statement that never claimed anything about it.
+
+    A sort this function does not know how to test is accepted, because the
+    question here is whether the value is provably outside its sort, not whether
+    it is provably inside. A :class:`~lanky.prelude.Refined` sort is tested on
+    its base only: its propositions name the variable they refine, and a table
+    entry has no name to bind them to.
+    """
+    if isinstance(sort, Refined):
+        return in_sort(value, sort.base, context)
+    if isinstance(sort, FinType):
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False
+        try:
+            bound = int(evaluate(sort.bound, context))
+        except Exception:  # noqa: BLE001 - an unevaluable bound cannot exclude a value
+            return True
+        return 0 <= value < bound
+    if isinstance(sort, Sort):
+        if sort.name == "Nat":
+            return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        if sort.name == "Int":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if sort.name in ("Bool", "Prop"):
+            return isinstance(value, bool)
+        if sort.name == "Real":
+            return isinstance(value, int | float | Fraction) and not isinstance(
+                value, bool
+            )
+    if sort is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if sort is float:
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if sort is bool:
+        return isinstance(value, bool)
+    return True
+
+
 def sort_names(sort: Any) -> frozenset[str]:
     """The variable names a sort's own expressions mention.
 
@@ -216,34 +277,68 @@ def _definition(prop: Any) -> tuple[Any, Any] | None:
     return None
 
 
-def _assign_definition(call: Any, value_expr: Any, context: dict[str, Any]) -> None:
-    """Perform one assignment ``f(i) = e`` into a sampled table."""
-    table = context.get(call.function.name)
+def _assign_definition(
+    call: Any,
+    value_expr: Any,
+    context: dict[str, Any],
+    sorts: dict[str, Any],
+) -> None:
+    """Perform one assignment ``f(i) = e`` into a sampled table.
+
+    Raises:
+        SkipSample: If the value the hypothesis defines is outside the family's
+            codomain. The hypothesis and the declared sort cannot both hold, so
+            there is no draw here to test: writing the value anyway would put a
+            point outside its sort into the context and let the goal be
+            "refuted" by a counterexample the statement excludes.
+    """
+    name = call.function.name
+    table = context.get(name)
     if not isinstance(table, Table):
         return
     index = int(evaluate(call.parameters[0], context))
-    if 0 <= index < len(table):
-        table[index] = evaluate(value_expr, context)
+    if not 0 <= index < len(table):
+        return
+    value = evaluate(value_expr, context)
+    sort = sorts.get(name)
+    codomain = sort.codomain if isinstance(sort, FnType) else None
+    if codomain is not None and not in_sort(value, codomain, context):
+        raise SkipSample(
+            f"{name}({index}) = {value!r} is outside {codomain}, so no draw "
+            f"satisfies {render(call)} == {render(value_expr)} at this sort"
+        )
+    table[index] = value
 
 
-def satisfy_hypotheses(hypotheses: Any, context: dict[str, Any]) -> None:
+def satisfy_hypotheses(
+    hypotheses: Any,
+    context: dict[str, Any],
+    sorts: Any = None,
+) -> None:
     """Make the definitional hypotheses true by construction, where possible.
 
     Each hypothesis is tried in the order written, so a recurrence that reads
     earlier entries sees the entries an earlier hypothesis set. Anything that
     does not match the pattern is left for the rejection filter.
+
+    ``sorts`` maps a variable name to its declared sort, and is what keeps a
+    synthesized value inside the family's codomain.
+
+    Raises:
+        SkipSample: If a definition demands a value the codomain does not have.
     """
+    sorts = dict(sorts or {})
     for prop in hypotheses:
         definition = _definition(prop)
         if definition is not None:
-            _try(lambda d=definition: _assign_definition(d[0], d[1], context))
+            _try(lambda d=definition: _assign_definition(d[0], d[1], context, sorts))
             continue
         if isinstance(prop, Forall) and prop.guard is None:
             definition = _definition(prop.body)
             if definition is None:
                 continue
             for _ in binder_assignments(prop.binders, context):
-                _try(lambda d=definition: _assign_definition(d[0], d[1], context))
+                _try(lambda d=definition: _assign_definition(d[0], d[1], context, sorts))
 
 
 def _try(action: Any) -> None:
@@ -264,12 +359,19 @@ class TestReport:
     ``valid`` is the number of draws the hypotheses accepted. When it is zero
     the test proves nothing, and saying so is the whole reason this field
     exists: an oracle must not report a vacuous pass as evidence.
+
+    ``undecided`` counts the draws that were dropped because the statement
+    could not be answered at them, which today means an existential over a
+    sampled domain that no draw witnessed (:class:`~lanky.terms.Undecided`).
+    Such a draw is neither evidence nor a counterexample, so it is not counted
+    as valid.
     """
 
     ok: bool
     counterexample: dict[str, Any] | None = None
     samples: int = 0
     valid: int = 0
+    undecided: int = 0
     reason: str = ""
     skipped: list[str] = field(default_factory=list)
 
@@ -288,9 +390,16 @@ def check(
     case that one is drawn first (see :func:`sampling_order`): a size has to
     exist before the family it sizes can be tabulated. ``hypotheses`` is a
     sequence of propositions.
+
+    A draw is dropped rather than counted when it cannot be completed
+    (:class:`SkipSample`, including a definitional hypothesis that would put a
+    value outside its codomain) and when the statement cannot be answered at it
+    (:class:`~lanky.terms.Undecided`, an existential over a sampled domain that
+    found no witness). Neither is a counterexample, and neither is evidence.
     """
     rng = random.Random(seed)
     variables = sampling_order(variables)
+    sorts = dict(variables)
     report = TestReport(ok=True)
     for _ in range(samples * REJECTION_FACTOR):
         if report.valid >= samples:
@@ -300,26 +409,39 @@ def check(
         try:
             for name, sort in variables:
                 context[name] = sample_value(sort, rng, context, name)
+            satisfy_hypotheses(hypotheses, context, sorts)
         except SkipSample as exc:
             if len(report.skipped) < 3:
                 report.skipped.append(str(exc))
             continue
-        satisfy_hypotheses(hypotheses, context)
         sampler = sort_sampler(rng, context)
-        if not all(bool(evaluate(h, context, sampler)) for h in hypotheses):
+        try:
+            if not all(bool(evaluate(h, context, sampler)) for h in hypotheses):
+                continue
+            satisfied = bool(evaluate(goal, context, sampler))
+        except Undecided as exc:
+            report.undecided += 1
+            if len(report.skipped) < 3:
+                report.skipped.append(str(exc))
             continue
         report.valid += 1
-        if not bool(evaluate(goal, context, sampler)):
+        if not satisfied:
             report.ok = False
             report.counterexample = {k: _describe(v) for k, v in context.items()}
             report.reason = "the goal is false at this assignment"
             return report
     if report.valid == 0:
-        report.reason = (
-            "no draw satisfied the hypotheses, so nothing was tested"
-            if hypotheses
-            else "no draw could be completed"
-        )
+        if report.undecided:
+            report.reason = (
+                "no draw could decide the statement: an existential over a "
+                "sampled domain found no witness, which is not a refutation"
+            )
+        else:
+            report.reason = (
+                "no draw satisfied the hypotheses, so nothing was tested"
+                if hypotheses
+                else "no draw could be completed"
+            )
     return report
 
 

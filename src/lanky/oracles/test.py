@@ -72,17 +72,22 @@ class TestOracle:
             # A pass over no valid draw is not evidence, so the status must not
             # improve. Returning the fact with the reason rather than ``None``
             # keeps the attempt in the ledger: the row stays ``ASSUMED`` and
-            # says why nothing tested it.
+            # says why nothing tested it. A draw the statement could not be
+            # answered at (an unwitnessed existential over a sampled domain)
+            # lands here too, which is the point: it is not a refutation.
             return fact.with_status(
                 fact.status,
                 untested=report.reason or "no draw satisfied the hypotheses",
                 samples=report.samples,
                 valid=0,
+                undecided=report.undecided or None,
                 skipped=report.skipped or None,
             )
+        extra = {"undecided": report.undecided} if report.undecided else {}
         return fact.with_status(
             Status.TESTED,
             self.name,
             samples=report.samples,
             valid=report.valid,
+            **extra,
         )

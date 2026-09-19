@@ -21,7 +21,35 @@ import os
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-__all__ = ["Fact", "Ledger", "Status"]
+__all__ = ["Fact", "Ledger", "Status", "fact_id"]
+
+
+def fact_id(
+    kind: str,
+    owner: str,
+    module: str | None = None,
+    line: int | None = None,
+    detail: str = "",
+) -> str:
+    """Build a fact id that names a definition rather than only a name.
+
+    A ledger is keyed by id (see :meth:`Ledger.add`), so two claims that share
+    an id are one claim and the later one silently replaces the earlier. A
+    qualified name alone is not enough to tell two definitions apart: two
+    modules checked together may each have a ``scan_monotone``, and a decorator
+    used twice in one module gives the same qualified name twice. The module
+    name and the definition's line make the id unique per definition, and both
+    are short enough to keep it readable; the ledger's table shows ``where`` and
+    ``owner`` in their own columns, so the id itself is free to be long.
+
+    The shape is ``kind:module.owner@line:detail``, with any part that is not
+    known left out. ``detail`` is for a theory that claims several facts about
+    one object, such as one obligation per array access.
+    """
+    name = f"{module}.{owner}" if module else owner
+    at = f"@{line}" if line is not None else ""
+    suffix = f":{detail}" if detail else ""
+    return f"{kind}:{name}{at}{suffix}"
 
 
 class Status(enum.Enum):

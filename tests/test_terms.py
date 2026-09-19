@@ -13,11 +13,13 @@ from lanky.terms import (
     Scope,
     Sum,
     SymbolicBoolError,
+    Undecided,
     Var,
     abs_,
     binders,
     evaluate,
     evaluate_annotations,
+    exists,
     forall,
     render,
     structurally_equal,
@@ -105,14 +107,24 @@ def test_evaluate_annotations_reads_a_theorem_signature() -> None:
 def test_evaluate_annotations_handles_evaluated_annotations() -> None:
     # Without "from __future__ import annotations" the annotation is an object
     # already; both forms have to work.
-    source = (
-        "from lanky.prelude import Nat\n"
-        "def f(n: Nat) -> n >= 0:\n"
-        "    pass\n"
-    )
-    namespace: dict = {}
-    exec(compile(source, "<eager>", "exec"), namespace)
-    annotations = evaluate_annotations(namespace["f"])
+    #
+    # Two details make this fixture an honest test of the eager path.
+    # ``dont_inherit=True``, because compile() otherwise inherits the future
+    # statements of *this* module, which has "from __future__ import
+    # annotations" at the top, and the fixture would quietly test the string
+    # path a second time. And a binding for ``n`` in the namespace, because an
+    # eager annotation is evaluated at definition time, where a name lanky
+    # would have invented does not exist yet: giving it a Var is what the
+    # defaulting Scope does for the string path, done by hand.
+    source = "def f(n: Nat) -> n >= 0:\n    pass\n"
+    namespace: dict = {"Nat": Nat, "n": Var("n")}
+    exec(compile(source, "<eager>", "exec", dont_inherit=True), namespace)
+    function = namespace["f"]
+    # the annotations really are objects here, not the strings the other path
+    # hands over, which is the whole point of the fixture
+    assert not isinstance(function.__annotations__["return"], str)
+    assert isinstance(function.__annotations__["return"], Comparison)
+    annotations = evaluate_annotations(function)
     assert annotations["n"] is Nat
     assert render(annotations["return"]) == "n >= 0"
 
@@ -257,3 +269,38 @@ def test_two_for_clauses_keep_both_names() -> None:
     p = Var("p")
     claim = forall(p(a) <= p(b) for a in Fin[n] for b in Fin[n] if a <= b)
     assert render(claim) == "forall a in Fin(n), b in Fin(n) where a <= b. p(a) <= p(b)"
+
+
+def test_a_sampled_existential_declines_rather_than_answering_false() -> None:
+    """``any`` over a sampled sort has no ``False`` to give.
+
+    The draws are four points of an infinite domain, so finding no witness is
+    not finding that there is none. The evaluator says so by raising rather
+    than by answering, and the property tester drops the draw.
+    """
+    claim = exists(x == 100 for x in Nat)
+    assert render(claim) == "exists x in Nat. x == 100"
+    with pytest.raises(Undecided, match="undecided"):
+        evaluate(claim, {}, sort_sampler(random.Random(0), {}))
+    # a witness among the draws is still an answer
+    assert evaluate(exists(x == 0 for x in Nat), {}, sort_sampler(random.Random(0), {}))
+
+
+def test_an_existential_over_an_index_type_answers_both_ways() -> None:
+    """``Fin`` is enumerated, so nothing is held back over it."""
+    assert evaluate(exists(i == 2 for i in Fin[4]), {}) is True
+    assert evaluate(exists(i == 9 for i in Fin[4]), {}) is False
+
+
+def test_a_sampled_universal_is_still_refutable() -> None:
+    """A failing draw of a ``forall`` is a real counterexample, sampled or not."""
+    assert evaluate(forall(x < 3 for x in Nat), {}, sort_sampler(random.Random(1), {})) is False
+    assert evaluate(forall(x >= 0 for x in Nat), {}, sort_sampler(random.Random(1), {})) is True
+
+
+def test_a_binderless_quantifier_renders_as_a_sequent() -> None:
+    """A closed statement with hypotheses and no variables is not "forall nothing"."""
+    body = Var("p") > 0
+    guard = Var("p") > 1
+    assert render(Forall((), body, guard)) == "p > 1 |- p > 0"
+    assert render(Forall((), body, None)) == "p > 0"

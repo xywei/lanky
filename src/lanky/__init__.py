@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import lanky.oracles  # noqa: F401 - importing lanky registers the built-in oracles
 from lanky.check import check_path
-from lanky.ledger import Fact, Ledger, Status
+from lanky.ledger import Fact, Ledger, Status, fact_id
 from lanky.plugins import Executor, Oracle, Registry, Theory, Verb, registry
 from lanky.prelude import Bool, Fin, Fn, Int, Nat, Prop, Real, Sort
 from lanky.terms import (
@@ -34,6 +34,7 @@ from lanky.terms import (
     Forall,
     Scope,
     Sum,
+    Undecided,
     Var,
     abs_,
     evaluate,
@@ -68,6 +69,7 @@ __all__ = [
     "Sum",
     "Theorem",
     "Theory",
+    "Undecided",
     "Var",
     "Verb",
     "__version__",
@@ -75,6 +77,7 @@ __all__ = [
     "check_path",
     "evaluate",
     "exists",
+    "fact_id",
     "forall",
     "registry",
     "render",

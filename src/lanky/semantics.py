@@ -68,7 +68,15 @@ def _is_negated(child: Any) -> bool:
 
 
 def _children(expr: Any) -> tuple[Any, ...]:
-    """The subexpressions of a term, quantifier domains included."""
+    """The subexpressions of a term, everything a domain object carries included.
+
+    A domain is not a pymbolic node, so the walk has to know how to open one, and
+    it has to: arithmetic hides in a domain as readily as in a body.
+    ``n : Nat & (n - 1 < n)`` subtracts in a refinement predicate, ``Fin[n - 1]``
+    in an index type's bound, and ``Fn[Fin[k - 1], Nat]`` inside a family's
+    domain. Lean elaborates all three with Lean's arithmetic, so all three are
+    exposed to the same gap as a body that subtracts.
+    """
     if isinstance(expr, Forall | Exists | Sum):
         parts: list[Any] = [expr.body]
         if expr.guard is not None:
@@ -76,6 +84,12 @@ def _children(expr: Any) -> tuple[Any, ...]:
         for _var, domain in expr.binders:
             parts.append(domain)
         return tuple(parts)
+    if isinstance(expr, Refined):
+        return (expr.base, *expr.props)
+    if isinstance(expr, FnType):
+        return (expr.domain, expr.codomain)
+    if isinstance(expr, FinType):
+        return (expr.bound,)
     if isinstance(expr, prim.ExpressionNode):
         return init_args(expr)
     if isinstance(expr, tuple):

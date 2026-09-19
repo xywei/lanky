@@ -44,7 +44,11 @@ class TheoremItem(pytest.Item):
                 f"counterexample: {report.counterexample}"
             )
         if report.valid == 0:
-            pytest.skip(f"no draw satisfied the hypotheses of {self.name}")
+            # The reason comes from the report, because "no valid draw" has
+            # more than one cause: hypotheses nothing satisfied, a draw that
+            # could not be completed, or a statement no draw could decide.
+            reason = report.reason or "no draw satisfied the hypotheses"
+            pytest.skip(f"{reason}: {self.name}")
 
     def repr_failure(self, excinfo: Any, style: Any = None) -> str:
         """Report the counterexample without a Python traceback."""

@@ -23,7 +23,7 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
-from lanky.ledger import Fact, Status
+from lanky.ledger import Fact, Status, fact_id
 from lanky.plugins import registry
 from lanky.prelude import FnType
 from lanky.terms import Forall, LogicalAnd, Var, evaluate, evaluate_annotations, render
@@ -88,6 +88,7 @@ class Theorem:
         self.line = code.co_firstlineno
         self.where = f"{os.path.basename(code.co_filename)}:{code.co_firstlineno}"
         self.qualname = getattr(fn, "__qualname__", fn.__name__)
+        self.module = getattr(fn, "__module__", "") or ""
 
     # {{{ the statement
 
@@ -110,11 +111,16 @@ class Theorem:
         The variables become the binders and the hypotheses the guard, which is
         exactly the shape an oracle wants: for all values of the variables
         satisfying the hypotheses, the goal.
+
+        A theorem with hypotheses and no sort-valued parameters still has a
+        guard, and the binder tuple is then empty rather than the whole
+        :class:`~lanky.terms.Forall` being dropped. Dropping it would hand the
+        oracles the bare goal, which is a different and stronger claim: the
+        hypotheses are what make an implication with a false antecedent valid,
+        and without them such a theorem is refuted by its own hypothesis.
         """
         if self.goal is None:
             return None
-        if not self.variables:
-            return self.goal
         binders = tuple((Var(name), sort) for name, sort in self.variables)
         guard: Any = None
         props = [prop for _, prop in self.hypotheses]
@@ -122,6 +128,8 @@ class Theorem:
             guard = props[0]
         elif props:
             guard = LogicalAnd(tuple(props))
+        if not binders and guard is None:
+            return self.goal
         return Forall(binders, self.goal, guard)
 
     # }}}
@@ -168,10 +176,22 @@ class Theorem:
 
     # }}}
 
+    @property
+    def fact_id(self) -> str:
+        """The id this theorem's fact carries, unique per definition.
+
+        Two theorems can share a qualified name (one per module, or one
+        decorator used twice), and a ledger keyed only by that name would keep
+        one of them and drop the other. The module and the definition's line
+        settle it; :func:`lanky.ledger.fact_id` is the shared builder, so a
+        plugin theory can key its own facts the same way.
+        """
+        return fact_id("theorem", self.qualname, module=self.module, line=self.line)
+
     def fact(self) -> Fact:
         """This theorem as a ledger entry, before any oracle has seen it."""
         return Fact(
-            id=f"theorem:{self.qualname}",
+            id=self.fact_id,
             kind="theorem",
             statement=self.statement,
             term=self.term,

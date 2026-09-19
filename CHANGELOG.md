@@ -105,6 +105,31 @@ listed because it changes behaviour a reader could already have depended on.
 - **A private theorem is not collected.** The pytest plugin skips a `Theorem`
   bound to a name starting with an underscore, so a module can keep a statement
   it does not want run.
+- **A sampled existential is undecided, not refuted.** `any(...)` over a sort
+  such as `Nat` used to answer `False` when none of its four draws was a
+  witness, which reported a true theorem as `REFUTED`; the evaluator now raises
+  `lanky.terms.Undecided` there, the tester drops the draw and counts it in
+  `TestReport.undecided`, and the fact stays `ASSUMED` with the reason in its
+  provenance. An existential over `Fin` is enumerated and still answers both
+  ways.
+- **Hypotheses survive a theorem with no sort variables.** `Theorem.term` used
+  to return the bare goal whenever there were no sort-valued parameters, which
+  dropped every hypothesis; it now builds the guarded `Forall` with an empty
+  binder tuple, so an implication with a false antecedent is no longer refuted
+  by its own hypothesis.
+- **A theorem's fact id names its definition.** `Fact.id` is now
+  `theorem:<module>.<qualname>@<line>` rather than `theorem:<qualname>`, built
+  by the new `lanky.ledger.fact_id`, so two same-named theorems collected in one
+  ledger are two facts instead of one silently replacing the other.
+- **Semantics notes see inside a domain.** `lanky.semantics` walks refinement
+  predicates, `Fin` bounds and `Fn` domains and codomains, so a statement whose
+  only `Nat` subtraction is in `n : Nat & (n - 1 < n)` or in `Fin[n - 1]` now
+  carries the note it always should have.
+- **A synthesized table value stays inside its codomain.** A definitional
+  hypothesis such as `f(0) == -1` for an `f : Fn[Fin[1], Nat]` used to write
+  `-1` into the drawn table and let the goal be refuted by a point outside its
+  sort; the assignment is now checked with the new `lanky.testing.in_sort` and
+  the draw is dropped instead.
 
 ### Notes
 
@@ -125,3 +150,7 @@ listed because it changes behaviour a reader could already have depended on.
   reports that rather than reconciling it; the module docstring explains why
   truncating the evaluator to match Lean would be wrong for a flattened
   pymbolic sum.
+- The test for the eager (non-`from __future__`) annotation path builds its
+  fixture with `compile(..., dont_inherit=True)`. Without that flag `compile`
+  inherits the future statements of the test module, so the fixture's
+  annotations came back as strings and the eager path went untested.

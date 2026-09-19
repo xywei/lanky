@@ -222,6 +222,17 @@ def _render_quantifier(expr: Forall | Exists, outer: int) -> str:
     universal = isinstance(expr, Forall)
     word = "∀" if universal else "∃"
     guards = list(conjuncts(expr.guard))
+    if not expr.binders:
+        # A closed statement whose hypotheses are its only parameters: there is
+        # no variable to quantify, but the guard is still the antecedent and
+        # dropping it would print a strictly stronger claim than was written.
+        text = _render(expr.body, _ARROW if universal else _AND + 1)
+        for guard in reversed(guards):
+            joiner = "→" if universal else "∧"
+            text = f"{_render(guard, _ARROW + 1)} {joiner} {text}"
+        if not guards:
+            return _render(expr.body, outer)
+        return _parens(text, _ARROW if universal else _AND, outer)
     # A universal's body is the rightmost thing in the formula, and an arrow is
     # right associative, so it never needs brackets; an existential's body sits
     # to the right of a conjunction, where a quantifier would swallow the rest.

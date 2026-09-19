@@ -93,9 +93,11 @@ sharp.
   refinement by `T & prop`, exactness classes.
 - Property testing, including satisfying a definitional hypothesis by
   construction rather than rejection sampling, so a theorem about a scan is
-  genuinely tested and not vacuously passed. A pass over zero valid draws is
-  never reported as `TESTED`: the fact stays `ASSUMED` and its provenance says
-  `untested` and why.
+  genuinely tested and not vacuously passed. A synthesized value has to land
+  inside the family's codomain, so an unsatisfiable definition drops the draw
+  rather than putting a point outside its sort into it. A pass over zero valid
+  draws is never reported as `TESTED`: the fact stays `ASSUMED` and its
+  provenance says `untested` and why.
 - Refusing the ways a statement can silently mean something other than what was
   written: a guard joined with Python's `or`, an `and` or `or` used as a value,
   a `not` in a guard, and an `if` statement inside a function an annotation
@@ -129,7 +131,11 @@ sharp.
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real` and true division
   raise rather than emit source Lean would reject.
 - Sampling quantifiers over `Nat` draws a handful of points. That is evidence of
-  the weakest kind and the ledger says so.
+  the weakest kind and the ledger says so. It is evidence in one direction only:
+  a `forall` that a draw breaks is really refuted, but an `any` that no draw
+  witnesses is undecided, not false, so the tester declines the draw and the
+  fact stays `ASSUMED`. Over `Fin` the domain is enumerated and both answers
+  hold.
 
 **Not yet.**
 
