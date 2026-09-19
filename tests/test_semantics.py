@@ -140,3 +140,77 @@ def test_a_domain_without_arithmetic_is_still_not_flagged() -> None:
     """The walk got wider, not noisier: an ordinary domain says nothing."""
     assert semantics.notes(indexes.term) == ()
     assert semantics.notes(adds.term) == ()
+
+
+def _make_divides_by_zero():
+    """``n // 0 == 0`` over ``Nat``: a Lean theorem and a Python exception.
+
+    Lean's ``Nat`` division is total, so ``omega`` and ``simp`` close this; the
+    property tester raises ``ZeroDivisionError`` at every draw. It is built
+    inside a function because there is nothing here for the pytest plugin to
+    run.
+    """
+
+    @theorem
+    def div_zero(n: Nat) -> n // 0 == 0:
+        """Division is total in Lean and undefined in Python."""
+
+    return div_zero
+
+
+_divides_by_zero = _make_divides_by_zero()
+
+
+def _make_divides_by_a_variable():
+    """``n // k * k <= n``: the divisor is a variable, so zero is one of its values."""
+
+    @theorem
+    def div_variable(n: Nat, k: Nat) -> (n // k) * k <= n:
+        """Fine at every k but zero, and zero is drawn."""
+
+    return div_variable
+
+
+_divides_by_a_variable = _make_divides_by_a_variable()
+
+
+@theorem
+def divides_by_a_literal(n: Nat, i: Fin[n]) -> (i // 2) * 2 <= i:
+    """A nonzero literal divisor is the one divisor that can be ruled out."""
+
+
+def test_a_divisor_that_may_be_zero_is_a_gap_over_nat_too() -> None:
+    """The gap the Int note does not cover: ``n // 0`` is a theorem in Lean.
+
+    The division notes are about different things. One is how a negative
+    operand rounds, which only ``Int`` has; this one is that Lean's division is
+    total where Python's raises, which ``Nat`` has as much as ``Int``, so a
+    statement over ``Nat`` used to be proved with no note and no cross-check
+    while calling it raised.
+    """
+    assert semantics.divides_by_possible_zero(_divides_by_zero.term)
+    assert semantics.notes(_divides_by_zero.term) == (semantics.DIVISION_BY_ZERO,)
+    assert semantics.notes(_divides_by_a_variable.term) == (semantics.DIVISION_BY_ZERO,)
+
+
+def test_a_nonzero_literal_divisor_carries_no_note() -> None:
+    """Over ``Nat``, ``n // 2`` means the same thing in both readings."""
+    assert not semantics.divides_by_possible_zero(divides_a_natural.term)
+    assert semantics.notes(divides_a_natural.term) == ()
+    assert not semantics.divides_by_possible_zero(divides_by_a_literal.term)
+    assert semantics.notes(divides_by_a_literal.term) == ()
+    # and the Int note is still only about rounding, which a literal does not fix
+    assert semantics.notes(_divides.term) == (semantics.INT_DIVISION,)
+
+
+def test_an_int_divisor_that_may_be_zero_carries_both_notes() -> None:
+    """Rounding and totality are two gaps, and a statement can have both."""
+
+    @theorem
+    def both(k: Int, m: Int) -> (k // m) * m <= k:
+        """A negative operand rounds differently, and m may be zero."""
+
+    assert semantics.notes(both.term) == (
+        semantics.INT_DIVISION,
+        semantics.DIVISION_BY_ZERO,
+    )

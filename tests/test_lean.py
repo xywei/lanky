@@ -18,6 +18,7 @@ from lanky import theorem
 from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
+    check_applications,
     lean_type,
     print_lean,
     statement_of,
@@ -203,6 +204,93 @@ def test_a_theorem_prints_itself() -> None:
 def test_a_reduction_statement_is_declined_by_the_printer() -> None:
     with pytest.raises(UnsupportedTerm):
         gauss.lean()
+
+
+@theorem
+def within_bounds(m: Nat, g: Fn[Fin[m], Nat]) -> all(g(k) >= 0 for k in Fin[m]):
+    """A family applied inside its domain, under a quantifier of its own."""
+
+
+@theorem
+def _outside_bounds(m: Nat, g: Fn[Fin[m], Nat]) -> g(m) == g(m):
+    """A family applied at ``m``, which is one point past its domain.
+
+    Erased to a total ``Nat -> Nat`` this is a Lean tautology, and lanky's own
+    types say ``g`` has no value there at all. The name is private so that the
+    pytest plugin does not collect a statement that decides nothing.
+    """
+
+
+def test_an_application_outside_its_domain_is_declined() -> None:
+    """The erasure of a family to a total function is sound only in bounds.
+
+    ``Fn[Fin[m], Nat]`` prints as ``Nat -> Nat`` and the bound lives in the
+    guards, which says exactly nothing about ``g m``. Lean would prove the
+    tautology, the property tester has no value to compare, and the ledger
+    would read ``proved``, so the printer refuses the statement instead.
+    """
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(_outside_bounds.term)
+    with pytest.raises(UnsupportedTerm, match="Fin\\(m\\)"):
+        statement_of(_outside_bounds.term, "outside_bounds")
+    oracle = LeanOracle(session=LeanSession())
+    assert not oracle.can_establish(_outside_bounds.fact())
+
+
+def test_an_application_inside_its_domain_still_prints() -> None:
+    """The check has to leave the statements the project exists for alone.
+
+    ``off(r + 1)`` against an ``off : Fn[Fin[size + 1], Nat]`` with ``r`` in
+    ``Fin[size]`` is in bounds because ``r < size``, which is affine arithmetic
+    and not a proof search.
+    """
+    check_applications(scan_monotone.term)
+    assert "off (r + 1)" in print_lean(scan_monotone.term)
+    assert print_lean(within_bounds.term) == (
+        "∀ m : Nat, ∀ g : Nat → Nat, ∀ k : Nat, k < m → g k ≥ 0"
+    )
+
+
+def test_an_argument_that_could_be_negative_is_declined_too() -> None:
+    """``Fin`` starts at zero, so an ``Int`` index has two bounds to clear.
+
+    Nothing here says ``k`` is not ``-1``, and a family erased to ``Nat → Nat``
+    would be applied at a point the domain does not have on that side either.
+    Only a hypothesis would rule it out, and the check is affine arithmetic
+    over the binders rather than a solver, so it declines.
+    """
+
+    @theorem
+    def signed(size: Nat, k: Int, fam: Fn[Fin[size], Nat]) -> fam(k) == fam(k):
+        """An Int index into a Fin domain."""
+
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(signed.term)
+
+
+def test_an_open_term_has_no_domain_to_leave() -> None:
+    """Only a family the statement itself declares is checked.
+
+    ``f`` here is a free variable of an open term, so there is nothing that
+    says what its domain is and nothing to refuse.
+    """
+    assert print_lean(Forall(((i, FinType(n)),), f(i + 3) <= n)) == (
+        "∀ i : Nat, i < n → f (i + 3) ≤ n"
+    )
+    check_applications(f(n + 100))
+
+
+def test_a_closed_boolean_statement_prints_as_a_proposition() -> None:
+    """``-> 1 == 2`` is the Prop ``False``, not the ``Bool`` literal ``false``.
+
+    The literal elaborates as a proposition only through the Bool-to-Prop
+    coercion, which is a second reading of a statement that has one. In a value
+    position the literal is still what is printed.
+    """
+    assert print_lean(False) == "False"
+    assert print_lean(True) == "True"
+    assert print_lean(Forall((), False, Var("p") > 1)) == "p > 1 → False"
+    assert print_lean(f(a) == True) == "f a = true"  # noqa: E712 - the point of it
 
 
 def test_a_binderless_statement_keeps_its_hypotheses() -> None:
@@ -481,6 +569,31 @@ def test_the_printed_proposition_elaborates(lean_oracle: LeanOracle) -> None:
     for term in (commutes.term, below.term, scan_monotone.term):
         closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(term)}\n")
         assert closed, detail
+
+
+def test_lean_proves_a_family_applied_within_its_domain(lean_oracle: LeanOracle) -> None:
+    """The bound check must cost nothing a statement in bounds was getting.
+
+    ``g`` is applied under a quantifier of its own here rather than at the top
+    level, which is where an in-bounds argument has to be recognized from the
+    enclosing binder rather than from the theorem's parameters.
+    """
+    proved = lean_oracle.establish(within_bounds.fact())
+    assert proved.status is Status.PROVED
+    assert proved.decided_by == "lean"
+
+
+def test_lean_is_never_asked_about_an_application_out_of_bounds(
+    lean_oracle: LeanOracle,
+) -> None:
+    """And the ledger row is not ``proved``, whatever else it is."""
+    from lanky.check import establish
+
+    assert not lean_oracle.can_establish(_outside_bounds.fact())
+    fact = establish(_outside_bounds.fact())
+    assert fact.status is not Status.PROVED
+    assert fact.status is Status.ASSUMED
+    assert "outside the domain" in fact.provenance["untested"]
 
 
 def test_the_statement_the_oracle_sends_is_the_one_it_records(

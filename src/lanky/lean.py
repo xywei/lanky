@@ -25,8 +25,19 @@ unfold, so the goals the tactic ladder sees are the goals it is good at.
 *A family is a total function.* ``Fn[Fin[n], Nat]`` prints as ``Nat → Nat``, not
 as ``Fin n → Nat``. The bound lives in the guards of the quantifiers that apply
 the family, so the printed statement constrains the family exactly where the
-lanky statement does and leaves it unconstrained outside, which is sound: a
-statement that never mentions a point cannot depend on its value.
+lanky statement does and leaves it unconstrained outside. That is sound exactly
+as far as its premise goes: a statement that never mentions a point cannot
+depend on its value. A statement that *does* mention one is a different matter,
+and :func:`check_applications` is the premise made into a check. ``f(n)`` for an
+``f : Fn[Fin[n], Nat]`` erases to an unrestricted ``f n``, which Lean is happy
+to reason about and the lanky statement has no value for, so the printer
+declines the whole statement (:exc:`UnsupportedTerm`) rather than proving
+something about a point outside the domain. What "in bounds" means here is
+"lanky can show it from the binders": an argument is checked as an affine form
+against the bounds the ``Fin`` binders and the ``Nat`` sorts give, so
+``off(r + 1)`` against ``Fn[Fin[n + 1], Nat]`` with ``r`` in ``Fin[n]`` goes
+through and anything the affine reading cannot settle is declined rather than
+assumed. Declining costs a proof at worst; assuming costs soundness.
 
 Two places where Lean's arithmetic is not Python's are worth knowing, because a
 statement that uses them means in Lean what Lean's operators mean and not what a
@@ -51,11 +62,12 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky.prelude import FinType, FnType, Refined, Sort
-from lanky.terms import Abs, Exists, Forall, Sum, Var, conjuncts
+from lanky.terms import Abs, Exists, Forall, Sum, Var, conjuncts, init_args, render
 
 __all__ = [
     "LeanStatement",
     "UnsupportedTerm",
+    "check_applications",
     "domain_guards",
     "lean_type",
     "print_lean",
@@ -129,6 +141,23 @@ def lean_type(obj: Any) -> str:
     raise UnsupportedTerm(f"cannot print the type {obj!r} in Lean")
 
 
+def _scalar_bounds(domain: Any) -> tuple[Any, Any]:
+    """What a binder's domain says about the value of its variable.
+
+    ``(lower, upper)`` as terms, with ``None`` where there is no bound. A
+    refinement is read through to its base: its propositions may well pin the
+    variable down further, but only the base is a bound this module can use
+    without a solver.
+    """
+    if isinstance(domain, Refined):
+        return _scalar_bounds(domain.base)
+    if isinstance(domain, FinType):
+        return 0, domain.bound - 1
+    if isinstance(domain, Sort) and domain.name == "Nat":
+        return 0, None
+    return None, None
+
+
 def domain_guards(var: Var, domain: Any) -> list[str]:
     """The propositions a binder's domain imposes on its variable.
 
@@ -136,9 +165,11 @@ def domain_guards(var: Var, domain: Any) -> list[str]:
     sort gives nothing, because the Lean type already says it.
     """
     if isinstance(domain, FinType):
-        return [f"{print_lean(var)} < {_render(domain.bound, _CMP + 1)}"]
+        return [f"{_render(var, _CMP + 1)} < {_render(domain.bound, _CMP + 1)}"]
     if isinstance(domain, Refined):
-        return domain_guards(var, domain.base) + [_render(p, _ARROW + 1) for p in domain.props]
+        return domain_guards(var, domain.base) + [
+            _render_prop(p, _ARROW + 1) for p in domain.props
+        ]
     return []
 
 
@@ -226,22 +257,22 @@ def _render_quantifier(expr: Forall | Exists, outer: int) -> str:
         # A closed statement whose hypotheses are its only parameters: there is
         # no variable to quantify, but the guard is still the antecedent and
         # dropping it would print a strictly stronger claim than was written.
-        text = _render(expr.body, _ARROW if universal else _AND + 1)
+        text = _render_prop(expr.body, _ARROW if universal else _AND + 1)
         for guard in reversed(guards):
             joiner = "→" if universal else "∧"
-            text = f"{_render(guard, _ARROW + 1)} {joiner} {text}"
+            text = f"{_render_prop(guard, _ARROW + 1)} {joiner} {text}"
         if not guards:
-            return _render(expr.body, outer)
+            return _render_prop(expr.body, outer)
         return _parens(text, _ARROW if universal else _AND, outer)
     # A universal's body is the rightmost thing in the formula, and an arrow is
     # right associative, so it never needs brackets; an existential's body sits
     # to the right of a conjunction, where a quantifier would swallow the rest.
-    text = _render(expr.body, _QUANT if universal else _AND + 1)
+    text = _render_prop(expr.body, _QUANT if universal else _AND + 1)
     for position in reversed(range(len(expr.binders))):
         var, domain = expr.binders[position]
         conditions = domain_guards(var, domain)
         if position == len(expr.binders) - 1:
-            conditions += [_render(guard, _ARROW + 1) for guard in guards]
+            conditions += [_render_prop(guard, _ARROW + 1) for guard in guards]
         if universal:
             for condition in reversed(conditions):
                 text = f"{condition} → {text}"
@@ -250,6 +281,23 @@ def _render_quantifier(expr: Forall | Exists, outer: int) -> str:
                 text = f"{condition} ∧ {text}"
         text = f"{word} {var.name} : {lean_type(domain)}, {text}"
     return _parens(text, _QUANT, outer)
+
+
+def _render_prop(expr: Any, outer: int) -> str:
+    """Print a term that stands where Lean expects a proposition.
+
+    The one term that reads differently in the two positions is a Boolean
+    constant. ``-> 1 == 2`` is answered by Python while the annotation is
+    evaluated, so the statement lanky holds is the ``bool`` ``False``, and the
+    proposition that says so in Lean is ``False`` and not the ``Bool`` literal
+    ``false``: the literal elaborates as a proposition only through the
+    ``Bool``-to-``Prop`` coercion, which is a second reading of the statement
+    where lanky means exactly one. In a value position, as an operand of a
+    comparison, ``false`` is still what is printed.
+    """
+    if isinstance(expr, bool):
+        return "True" if expr else "False"
+    return _render(expr, outer)
 
 
 def _render(expr: Any, outer: int) -> str:
@@ -278,13 +326,13 @@ def _render(expr: Any, outer: int) -> str:
         text = f"{_render(expr.left, _CMP + 1)} {relation} {_render(expr.right, _CMP + 1)}"
         return _parens(text, _CMP, outer)
     if isinstance(expr, prim.LogicalAnd):
-        text = " ∧ ".join(_render(child, _AND + 1) for child in expr.children)
+        text = " ∧ ".join(_render_prop(child, _AND + 1) for child in expr.children)
         return _parens(text, _AND, outer)
     if isinstance(expr, prim.LogicalOr):
-        text = " ∨ ".join(_render(child, _OR + 1) for child in expr.children)
+        text = " ∨ ".join(_render_prop(child, _OR + 1) for child in expr.children)
         return _parens(text, _OR, outer)
     if isinstance(expr, prim.LogicalNot):
-        return _parens(f"¬{_render(expr.child, _APP)}", _NOT, outer)
+        return _parens(f"¬{_render_prop(expr.child, _APP)}", _NOT, outer)
     if isinstance(expr, prim.Sum):
         return _parens(_render_sum(expr), _ADD, outer)
     if isinstance(expr, prim.Product):
@@ -325,9 +373,233 @@ def print_lean(expr: Any) -> str:
     """Render a lanky term as one Lean 4 proposition.
 
     Raises:
-        UnsupportedTerm: If the term leaves the core-Lean fragment.
+        UnsupportedTerm: If the term leaves the core-Lean fragment, or applies
+            a family outside the domain it declares (:func:`check_applications`).
     """
-    return _render(expr, _QUANT)
+    check_applications(expr)
+    return _render_prop(expr, _QUANT)
+
+
+# }}}
+
+
+# {{{ applications of a family, and the domain it declares
+
+#: The key an affine form keeps its constant term under; no variable is named "".
+_CONSTANT = ""
+
+#: How many bounds one argument may be resolved through before giving up.
+_SUBSTITUTIONS = 16
+
+
+def _affine(expr: Any) -> dict[str, int] | None:
+    """``expr`` as ``{variable: coefficient}`` plus a constant, or ``None``.
+
+    Affine is as far as this goes, and far enough: an index expression is
+    ``r + 1`` or ``2 * i`` or ``n - 1``, and anything else (a division, a
+    family application, a product of two variables) is not something the check
+    can reason about, so it answers ``None`` and the caller declines.
+    """
+    if isinstance(expr, bool):
+        return None
+    if isinstance(expr, int):
+        return {_CONSTANT: expr}
+    if isinstance(expr, Var | prim.Variable):
+        return {_CONSTANT: 0, expr.name: 1}
+    if isinstance(expr, prim.Sum):
+        total: dict[str, int] = {_CONSTANT: 0}
+        for child in expr.children:
+            part = _affine(child)
+            if part is None:
+                return None
+            total = _add(total, part)
+        return total
+    if isinstance(expr, prim.Product):
+        total = {_CONSTANT: 1}
+        for child in expr.children:
+            part = _affine(child)
+            if part is None or not (_is_constant(total) or _is_constant(part)):
+                return None
+            total = (
+                _scale(part, total[_CONSTANT])
+                if _is_constant(total)
+                else _scale(total, part[_CONSTANT])
+            )
+        return total
+    return None
+
+
+def _add(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
+    """Sum two affine forms."""
+    total = dict(left)
+    for name, coefficient in right.items():
+        total[name] = total.get(name, 0) + coefficient
+    return total
+
+
+def _scale(form: dict[str, int], factor: int) -> dict[str, int]:
+    """Multiply an affine form by an integer."""
+    return {name: coefficient * factor for name, coefficient in form.items()}
+
+
+def _is_constant(form: dict[str, int]) -> bool:
+    """Whether the form has no variable left with a nonzero coefficient."""
+    return all(value == 0 for name, value in form.items() if name != _CONSTANT)
+
+
+@dataclass
+class _Scope:
+    """What is in scope while a statement's applications are checked.
+
+    ``lower`` and ``upper`` are affine forms, so the upper bound of an ``i`` in
+    ``Fin[n + 1]`` is ``n``, itself in terms of a variable with bounds of its
+    own. ``families`` is the parameters whose sort is a family over an index
+    type: those, and only those, have a domain to leave.
+    """
+
+    lower: dict[str, dict[str, int]] = field(default_factory=dict)
+    upper: dict[str, dict[str, int]] = field(default_factory=dict)
+    families: dict[str, FnType] = field(default_factory=dict)
+
+    def extended(self, binders: Any) -> _Scope:
+        """This scope with the binders of one quantifier added."""
+        out = _Scope(dict(self.lower), dict(self.upper), dict(self.families))
+        for var, domain in binders:
+            out.bind(var.name, domain)
+        return out
+
+    def bind(self, name: str, domain: Any) -> None:
+        """Record what one binder's domain says about its variable.
+
+        Whatever an outer binder of the same name said is dropped first: an
+        inner binder shadows it, and carrying the old bounds over would be
+        reasoning about the wrong variable.
+        """
+        base = domain.base if isinstance(domain, Refined) else domain
+        self.lower.pop(name, None)
+        self.upper.pop(name, None)
+        self.families.pop(name, None)
+        if isinstance(base, FnType):
+            self.families[name] = base
+            return
+        low, high = _scalar_bounds(domain)
+        for bound, table in ((low, self.lower), (high, self.upper)):
+            form = None if bound is None else _affine(bound)
+            if form is not None:
+                table[name] = form
+
+
+def _resolve(form: dict[str, int], scope: _Scope, maximize: bool) -> int | None:
+    """The largest (or smallest) value an affine form can take, as an integer.
+
+    Each variable is replaced by the bound that pushes the form the way this
+    call wants it: an upper bound for a positive coefficient when maximizing, a
+    lower bound for a negative one, and the other way round when minimizing.
+    The bounds are affine too, so the substitution can introduce a variable of
+    its own (the ``n`` in ``i <= n + 1 - 1``), which is why this is a loop; a
+    variable with no bound in the direction that is needed means the form is
+    unbounded as far as lanky can tell, and ``None`` says so.
+    """
+    form = dict(form)
+    for _ in range(_SUBSTITUTIONS):
+        name = next(
+            (
+                key
+                for key, value in form.items()
+                if key != _CONSTANT and value != 0
+            ),
+            None,
+        )
+        if name is None:
+            return form[_CONSTANT]
+        coefficient = form[name]
+        wants_upper = (coefficient > 0) == maximize
+        bound = (scope.upper if wants_upper else scope.lower).get(name)
+        if bound is None:
+            return None
+        form[name] = 0
+        form = _add(form, _scale(bound, coefficient))
+    return None
+
+
+def _fits(argument: Any, domain: FinType, scope: _Scope) -> bool:
+    """Whether ``argument`` is a point of ``domain`` for every value in scope.
+
+    Two obligations, both discharged by affine arithmetic rather than by a
+    solver: ``argument <= bound - 1`` and ``argument >= 0``. The second one is
+    not redundant, because an ``Int`` index can be negative and ``Fin`` starts
+    at zero.
+    """
+    arg = _affine(argument)
+    limit = _affine(domain.bound)
+    if arg is None or limit is None:
+        return False
+    highest = _resolve(_add(_add(arg, _scale(limit, -1)), {_CONSTANT: 1}), scope, True)
+    if highest is None or highest > 0:
+        return False
+    lowest = _resolve(arg, scope, False)
+    return lowest is not None and lowest >= 0
+
+
+def _application(expr: Any) -> tuple[str, Any] | None:
+    """``(family name, argument)`` for a one-argument application, or ``None``."""
+    if isinstance(expr, prim.Call) and isinstance(expr.function, Var | prim.Variable):
+        if len(expr.parameters) == 1:
+            return expr.function.name, expr.parameters[0]
+    if isinstance(expr, prim.Subscript) and isinstance(
+        expr.aggregate, Var | prim.Variable
+    ):
+        index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
+        if len(index) == 1:
+            return expr.aggregate.name, index[0]
+    return None
+
+
+def _check(expr: Any, scope: _Scope) -> None:
+    """Check every application below ``expr``, under the binders it sits in."""
+    if isinstance(expr, Forall | Exists | Sum):
+        for _var, domain in expr.binders:
+            _check(getattr(domain, "bound", None), scope)
+        inner = scope.extended(expr.binders)
+        _check(expr.body, inner)
+        if expr.guard is not None:
+            _check(expr.guard, inner)
+        return
+    if not isinstance(expr, prim.ExpressionNode):
+        return
+    found = _application(expr)
+    if found is not None:
+        name, argument = found
+        family = scope.families.get(name)
+        domain = family.domain if family is not None else None
+        base = domain.base if isinstance(domain, Refined) else domain
+        if isinstance(base, FinType) and not _fits(argument, base, scope):
+            raise UnsupportedTerm(
+                f"{render(expr)} applies {name} outside the domain it declares "
+                f"({base}): lanky cannot show that {render(argument)} is a point "
+                f"of {base}, and a family prints as a total Nat function, so Lean "
+                "would be reasoning about a value the statement does not have"
+            )
+    for child in init_args(expr):
+        if isinstance(child, tuple):
+            for item in child:
+                _check(item, scope)
+        else:
+            _check(child, scope)
+
+
+def check_applications(term: Any) -> None:
+    """Refuse a statement that applies a family outside the domain it declares.
+
+    This is what makes the erasure of ``Fn[Fin[n], B]`` to ``Nat → B`` sound
+    rather than merely usual (see the module docstring). Only a family the
+    statement's own binders declare is checked: a bare ``f(a)`` with no binder
+    for ``f`` is an open term, and an open term is somebody else's statement.
+
+    Raises:
+        UnsupportedTerm: If an application cannot be shown to stay in bounds.
+    """
+    _check(term, _Scope())
 
 
 # }}}
@@ -385,7 +657,7 @@ class LeanStatement:
             prop = self.hypotheses[position][1]
             term = self.hypothesis_terms[position] if self.hypothesis_terms else None
             if term is not None:
-                prop = _render(term, _ARROW + 1)
+                prop = _render_prop(term, _ARROW + 1)
             text = f"{prop} → {text}"
         for name, sort in reversed(self.binders):
             text = f"∀ {name} : {sort}, {text}"
@@ -420,9 +692,12 @@ def statement_of(term: Any, name: str = "lanky_claim") -> LeanStatement:
     becomes the named hypotheses; everything below stays a proposition.
 
     Raises:
-        UnsupportedTerm: If any part of the statement leaves the fragment.
+        UnsupportedTerm: If any part of the statement leaves the fragment, or
+            applies a family outside the domain it declares
+            (:func:`check_applications`).
     """
     lean_name = _lean_name(name)
+    check_applications(term)
     if not isinstance(term, Forall):
         return LeanStatement(lean_name, (), (), print_lean(term), term)
 
@@ -435,13 +710,13 @@ def statement_of(term: Any, name: str = "lanky_claim") -> LeanStatement:
             hypotheses.append((f"h{len(hypotheses)}", guard))
             hypothesis_terms.append(None)
     for guard in conjuncts(term.guard):
-        hypotheses.append((f"h{len(hypotheses)}", _render(guard, _QUANT)))
+        hypotheses.append((f"h{len(hypotheses)}", _render_prop(guard, _QUANT)))
         hypothesis_terms.append(guard)
     return LeanStatement(
         name=lean_name,
         binders=tuple(binders),
         hypotheses=tuple(hypotheses),
-        goal=_render(term.body, _QUANT),
+        goal=_render_prop(term.body, _QUANT),
         goal_term=term.body,
         hypothesis_terms=tuple(hypothesis_terms),
     )

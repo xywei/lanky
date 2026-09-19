@@ -77,7 +77,11 @@ class Theorem:
         variables: list[tuple[str, Any]] = []
         hypotheses: list[tuple[str, Any]] = []
         for name, annotation in annotations.items():
-            if isinstance(annotation, prim.ExpressionNode):
+            # A concrete bool is a proposition Python already answered, as in
+            # ``h: 1 == 2``, so it is a hypothesis and not a sort: nothing in
+            # the prelude is a bool value, and reading it as one used to send
+            # the sampler looking for an inhabitant of ``False``.
+            if isinstance(annotation, prim.ExpressionNode | bool):
                 hypotheses.append((name, annotation))
             else:
                 variables.append((name, annotation))
@@ -118,6 +122,11 @@ class Theorem:
         oracles the bare goal, which is a different and stronger claim: the
         hypotheses are what make an implication with a false antecedent valid,
         and without them such a theorem is refuted by its own hypothesis.
+
+        With neither binders nor a guard the term is the goal itself, and for a
+        closed statement such as ``-> 1 == 2`` the goal is a concrete ``bool``
+        rather than a term. That is a fact like any other: the property-test
+        oracle takes a ``bool`` and answers ``TESTED`` or ``REFUTED``.
         """
         if self.goal is None:
             return None
@@ -140,13 +149,19 @@ class Theorem:
         The proof body is not run: it is a script for an oracle, not code. What
         running a theorem means is checking what it says. A value for a family
         parameter may be given as a sequence, which is read as a table.
+
+        Raises:
+            lanky.terms.Undecided: If the statement applies a family outside
+                the domain it declares at these values. There is no value to
+                compare there, so there is no verdict either; the property
+                tester drops such a draw for the same reason.
         """
         missing = [name for name, _ in self.variables if name not in concrete]
         if missing:
             raise TypeError(f"{self.__name__} needs values for {', '.join(missing)}")
         sorts = dict(self.variables)
         context = {
-            name: Table(value)
+            name: Table(value, name=name)
             if isinstance(sorts.get(name), FnType) and not callable(value)
             else value
             for name, value in concrete.items()

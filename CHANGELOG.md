@@ -130,6 +130,34 @@ listed because it changes behaviour a reader could already have depended on.
   `-1` into the drawn table and let the goal be refuted by a point outside its
   sort; the assignment is now checked with the new `lanky.testing.in_sort` and
   the draw is dropped instead.
+- **A closed Boolean statement is a fact.** `-> 1 == 2` is answered by Python
+  while the annotation is evaluated, so the term is the `bool` `False`; the
+  property-test oracle declined anything that was not a pymbolic node, and the
+  falsest theorem there is sat in the ledger as `assumed` with the check
+  exiting 0. It is now `REFUTED` with an explicit empty counterexample and a
+  reason, `True` is `TESTED`, a parameter annotated with a concrete bool is a
+  hypothesis rather than a sort nothing can sample, the Lean printer writes
+  such a statement as the proposition `True` or `False` rather than as a `Bool`
+  literal leaning on a coercion, and `lanky check` exits 1.
+- **Division by zero is a semantics gap of its own.** Lean's `Nat` and `Int`
+  division are total (`x / 0` is `0`, `x % 0` is `x`) and Python's raise, so
+  `n // 0 == 0` was `PROVED` with no note while calling it raised
+  `ZeroDivisionError`. `lanky.semantics.DIVISION_BY_ZERO` is recorded for any
+  divisor that is not a nonzero literal, over `Nat` as well as `Int`; the
+  property tester now counts such a draw as undecided rather than crashing, and
+  the cross-check records in the provenance that the sampled reading could not
+  be run.
+- **A family application has to stay inside the domain it declares.**
+  `Fn[Fin[n], B]` prints as an unrestricted `Nat -> B`, which is sound only
+  where every application is in bounds, and nothing checked it: `f(n)` for an
+  `f : Fn[Fin[n], Nat]` became a Lean tautology and was `PROVED` while the
+  tester raised `IndexError` on the same statement. The new
+  `lanky.lean.check_applications` discharges each application's bound by affine
+  arithmetic over the enclosing binders and declines the whole statement with
+  `UnsupportedTerm` when it cannot (`off(r + 1)` against `Fn[Fin[n + 1], Nat]`
+  with `r` in `Fin[n]` still goes through), and a table applied outside its
+  domain now makes the draw undecided rather than raising, so neither reading
+  can call an ill-typed application a proof.
 
 ### Notes
 

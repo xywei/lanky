@@ -141,6 +141,113 @@ def test_a_semantics_gap_is_recorded_and_cross_checked(tmp_path, monkeypatch) ->
         assert fact.provenance["semantics_counterexample"] == {"n": 0}
 
 
+CLOSED = '''
+"""Two claims Python answers on its own."""
+
+from __future__ import annotations
+
+from lanky import theorem
+
+
+@theorem
+def certainly() -> 1 == 1:
+    """True, with no variable to draw and no hypothesis to satisfy."""
+
+
+@theorem
+def impossible() -> 1 == 2:
+    """False, and nothing in the file says otherwise."""
+'''
+
+
+def test_cli_exits_one_on_a_false_closed_claim(tmp_path, capsys) -> None:
+    """The shortest false theorem there is used to leave the check green.
+
+    ``1 == 2`` is answered by Python while the annotation is evaluated, so the
+    term is a ``bool``. The property oracle declined anything that was not a
+    pymbolic node and Lean has no proof of a false statement, so the row read
+    ``assumed`` and ``lanky check`` exited 0.
+    """
+    path = tmp_path / "closed.py"
+    path.write_text(CLOSED, encoding="utf-8")
+    code = cli.main(["check", str(path)])
+    printed = capsys.readouterr().out
+    assert code == 1
+    assert "REFUTED impossible" in printed
+    # empty on purpose, and printed rather than dropped: no assignment is what
+    # makes this statement false
+    assert "counterexample: {}" in printed
+    assert "constant False" in printed
+
+
+def test_a_true_closed_claim_is_tested_rather_than_assumed(tmp_path, monkeypatch) -> None:
+    """The other side of it, with Lean out of the way so the decider is fixed."""
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "closed.py"
+    path.write_text(CLOSED.split("@theorem\ndef impossible")[0], encoding="utf-8")
+    ledger = check_path(path)
+    (fact,) = list(ledger)
+    assert fact.status is Status.TESTED
+    assert fact.decided_by == "property-test"
+
+
+def test_a_division_by_zero_is_a_gap_the_ledger_records(tmp_path) -> None:
+    """``n // 0 == 0`` is a Lean theorem and a Python ZeroDivisionError.
+
+    Whatever establishes it, the note has to be in the provenance and the
+    sampled reading has to have been tried: with Lean the fact is proved and
+    the cross-check records that the Python reading could not be run, without
+    Lean the tester declines the draws and the row stays assumed.
+    """
+    from lanky.semantics import DIVISION_BY_ZERO
+
+    path = tmp_path / "divzero.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Nat\n\n\n"
+        "@theorem\n"
+        "def div_zero(n: Nat) -> n // 0 == 0:\n"
+        '    """Total in Lean, undefined in Python."""\n',
+        encoding="utf-8",
+    )
+    ledger = check_path(path)
+    (fact,) = list(ledger)
+    assert DIVISION_BY_ZERO in fact.provenance["semantics"]
+    assert fact.status is not Status.REFUTED
+    if fact.status is Status.ASSUMED:
+        assert "zero" in fact.provenance["untested"]
+    else:
+        assert fact.status is Status.PROVED
+        assert "zero" in fact.provenance["semantics_undecided"]
+
+
+def test_an_application_outside_its_domain_is_never_proved(tmp_path, capsys) -> None:
+    """A family applied past its own domain must not come back ``proved``.
+
+    Lean sees a total ``Nat -> Nat`` once the family is erased, so the claim is
+    a tautology there; the statement lanky wrote has no value at that point at
+    all. The printer declines it, the tester cannot answer it either, and the
+    ledger says assumed and why rather than proved.
+    """
+    path = tmp_path / "outside.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Fin, Fn, Nat\n\n\n"
+        "@theorem\n"
+        "def outside(n: Nat, f: Fn[Fin[n], Nat]) -> f(n) == f(n):\n"
+        '    """One point past the domain f declares."""\n',
+        encoding="utf-8",
+    )
+    assert cli.main(["check", str(path)]) == 0
+    assert "assumed" in capsys.readouterr().out
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert fact.status is not Status.PROVED
+    assert "outside the domain" in fact.provenance["untested"]
+
+
 def test_a_file_that_does_not_exist_is_a_mistake_in_the_command(capsys) -> None:
     assert cli.main(["check", "/no/such/file.py"]) == 2
     assert "no such file" in capsys.readouterr().out

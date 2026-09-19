@@ -163,8 +163,14 @@ Two representation choices are visible there. A bounded quantifier prints as a
 guarded `Nat` quantifier rather than `∀ i : Fin n`, because `omega` reasons about
 linear `Nat` arithmetic and the `Fin` form would bring coercions the lanky
 statement does not mean. And `Fn[Fin[n], Nat]` prints as the total function
-`Nat → Nat`, with boundedness living in the guards, which is sound because the
-statement never mentions a point outside them.
+`Nat → Nat`, with boundedness living in the guards, which is sound as long as
+the statement never mentions a point outside them. That last clause is a
+check and not a hope: before printing anything, lanky shows that every
+application of a family stays inside its domain, reading the argument as an
+affine expression in the enclosing binders, so `off(r + 1)` against an
+`off : Fn[Fin[n + 1], Nat]` with `r` in `Fin[n]` goes through and `off(n + 1)`
+is declined with `UnsupportedTerm`. A declined statement falls to the property
+tester, which has nothing to compare at such a point either and says so.
 
 The script was not written by hand. The ladder tries `omega`, `decide`, `simp`,
 `simp_all` and two intro-plus-closer scripts, and then an induction strategy that
@@ -212,26 +218,47 @@ is in the refuted fact's provenance.)
 
 Lean is right about the statement it read and the tester is right about the one
 it ran; they are not the same statement. The note is in the fact's provenance
-either way, and the exit code is 0, because nothing was refuted. The other case
-is floor division and remainder over `Int`, where Lean and Python round a
-negative operand differently. `lanky.semantics.notes(term)` is the check, and
-its module docstring explains why lanky does not simply truncate the evaluator
-instead.
+either way, and the exit code is 0, because nothing was refuted.
+
+Two more cases read the same way. Floor division and remainder over `Int` round
+a negative operand differently in Lean and in Python. And division by anything
+that is not a nonzero literal is total in Lean, where `n / 0` is `0`, and an
+exception in Python. Put `def div_zero(n: Nat) -> n // 0 == 0` in the same
+`gap.py` in place of `truncated`, and the row reads `proved lean` with this
+under the table:
+
+```text
+SEMANTICS div_zero at gap.py:7: no draw could decide the statement: the statement divides by zero at this draw, which Python raises on and Lean's total Nat and Int division does not, so the two readings differ here rather than the statement being false
+  division or remainder by a divisor that is not a nonzero literal: Lean's Nat and Int division are total (x / 0 is 0 and x % 0 is x) while Python raises ZeroDivisionError, so the sampled reading cannot answer where Lean can
+```
+
+(two lines in the terminal, each wrapped by your pager rather than by lanky.)
+The sampled reading is not a counterexample there, and it is not agreement
+either: it is a reading that could not be run, which is worth saying.
+`lanky.semantics.notes(term)` is the check, and its module docstring explains
+why lanky does not simply truncate the evaluator instead.
 
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
-  counterexample is in the provenance, and `lanky check` exits 1.
+  counterexample is in the provenance, and `lanky check` exits 1. That holds
+  for `def impossible() -> 1 == 2` as well, which has no variable to name in a
+  counterexample: Python answers the annotation itself, the term is the `bool`
+  `False`, and the row still reads `refuted` with an empty witness.
 - Write a theorem whose hypotheses no sample can satisfy. The fact comes back
   `assumed`, rather than passing vacuously, and its provenance carries
   `untested` with the reason and `valid: 0`. Under `pytest` the same theorem is
   reported as skipped.
-- Write `def unwitnessed() -> any(x == 100 for x in Nat)` and check it. `Nat` is
-  sampled rather than enumerated, so no draw witnesses the statement, and no
+- Write `def unwitnessed() -> any(x == 100 for x in Nat)` and check it with
+  `LANKY_LEAN_DISABLE=1`, so that the property tester is the only oracle. `Nat`
+  is sampled rather than enumerated, so no draw witnesses the statement, and no
   draw refutes it either: the row reads `assumed`, its provenance says why, and
   `lanky check` exits 0. Write the same shape over an index type,
   `def enumerated(n: Nat) -> any(i == 0 for i in Fin[n + 1])`, and the domain is
-  walked rather than sampled, so that row reads `tested`.
+  walked rather than sampled, so that row reads `tested`. (With Lean on the
+  machine both rows read `proved lean` instead: `simp` finds the witness the
+  sampler cannot. The point is what each oracle can honestly say, and the
+  status column is where it says it.)
 - `uv sync --group dev --extra lean` and watch a row change from `tested` to
   `proved`. The first run builds a Lean REPL, takes about a minute, and is
   cached in `$XDG_CACHE_HOME/lanky/lean-repl` (`~/.cache/lanky/lean-repl` by

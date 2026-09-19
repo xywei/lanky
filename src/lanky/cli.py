@@ -9,10 +9,12 @@ subcommand of ``lanky`` without lanky knowing what loopty is.
 fact is a broken claim, while an assumed one is a claim nobody got to.
 
 One more thing is printed under the table and does not change the exit code: a
-statement whose Lean reading and whose Python reading disagree (subtraction
-over ``Nat``, division over ``Int``; see :mod:`lanky.semantics`). The fact keeps
-the status its oracle gave it, because the oracle was right about the statement
-it read; what is reported is that there are two readings and they differ.
+statement whose Lean reading and whose Python reading disagree, or whose Python
+reading could not be run at all (subtraction over ``Nat``, division over
+``Int``, division by zero; see :mod:`lanky.semantics`). The fact keeps the
+status its oracle gave it, because the oracle was right about the statement it
+read; what is reported is that there are two readings and they are not the same
+statement.
 """
 
 from __future__ import annotations
@@ -72,7 +74,9 @@ class CheckVerb:
         if args.json:
             Path(args.json).write_text(ledger.to_json(), encoding="utf-8")
         for fact in ledger:
-            disagreement = fact.provenance.get("semantics_disagreement")
+            disagreement = fact.provenance.get(
+                "semantics_disagreement"
+            ) or fact.provenance.get("semantics_undecided")
             if not disagreement:
                 continue
             print()
@@ -86,10 +90,16 @@ class CheckVerb:
         if refuted:
             print()
             for fact in refuted:
-                witness = fact.provenance.get("counterexample")
                 print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
-                if witness:
-                    print(f"  counterexample: {witness}")
+                if "counterexample" not in fact.provenance:
+                    continue
+                witness = fact.provenance["counterexample"]
+                print(f"  counterexample: {witness}")
+                if not witness and fact.provenance.get("reason"):
+                    # A closed statement such as ``-> 1 == 2`` is false at no
+                    # assignment in particular. The empty witness is the honest
+                    # one and says nothing on its own, so the reason follows it.
+                    print(f"  {fact.provenance['reason']}")
             return 1
         return 0
 

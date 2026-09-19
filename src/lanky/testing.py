@@ -25,10 +25,30 @@ than reported as a pass. An assignment has to land inside the family's codomain
 ``Fn[Fin[1], Nat]`` is unsatisfiable rather than a licence to put ``-1`` into the
 draw, so the draw is dropped instead.
 
-A draw that the statement cannot be answered at is dropped the same way. That is
-what an existential over a sampled domain does when no draw witnesses it
-(:class:`~lanky.terms.Undecided`): four points out of ``Nat`` finding no witness
-is not a refutation, so the draw counts as neither evidence nor counterexample.
+A draw that the statement cannot be answered at is dropped the same way. Three
+things do that, and all three raise or are read as
+:class:`~lanky.terms.Undecided` rather than as a counterexample, because none of
+them is one:
+
+*An existential over a sampled domain that no draw witnesses.* Four points out
+of ``Nat`` finding no witness is not a refutation.
+
+*A division or remainder by zero.* Python raises ``ZeroDivisionError`` where
+Lean's ``Nat`` and ``Int`` division are total (``x / 0`` is ``0``, ``x % 0`` is
+``x``), so the sampled reading has no answer at that draw while the Lean reading
+does. That is a gap between the two readings (:mod:`lanky.semantics` records it
+in the fact's provenance), not evidence against the statement.
+
+*A family applied outside the domain it declares.* ``f(n)`` for an
+``f : Fn[Fin[n], Nat]`` names a point the statement's own types say is not
+there, so the table has no value for it and the draw decides nothing. The Lean
+printer refuses such an application outright (see :mod:`lanky.lean`), and this
+is the same reading on the Python side.
+
+A statement that is already a concrete ``True`` or ``False``, because it binds
+no variable and assumes nothing, is not sampled at all: there is nothing to
+draw, so it is reported once, as a pass or as a refutation with an empty
+counterexample.
 """
 
 from __future__ import annotations
@@ -79,22 +99,41 @@ class Table:
 
     It is callable, because a theorem writes ``off(r)``, and indexable and
     mutable, because the sampler fills it in when a hypothesis defines it.
+
+    A point outside the domain is :class:`~lanky.terms.Undecided` and not an
+    ``IndexError``, and a negative one is not the Python index it looks like.
+    ``f(n)`` for an ``f : Fn[Fin[n], Nat]`` is a point the statement's own
+    types say the family does not have: there is no value to compare, so the
+    draw decides nothing, and reading ``f(-1)`` as the last entry would answer
+    a question the statement never asked.
     """
 
-    def __init__(self, values: Any) -> None:
+    def __init__(self, values: Any, name: str = "a family") -> None:
         self.values = list(values)
+        self.name = name
+
+    def _position(self, index: Any) -> int:
+        """The index as a point of the domain, or decline to answer there."""
+        position = int(index)
+        if not 0 <= position < len(self.values):
+            extent = f"0 .. {len(self.values) - 1}" if self.values else "no points"
+            raise Undecided(
+                f"{self.name} is applied at {position}, which is outside the "
+                f"domain it declares ({extent}), so this draw decides nothing"
+            )
+        return position
 
     def __call__(self, index: Any) -> Any:
         """The value at ``index``, as a family application."""
-        return self.values[int(index)]
+        return self.values[self._position(index)]
 
     def __getitem__(self, index: Any) -> Any:
         """The value at ``index``."""
-        return self.values[int(index)]
+        return self.values[self._position(index)]
 
     def __setitem__(self, index: Any, value: Any) -> None:
         """Set the value at ``index``."""
-        self.values[int(index)] = value
+        self.values[self._position(index)] = value
 
     def __len__(self) -> int:
         """The size of the domain."""
@@ -138,7 +177,10 @@ def sample_value(
         bound = int(evaluate(domain.bound, context))
         if bound < 0:
             raise SkipSample(f"{domain} has a negative size")
-        return Table(sample_value(sort.codomain, rng, context) for _ in range(bound))
+        return Table(
+            (sample_value(sort.codomain, rng, context) for _ in range(bound)),
+            name=name or "a family",
+        )
     if isinstance(sort, Sort):
         if sort.name == "Nat":
             return rng.randrange(MAX_NAT + 1)
@@ -342,10 +384,16 @@ def satisfy_hypotheses(
 
 
 def _try(action: Any) -> None:
-    """Run an assignment, ignoring the draws it cannot complete."""
+    """Run an assignment, ignoring the ones that cannot be carried out.
+
+    :class:`~lanky.terms.Undecided` is in the list because the value a
+    definition assigns can itself read the table (a recurrence does), and a
+    read outside the domain declines rather than raising ``IndexError``. The
+    assignment is skipped either way and the hypothesis is left to the filter.
+    """
     try:
         action()
-    except (TypeError, ValueError, KeyError, IndexError, ZeroDivisionError):
+    except (TypeError, ValueError, KeyError, IndexError, ZeroDivisionError, Undecided):
         return
 
 
@@ -361,10 +409,10 @@ class TestReport:
     exists: an oracle must not report a vacuous pass as evidence.
 
     ``undecided`` counts the draws that were dropped because the statement
-    could not be answered at them, which today means an existential over a
-    sampled domain that no draw witnessed (:class:`~lanky.terms.Undecided`).
-    Such a draw is neither evidence nor a counterexample, so it is not counted
-    as valid.
+    could not be answered at them: an existential over a sampled domain that no
+    draw witnessed, a division by zero, or a family applied outside its domain
+    (see the module docstring). Such a draw is neither evidence nor a
+    counterexample, so it is not counted as valid.
     """
 
     ok: bool
@@ -394,13 +442,26 @@ def check(
     A draw is dropped rather than counted when it cannot be completed
     (:class:`SkipSample`, including a definitional hypothesis that would put a
     value outside its codomain) and when the statement cannot be answered at it
-    (:class:`~lanky.terms.Undecided`, an existential over a sampled domain that
-    found no witness). Neither is a counterexample, and neither is evidence.
+    (:class:`~lanky.terms.Undecided` or a ``ZeroDivisionError``: an existential
+    over a sampled domain that found no witness, a division by zero, a family
+    applied outside its domain). Neither is a counterexample, and neither is
+    evidence.
+
+    A goal that is already a concrete value is not sampled. A theorem with no
+    binders and no hypotheses whose return annotation evaluated to a ``bool``
+    has nothing to draw, so it is answered once, and a missing return
+    annotation claims nothing and is read as ``True``, which is what
+    :meth:`lanky.theory.Theorem.__call__` has always answered there.
     """
+    if goal is None:
+        goal = True
+    if not variables and not hypotheses and not isinstance(goal, prim.ExpressionNode):
+        return _constant_report(goal)
     rng = random.Random(seed)
     variables = sampling_order(variables)
     sorts = dict(variables)
     report = TestReport(ok=True)
+    undecided_reason = ""
     for _ in range(samples * REJECTION_FACTOR):
         if report.valid >= samples:
             break
@@ -419,10 +480,11 @@ def check(
             if not all(bool(evaluate(h, context, sampler)) for h in hypotheses):
                 continue
             satisfied = bool(evaluate(goal, context, sampler))
-        except Undecided as exc:
+        except (Undecided, ZeroDivisionError) as exc:
             report.undecided += 1
+            undecided_reason = undecided_reason or _undecided_reason(exc)
             if len(report.skipped) < 3:
-                report.skipped.append(str(exc))
+                report.skipped.append(_undecided_reason(exc))
             continue
         report.valid += 1
         if not satisfied:
@@ -432,10 +494,7 @@ def check(
             return report
     if report.valid == 0:
         if report.undecided:
-            report.reason = (
-                "no draw could decide the statement: an existential over a "
-                "sampled domain found no witness, which is not a refutation"
-            )
+            report.reason = f"no draw could decide the statement: {undecided_reason}"
         else:
             report.reason = (
                 "no draw satisfied the hypotheses, so nothing was tested"
@@ -443,6 +502,43 @@ def check(
                 else "no draw could be completed"
             )
     return report
+
+
+def _constant_report(goal: Any) -> TestReport:
+    """The report for a statement that is already a concrete value.
+
+    ``@theorem def impossible() -> 1 == 2`` has no binders and no hypotheses,
+    so Python answered the annotation itself and the term is the ``bool``
+    ``False``. There is nothing to sample, and declining it would leave a false
+    claim in the ledger as ``ASSUMED``, so it is answered here: ``True`` is a
+    pass over the one draw there is, and ``False`` is a refutation whose
+    counterexample is empty on purpose, because no assignment is what makes the
+    statement false.
+    """
+    if bool(goal):
+        return TestReport(ok=True, samples=1, valid=1)
+    return TestReport(
+        ok=False,
+        counterexample={},
+        samples=1,
+        valid=1,
+        reason=(
+            "the statement is the constant False: it binds no variable and "
+            "assumes nothing, so there is no assignment to blame and nothing "
+            "that could make it true"
+        ),
+    )
+
+
+def _undecided_reason(exc: Exception) -> str:
+    """Why a draw decided nothing, as a line for a report."""
+    if isinstance(exc, ZeroDivisionError):
+        return (
+            "the statement divides by zero at this draw, which Python raises on "
+            "and Lean's total Nat and Int division does not, so the two readings "
+            "differ here rather than the statement being false"
+        )
+    return str(exc)
 
 
 def _describe(value: Any) -> Any:

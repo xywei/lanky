@@ -107,6 +107,13 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
 
     Only for a fact carrying a semantics note, and only to record what the
     sampled reading says. The status a stronger oracle gave stands.
+
+    There are two things worth recording. A counterexample is the loud one: the
+    Python reading is false where the Lean reading was proved. The quiet one is
+    a sampled reading that could not be run at all, which is what a division by
+    zero does: Lean's division is total and Python's raises, so there is no
+    counterexample and no evidence either, and a ledger that said nothing here
+    would suggest the two readings had been compared.
     """
     if not gaps or fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
         return fact
@@ -122,8 +129,15 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
             result = oracle.establish(fact)
         except Exception:  # noqa: BLE001 - a cross-check must not fail a check
             continue
-        if result is None or result.status is not Status.REFUTED:
+        if result is None:
             continue
+        if result.status is not Status.REFUTED:
+            undecided = result.provenance.get("untested")
+            if not undecided or not result.provenance.get("undecided"):
+                continue
+            if verbose:
+                print(f"  {oracle.name} could not run the sampled reading: {undecided}")
+            return fact.with_status(fact.status, semantics_undecided=undecided)
         counterexample = result.provenance.get("counterexample")
         if verbose:
             print(

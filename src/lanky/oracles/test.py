@@ -11,6 +11,14 @@ A pass over zero valid draws establishes nothing, so in that case the oracle
 leaves the status alone, records ``untested`` and the reason in the fact's
 provenance, and the fact is reported as ``ASSUMED`` rather than as a vacuous
 pass.
+
+A term that is already a concrete ``bool`` belongs here too. ``-> 1 == 2`` has
+no binders and no hypotheses, so Python answered the annotation while it was
+being evaluated and the fact's term is ``False`` rather than a pymbolic node.
+Nothing is sampled there, but everything else about it is this oracle's
+business: ``True`` is ``TESTED`` over the one draw there is and ``False`` is
+``REFUTED``, which is what keeps a false closed claim out of the ledger's
+``ASSUMED`` rows and makes ``lanky check`` exit 1 on it.
 """
 
 from __future__ import annotations
@@ -41,8 +49,14 @@ class TestOracle:
         return "test"
 
     def can_establish(self, fact: Fact, /) -> bool:
-        """Willing to try any fact that has a term to evaluate."""
-        return isinstance(fact.term, prim.ExpressionNode)
+        """Willing to try any fact that has a term to evaluate.
+
+        A concrete ``bool`` is such a term. It is not a pymbolic node, because
+        a closed comparison such as ``1 == 2`` is answered by Python before
+        lanky sees it, and declining it used to leave the falsest statement
+        there is sitting in the ledger as ``ASSUMED``.
+        """
+        return isinstance(fact.term, prim.ExpressionNode | bool)
 
     def establish(self, fact: Fact, /) -> Fact | None:
         """Sample the fact's term; ``TESTED``, ``REFUTED``, or decline."""

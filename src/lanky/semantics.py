@@ -4,7 +4,7 @@ The design idea. A lanky statement is read twice: the property tester evaluates
 it with Python's arithmetic on Python integers, and the Lean oracle elaborates
 it with Lean's arithmetic on ``Nat`` and ``Int``. For index arithmetic the two
 readings agree, which is why the same annotation can be both a test and a
-theorem. Two operators break that agreement, and a fact that uses one is worth a
+theorem. Three things break that agreement, and a fact that uses one is worth a
 note in its provenance rather than a silent discrepancy:
 
 *Subtraction over ``Nat``.* Lean truncates at zero, so ``n - 1`` is ``0`` at
@@ -15,7 +15,16 @@ under the sampled reading, or the other way around.
 *Floor division and remainder over ``Int``.* Lean and Python disagree on how a
 negative operand rounds. Over ``Nat`` they agree.
 
-This module only *detects* the two, and records what it found; it does not
+*Division or remainder by something that may be zero.* Lean's ``Nat`` and
+``Int`` division are total: ``x / 0`` is ``0`` and ``x % 0`` is ``x``, and
+``omega`` proves statements that say so. Python raises ``ZeroDivisionError``,
+so the sampled reading has no answer where the Lean reading has an easy one.
+This one is over ``Nat`` as much as over ``Int``, which is why it is a note of
+its own: ``n // 0 == 0`` is a Lean theorem and a Python exception. A divisor
+that is a nonzero integer literal is the one case that can be ruled out by
+looking, so it is the one case that carries no note.
+
+This module only *detects* the three, and records what it found; it does not
 change how anything is evaluated. Truncating the evaluator instead would be
 wrong in an interesting way, and the reason is worth writing down: pymbolic has
 no subtraction node, so ``a - b + c`` is one flattened
@@ -38,8 +47,10 @@ from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import Exists, Forall, Sum, init_args
 
 __all__ = [
+    "DIVISION_BY_ZERO",
     "INT_DIVISION",
     "NAT_SUBTRACTION",
+    "divides_by_possible_zero",
     "notes",
     "sorts_of",
     "uses_floor_division",
@@ -56,6 +67,14 @@ NAT_SUBTRACTION = (
 INT_DIVISION = (
     "floor division or remainder over Int: Lean and Python round a negative "
     "operand differently"
+)
+
+#: The note recorded for a division whose divisor cannot be seen to be nonzero.
+DIVISION_BY_ZERO = (
+    "division or remainder by a divisor that is not a nonzero literal: Lean's "
+    "Nat and Int division are total (x / 0 is 0 and x % 0 is x) while Python "
+    "raises ZeroDivisionError, so the sampled reading cannot answer where Lean "
+    "can"
 )
 
 
@@ -143,6 +162,27 @@ def uses_floor_division(term: Any) -> bool:
     return any(isinstance(node, prim.FloorDiv | prim.Remainder) for node in _walk(term))
 
 
+def _is_nonzero_literal(expr: Any) -> bool:
+    """Whether this divisor is an integer literal that is plainly not zero."""
+    return isinstance(expr, int) and not isinstance(expr, bool) and expr != 0
+
+
+def divides_by_possible_zero(term: Any) -> bool:
+    """Whether ``term`` divides by something that has not been ruled out as zero.
+
+    Syntactic on purpose, and in the safe direction: a nonzero integer literal
+    is the only divisor that can be dismissed by looking at it, so ``n // 2``
+    carries no note and ``n // 0``, ``n // k`` and ``n // (k + 1)`` all do. A
+    divisor a hypothesis keeps away from zero is flagged as well, which
+    overstates the gap by one note and never understates it.
+    """
+    return any(
+        isinstance(node, prim.FloorDiv | prim.Remainder)
+        and not _is_nonzero_literal(node.denominator)
+        for node in _walk(term)
+    )
+
+
 def notes(term: Any) -> tuple[str, ...]:
     """The semantics gaps this term is exposed to, as lines for a provenance.
 
@@ -159,6 +199,8 @@ def notes(term: Any) -> tuple[str, ...]:
             found.append(NAT_SUBTRACTION)
         if "Int" in sorts and uses_floor_division(term):
             found.append(INT_DIVISION)
+        if ("Nat" in sorts or "Int" in sorts) and divides_by_possible_zero(term):
+            found.append(DIVISION_BY_ZERO)
     except Exception:  # noqa: BLE001 - a note is never worth failing a check over
         return ()
     return tuple(found)

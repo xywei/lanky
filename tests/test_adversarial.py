@@ -1,22 +1,26 @@
 """Probes that try to make lanky claim something it has not established.
 
-Three ways a checker like this goes quietly wrong, one test each: a statement
-nobody could actually test reported as tested, a name that means two things at
-once read as one of them, and a refutation that does not survive being written
-down. Each of these is about the *report* rather than about the mathematics: the
-failure mode that matters here is a ledger that reads better than the evidence.
+Ways a checker like this goes quietly wrong, one test each: a statement nobody
+could actually test reported as tested, a name that means two things at once
+read as one of them, a refutation that does not survive being written down, a
+false statement no oracle would take, and a draw that raises where it should
+decline. Each of these is about the *report* rather than about the mathematics:
+the failure mode that matters here is a ledger that reads better than the
+evidence.
 """
 
 from __future__ import annotations
 
 import json
 
+import pytest
+
 from lanky import theorem
 from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.test import TestOracle
 from lanky.prelude import Fin, Fn, Nat
-from lanky.terms import Forall, Var, structurally_equal
+from lanky.terms import Forall, Undecided, Var, structurally_equal
 
 # {{{ a hypothesis no draw can satisfy
 
@@ -469,6 +473,217 @@ def test_a_definition_inside_the_codomain_still_fills_the_table() -> None:
     report = scan.report(n=25)
     assert report.ok
     assert report.valid == 25
+
+
+# }}}
+
+
+# {{{ a statement Python has already answered
+
+
+def test_a_closed_boolean_goal_is_a_fact_like_any_other() -> None:
+    """``-> 1 == 2`` is the shortest false theorem there is, and it was ignored.
+
+    Python answers the annotation before lanky sees it, so the term is the
+    ``bool`` ``False`` rather than a pymbolic node. The property oracle used to
+    decline anything that was not a node, the Lean oracle has no proof of a
+    false statement, and the false claim sat in the ledger as ``ASSUMED`` with
+    the check exiting 0.
+    """
+    claim = _closed_false()
+    assert claim.term is False
+    fact = claim.fact()
+    oracle = TestOracle(samples=5)
+    assert oracle.can_establish(fact)
+    result = oracle.establish(fact)
+    assert result is not None
+    assert result.status is Status.REFUTED
+    assert result.decided_by == "property-test"
+    # the counterexample is empty on purpose: no assignment is what makes this
+    # statement false, and the reason says so rather than leaving a bare {}
+    assert result.provenance["counterexample"] == {}
+    assert "constant False" in result.provenance["reason"]
+
+
+def test_a_closed_true_goal_is_tested_rather_than_assumed() -> None:
+    result = TestOracle(samples=5).establish(closed_true.fact())
+    assert result is not None
+    assert result.status is Status.TESTED
+    assert result.decided_by == "property-test"
+    assert result.provenance["valid"] == 1
+
+
+def test_every_way_of_running_a_closed_statement_agrees() -> None:
+    """The call, the report, the test and the pytest item say the same thing."""
+    claim = _closed_false()
+    assert claim().goal is False
+    assert claim().holds is False
+    ok, counterexample = claim.test(n=5)
+    assert not ok
+    assert counterexample == {}
+    report = claim.report(n=5)
+    assert report.valid == 1
+    assert report.samples == 1
+
+    assert closed_true().holds is True
+    assert closed_true.test(n=5) == (True, None)
+    assert closed_true.report(n=5).valid == 1
+
+
+def test_a_satisfied_hypothesis_does_not_shield_a_false_closed_goal() -> None:
+    """The binderless guard from the round of fixes before, with a bool body."""
+    claim = _guarded_closed_goal()
+    term = claim.term
+    assert isinstance(term, Forall)
+    assert term.binders == ()
+    assert term.body is False
+    result = TestOracle(samples=5).establish(claim.fact())
+    assert result is not None
+    assert result.status is Status.REFUTED
+    assert result.provenance["counterexample"] == {}
+
+
+def test_a_constant_false_hypothesis_is_vacuous_rather_than_refuted() -> None:
+    """A parameter annotated with a concrete bool is a hypothesis, not a sort.
+
+    ``h: 1 == 2`` used to be read as a variable whose sort is ``False``, which
+    nothing can sample; as the hypothesis it is, the statement is the valid
+    implication nobody can test, which is ``ASSUMED``.
+    """
+    claim = _constant_false_hypothesis()
+    assert claim.variables == ()
+    assert len(claim.hypotheses) == 1
+    result = TestOracle(samples=5).establish(claim.fact())
+    assert result is not None
+    assert result.status is Status.ASSUMED
+    assert result.provenance["valid"] == 0
+
+
+# }}}
+
+
+# {{{ a draw the statement cannot be answered at
+
+
+def test_a_division_by_zero_is_an_undecided_draw_rather_than_a_crash() -> None:
+    """Lean's ``Nat`` division is total and Python's raises; that is a gap.
+
+    Neither reading is a counterexample to the other, so the draw is dropped
+    the way an unwitnessed existential is, and the tester reports rather than
+    propagating a ``ZeroDivisionError`` to whoever called it.
+    """
+    claim = _divides_by_a_variable()
+    report = claim.report(n=5)
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided > 0
+    assert "zero" in report.reason
+
+    result = TestOracle(samples=5).establish(claim.fact())
+    assert result is not None
+    assert result.status is Status.ASSUMED
+    assert result.decided_by is None
+    assert "zero" in result.provenance["untested"]
+
+
+def test_a_family_applied_outside_its_domain_is_an_undecided_draw() -> None:
+    """``f(n)`` for an ``f : Fn[Fin[n], Nat]`` raised an ``IndexError``.
+
+    The statement names a point its own types say the family does not have.
+    That is not a counterexample and it is not evidence either, so the draw
+    decides nothing, which is the same reading the Lean printer takes when it
+    declines to erase the family (see ``tests/test_lean.py``).
+    """
+    claim = _applies_outside_its_domain()
+    report = claim.report(n=5)
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided > 0
+    assert "outside the domain" in report.reason
+
+    result = TestOracle(samples=5).establish(claim.fact())
+    assert result is not None
+    assert result.status is Status.ASSUMED
+    assert result.decided_by is None
+    assert "outside the domain" in result.provenance["untested"]
+
+
+def test_a_table_declines_a_point_it_does_not_have() -> None:
+    """And a negative index is not the last entry, which Python would make it."""
+    from lanky.testing import Table
+
+    table = Table([1, 2, 3], name="f")
+    assert table(0) == 1
+    assert table[2] == 3
+    with pytest.raises(Undecided, match="outside the domain"):
+        table(3)
+    with pytest.raises(Undecided, match="outside the domain"):
+        table(-1)
+
+
+def _closed_false():
+    """``-> 1 == 2``: no binders, no hypotheses, and false.
+
+    Built inside a function because lanky's pytest plugin collects module-level
+    theorems, and this one is meant to be refuted rather than run.
+    """
+
+    @theorem
+    def impossible() -> 1 == 2:
+        """Python answers this annotation: the term is the bool False."""
+
+    return impossible
+
+
+@theorem
+def closed_true() -> 1 == 1:
+    """The same shape, and true: a closed statement is still a claim."""
+
+
+def _guarded_closed_goal():
+    """A hypothesis that holds, and a goal Python already answered ``False``."""
+
+    @theorem
+    def guarded(h: all(i >= 0 for i in Fin[3])) -> 1 == 2:
+        """The guard is satisfied, so nothing stands between this and refuted."""
+
+    return guarded
+
+
+def _constant_false_hypothesis():
+    """A hypothesis that is the constant ``False``, which nothing satisfies."""
+
+    @theorem
+    def vacuous(h: 1 == 2) -> 1 == 3:
+        """An implication with a false antecedent: valid, and untestable."""
+
+    return vacuous
+
+
+def _divides_by_a_variable():
+    """``n // 0 == 0``: a Lean theorem and a Python ZeroDivisionError."""
+
+    @theorem
+    def div_zero(n: Nat) -> n // 0 == 0:
+        """Total in Lean, undefined in Python."""
+
+    return div_zero
+
+
+def _applies_outside_its_domain():
+    """``f(n)`` for an ``f : Fn[Fin[n], Nat]``: one point past the domain."""
+
+    @theorem
+    def outside(n: Nat, f: Fn[Fin[n], Nat]) -> f(n) == f(n):
+        """A tautology in Lean once the family is erased, and ill typed here."""
+
+    return outside
+
+
+# }}}
+
+
+# {{{ the membership test
 
 
 def test_in_sort_knows_the_sorts_it_can_judge() -> None:

@@ -103,9 +103,13 @@ sharp.
   a `not` in a guard, and an `if` statement inside a function an annotation
   calls. The connectives are `&`, `|` and `~`.
 - A note in the provenance when Lean's reading of a statement and lanky's
-  Python reading can differ (`Nat` subtraction, `Int` division), and, when a
-  stronger oracle established such a fact, the counterexample the sampled
-  reading found.
+  Python reading can differ (`Nat` subtraction, `Int` division, division by a
+  divisor that may be zero), and, when a stronger oracle established such a
+  fact, what the sampled reading found: the counterexample, or that it could
+  not be run at all.
+- A statement the annotation already answered is a claim like any other:
+  `-> 1 == 2` is `refuted` with an empty counterexample and `lanky check` exits
+  1 on it.
 - The Lean oracle over core Lean 4, with a tactic ladder and an induction
   strategy read off the term. No Mathlib is fetched or needed.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
@@ -118,9 +122,10 @@ sharp.
   end with no valid draws. The fact is then `ASSUMED`, never falsely `TESTED`.
 - The two readings of a statement are detected and reported, not reconciled.
   A statement that subtracts over `Nat` can be `PROVED` in Lean and false when
-  sampled; the ledger says both and the exit code stays 0. See
-  `src/lanky/semantics.py` for why truncating the evaluator instead would be
-  wrong.
+  sampled, and one that divides by zero is a theorem in Lean and a
+  `ZeroDivisionError` in Python; the ledger says both and the exit code stays
+  0. See `src/lanky/semantics.py` for why truncating the evaluator instead
+  would be wrong.
 - Python's `and` between two propositions in a generator's `if` clause happens
   to produce the conjunction that was written, because of how CPython compiles
   a comprehension filter, so it is not refused. It cannot be told apart from
@@ -130,6 +135,11 @@ sharp.
   `lanky.oracles.lean.use_tactic` pins a script by hand.
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real` and true division
   raise rather than emit source Lean would reject.
+- A family prints as a total function, so every application of one has to be
+  shown in bounds before the statement can go to Lean. The check is affine
+  arithmetic over the enclosing binders, not a solver, so an argument it cannot
+  settle is declined rather than assumed: the statement falls through to the
+  tester, which is a proof fewer and never a proof too many.
 - Sampling quantifiers over `Nat` draws a handful of points. That is evidence of
   the weakest kind and the ledger says so. It is evidence in one direction only:
   a `forall` that a draw breaks is really refuted, but an `any` that no draw
