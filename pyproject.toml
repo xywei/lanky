@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lanky"
-version = "0.0.1"
+version = "0.1.0.dev0"
 description = "Python for math you can check. A Lean-hosted proof language, shaped like mypy."
 readme = "README.md"
 license = "MIT"
@@ -13,7 +13,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Xiaoyu Wei" }]
 keywords = ["lean", "mathlib", "proof", "theorem-proving", "formal-methods", "type-checking"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
@@ -22,11 +22,16 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = [
+    "numpy>=1.26",
+    "pymbolic>=2025.1",
+]
 
 [project.optional-dependencies]
-# PyPantograph (the Lean session driver) will go here once the Lean oracle lands.
-lean = []
+# The Lean session driver. Core Lean 4 only: no Mathlib is fetched or needed.
+lean = [
+    "lean-interact>=0.11.5",
+]
 
 [project.urls]
 Homepage = "https://github.com/xywei/lanky"
@@ -34,6 +39,9 @@ Repository = "https://github.com/xywei/lanky"
 
 [project.scripts]
 lanky = "lanky.cli:main"
+
+[project.entry-points.pytest11]
+lanky = "lanky.pytest_plugin"
 
 [dependency-groups]
 dev = ["pytest", "ruff"]
@@ -44,6 +52,19 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# A lanky statement names its variables in the annotations, and a size such as
+# "n" has no binding anywhere in the file: it is a symbolic variable that lanky
+# invents while evaluating the annotation. Static checkers necessarily read that
+# as an undefined name, so files that carry statements switch F821 off. Files
+# that use lanky elsewhere need the same setting.
+"examples/*.py" = ["F821"]
+"tests/test_terms.py" = ["F821"]
+"tests/test_theory.py" = ["F821"]
+"tests/test_lean.py" = ["F821"]
+"tests/test_adversarial.py" = ["F821"]
+"tests/test_semantics.py" = ["F821"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
