@@ -808,23 +808,53 @@ def test_a_quantified_point_does_not_overwrite_a_drawn_variable() -> None:
 # {{{ a theorem with no goal
 
 
-def test_a_theorem_without_a_goal_claims_true_everywhere() -> None:
-    """A missing return annotation reads as ``True`` in every way of running it.
+def test_a_theorem_without_a_goal_is_refused_where_it_is_written() -> None:
+    """A missing return annotation is a ``TypeError`` at the decorator.
 
-    ``statement`` and ``__call__`` said ``True`` while ``report`` handed
-    ``None`` to the tester, which read it as false and returned a
-    counterexample, so the pytest plugin failed a theorem its own call passed.
-    The second round of fixes on the MVP made them agree; this pins it.
+    Such a theorem claims nothing. It read as ``True`` when it was called or
+    sampled, and as ``assumed`` under ``lanky check``, because its fact had no
+    term for an oracle to take: one statement with two answers. It is now
+    refused where it is written, and so is ``-> None``, which evaluates to
+    the same missing goal.
     """
+    with pytest.raises(TypeError, match="a theorem needs a goal"):
 
-    @theorem
-    def no_goal(n: Nat, h: n > 1):
-        """Hypotheses and no conclusion: it claims nothing."""
+        @theorem
+        def no_goal(n: Nat, h: n > 1):
+            """Hypotheses and no conclusion: it claims nothing."""
 
-    assert no_goal.statement == "n : Nat | n > 1 |- True"
-    assert no_goal(n=3).holds
-    assert no_goal.test(n=5) == (True, None)
-    report = no_goal.report(n=5)
+    with pytest.raises(TypeError, match="no_none_goal at .*: a theorem needs a goal"):
+
+        @theorem
+        def no_none_goal(n: Nat) -> None:
+            """``None`` is not a proposition either."""
+
+
+def test_a_file_with_a_goalless_theorem_does_not_import(tmp_path, capsys) -> None:
+    """Under ``lanky check`` the refusal is an import failure with its reason."""
+    from lanky import cli
+
+    path = tmp_path / "goalless.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Nat\n\n\n"
+        "@theorem\n"
+        "def goalless(n: Nat, h: n > 1):\n"
+        '    """No return annotation."""\n',
+        encoding="utf-8",
+    )
+    assert cli.main(["check", str(path)]) == 1
+    printed = capsys.readouterr().out
+    assert "could not be imported" in printed
+    assert "TypeError: goalless at goalless.py:7: a theorem needs a goal" in printed
+
+
+def test_the_tester_still_reads_a_missing_goal_as_true() -> None:
+    """``lanky.testing.check`` takes ``goal=None`` from a direct caller as ``True``."""
+    from lanky.testing import check
+
+    report = check([("n", Nat)], [], None, samples=5)
     assert report.ok
     assert report.valid == 5
 

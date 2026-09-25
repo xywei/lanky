@@ -75,6 +75,13 @@ class Theorem:
             before the domains that mention it.
         hypotheses: ``(name, proposition)`` pairs.
         goal: The return annotation, as a term.
+
+    Raises:
+        TypeError: If the function has no return annotation (or ``-> None``).
+            A theorem needs a goal. Without one it used to read as ``True``
+            when it was called or tested and as ``assumed`` in the ledger,
+            where no oracle takes a fact with no term, so one statement had
+            two answers; it is refused where it is written instead.
     """
 
     def __init__(self, fn: Any) -> None:
@@ -82,6 +89,14 @@ class Theorem:
         functools.update_wrapper(self, fn)
         annotations = evaluate_annotations(fn)
         self.goal = annotations.pop("return", None)
+        if self.goal is None:
+            code = fn.__code__
+            raise TypeError(
+                f"{getattr(fn, '__qualname__', fn.__name__)} at "
+                f"{os.path.basename(code.co_filename)}:{code.co_firstlineno}: "
+                "a theorem needs a goal; write the proposition it claims as the "
+                "return annotation, as in `-> n + 0 == n`"
+            )
         variables: list[tuple[str, Any]] = []
         hypotheses: list[tuple[str, Any]] = []
         for name, annotation in annotations.items():
@@ -113,7 +128,7 @@ class Theorem:
         if hypotheses:
             parts.append(hypotheses)
         head = " | ".join(parts)
-        goal = render(self.goal) if self.goal is not None else "True"
+        goal = render(self.goal)
         return f"{head} |- {goal}" if head else goal
 
     @property
@@ -136,8 +151,6 @@ class Theorem:
         rather than a term. That is a fact like any other: the property-test
         oracle takes a ``bool`` and answers ``TESTED`` or ``REFUTED``.
         """
-        if self.goal is None:
-            return None
         binders = tuple((Var(name), sort) for name, sort in self.variables)
         guard: Any = None
         props = [prop for _, prop in self.hypotheses]
@@ -184,9 +197,7 @@ class Theorem:
                 name: truth_value(evaluate(prop, context), prop)
                 for name, prop in self.hypotheses
             },
-            goal=True
-            if self.goal is None
-            else truth_value(evaluate(self.goal, context), self.goal),
+            goal=truth_value(evaluate(self.goal, context), self.goal),
         )
 
     # {{{ property testing

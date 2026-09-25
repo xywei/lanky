@@ -532,9 +532,10 @@ def check(
 
     A goal that is already a concrete value is not sampled. A theorem with no
     binders and no hypotheses whose return annotation evaluated to a ``bool``
-    has nothing to draw, so it is answered once, and a missing return
-    annotation claims nothing and is read as ``True``, which is what
-    :meth:`lanky.theory.Theorem.__call__` has always answered there.
+    has nothing to draw, so it is answered once. A ``goal`` of ``None``
+    claims nothing and is read as ``True``; only a direct caller can pass
+    one, because :class:`lanky.theory.Theorem` refuses a function with no
+    return annotation.
     """
     if goal is None:
         goal = True

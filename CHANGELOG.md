@@ -257,6 +257,10 @@ listed because it changes behaviour a reader could already have depended on.
   as `Nat & (10 // n > 1)` at `n = 0`, skips that draw, for a codomain and for
   a named variable alike, where its `ZeroDivisionError` used to end the whole
   test.
+- **A theorem needs a goal.** `@theorem` on a function with no return
+  annotation, or with `-> None`, raises `TypeError` naming the function and
+  its line. Such a theorem read as `True` when it was called or sampled, and
+  as `assumed` in the ledger, where no oracle takes a fact without a term.
 - **Two families are equal when their values are.** `lanky.testing.Table`
   had no equality of its own, so `f == g` compared two drawn tables by
   identity, and over `Fn[Fin[0], Nat]`, where it is true because there is one
