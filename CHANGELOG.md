@@ -285,6 +285,21 @@ listed because it changes behaviour a reader could already have depended on.
   function out of an empty domain, it was refuted. A table now compares its
   values, recursively for a family of families, and is unhashable like the
   list it wraps.
+- **CI runs the suite with Lean as well.** The Lean tests skipped in CI, all
+  seventeen of them, so nothing there showed the `proved lean` row the README
+  leads with. A second job, `test with Lean`, installs elan, Lean v4.29.1 (a
+  toolchain lean-interact 0.11.5's REPL has a build for, which v4.34 is not)
+  and the `lean` extra, caches the toolchain and the built REPL, and runs the
+  whole suite with the oracle on. It sets `LANKY_LEAN_TEST_REQUIRED=1`, under
+  which a Lean test that cannot get a Lean session fails where it used to
+  skip, so the job cannot pass by running none of them; the availability test
+  that passed without Lean by returning early now skips there instead. The job
+  then runs `lanky check examples/gauss.py` and asserts the README's `proved
+  lean` row, and the suite compares the README's abridged table and the
+  quickstart's full one with what the check prints, with Lean and, reading
+  the row as `tested`, without it. The first run with Lean failed two tests
+  of multi-file checking that counted `1 facts: 1 tested` for a claim Lean
+  proves; they now pin the decider with `LANKY_LEAN_DISABLE`.
 
 ### Notes
 
@@ -294,8 +309,9 @@ listed because it changes behaviour a reader could already have depended on.
 - A file carrying statements needs `from __future__ import annotations` and a
   ruff `F821` per-file ignore: a size such as `n` is a symbolic variable lanky
   invents and has no binding a static checker can see.
-- The Lean toolchain is not installed in CI, so the Lean tests skip there and the
-  facts Lean would prove are tested instead. The ledger says which happened.
+- CI runs the suite twice: without Lean, on Python 3.12 and 3.13, where the Lean
+  tests skip and the facts Lean would prove are tested instead, and with Lean
+  v4.29.1, where they run. The ledger says which happened.
 - Python's `and` between two propositions in a generator's `if` clause is *not*
   refused: CPython compiles a conjunction in a comprehension filter into two
   successive tests, so both halves are captured and the guard is the one that
