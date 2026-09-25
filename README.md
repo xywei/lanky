@@ -87,6 +87,8 @@ sharp.
 **Works.**
 
 - `lanky check FILE [--json OUT] [--verbose]`, exit code 1 on any refutation.
+  Each refuted fact is repeated under the table with its counterexample and
+  its reason, or with `no witness recorded` when it carries neither.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - The ledger: six statuses, provenance, JSON, a rendered table.
@@ -109,8 +111,8 @@ sharp.
   fact, what the sampled reading found: the counterexample, or that it could
   not be run at all.
 - A statement the annotation already answered is a claim like any other:
-  `-> 1 == 2` is `refuted` with an empty counterexample and `lanky check` exits
-  1 on it.
+  `-> 1 == 2` is `refuted`, `lanky check` prints why under the table, and it
+  exits 1 on it.
 - The Lean oracle over core Lean 4, with a tactic ladder and an induction
   strategy read off the term. No Mathlib is fetched or needed. CI runs the
   suite against Lean v4.29.1 as well as without Lean.
@@ -147,7 +149,11 @@ sharp.
   a `forall` that a draw breaks is really refuted, but an `any` that no draw
   witnesses is undecided, not false, so the tester declines the draw and the
   fact stays `ASSUMED`. Over `Fin` the domain is enumerated and both answers
-  hold.
+  hold. A quantifier over a refined domain `T & p`, which a plugin building
+  terms by hand can write, ranges over the points of `T` where `p` holds, as
+  the Lean printer reads it: enumerated when `T` is, filtered draws when it is
+  sampled, and a `forall` whose refinement rejects every draw is undecided
+  rather than passed.
 
 **Not yet.**
 

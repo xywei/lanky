@@ -69,6 +69,7 @@ __all__ = [
     "binder_assignments",
     "binders",
     "conjuncts",
+    "decline_empty_walk",
     "evaluate",
     "evaluate_annotations",
     "exists",
@@ -788,6 +789,36 @@ def truth_value(value: Any, prop: Any) -> bool:
     )
 
 
+@functools.cache
+def _refined_type() -> type:
+    """:class:`lanky.prelude.Refined`, imported when first asked for.
+
+    The prelude imports this module, so the class cannot be imported at the
+    top of it.
+    """
+    from lanky.prelude import Refined
+
+    return Refined
+
+
+def _base_domain(domain: Any) -> Any:
+    """The domain a refinement refines, through any number of refinements."""
+    refined = _refined_type()
+    while isinstance(domain, refined):
+        domain = domain.base
+    return domain
+
+
+def _sampled_refinements(binder_list: Sequence[tuple[Var, Any]]) -> list[Any]:
+    """The binder domains that refine a domain the evaluator samples."""
+    return [
+        domain
+        for _var, domain in binder_list
+        if isinstance(domain, _refined_type())
+        and not LankyEvaluationMapper.is_exhaustive(domain)
+    ]
+
+
 class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     """Evaluate a lanky term at concrete values.
 
@@ -804,8 +835,18 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     there, but an ``exists`` that finds no witness among four draws has learned
     nothing, so it declines rather than answering ``False``.
 
-    Wherever a proposition's truth is read, in a connective, a guard or the
-    body of a quantifier, the value has to be a truth value
+    A refined domain ``T & p`` (:class:`lanky.prelude.Refined`) has the points
+    of ``T`` at which ``p`` holds. ``p`` talks about the binder (``k > 0`` for
+    the binder ``k``), so it can only be read with the binder bound, and that
+    is done here, point by point, as a guard is read: ``T`` is walked or
+    sampled, each point is bound, and the points the refinement rejects are
+    skipped. Whether the domain is enumerated is whether ``T`` is, so
+    ``Fin[n] & p`` still decides both quantifiers. This is the reading the Lean
+    printer gives the same binder (``T`` plus the guard ``p``), so the two
+    readings of the statement agree.
+
+    Wherever a proposition's truth is read, in a connective, a guard, a
+    refinement or the body of a quantifier, the value has to be a truth value
     (:func:`truth_value`). pymbolic's own connectives apply Python's
     truthiness, which reads a number as a proposition.
     """
@@ -824,18 +865,41 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         """Whether walking this domain visits every one of its points.
 
         An index type with a bound answers ``points``, so its extent is the
-        whole domain; anything else is sampled.
+        whole domain; anything else is sampled. A refinement is walked by
+        walking what it refines, so it is exhaustive when that is: every point
+        of ``Fin[n]`` is visited and each is kept or skipped.
         """
-        return getattr(domain, "points", None) is not None
+        return getattr(_base_domain(domain), "points", None) is not None
 
     def _points(self, domain: Any) -> Iterable[Any]:
-        """The concrete points of one binder domain."""
-        points = getattr(domain, "points", None)
+        """The concrete points of one binder domain, before any refinement.
+
+        A refined domain yields the points of the domain it refines, and
+        :meth:`assignments` keeps the ones the refinement admits, because the
+        refinement can only be read with the binder bound. The sampler is
+        handed the base too: a draw of ``Nat & p`` made without the binder's
+        name could not judge ``p``, and used to come back unfiltered.
+        """
+        base = _base_domain(domain)
+        points = getattr(base, "points", None)
         if points is not None:
             return points(self.rec)
         if self.sampler is not None:
-            return self.sampler(domain)
+            return self.sampler(base)
         raise ValueError(f"cannot enumerate the binder domain {domain!r}")
+
+    def _admits(self, domain: Any) -> bool:
+        """Whether the point just bound is a point of ``domain``.
+
+        Only a refinement can say no. Its propositions are read under the
+        current assignment, the binder included, the innermost refinement
+        first, so ``Nat & (k > 0) & (10 // k > 1)`` never divides by zero. A
+        proposition that cannot be answered raises, as a guard does, and the
+        caller decides what that means (the property tester drops the draw).
+        """
+        if not isinstance(domain, _refined_type()):
+            return True
+        return self._admits(domain.base) and all(self._truth(p) for p in domain.props)
 
     def assignments(self, binder_list: Sequence[tuple[Var, Any]]) -> Iterator[None]:
         """Bind every binder in turn, yielding once per assignment.
@@ -849,6 +913,10 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         inner ``i`` of ``all(any(i == 0 for i in Fin[1]) & (i < 2) for i in
         Fin[3])`` would answer the outer ``i < 2`` and turn a false statement
         into a pass.
+
+        A point a refined domain does not admit (:meth:`_admits`) is bound,
+        judged and skipped, so no assignment yielded here is outside the
+        domain its binder declares.
         """
         if not binder_list:
             yield None
@@ -858,6 +926,8 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         try:
             for point in self._points(domain):
                 self.context[var.name] = point
+                if not self._admits(domain):
+                    continue
                 yield from self.assignments(rest)
         finally:
             if saved is _UNSET:
@@ -896,11 +966,19 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         collector would work in CPython and rest on refcounting for something
         that has to hold: until the walk is closed its ``finally`` has not run,
         and the binding this quantifier replaced is still the inner point.
+
+        Raises:
+            Undecided: If the walk reached no point because a refinement of a
+                sampled domain rejected every draw (:func:`decline_empty_walk`).
         """
+        visited = 0
         with closing(self.assignments(expr.binders)) as walk:
             for _ in walk:
+                visited += 1
                 if self._holds(expr.guard) and not self._truth(expr.body):
                     return False
+        if not visited:
+            decline_empty_walk(expr)
         return True
 
     def map_exists(self, expr: Exists) -> Any:
@@ -953,6 +1031,34 @@ class _Unset:
 _UNSET = _Unset()
 
 
+def decline_empty_walk(expr: Forall) -> None:
+    """Decline a ``forall`` whose walk reached no point, where that says nothing.
+
+    An enumerated domain with no point makes a ``forall`` vacuously true, and
+    it is. A refinement of a sampled domain is different: its walk is a
+    handful of draws of the base, and a refinement that rejects all of them
+    (``Nat & (k == 1000)``, say) leaves a ``forall`` that holds at every point
+    it looked at because it looked at none. That is a vacuous pass, which the
+    property tester exists not to report as evidence, so it is undecided
+    instead, the way an unwitnessed existential over a sampled domain is.
+
+    The walk is declined whenever a sampled refinement is among the binders,
+    including when an enumerated binder before it was the empty one. Telling
+    the two apart would take bookkeeping in the walk, and declining costs a
+    draw and claims nothing.
+
+    Raises:
+        Undecided: If a binder domain of ``expr`` refines a sampled domain.
+    """
+    sampled = _sampled_refinements(expr.binders)
+    if sampled:
+        names = ", ".join(str(domain) for domain in sampled)
+        raise Undecided(
+            f"no draw of {names} satisfied its refinement, so {render(expr)} "
+            "was evaluated at no point, which is not evidence that it holds"
+        )
+
+
 def binder_assignments(
     binder_list: Sequence[tuple[Var, Any]],
     context: dict[str, Any],
@@ -965,7 +1071,8 @@ def binder_assignments(
     the iterator puts back the bindings it replaced. A caller that breaks out
     of the loop should close it (``contextlib.closing``) rather than leave that
     to the collector. This is what a sampler uses to walk a quantified
-    hypothesis point by point.
+    hypothesis point by point. A refined domain yields only the points its
+    refinement admits (see :class:`LankyEvaluationMapper`).
     """
     yield from LankyEvaluationMapper(context, sampler).assignments(list(binder_list))
 
@@ -1035,6 +1142,20 @@ def conjuncts(prop: Any) -> tuple[Any, ...]:
     return (prop,)
 
 
+def _domain_names(var: Var, domain: Any) -> frozenset[str]:
+    """The names a binder's domain mentions, apart from the binder itself.
+
+    A ``Fin`` bound is read as it always was. A refinement adds the names its
+    propositions mention, less its own binder, which is what they are about:
+    ``Fin[n] & (k < m)`` for the binder ``k`` mentions ``n`` and ``m``. It used
+    to be read through ``bound``, which a refinement does not have, so both
+    were missed.
+    """
+    if isinstance(domain, _refined_type()):
+        return _domain_names(var, domain.base) | (free_variables(domain.props) - {var.name})
+    return free_variables(getattr(domain, "bound", None))
+
+
 def free_variables(expr: Any) -> frozenset[str]:
     """The names a term mentions that no binder of the term binds."""
     if isinstance(expr, Var):
@@ -1043,8 +1164,8 @@ def free_variables(expr: Any) -> frozenset[str]:
         bound = {var.name for var, _ in expr.binders}
         inner = free_variables(expr.body) | free_variables(expr.guard)
         domains: frozenset[str] = frozenset()
-        for _, domain in expr.binders:
-            domains |= free_variables(getattr(domain, "bound", None))
+        for var, domain in expr.binders:
+            domains |= _domain_names(var, domain)
         return (inner - bound) | domains
     if isinstance(expr, prim.ExpressionNode):
         out: frozenset[str] = frozenset()
