@@ -268,6 +268,36 @@ def test_an_empty_domain_is_an_inconsistent_hypothesis(tmp_path, oracles) -> Non
     assert fact.provenance["unsatisfied_detail"] == "a draw could not be completed: Fin(0) is empty"
 
 
+def test_a_family_with_nowhere_to_put_its_values_is_an_inconsistent_hypothesis(
+    tmp_path, oracles, capsys
+) -> None:
+    """``f : Fn[Fin[1], Nat & False]`` has no member, so no draw has an ``f``.
+
+    Only a guard, a ``Fin`` or a refinement used to count as a hypothesis, so
+    a statement over such a family was never examined: the row read
+    ``assumed`` and nothing was printed. A family whose values are restricted
+    counts now. Lean erases the restriction, so only the warning can say it.
+    """
+    from lanky.check import has_hypotheses
+
+    oracles(TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace(
+            "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+            "f: Fn[Fin[1], Nat & False]) -> f(0) == 1",
+        ).replace("import Fin, Nat", "import Fin, Fn, Nat"),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    assert cli.main(["check", path]) == 0
+    assert "WARNING vacuous at vacuous.py:7" in capsys.readouterr().out
+    f = Var("f")
+    assert has_hypotheses(Forall(((f, Fn[Fin[2], Fin[3]]),), f(0) >= 0))
+    assert has_hypotheses(Forall(((f, Fn[Fin[2], Fn[Fin[2], Nat & False]]),), f(0)(0) >= 0))
+    assert not has_hypotheses(Forall(((f, Fn[Fin[2], Nat]),), f(0) >= 0))
+
+
 UNTABULATED = VACUOUS.replace(
     "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
     "f: Fn[Nat, Nat], n: Nat, h: f(n) >= 1) -> f(n) + 1 >= 2",

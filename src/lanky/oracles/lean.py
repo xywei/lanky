@@ -343,6 +343,11 @@ def _goal_intro(
     what lets a strategy decide which variable to induce on, and the fourth
     value names, for each natural variable, the hypothesis ``0 ≤ a`` that makes
     it one, which is what an induction on it has to start from.
+
+    The guards are rendered to be counted, and rendering a bound such as
+    ``Fin[2 ** n]`` needs to know that ``n`` is a natural, so each binder's
+    guards are rendered with the statement's own binders and the goal's
+    earlier ones in scope, as the printer rendered them.
     """
     goal = statement.goal_term
     if not isinstance(goal, Forall):
@@ -352,11 +357,14 @@ def _goal_intro(
     variables: list[Var] = []
     naturals: dict[str, str] = {}
     guards = list(conjuncts(goal.guard))
+    scope = dict(statement.types)
     for position, (var, domain) in enumerate(goal.binders):
         names.append(var.name)
         used.add(var.name)
         variables.append(var)
-        for index, _ in enumerate(domain_guards(var, domain)):
+        conditions = domain_guards(var, domain, scope)
+        scope = {**scope, var.name: domain}
+        for index, _ in enumerate(conditions):
             names.append(_fresh("hd", used))
             if index == 0 and is_natural(domain):
                 naturals[var.name] = names[-1]
@@ -391,13 +399,15 @@ def _bounded_hypotheses(statement: LeanStatement) -> list[tuple[str, int]]:
     every ``r`` below ``n``), and the successor case of an induction is exactly
     where it has to be instantiated. The count is how many premises follow the
     variable once it is applied: its domain's guards (two for a point of a
-    ``Fin``) and its own generator guard.
+    ``Fin``) and its own generator guard. The guards are rendered with the
+    statement's binders in scope, as in :func:`_goal_intro`.
     """
     found = []
     for (name, _), term in zip(statement.hypotheses, statement.hypothesis_terms, strict=False):
         if isinstance(term, Forall) and len(term.binders) == 1:
             var, domain = term.binders[0]
-            found.append((name, len(domain_guards(var, domain)) + len(conjuncts(term.guard))))
+            premises = len(domain_guards(var, domain, statement.types))
+            found.append((name, premises + len(conjuncts(term.guard))))
     return found
 
 

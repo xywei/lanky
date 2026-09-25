@@ -692,6 +692,36 @@ def test_a_family_over_the_naturals_is_applied_only_at_naturals() -> None:
     )
 
 
+def test_a_natural_value_is_a_point_of_a_family_over_the_naturals() -> None:
+    """``g(f(i))`` is not affine, and ``f(i)`` is a ``Nat`` all the same.
+
+    The affine check cannot read an application, so a family over ``Nat``
+    applied to another family's value was declined, though the value is a
+    natural in the printed source as in the lanky statement. An argument that
+    only lands in ``Nat`` because it is an ``Int`` expression of such values,
+    ``f(i) - 1``, is still declined.
+    """
+
+    @theorem
+    def composed(n: Nat, f: Fn[Fin[n], Nat], g: Fn[Nat, Nat]) -> all(
+        g(f(i)) >= 0 for i in Fin[n]
+    ):
+        """g is applied at points it has."""
+
+    @theorem
+    def _shifted(n: Nat, f: Fn[Fin[n], Nat], g: Fn[Nat, Nat]) -> all(
+        g(f(i) - 1) >= 0 for i in Fin[n]
+    ):
+        """g is applied at -1 wherever f is 0."""
+
+    assert print_lean(composed.term) == (
+        "∀ n : Int, 0 ≤ n → ∀ f : Int → Nat, ∀ g : Int → Nat, "
+        "∀ i : Int, 0 ≤ i → i < n → (g (f i : Int) : Int) ≥ 0"
+    )
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(_shifted.term)
+
+
 def test_an_exponent_is_a_natural() -> None:
     """Lean's ``^`` on ``Int`` takes a ``Nat``, and a natural variable is an ``Int``.
 
@@ -791,6 +821,24 @@ def test_a_variable_that_is_not_a_natural_is_not_induced_on() -> None:
     natural = Forall(((n, Nat),), Forall(((k, Nat),), k + n >= k))
     (script,) = induction_scripts(statement_of(natural, "t"))
     assert "obtain ⟨k, rfl⟩ := Int.eq_ofNat_of_zero_le hd" in script
+
+
+def test_the_ladder_renders_a_goal_bound_with_the_binders_in_scope() -> None:
+    """``Fin[2 ** n]`` in the goal needs to know that ``n`` is a natural.
+
+    The ladder counts each goal binder's guards by rendering them, and it used
+    to render them with nothing in scope, so ``n.toNat`` could not be printed
+    and the ladder raised for a statement the printer had printed; the oracle
+    loop swallowed that, and Lean was never asked. A bounded hypothesis over
+    such a domain is counted the same way.
+    """
+    j = Var("j")
+    goal = Forall(((i, FinType(2**n)),), i >= 0)
+    ladder = tactic_ladder(statement_of(Forall(((n, Nat),), goal), "t"))
+    assert "intro i hd hd_1\nfirst | omega" in ladder[5]
+    hypothesis = Forall(((j, FinType(2**n)),), j < 2**n)
+    (script,) = induction_scripts(statement_of(Forall(((n, Nat),), goal, hypothesis), "t"))
+    assert "have hstep := h1 k (by omega) (by omega)" in script
 
 
 def test_a_statement_with_no_quantified_goal_has_only_the_cheap_ladder() -> None:
@@ -1164,6 +1212,18 @@ def test_a_variable_only_in_an_exponent_does_not_make_the_claim_natural(
     assert fact.decided_by == "property-test"
     assert cli.main(["check", str(path)]) == 1
     assert "REFUTED power_below_one" in capsys.readouterr().out
+
+
+def test_lean_proves_a_goal_whose_bound_is_a_power(lean_oracle: LeanOracle) -> None:
+    """The ladder used to raise on ``Fin[2 ** n]``, and Lean was never asked."""
+
+    @theorem
+    def powered(n: Nat) -> all(i < 2**n for i in Fin[2**n]):
+        """Every point of Fin[2 ** n] is below its bound."""
+
+    proved = lean_oracle.establish(powered.fact())
+    assert proved.status is Status.PROVED
+    assert "(2 : Int) ^ n.toNat" in proved.provenance["lean_source"]
 
 
 def test_hypotheses_with_a_power_are_not_found_inconsistent_by_truncation(

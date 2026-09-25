@@ -297,7 +297,8 @@ listed because it changes behaviour a reader could already have depended on.
   and which `omega` understands. A family's natural values stay `Nat` in its
   type, `Int → Nat`, and an application used as a number is cast,
   `(f i : Int)`. A family over `Nat` is applied only where the argument can
-  be shown non-negative, and an exponent has to be a literal, a natural
+  be shown non-negative, or is another family's natural value, and an
+  exponent has to be a literal, a natural
   variable (printed `n.toNat`) or a natural value. A literal base is ascribed,
   `(2 : Int) ^ m.toNat`: with its variable only in the `Nat` exponent,
   `1 - 2 ** m >= 0` had no `Int` in it, Lean read its numerals as `Nat`, and
@@ -317,8 +318,9 @@ listed because it changes behaviour a reader could already have depended on.
   From `n > 2` and `n < 1`, `omega` proves `n == n + 1`. The row read
   `proved lean` with nothing under the table, and the property tester, which
   would have found that no draw satisfied the hypotheses, was never asked
-  (#5). The tester now cross-checks every fact with hypotheses (a guard, or a
-  binder into `Fin` or a refinement) that a stronger oracle established. When
+  (#5). The tester now cross-checks every fact with hypotheses (a guard, a
+  binder into `Fin` or a refinement, or a family whose values are restricted
+  so) that a stronger oracle established. When
   no draw satisfies the hypotheses, whoever established the fact, the
   stronger oracles are asked whether the hypotheses alone prove `False`
   (`lanky.check.hypotheses_fact`; for Lean that is the cheap ladder). If one

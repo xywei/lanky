@@ -24,7 +24,7 @@ from typing import Any
 from lanky import semantics
 from lanky.ledger import STATUS_STRENGTH, Fact, Ledger, Status
 from lanky.plugins import TRUST_STRENGTH, oracle_availability, registry
-from lanky.prelude import FinType, Refined
+from lanky.prelude import FinType, FnType, Refined
 from lanky.terms import Forall
 
 __all__ = [
@@ -222,14 +222,25 @@ def has_hypotheses(term: Any) -> bool:
     That is a guard, which is what a theorem's hypotheses become, or a binder
     whose domain restricts its sort: a point of ``Fin[n]`` has to be below
     ``n``, and a refined variable has to satisfy its refinement. Lean states
-    all of them as hypotheses of the theorem it is asked. A variable of a plain
-    sort, or a family, assumes nothing a draw can miss.
+    all of them as hypotheses of the theorem it is asked. So does a family
+    whose values are restricted in the same way: ``Fn[Fin[1], Nat & False]``
+    has no member, because its one value has nowhere to go. A variable of a
+    plain sort, or a family into one, assumes nothing a draw can miss.
     """
     if not isinstance(term, Forall):
         return False
     if term.guard is not None:
         return True
-    return any(isinstance(domain, FinType | Refined) for _var, domain in term.binders)
+    return any(_restricts(domain) for _var, domain in term.binders)
+
+
+def _restricts(domain: Any) -> bool:
+    """Whether a binder's domain, or the values of a family it is, restrict a sort."""
+    if isinstance(domain, FinType | Refined):
+        return True
+    if isinstance(domain, FnType):
+        return _restricts(domain.codomain)
+    return False
 
 
 def _never_satisfied(provenance: dict) -> str | None:

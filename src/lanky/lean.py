@@ -62,7 +62,8 @@ against the bounds the ``Fin`` binders and the ``Nat`` sorts give, so
 through and anything the affine reading cannot settle is declined rather than
 assumed. Declining costs a proof at worst; assuming costs soundness. A family
 over ``Nat`` erases to a function from ``Int`` as well, so its arguments have
-to be shown non-negative in the same way.
+to be shown non-negative in the same way, or be the natural value of another
+family.
 
 Three things follow from taking that seriously. An application chain is checked
 level by level: ``f(i)(j)`` for a family of families erases to ``f i j``, so
@@ -795,6 +796,30 @@ def _nonnegative(argument: Any, scope: _Scope) -> bool:
     return lowest is not None and lowest >= 0
 
 
+def _natural_value(argument: Any, scope: _Scope) -> bool:
+    """Whether ``argument`` applies a family in scope whose values are naturals.
+
+    ``g(f(i))`` for an ``f : Fn[Fin[n], Nat]`` and a ``g : Fn[Nat, Nat]`` is
+    not affine, so :func:`_nonnegative` cannot read it, but its value is a
+    ``Nat`` in the printed source as in the lanky statement, which is all a
+    point of ``Nat`` has to be. The inner application is checked against its
+    own domain where the walk reaches it.
+    """
+    found = _spine(argument)
+    if found is None:
+        return False
+    name, arguments = found
+    current: Any = scope.families.get(name)
+    if current is None:
+        return False
+    for _ in arguments:
+        base = _unrefined(current)
+        if not isinstance(base, FnType):
+            return False
+        current = base.codomain
+    return is_natural(current)
+
+
 def _spine(expr: Any) -> tuple[str, tuple[Any, ...]] | None:
     """``(family name, arguments in order)`` for a chain of applications.
 
@@ -862,7 +887,8 @@ def _check_chain(
             )
         natural_domain = isinstance(domain, Sort) and domain.name == "Nat"
         if (isinstance(domain, FinType) and not _fits(argument, domain, scope)) or (
-            natural_domain and not _nonnegative(argument, scope)
+            natural_domain
+            and not (_nonnegative(argument, scope) or _natural_value(argument, scope))
         ):
             raise UnsupportedTerm(
                 f"{render(expr)} applies {name} outside the domain it declares "
