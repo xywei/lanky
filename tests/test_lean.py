@@ -26,7 +26,13 @@ from lanky.lean import (
     statement_of,
 )
 from lanky.ledger import Status
-from lanky.oracles.lean import LeanOracle, LeanSession, tactic_ladder, use_tactic
+from lanky.oracles.lean import (
+    LeanOracle,
+    LeanSession,
+    induction_scripts,
+    tactic_ladder,
+    use_tactic,
+)
 from lanky.prelude import Bool, Fin, FinType, Fn, Int, Nat, Real
 from lanky.terms import Abs, Exists, Forall, Sum, Var
 
@@ -46,20 +52,25 @@ f = Var("f")
 
 
 def test_scalar_sorts_print_as_core_lean_types() -> None:
-    assert lean_type(Nat) == "Nat"
+    # A natural is an integer that is not negative: its variable is an Int,
+    # and 0 ≤ n is a hypothesis (see the tests of the integer reading below).
+    assert lean_type(Nat) == "Int"
     assert lean_type(Int) == "Int"
     assert lean_type(Bool) == "Bool"
 
 
-def test_an_index_type_is_a_natural_number() -> None:
-    # Fin[n] is not Fin n in Lean: its points are naturals and its bound is a
-    # guard, so that omega sees linear arithmetic and no coercion.
-    assert lean_type(FinType(n)) == "Nat"
+def test_an_index_type_is_an_integer_with_bounds() -> None:
+    # Fin[n] is not Fin n in Lean: its points are integers with both bounds as
+    # guards, so that omega sees linear arithmetic and no coercion.
+    assert lean_type(FinType(n)) == "Int"
 
 
 def test_a_family_is_a_total_function() -> None:
-    assert lean_type(Fn[Fin[n], Nat]) == "Nat → Nat"
-    assert lean_type(Fn[Fin[n], Fn[Fin[n], Int]]) == "Nat → Nat → Int"
+    # A family is a function from Int; a natural value stays a Nat, which is
+    # cast where it is used as a number.
+    assert lean_type(Fn[Fin[n], Nat]) == "Int → Nat"
+    assert lean_type(Fn[Fin[n], Fn[Fin[n], Int]]) == "Int → Int → Int"
+    assert lean_type(Fn[Fin[n], Fin[n]]) == "Int → Nat"
 
 
 def test_a_function_typed_domain_is_bracketed() -> None:
@@ -71,9 +82,9 @@ def test_a_function_typed_domain_is_bracketed() -> None:
     prints as its base, so a refined function-typed domain is bracketed too,
     and a function-typed codomain still needs nothing.
     """
-    assert lean_type(Fn[Fn[Fin[n], Nat], Nat]) == "(Nat → Nat) → Nat"
-    assert lean_type(Fn[Fn[Fin[n], Nat] & (n > 0), Int]) == "(Nat → Nat) → Int"
-    assert lean_type(Fn[Fin[n], Fn[Fn[Fin[n], Nat], Nat]]) == "Nat → (Nat → Nat) → Nat"
+    assert lean_type(Fn[Fn[Fin[n], Nat], Nat]) == "(Int → Nat) → Nat"
+    assert lean_type(Fn[Fn[Fin[n], Nat] & (n > 0), Int]) == "(Int → Nat) → Int"
+    assert lean_type(Fn[Fin[n], Fn[Fn[Fin[n], Nat], Nat]]) == "Int → (Int → Nat) → Nat"
 
     @theorem
     def higher_order(
@@ -85,12 +96,13 @@ def test_a_function_typed_domain_is_bracketed() -> None:
 
     statement = statement_of(higher_order.term, "higher_order")
     assert statement.binders == (
-        ("m", "Nat"),
-        ("total", "(Nat → Nat) → Nat"),
-        ("g", "Nat → Nat"),
+        ("m", "Int"),
+        ("total", "(Int → Nat) → Nat"),
+        ("g", "Int → Nat"),
     )
     assert print_lean(higher_order.term) == (
-        "∀ m : Nat, ∀ total : (Nat → Nat) → Nat, ∀ g : Nat → Nat, total g ≥ 0"
+        "∀ m : Int, 0 ≤ m → ∀ total : (Int → Nat) → Nat, ∀ g : Int → Nat, "
+        "(total g : Int) ≥ 0"
     )
 
 
@@ -109,8 +121,30 @@ def test_arithmetic_and_precedence() -> None:
     assert print_lean((a + b) * n) == "(a + b) * n"
     assert print_lean(a + b * n) == "a + b * n"
     assert print_lean(a**2 + 1) == "a ^ 2 + 1"
-    assert print_lean(a // b) == "a / b"
-    assert print_lean(a % b) == "a % b"
+    assert print_lean(a // 2) == "a / 2"
+    assert print_lean(a % 2) == "a % 2"
+    assert print_lean(a // b) == "Int.fdiv a b"
+    assert print_lean(a % b) == "Int.fmod a b"
+
+
+def test_floor_division_rounds_the_way_python_does() -> None:
+    """``//`` and ``%`` are Python's, which round toward negative infinity.
+
+    ``Int.fdiv`` and ``Int.fmod`` are Lean's functions that do the same. A
+    positive literal divisor is printed with Lean's ``/`` and ``%`` instead,
+    which on ``Int`` are Euclidean and agree with floor division exactly when
+    the divisor is positive, so ``omega`` can still reason about ``n // 2``.
+    Any other divisor, a negative literal or zero included, gets ``Int.fdiv``:
+    ``7 // -2`` is ``-4`` in Python, and Euclidean division says ``-3``.
+    """
+    assert print_lean((a + b) // 2) == "(a + b) / 2"
+    assert print_lean(a // 2 * 2 <= a) == "(a / 2) * 2 ≤ a"
+    assert print_lean(a // -2) == "Int.fdiv a (-2)"
+    assert print_lean(a % -2) == "Int.fmod a (-2)"
+    assert print_lean(a // 0) == "Int.fdiv a 0"
+    assert print_lean((a + b) // (n + 1)) == "Int.fdiv (a + b) (n + 1)"
+    assert print_lean(a // b * 2 <= a) == "Int.fdiv a b * 2 ≤ a"
+    assert print_lean(f(a // b)) == "f (Int.fdiv a b)"
 
 
 def test_subtraction_is_printed_as_written() -> None:
@@ -136,18 +170,25 @@ def test_a_family_is_applied_not_subscripted() -> None:
     assert print_lean(f[a]) == "f a"
 
 
-def test_a_bounded_quantifier_is_a_guarded_nat_quantifier() -> None:
-    assert print_lean(Forall(((i, FinType(n)),), f(i) <= n)) == "∀ i : Nat, i < n → f i ≤ n"
-    assert print_lean(Forall(((i, Nat),), f(i) <= n)) == "∀ i : Nat, f i ≤ n"
+def test_a_bounded_quantifier_is_a_guarded_int_quantifier() -> None:
+    assert print_lean(Forall(((i, FinType(n)),), f(i) <= n)) == (
+        "∀ i : Int, 0 ≤ i → i < n → f i ≤ n"
+    )
+    assert print_lean(Forall(((i, Nat),), f(i) <= n)) == "∀ i : Int, 0 ≤ i → f i ≤ n"
+    assert print_lean(Forall(((i, Int),), f(i) <= n)) == "∀ i : Int, f i ≤ n"
 
 
 def test_an_existential_conjoins_its_guard() -> None:
-    assert print_lean(Exists(((i, FinType(n)),), f(i) == 0)) == "∃ i : Nat, i < n ∧ f i = 0"
+    assert print_lean(Exists(((i, FinType(n)),), f(i) == 0)) == (
+        "∃ i : Int, 0 ≤ i ∧ i < n ∧ f i = 0"
+    )
 
 
 def test_a_generator_guard_follows_the_last_binder() -> None:
     term = Forall(((a, FinType(n)), (b, FinType(n))), f(a) <= f(b), a <= b)
-    assert print_lean(term) == "∀ a : Nat, a < n → ∀ b : Nat, b < n → a ≤ b → f a ≤ f b"
+    assert print_lean(term) == (
+        "∀ a : Int, 0 ≤ a → a < n → ∀ b : Int, 0 ≤ b → b < n → a ≤ b → f a ≤ f b"
+    )
 
 
 def test_a_reduction_needs_mathlib() -> None:
@@ -199,27 +240,32 @@ def gauss(size: Nat) -> 2 * sum(k for k in Fin[size + 1]) == size * (size + 1):
 
 def test_a_statement_becomes_lean_binders_and_hypotheses() -> None:
     statement = statement_of(commutes.term, "commutes")
-    assert statement.binders == (("x", "Nat"), ("y", "Nat"))
-    assert statement.hypotheses == ()
+    assert statement.binders == (("x", "Int"), ("y", "Int"))
+    assert statement.hypotheses == (("h0", "0 ≤ x"), ("h1", "0 ≤ y"))
     assert statement.goal == "x + y = y + x"
+    # each binder's guard follows it, as it does in print_lean
     assert statement.source("omega") == (
-        "theorem commutes (x : Nat) (y : Nat) : x + y = y + x := by\n  omega\n"
+        "theorem commutes (x : Int) (h0 : 0 ≤ x) (y : Int) (h1 : 0 ≤ y) : "
+        "x + y = y + x := by\n  omega\n"
     )
 
 
-def test_an_index_typed_variable_carries_its_bound_as_a_hypothesis() -> None:
+def test_an_index_typed_variable_carries_its_bounds_as_hypotheses() -> None:
     statement = statement_of(below.term, "below")
-    assert statement.binders == (("m", "Nat"), ("j", "Nat"))
-    assert statement.hypotheses == (("h0", "j < m"),)
+    assert statement.binders == (("m", "Int"), ("j", "Int"))
+    assert statement.hypotheses == (("h0", "0 ≤ m"), ("h1", "0 ≤ j"), ("h2", "j < m"))
     assert statement.goal == "j < m + 1"
 
 
 def test_the_scan_statement_prints_as_a_lean_theorem() -> None:
     statement = statement_of(scan_monotone.term, "scan_monotone")
     assert statement.source("omega").splitlines()[0] == (
-        "theorem scan_monotone (size : Nat) (cnt : Nat → Nat) (off : Nat → Nat) "
-        "(h0 : off 0 = 0) (h1 : ∀ r : Nat, r < size → off (r + 1) = off r + cnt r) : "
-        "∀ p : Nat, p < size + 1 → ∀ q : Nat, q < size + 1 → p ≤ q → off p ≤ off q := by"
+        "theorem scan_monotone (size : Int) (h0 : 0 ≤ size) (cnt : Int → Nat) "
+        "(off : Int → Nat) (h1 : (off 0 : Int) = 0) "
+        "(h2 : ∀ r : Int, 0 ≤ r → r < size → "
+        "(off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) : "
+        "∀ p : Int, 0 ≤ p → p < size + 1 → ∀ q : Int, 0 ≤ q → q < size + 1 → "
+        "p ≤ q → (off p : Int) ≤ (off q : Int) := by"
     )
 
 
@@ -227,12 +273,18 @@ def test_a_quantified_hypothesis_is_parenthesized_in_the_proposition() -> None:
     # To the left of an arrow a quantifier needs brackets; in binder syntax it
     # does not, which is why the proposition is rendered rather than pasted.
     proposition = statement_of(scan_monotone.term, "scan_monotone").proposition
-    assert "(∀ r : Nat, r < size → off (r + 1) = off r + cnt r) →" in proposition
+    assert (
+        "(∀ r : Int, 0 ≤ r → r < size → "
+        "(off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) →"
+    ) in proposition
     assert proposition == print_lean(scan_monotone.term)
+    # and a binder's own guard sits next to it in both
+    for term in (commutes.term, below.term):
+        assert statement_of(term, "t").proposition == print_lean(term)
 
 
 def test_a_theorem_prints_itself() -> None:
-    assert commutes.lean() == "∀ x : Nat, ∀ y : Nat, x + y = y + x"
+    assert commutes.lean() == "∀ x : Int, 0 ≤ x → ∀ y : Int, 0 ≤ y → x + y = y + x"
 
 
 def test_a_reduction_statement_is_declined_by_the_printer() -> None:
@@ -279,16 +331,16 @@ def test_an_application_inside_its_domain_still_prints() -> None:
     and not a proof search.
     """
     check_applications(scan_monotone.term)
-    assert "off (r + 1)" in print_lean(scan_monotone.term)
+    assert "(off (r + 1) : Int)" in print_lean(scan_monotone.term)
     assert print_lean(within_bounds.term) == (
-        "∀ m : Nat, ∀ g : Nat → Nat, ∀ k : Nat, k < m → g k ≥ 0"
+        "∀ m : Int, 0 ≤ m → ∀ g : Int → Nat, ∀ k : Int, 0 ≤ k → k < m → (g k : Int) ≥ 0"
     )
 
 
 def test_an_argument_that_could_be_negative_is_declined_too() -> None:
     """``Fin`` starts at zero, so an ``Int`` index has two bounds to clear.
 
-    Nothing here says ``k`` is not ``-1``, and a family erased to ``Nat → Nat``
+    Nothing here says ``k`` is not ``-1``, and a family erased to ``Int → Nat``
     would be applied at a point the domain does not have on that side either.
     Only a hypothesis would rule it out, and the check is affine arithmetic
     over the binders rather than a solver, so it declines.
@@ -309,7 +361,7 @@ def test_an_open_term_has_no_domain_to_leave() -> None:
     says what its domain is and nothing to refuse.
     """
     assert print_lean(Forall(((i, FinType(n)),), f(i + 3) <= n)) == (
-        "∀ i : Nat, i < n → f (i + 3) ≤ n"
+        "∀ i : Int, 0 ≤ i → i < n → f (i + 3) ≤ n"
     )
     check_applications(f(n + 100))
 
@@ -323,7 +375,7 @@ def chained_in_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(0) == grid(0
 def _chained_out_of_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(1) == grid(0)(1):
     """The same shape with the *outer* application one point past its domain.
 
-    ``grid(0)`` is a family over ``Fin[1]`` in lanky and a total ``Nat → Nat``
+    ``grid(0)`` is a family over ``Fin[1]`` in lanky and a total ``Int → Nat``
     in Lean, so ``grid(0)(1)`` is a Lean tautology about a value the statement does
     not have. The name is private so that the pytest plugin does not collect a
     statement that decides nothing.
@@ -334,7 +386,7 @@ def _chained_out_of_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(1) == g
 def _applied_more_often_than_its_type(row: Fn[Fin[1], Nat]) -> row(0)(0) == row(0)(0):
     """A family applied twice though its type takes one argument.
 
-    Printed it would be ``row 0 0`` for a ``row : Nat → Nat``, which Lean will
+    Printed it would be ``row 0 0`` for a ``row : Int → Nat``, which Lean will
     not elaborate, so the honest answer is to decline it here.
     """
 
@@ -343,7 +395,7 @@ def test_a_chained_application_is_checked_at_every_level() -> None:
     """A family whose codomain is a family is applied again, and that counts.
 
     Reading only the innermost call left the outer argument unchecked, while
-    the erasure of ``Fn[Fin[1], Fn[Fin[1], Nat]]`` to a total ``Nat → Nat →
+    the erasure of ``Fn[Fin[1], Fn[Fin[1], Nat]]`` to a total ``Int → Int →
     Nat`` says nothing about it: Lean proved the reflexive statement and the
     property tester had no entry to compare. Every level is now discharged
     against its own ``Fin`` bound.
@@ -362,7 +414,7 @@ def test_a_chained_application_in_bounds_still_prints() -> None:
     """And the check costs a chain that stays in bounds nothing."""
     check_applications(chained_in_bounds.term)
     assert print_lean(chained_in_bounds.term) == (
-        "∀ grid : Nat → Nat → Nat, grid 0 0 = grid 0 0"
+        "∀ grid : Int → Int → Nat, (grid 0 0 : Int) = (grid 0 0 : Int)"
     )
 
 
@@ -439,7 +491,8 @@ def test_a_refinement_whose_applications_are_in_bounds_still_prints() -> None:
 
     check_applications(refined_index.term)
     assert print_lean(refined_index.term) == (
-        "∀ m : Nat, ∀ g : Nat → Nat, ∀ k : Nat, k < m → g k = 0 → g k = 0"
+        "∀ m : Int, 0 ≤ m → ∀ g : Int → Nat, ∀ k : Int, 0 ≤ k → k < m → "
+        "(g k : Int) = 0 → (g k : Int) = 0"
     )
 
 
@@ -492,12 +545,14 @@ def test_a_binder_that_captures_nothing_still_prints() -> None:
     def fresh(m: Nat) -> all(j >= 0 for j in Fin[m]):
         """The same shape as the captured one, with a name of its own."""
 
-    assert print_lean(fresh.term) == "∀ m : Nat, ∀ j : Nat, j < m → j ≥ 0"
+    assert print_lean(fresh.term) == "∀ m : Int, 0 ≤ m → ∀ j : Int, 0 ≤ j → j < m → j ≥ 0"
     shadowing = Forall(((i, FinType(n)),), Exists(((i, FinType(1)),), i == 0))
-    assert print_lean(shadowing) == "∀ i : Nat, i < n → ∃ i : Nat, i < 1 ∧ i = 0"
+    assert print_lean(shadowing) == (
+        "∀ i : Int, 0 ≤ i → i < n → ∃ i : Int, 0 ≤ i ∧ i < 1 ∧ i = 0"
+    )
     k = Var("k")
     refined = Forall(((k, Fin[n] & (k > 0)),), k < n)
-    assert print_lean(refined) == "∀ k : Nat, k < n → k > 0 → k < n"
+    assert print_lean(refined) == "∀ k : Int, 0 ≤ k → k < n → k > 0 → k < n"
 
 
 def test_a_closed_boolean_statement_prints_as_a_proposition() -> None:
@@ -534,20 +589,258 @@ def test_a_binderless_statement_keeps_its_hypotheses() -> None:
 # }}}
 
 
+# {{{ one reading of arithmetic, the integer one
+
+
+def _make_truncated():
+    """``n - 1 >= 0`` over ``Nat``: true only where subtraction truncates.
+
+    Built inside a function because it is false, at ``n = 0``, and a
+    module-level theorem is collected and run by lanky's own pytest plugin.
+    """
+
+    @theorem
+    def truncated(n: Nat) -> n - 1 >= 0:
+        """False at n = 0, which Lean has to see as well."""
+
+    return truncated
+
+
+_truncated = _make_truncated()
+
+
+@theorem
+def one_below(m: Nat) -> m - 1 <= m:
+    """True in the integer reading, so Lean still proves it."""
+
+
+def test_a_natural_is_an_integer_with_its_bound_as_a_hypothesis() -> None:
+    """The statement Lean gets is the one the property tester runs.
+
+    A ``Nat`` used to print as a Lean ``Nat``, whose subtraction truncates at
+    zero, so Lean proved ``n - 1 >= 0`` while the tester refuted it at
+    ``n = 0`` and ``lanky check`` exited 0 or 1 depending on whether Lean was
+    installed. A natural is now an ``Int`` with ``0 ≤ n`` as a hypothesis, and
+    ``n - 1`` is integer subtraction in both readings.
+    """
+    assert print_lean(_truncated.term) == "∀ n : Int, 0 ≤ n → n - 1 ≥ 0"
+    statement = statement_of(_truncated.term, "truncated")
+    assert statement.source("omega").splitlines()[0] == (
+        "theorem truncated (n : Int) (h0 : 0 ≤ n) : n - 1 ≥ 0 := by"
+    )
+    assert print_lean(one_below.term) == "∀ m : Int, 0 ≤ m → m - 1 ≤ m"
+
+
+def test_a_natural_value_is_cast_where_it_is_a_number() -> None:
+    """A family's natural values stay ``Nat`` and are cast to ``Int`` where used.
+
+    ``off(r + 1) - off(r)`` is integer subtraction under the tester, which
+    draws the table's entries as Python integers, so it has to be integer
+    subtraction in Lean too: every application of a family with natural values
+    is written ``(f x : Int)``. A family with integer values needs no cast, a
+    partial application of a family of families is a function and gets none,
+    and a family nothing binds, in an open term, is left as written.
+    """
+
+    @theorem
+    def steps(
+        size: Nat,
+        off: Fn[Fin[size + 1], Nat],
+        shift: Fn[Fin[size], Int],
+    ) -> all(off(r + 1) - off(r) + shift(r) >= shift(r) - off(r) for r in Fin[size]):
+        """Arithmetic on natural values, and on integer ones."""
+
+    assert print_lean(steps.term) == (
+        "∀ size : Int, 0 ≤ size → ∀ off : Int → Nat, ∀ shift : Int → Int, "
+        "∀ r : Int, 0 ≤ r → r < size → "
+        "(off (r + 1) : Int) - (off r : Int) + shift r ≥ shift r - (off r : Int)"
+    )
+
+    @theorem
+    def rows(grid: Fn[Fin[2], Fn[Fin[3], Nat]], pick: Fn[Fn[Fin[3], Nat], Nat]) -> (
+        pick(grid(1)) >= grid(1)(2)
+    ):
+        """A family of families, and one applied to a family."""
+
+    assert print_lean(rows.term) == (
+        "∀ grid : Int → Int → Nat, ∀ pick : (Int → Nat) → Nat, "
+        "(pick (grid 1) : Int) ≥ (grid 1 2 : Int)"
+    )
+
+
+def test_a_family_over_the_naturals_is_applied_only_at_naturals() -> None:
+    """A family over ``Nat`` is a function from ``Int`` too, so ``-1`` is a point.
+
+    ``f(n - 1)`` at ``n = 0`` names a value the family does not have. With a
+    ``Nat`` domain Lean used to truncate the argument to ``0``; with an ``Int``
+    one it would reason about ``f (-1)``. Either way it is not the statement
+    lanky holds, so an argument has to be shown non-negative from the binders,
+    the way an argument into ``Fin`` has to be shown in bounds.
+    """
+
+    @theorem
+    def _before(n: Nat, f: Fn[Nat, Nat]) -> f(n - 1) == f(n - 1):
+        """One point before n, which is -1 at n = 0."""
+
+    @theorem
+    def at_n(n: Nat, f: Fn[Nat, Nat]) -> f(n + 1) >= f(n) - f(n):
+        """Points the family has, whatever n is."""
+
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(_before.term)
+    assert print_lean(at_n.term) == (
+        "∀ n : Int, 0 ≤ n → ∀ f : Int → Nat, "
+        "(f (n + 1) : Int) ≥ (f n : Int) - (f n : Int)"
+    )
+
+
+def test_a_natural_value_is_a_point_of_a_family_over_the_naturals() -> None:
+    """``g(f(i))`` is not affine, and ``f(i)`` is a ``Nat`` all the same.
+
+    The affine check cannot read an application, so a family over ``Nat``
+    applied to another family's value was declined, though the value is a
+    natural in the printed source as in the lanky statement. An argument that
+    only lands in ``Nat`` because it is an ``Int`` expression of such values,
+    ``f(i) - 1``, is still declined.
+    """
+
+    @theorem
+    def composed(n: Nat, f: Fn[Fin[n], Nat], g: Fn[Nat, Nat]) -> all(
+        g(f(i)) >= 0 for i in Fin[n]
+    ):
+        """g is applied at points it has."""
+
+    @theorem
+    def _shifted(n: Nat, f: Fn[Fin[n], Nat], g: Fn[Nat, Nat]) -> all(
+        g(f(i) - 1) >= 0 for i in Fin[n]
+    ):
+        """g is applied at -1 wherever f is 0."""
+
+    assert print_lean(composed.term) == (
+        "∀ n : Int, 0 ≤ n → ∀ f : Int → Nat, ∀ g : Int → Nat, "
+        "∀ i : Int, 0 ≤ i → i < n → (g (f i : Int) : Int) ≥ 0"
+    )
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(_shifted.term)
+
+
+def test_an_exponent_is_a_natural() -> None:
+    """Lean's ``^`` on ``Int`` takes a ``Nat``, and a natural variable is an ``Int``.
+
+    A literal elaborates as it is; a natural variable is given as ``n.toNat``,
+    which is ``n`` under its own ``0 ≤ n``; a family's natural value is a
+    ``Nat`` already; anything else could be negative, where Python's ``**`` is
+    a float, and is declined.
+    """
+
+    @theorem
+    def powers(k: Int, m: Nat, f: Fn[Fin[1], Nat]) -> k**m * k**2 == k ** (m + 2) + 2 ** f(0):
+        """Three exponents Lean can take and one it cannot."""
+
+    with pytest.raises(UnsupportedTerm, match="exponent"):
+        print_lean(powers.term)
+
+    @theorem
+    def fine(k: Int, m: Nat, f: Fn[Fin[1], Nat]) -> k**m * k**2 >= 2 ** f(0) - 2 ** f(0):
+        """The three it can."""
+
+    assert print_lean(fine.term) == (
+        "∀ k : Int, ∀ m : Int, 0 ≤ m → ∀ f : Int → Nat, "
+        "k ^ m.toNat * k ^ 2 ≥ (2 : Int) ^ f 0 - (2 : Int) ^ f 0"
+    )
+    with pytest.raises(UnsupportedTerm, match="exponent"):
+        print_lean(Forall(((a, Int),), a**a >= 0))
+
+
+def _make_power_below_one():
+    """``1 - 2 ** m >= 0`` over ``Nat``: false at ``m = 1``, true only in ``Nat``.
+
+    Built inside a function because it is false, and a module-level theorem is
+    collected and run by lanky's own pytest plugin.
+    """
+
+    @theorem
+    def power_below_one(m: Nat) -> 1 - 2**m >= 0:
+        """Its variable is only in the exponent, so nothing else types the numerals."""
+
+    return power_below_one
+
+
+_power_below_one = _make_power_below_one()
+
+
+def test_a_literal_base_is_an_integer() -> None:
+    """A numeral with no typed neighbour is a ``Nat`` to Lean, so a literal base is not.
+
+    ``m`` appears only in the exponent, as ``m.toNat``, which is a ``Nat``. Printed
+    as ``1 - 2 ^ m.toNat ≥ 0`` every numeral in the statement defaulted to
+    ``Nat``, whose subtraction truncates, so Lean proved a claim Python refutes
+    at ``m = 1``, and ``lanky check`` exited 0 with Lean and 1 without, which
+    is #6 again. The ascription makes it integer arithmetic; a base that is not
+    a literal is typed by what is in it and is left alone.
+    """
+    assert print_lean(_power_below_one.term) == "∀ m : Int, 0 ≤ m → 1 - (2 : Int) ^ m.toNat ≥ 0"
+    assert print_lean(Forall(((n, Nat),), (-1) ** n <= 1)) == (
+        "∀ n : Int, 0 ≤ n → (-1 : Int) ^ n.toNat ≤ 1"
+    )
+    assert print_lean(Forall(((n, Nat),), (n + 1) ** n >= 1)) == (
+        "∀ n : Int, 0 ≤ n → (n + 1) ^ n.toNat ≥ 1"
+    )
+
+
+# }}}
+
+
 # {{{ the tactic ladder, without Lean
 
 
 def test_the_ladder_starts_cheap_and_ends_with_an_induction() -> None:
     ladder = tactic_ladder(statement_of(scan_monotone.term, "scan_monotone"))
-    assert ladder[:4] == ["omega", "decide", "simp", "simp_all"]
+    assert ladder[:5] == ["omega", "decide", "simp", "simp_all", "simp_all <;> omega"]
     script = ladder[-2]
     # The strategy is read off the statement: q is the variable the guard p <= q
     # makes reachable by steps, p is what the successor case splits against, and
-    # h1 is the recurrence to instantiate.
-    assert "intro p " in script
+    # h2 is the recurrence to instantiate, at a point of Fin, so with two
+    # guards to discharge. q is an Int with 0 ≤ q as hd_2, and it is traded for
+    # the natural it is before anything is induced on.
+    assert "intro p hd hd_1 q hd_2 hd_3 hg" in script
+    assert "obtain ⟨q, rfl⟩ := Int.eq_ofNat_of_zero_le hd_2" in script
     assert "induction q with" in script
-    assert "rcases Nat.lt_or_ge k p with" in script
-    assert "have hstep := h1 k (by omega)" in script
+    assert "by_cases hlt : (k : Int) < p" in script
+    assert "have hstep := h2 k (by omega) (by omega)" in script
+
+
+def test_a_variable_that_is_not_a_natural_is_not_induced_on() -> None:
+    """An ``Int`` has no lower bound to start an induction from.
+
+    The strategy trades a natural for a ``Nat`` through its ``0 ≤ b``
+    hypothesis, and an ``Int`` variable has none, so the ladder stops at the
+    cheap attempts rather than emitting a script that cannot elaborate.
+    """
+    k = Var("k")
+    term = Forall(((n, Nat),), Forall(((k, Int),), k + n >= k))
+    assert induction_scripts(statement_of(term, "t")) == []
+    natural = Forall(((n, Nat),), Forall(((k, Nat),), k + n >= k))
+    (script,) = induction_scripts(statement_of(natural, "t"))
+    assert "obtain ⟨k, rfl⟩ := Int.eq_ofNat_of_zero_le hd" in script
+
+
+def test_the_ladder_renders_a_goal_bound_with_the_binders_in_scope() -> None:
+    """``Fin[2 ** n]`` in the goal needs to know that ``n`` is a natural.
+
+    The ladder counts each goal binder's guards by rendering them, and it used
+    to render them with nothing in scope, so ``n.toNat`` could not be printed
+    and the ladder raised for a statement the printer had printed; the oracle
+    loop swallowed that, and Lean was never asked. A bounded hypothesis over
+    such a domain is counted the same way.
+    """
+    j = Var("j")
+    goal = Forall(((i, FinType(2**n)),), i >= 0)
+    ladder = tactic_ladder(statement_of(Forall(((n, Nat),), goal), "t"))
+    assert "intro i hd hd_1\nfirst | omega" in ladder[5]
+    hypothesis = Forall(((j, FinType(2**n)),), j < 2**n)
+    (script,) = induction_scripts(statement_of(Forall(((n, Nat),), goal, hypothesis), "t"))
+    assert "have hstep := h1 k (by omega) (by omega)" in script
 
 
 def test_a_statement_with_no_quantified_goal_has_only_the_cheap_ladder() -> None:
@@ -556,6 +849,7 @@ def test_a_statement_with_no_quantified_goal_has_only_the_cheap_ladder() -> None
         "decide",
         "simp",
         "simp_all",
+        "simp_all <;> omega",
     ]
 
 
@@ -861,13 +1155,13 @@ def test_lean_proves_the_scan_is_monotone(lean_oracle: LeanOracle) -> None:
 
 
 def test_a_pinned_tactic_is_the_one_that_runs(lean_oracle: LeanOracle) -> None:
-    lean_oracle.tactics[commutes.fact().id] = "exact Nat.add_comm x y"
+    lean_oracle.tactics[commutes.fact().id] = "exact Int.add_comm x y"
     try:
         proved = lean_oracle.establish(commutes.fact())
     finally:
         lean_oracle.tactics.clear()
     assert proved.status is Status.PROVED
-    assert proved.provenance["tactic"] == "exact Nat.add_comm x y"
+    assert proved.provenance["tactic"] == "exact Int.add_comm x y"
 
 
 def test_lean_reports_a_goal_it_cannot_close(lean_oracle: LeanOracle) -> None:
@@ -986,7 +1280,7 @@ def test_lean_proves_a_chained_application_within_its_domain(
     proved = lean_oracle.establish(chained_in_bounds.fact())
     assert proved.status is Status.PROVED
     assert proved.decided_by == "lean"
-    assert "grid 0 0 = grid 0 0" in proved.provenance["lean_source"]
+    assert "(grid 0 0 : Int) = (grid 0 0 : Int)" in proved.provenance["lean_source"]
 
 
 def test_lean_is_never_asked_about_a_chained_application_out_of_bounds(
@@ -1040,6 +1334,232 @@ def test_lean_is_never_asked_about_a_captured_binder(lean_oracle: LeanOracle) ->
     assert not lean_oracle.can_establish(_captured_binder.fact())
     fact = establish(_captured_binder.fact())
     assert fact.status is Status.REFUTED
+
+
+def test_lean_does_not_prove_what_only_truncation_makes_true(
+    lean_oracle: LeanOracle,
+) -> None:
+    """#6 with a real Lean: ``n - 1 >= 0`` is not a theorem of the integers.
+
+    Lean used to prove it, because its ``Nat`` subtraction truncates, and the
+    same file then exited 0 with Lean and 1 without. Lean now reads the integer
+    statement, fails to prove it, and the tester's refutation is the answer on
+    every machine. A statement whose readings always agreed keeps its proof.
+    """
+    result = lean_oracle.establish(_truncated.fact())
+    assert result.status is Status.ASSUMED
+    assert result.provenance["lean_tried"] >= 4
+    proved = lean_oracle.establish(one_below.fact())
+    assert proved.status is Status.PROVED
+    assert proved.provenance["tactic"] == "omega"
+
+
+@pytest.mark.parametrize("lean", ["as installed", "disabled"])
+def test_a_variable_only_in_an_exponent_does_not_make_the_claim_natural(
+    lean_oracle: LeanOracle, tmp_path, monkeypatch, capsys, lean
+) -> None:
+    """``1 - 2 ** m >= 0`` is refuted, and exits 1, with Lean and without.
+
+    Its only variable sits in an exponent, which Lean takes as a ``Nat``, so
+    before the literal base was ascribed nothing typed the numerals, Lean read
+    the claim over ``Nat`` and proved it, and the check exited 0 where Lean was
+    installed. The tester refutes it at ``m = 1``.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    assert lean_oracle.establish(_power_below_one.fact()).status is Status.ASSUMED
+    if lean == "disabled":
+        monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "power.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Nat\n\n\n"
+        "@theorem\n"
+        "def power_below_one(m: Nat) -> 1 - 2**m >= 0:\n"
+        '    """False at m = 1."""\n',
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.REFUTED
+    assert fact.decided_by == "property-test"
+    assert cli.main(["check", str(path)]) == 1
+    assert "REFUTED power_below_one" in capsys.readouterr().out
+
+
+def test_lean_proves_a_goal_whose_bound_is_a_power(lean_oracle: LeanOracle) -> None:
+    """The ladder used to raise on ``Fin[2 ** n]``, and Lean was never asked."""
+
+    @theorem
+    def powered(n: Nat) -> all(i < 2**n for i in Fin[2**n]):
+        """Every point of Fin[2 ** n] is below its bound."""
+
+    proved = lean_oracle.establish(powered.fact())
+    assert proved.status is Status.PROVED
+    assert "(2 : Int) ^ n.toNat" in proved.provenance["lean_source"]
+
+
+def test_hypotheses_with_a_power_are_not_found_inconsistent_by_truncation(
+    lean_oracle: LeanOracle,
+) -> None:
+    """``2 ** m - 5 < 0`` holds at ``m = 0``; over ``Nat`` it held nowhere.
+
+    Together with ``n == 1000`` no draw satisfies the hypotheses, so Lean is
+    asked whether they prove ``False``. Read over ``Nat``, ``2 ^ m - 5`` is
+    never below zero and ``omega`` said yes, which marked a satisfiable claim
+    vacuous and failed the check.
+    """
+    from lanky.check import hypotheses_fact
+
+    @theorem
+    def rare_power(m: Nat, n: Nat, h: (2**m - 5 < 0) & (n == 1000)) -> n > 999:
+        """Satisfied at m = 0 and n = 1000, where no draw looks."""
+
+    question = hypotheses_fact(rare_power.fact())
+    assert "(2 : Int) ^ m.toNat - 5 < 0" in print_lean(question.term)
+    assert lean_oracle.establish(question).status is Status.ASSUMED
+
+
+def test_lean_reads_floor_division_the_way_python_does(lean_oracle: LeanOracle) -> None:
+    """Division by a positive literal still proves, and a negative divisor floors.
+
+    ``(k // 2) * 2 <= k`` is true under floor division and ``omega`` proves it
+    through Lean's ``/``, which is floor division for a positive divisor.
+    ``3 // -2`` is ``-2`` in Python and ``-1`` under Euclidean division, so a
+    claim that it is ``-1`` must not be proved: it is false as the file runs it.
+    """
+
+    @theorem
+    def halves(k: Int) -> (k // 2) * 2 <= k:
+        """Floor division by two rounds down, negative k included."""
+
+    proved = lean_oracle.establish(halves.fact())
+    assert proved.status is Status.PROVED
+
+    @theorem
+    def euclidean(k: Int, h: k == 3) -> k // -2 == -1:
+        """True of Euclidean division and false of Python's."""
+
+    assert "Int.fdiv k (-2)" in print_lean(euclidean.term)
+    result = lean_oracle.establish(euclidean.fact())
+    assert result.status is not Status.PROVED
+    from lanky.check import establish
+
+    assert establish(euclidean.fact()).status is Status.REFUTED
+
+
+def test_the_printed_integer_reading_elaborates(lean_oracle: LeanOracle) -> None:
+    """Casts, ``Int.fdiv``, ``Int.fmod`` and ``.toNat`` exponents are well typed."""
+
+    @theorem
+    def everything(
+        size: Nat,
+        off: Fn[Fin[size + 1], Nat],
+        k: Int,
+        m: Nat,
+    ) -> (k // (m + 1)) * (m + 1) + k % (m + 1) + 2**m - 2**m == k + off(0) - off(size):
+        """A statement that uses every construct the integer reading prints."""
+
+    source = print_lean(everything.term)
+    for construct in (
+        "Int.fdiv k (m + 1)",
+        "Int.fmod k (m + 1)",
+        "(2 : Int) ^ m.toNat",
+        "(off 0 : Int)",
+    ):
+        assert construct in source
+    claims = (everything, _truncated, one_below, scan_monotone, chained_in_bounds, _power_below_one)
+    for claim in claims:
+        closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(claim.term)}\n")
+        assert closed, detail
+
+
+def test_lean_closes_an_existential_over_an_index_type(lean_oracle: LeanOracle) -> None:
+    """``simp`` knew ``0 < n + 1`` for a ``Nat``; for an ``Int`` it is ``omega``'s.
+
+    The witness is found by ``simp``, which leaves ``0 < n + 1``; with ``n`` an
+    ``Int`` and ``0 ≤ n`` a hypothesis that takes ``omega``, so the cheap ladder
+    ends with ``simp_all <;> omega``.
+    """
+
+    @theorem
+    def enumerated(m: Nat) -> any(j == 0 for j in Fin[m + 1]):
+        """A witness in the domain, whatever m is."""
+
+    proved = lean_oracle.establish(enumerated.fact())
+    assert proved.status is Status.PROVED
+    assert proved.provenance["tactic"] == "simp_all <;> omega"
+
+
+_VACUOUS = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    "@theorem\n"
+    "def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
+    '    """No natural satisfies the hypotheses, so the goal is never at stake."""\n'
+)
+
+
+def test_lean_shows_a_vacuous_claim_vacuous(lean_oracle: LeanOracle, tmp_path, capsys) -> None:
+    """#5 with a real Lean: the claim is proved, marked vacuous, and fails the check.
+
+    ``omega`` closes ``n = n + 1`` from ``n > 2`` and ``n < 1``, which is a
+    valid proof of a claim that says nothing. The tester finds no draw that
+    satisfies the hypotheses, and Lean proves them inconsistent on their own.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "vacuous.py"
+    path.write_text(_VACUOUS, encoding="utf-8")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert fact.decided_by == "lean"
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous_by"] == "lean"
+    assert ": False := by" in fact.provenance["vacuous_evidence"]["lean_source"]
+    assert cli.main(["check", str(path)]) == 1
+    assert "proved (vacuous)  lean" in capsys.readouterr().out
+
+
+def test_lean_leaves_hypotheses_the_sampler_misses_to_a_warning(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """``n == 1000`` holds where no draw looks, and ``False`` does not follow from it."""
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "rare.py"
+    path.write_text(
+        _VACUOUS.replace("(n > 2) & (n < 1)) -> n == n + 1", "n == 1000) -> n > 999"),
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    assert cli.main(["check", str(path)]) == 0
+    assert "WARNING vacuous at rare.py:7" in capsys.readouterr().out
+
+
+def test_lean_refutes_hypotheses_under_a_goal_it_cannot_state(
+    lean_oracle: LeanOracle, tmp_path
+) -> None:
+    """A reduction keeps the goal from Lean, and the hypotheses still reach it."""
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "reduction.py"
+    path.write_text(
+        _VACUOUS.replace("-> n == n + 1", "-> 2 * sum(i for i in Fin[n + 1]) == 7"),
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert fact.is_vacuous
+    assert cli.main(["check", str(path)]) == 1
 
 
 def test_the_statement_the_oracle_sends_is_the_one_it_records(

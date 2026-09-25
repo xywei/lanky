@@ -1,7 +1,7 @@
 # Quickstart
 
 One file, four commands, and the output each one prints. Everything below was
-run in this repository on 2026-09-18 with `uv run`; the numbers and the Lean
+run in this repository on 2026-09-25 with `uv run`; the numbers and the Lean
 source are copied from the terminal, not written from memory. The one thing that
 drifts is a timing, which is a property of the machine and not of the claim. The
 `lanky check` table is held to more than that: the test suite compares it with a
@@ -157,25 +157,34 @@ statement on one line):
 ```text
 lean_version: v4.29.1
 
-theorem scan_monotone (n : Nat) (cnt : Nat → Nat) (off : Nat → Nat)
-    (h0 : off 0 = 0) (h1 : ∀ r : Nat, r < n → off (r + 1) = off r + cnt r) :
-    ∀ a : Nat, a < n + 1 → ∀ b : Nat, b < n + 1 → a ≤ b → off a ≤ off b := by
-  intro a hd b hd_1 hg
+theorem scan_monotone (n : Int) (h0 : 0 ≤ n) (cnt : Int → Nat) (off : Int → Nat)
+    (h1 : (off 0 : Int) = 0)
+    (h2 : ∀ r : Int, 0 ≤ r → r < n → (off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) :
+    ∀ a : Int, 0 ≤ a → a < n + 1 → ∀ b : Int, 0 ≤ b → b < n + 1 → a ≤ b →
+      (off a : Int) ≤ (off b : Int) := by
+  intro a hd hd_1 b hd_2 hd_3 hg
+  obtain ⟨b, rfl⟩ := Int.eq_ofNat_of_zero_le hd_2
   induction b with
   | zero =>
-    first | omega | simp_all | (simp_all <;> omega)
+    first | omega | (have hzero : a = ((0 : Nat) : Int) := (by omega); subst hzero; ...) | ...
   | succ k ih =>
-    first | (have hstep := h1 k (by omega)) | skip
-    rcases Nat.lt_or_ge k a with hlt | hge
+    have hcast : ((k + 1 : Nat) : Int) = (k : Int) + 1 := (by omega)
+    try simp only [hcast] at *
+    first | (have hstep := h2 k (by omega) (by omega)) | skip
+    by_cases hlt : (k : Int) < a
     ...
 ```
 
-Two representation choices are visible there. A bounded quantifier prints as a
-guarded `Nat` quantifier rather than `∀ i : Fin n`, because `omega` reasons about
-linear `Nat` arithmetic and the `Fin` form would bring coercions the lanky
-statement does not mean. And `Fn[Fin[n], Nat]` prints as the total function
-`Nat → Nat`, with boundedness living in the guards, which is sound as long as
-the statement never mentions a point outside them. That last clause is a
+Three representation choices are visible there. A natural is an `Int` with
+`0 ≤ n` as a hypothesis, which is the integer reading every oracle shares (see
+[One reading of arithmetic](#one-reading-of-arithmetic) below). A bounded
+quantifier prints as a guarded `Int` quantifier, `∀ a : Int, 0 ≤ a → a < n + 1
+→ ...`, rather than `∀ a : Fin (n + 1)`, because `omega` reasons about linear
+integer arithmetic and the `Fin` form would bring coercions the lanky statement
+does not mean. And `Fn[Fin[n], Nat]` prints as the total function `Int → Nat`,
+whose values are cast, `(off a : Int)`, where they are used as numbers, with
+boundedness living in the guards, which is sound as long as the statement
+never mentions a point outside them. That last clause is a
 check and not a hope: before printing anything, lanky shows that every
 application of a family stays inside its domain, reading the argument as an
 affine expression in the enclosing binders, so `off(r + 1)` against an
@@ -184,70 +193,72 @@ is declined with `UnsupportedTerm`. A declined statement falls to the property
 tester, which has nothing to compare at such a point either and says so.
 
 The script was not written by hand. The ladder tries `omega`, `decide`, `simp`,
-`simp_all` and two intro-plus-closer scripts, and then an induction strategy that
-reads its induction variable, its split variable and every fresh name off the
-term. A guard `a <= b` says `b` is reached from `a` by steps, so `b` is what gets
-induced on. When the ladder runs out, the fact comes back unchanged with
+`simp_all`, `simp_all <;> omega` and two intro-plus-closer scripts, and then an
+induction strategy that reads its induction variable, its split variable and
+every fresh name off the term. A guard `a <= b` says `b` is reached from `a` by
+steps, so `b` is what gets induced on. It is an `Int`, so the script first
+trades it for the natural it is, through its `0 ≤ b` hypothesis, and inducts on
+that. When the ladder runs out, the fact comes back unchanged with
 `lean_tried` in its provenance and the property tester takes it.
 
 `lanky.oracles.lean.use_tactic(scan_monotone, "...")` pins a script by hand when
 the ladder cannot find one, and the ledger records a pinned script exactly the
 way it records a found one.
 
-## Two readings of one statement
+## One reading of arithmetic
 
-A lanky statement is read twice: the property tester evaluates it with Python's
-arithmetic, and Lean elaborates it with Lean's. For index arithmetic the two
-agree, which is the whole reason one annotation can be both a test and a
-theorem. Two operators break the agreement, and `lanky check` says so rather
-than letting the ledger paper over it:
+A lanky statement is read by more than one oracle: the property tester
+evaluates it with Python's arithmetic, and Lean elaborates what the printer
+sends it. They read the same statement, the integer one. `Nat` means an integer
+that is not negative, so a natural prints as an `Int` with `0 ≤ n` as a
+hypothesis, subtraction is integer subtraction, and `//` and `%` print as
+`Int.fdiv` and `Int.fmod`, which round toward negative infinity as Python's do
+(a positive literal divisor prints as `/` and `%`, which agree with them there
+and which `omega` understands). Lean's truncated `Nat` subtraction never
+appears.
 
 Put this in `gap.py`, with the same two imports `examples/gauss.py` has:
 
 ```python
 @theorem
 def truncated(n: Nat) -> n - 1 >= 0:
-    """True in Lean, where Nat subtraction truncates at zero."""
+    """False at n = 0, and false in Lean too."""
 ```
 
 ```console
 $ uv run lanky check gap.py
-STATUS  BY    WHERE     OWNER      STATEMENT
-------  ----  --------  ---------  ---------------------
-proved  lean  gap.py:7  truncated  n : Nat |- n - 1 >= 0
+STATUS   BY             WHERE     OWNER      STATEMENT
+-------  -------------  --------  ---------  ---------------------
+refuted  property-test  gap.py:7  truncated  n : Nat |- n - 1 >= 0
 
-1 facts: 1 proved
+1 facts: 1 refuted
 
-SEMANTICS truncated at gap.py:7: property-test refutes this statement under lanky's Python reading
+REFUTED truncated at gap.py:7: n : Nat |- n - 1 >= 0
   counterexample: {'n': 0}
-  subtraction over Nat: Lean truncates at 0 (n - 1 is 0 at n = 0) while the property tester samples naturals as Python integers, which go negative
 ```
 
-(The last line is one line in the terminal, wrapped here. Without the Lean extra
-the same file reads `refuted property-test`, `lanky check` exits 1, and the note
-is in the refuted fact's provenance.)
+That is the output with the Lean extra and without it, and `lanky check` exits
+1 either way. Lean is given `theorem truncated (n : Int) (h0 : 0 ≤ n) : n - 1 ≥
+0`, which is false at `n = 0` as the Python reading is, so no tactic closes it
+and the tester's counterexample is the answer. A statement whose integer
+reading is true keeps its proof: `n - 1 <= n` reads `proved lean`.
 
-Lean is right about the statement it read and the tester is right about the one
-it ran; they are not the same statement. The note is in the fact's provenance
-either way, and the exit code is 0, because nothing was refuted.
-
-Two more cases read the same way. Floor division and remainder over `Int` round
-a negative operand differently in Lean and in Python. And division by anything
-that is not a nonzero literal is total in Lean, where `n / 0` is `0`, and an
-exception in Python. Put `def div_zero(n: Nat) -> n // 0 == 0` in the same
-`gap.py` in place of `truncated`, and the row reads `proved lean` with this
-under the table:
+One gap is left. Division by anything that is not a nonzero literal is total in
+Lean, where `Int.fdiv n 0` is `0`, and an exception in Python. Put
+`def div_zero(n: Nat) -> n // 0 == 0` in the same `gap.py` in place of
+`truncated`, and with Lean the row reads `proved lean` with this under the
+table:
 
 ```text
-SEMANTICS div_zero at gap.py:7: no draw could decide the statement: the statement divides by zero at this draw, which Python raises on and Lean's total Nat and Int division does not, so the two readings differ here rather than the statement being false
-  division or remainder by a divisor that is not a nonzero literal: Lean's Nat and Int division are total (x / 0 is 0 and x % 0 is x) while Python raises ZeroDivisionError, so the sampled reading cannot answer where Lean can
+SEMANTICS div_zero at gap.py:7: no draw could decide the statement: the statement divides by zero at this draw, which Python raises on and Lean's total integer division does not, so the two readings differ here rather than the statement being false
+  division or remainder by a divisor that is not a nonzero literal: Lean's integer division is total (Int.fdiv x 0 is 0 and Int.fmod x 0 is x) while Python raises ZeroDivisionError, so the sampled reading cannot answer where Lean can
 ```
 
 (two lines in the terminal, each wrapped by your pager rather than by lanky.)
 The sampled reading is not a counterexample there, and it is not agreement
-either: it is a reading that could not be run, which is worth saying.
-`lanky.semantics.notes(term)` is the check, and its module docstring explains
-why lanky does not simply truncate the evaluator instead.
+either: it is a reading that could not be run, which is worth saying. Without
+Lean the row is `assumed`, and the exit code is 0 both ways, because nothing
+was refuted. `lanky.semantics.notes(term)` is the check.
 
 ## What to try next
 
@@ -262,10 +273,40 @@ why lanky does not simply truncate the evaluator instead.
 - Leave off a theorem's return annotation. `@theorem` raises `TypeError`
   where the function is defined, because a theorem needs a goal, and
   `lanky check` reports the file as one that does not import.
-- Write a theorem whose hypotheses no sample can satisfy. The fact comes back
-  `assumed`, rather than passing vacuously, and its provenance carries
-  `untested` with the reason and `valid: 0`. Under `pytest` the same theorem is
-  reported as skipped.
+- Write a theorem whose hypotheses no sample can satisfy, such as
+  `def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1`. Without Lean the
+  fact comes back `assumed`, rather than passing vacuously; its provenance
+  carries `untested` with the reason and `valid: 0`, and under the table:
+
+  ```text
+  WARNING vacuous at vacuous.py:7: hypotheses never satisfied in 4000 draws
+    no oracle could show them inconsistent, so the claim may be vacuous
+  ```
+
+  With Lean, `omega` proves the goal from the contradictory hypotheses, which
+  is a valid proof of a claim that says nothing. The tester's cross-check
+  finds that no draw satisfied the hypotheses, Lean then proves them
+  inconsistent on their own (`theorem vacuous ... : False`), and the ledger
+  says so and exits 1:
+
+  ```text
+  STATUS            BY    WHERE         OWNER    STATEMENT
+  ----------------  ----  ------------  -------  ---------------------------------------
+  proved (vacuous)  lean  vacuous.py:7  vacuous  n : Nat | n > 2 and n < 1 |- n == n + 1
+
+  1 facts: 1 proved; 1 vacuous
+
+  VACUOUS vacuous at vacuous.py:7: n : Nat | n > 2 and n < 1 |- n == n + 1
+    the hypotheses are inconsistent: proved by lean, so the goal is never at stake
+    hypotheses never satisfied in 4000 draws
+  ```
+
+  `--json` carries the mark as `vacuous` in the provenance, next to the proof
+  of inconsistency. Hypotheses that hold only where the sampler does not look,
+  `h: n == 1000` with naturals drawn up to five, get the warning on both
+  machines: Lean proves the claim and cannot prove `False`, and the exit code
+  is 0. Under `pytest` a theorem with unsatisfiable hypotheses is reported as
+  skipped.
 - Write `def unwitnessed() -> any(x == 100 for x in Nat)` and check it with
   `LANKY_LEAN_DISABLE=1`, so that the property tester is the only oracle. `Nat`
   is sampled rather than enumerated, so no draw witnesses the statement, and no
@@ -298,7 +339,7 @@ why lanky does not simply truncate the evaluator instead.
 | the four plugin protocols and the registry | `src/lanky/plugins.py` |
 | `@theorem` and `Theorem` | `src/lanky/theory.py` |
 | samplers and the property tester | `src/lanky/testing.py` |
-| the two readings and where they differ | `src/lanky/semantics.py` |
+| where the readings still differ: division by zero | `src/lanky/semantics.py` |
 | the Lean printer | `src/lanky/lean.py` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |

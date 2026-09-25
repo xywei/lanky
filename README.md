@@ -86,9 +86,10 @@ sharp.
 
 **Works.**
 
-- `lanky check FILE [--json OUT] [--verbose]`, exit code 1 on any refutation.
-  Each refuted fact is repeated under the table with its counterexample and
-  its reason, or with `no witness recorded` when it carries neither.
+- `lanky check FILE [--json OUT] [--verbose]`, exit code 1 on any refutation
+  or vacuous claim. Each refuted fact is repeated under the table with its
+  counterexample and its reason, or with `no witness recorded` when it carries
+  neither.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - The ledger: six statuses, provenance, JSON, a rendered table.
@@ -105,11 +106,18 @@ sharp.
   written: a guard joined with Python's `or`, an `and` or `or` used as a value,
   a `not` in a guard, and an `if` statement inside a function an annotation
   calls. The connectives are `&`, `|` and `~`.
-- A note in the provenance when Lean's reading of a statement and lanky's
-  Python reading can differ (`Nat` subtraction, `Int` division, division by a
-  divisor that may be zero), and, when a stronger oracle established such a
-  fact, what the sampled reading found: the counterexample, or that it could
-  not be run at all.
+- One reading of arithmetic for every oracle. `Nat` means an integer that is
+  not negative, and the Lean printer says so: a natural is an `Int` with
+  `0 ≤ n` as a hypothesis, and `//` and `%` are `Int.fdiv` and `Int.fmod`,
+  which round the way Python's do. What Lean proves is what the property
+  tester tests, so a claim is refuted, or not, whether or not Lean is
+  installed: `n - 1 >= 0` over `Nat` is refuted everywhere, and `n - 1 <= n`
+  is still proved where Lean is.
+- Vacuous claims are caught. When no draw satisfies a fact's hypotheses, the
+  stronger oracles are asked whether the hypotheses alone prove `False`. If one
+  does, the row reads `proved (vacuous)` and `lanky check` exits 1: the claim
+  is true and says nothing, which is usually a mistake in the hypotheses. If
+  none can, a warning says the hypotheses were never satisfied.
 - A statement the annotation already answered is a claim like any other:
   `-> 1 == 2` is `refuted`, `lanky check` prints why under the table, and it
   exits 1 on it.
@@ -124,12 +132,17 @@ sharp.
 - The property tester satisfies hypotheses of the shape `f(i) == e` by
   assignment and rejection-samples everything else, so an awkward hypothesis can
   end with no valid draws. The fact is then `ASSUMED`, never falsely `TESTED`.
-- The two readings of a statement are detected and reported, not reconciled.
-  A statement that subtracts over `Nat` can be `PROVED` in Lean and false when
-  sampled, and one that divides by zero is a theorem in Lean and a
-  `ZeroDivisionError` in Python; the ledger says both and the exit code stays
-  0. See `src/lanky/semantics.py` for why truncating the evaluator instead
-  would be wrong.
+- Division by zero is the one place the readings part. Lean's division is
+  total, so `n // 0 == 0` is a theorem there and a `ZeroDivisionError` in
+  Python; the fact carries a note, the ledger says what the sampled reading
+  could not do, and the exit code stays 0. See `src/lanky/semantics.py`.
+- Vacuity is found by sampling first, and sampling cannot tell hypotheses that
+  hold nowhere from hypotheses that hold only where it does not look
+  (`n == 1000`, with naturals drawn up to five). Both get the warning until an
+  oracle proves the hypotheses inconsistent; without one, a vacuous claim
+  warns and does not fail the check. A statement over a sort the tester cannot
+  draw, such as a family over `Nat`, gets no warning, because no draw reached
+  its hypotheses.
 - Python's `and` between two propositions in a generator's `if` clause happens
   to produce the conjunction that was written, because of how CPython compiles
   a comprehension filter, so it is not refused. It cannot be told apart from
@@ -137,8 +150,9 @@ sharp.
 - The Lean induction strategy is a shape matcher, not proof search. A statement
   needing a different induction or a lemma falls through to the tester;
   `lanky.oracles.lean.use_tactic` pins a script by hand.
-- The Lean printer covers core Lean: `Sum`, `Abs`, `Real` and true division
-  raise rather than emit source Lean would reject.
+- The Lean printer covers core Lean: `Sum`, `Abs`, `Real`, true division and
+  an exponent that could be negative raise rather than emit source Lean would
+  reject.
 - A family prints as a total function, so every application of one has to be
   shown in bounds before the statement can go to Lean. The check is affine
   arithmetic over the enclosing binders, not a solver, so an argument it cannot

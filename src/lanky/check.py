@@ -22,10 +22,19 @@ from pathlib import Path
 from typing import Any
 
 from lanky import semantics
-from lanky.ledger import Fact, Ledger, Status
+from lanky.ledger import STATUS_STRENGTH, Fact, Ledger, Status
 from lanky.plugins import TRUST_STRENGTH, oracle_availability, registry
+from lanky.prelude import FinType, FnType, Refined
+from lanky.terms import Forall
 
-__all__ = ["check_path", "establish", "import_path", "oracle_lines"]
+__all__ = [
+    "check_path",
+    "establish",
+    "has_hypotheses",
+    "hypotheses_fact",
+    "import_path",
+    "oracle_lines",
+]
 
 
 class _PackageSpec(importlib.machinery.ModuleSpec):
@@ -169,13 +178,16 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     """Offer one fact to the oracles, strongest trust class first.
 
     Before anything is offered, the fact is annotated with the semantics gaps
-    its term is exposed to (see :mod:`lanky.semantics`), because a statement
-    that subtracts over ``Nat`` does not mean the same thing to Lean and to the
-    property tester. When such a fact is established by something stronger than
-    a test, the test is still run afterwards as a cross-check: it cannot change
-    the status, but a counterexample under the Python reading of a statement
-    Lean proved is exactly the discrepancy the note warns about, and it is
+    its term is exposed to (see :mod:`lanky.semantics`): a statement that may
+    divide by zero is a theorem in Lean and an exception in Python. When a fact
+    with such a gap, or with hypotheses, is established by something stronger
+    than a test, the test is still run afterwards as a cross-check (see
+    :func:`_cross_check`); it cannot change the status, but what it finds is
     recorded rather than lost.
+
+    Last, a fact whose hypotheses no draw satisfied is examined for vacuity
+    (:func:`_examine_vacuity`): a claim that nothing is ever at stake in says
+    nothing, however strongly it is established, and the ledger says so.
     """
     gaps = semantics.notes(fact.term)
     if gaps:
@@ -198,25 +210,107 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
         if result is None:
             continue
         if result.status is not Status.ASSUMED:
-            return _cross_check(result, gaps, verbose=verbose)
+            fact = _cross_check(result, gaps, verbose=verbose)
+            break
         fact = result
-    return fact
+    return _examine_vacuity(fact, verbose=verbose)
+
+
+def has_hypotheses(term: Any) -> bool:
+    """Whether a statement assumes something that a draw of its variables can fail.
+
+    That is a guard, which is what a theorem's hypotheses become, or a binder
+    whose domain restricts its sort: a point of ``Fin[n]`` has to be below
+    ``n``, and a refined variable has to satisfy its refinement. Lean states
+    all of them as hypotheses of the theorem it is asked. So does a family
+    whose values are restricted in the same way: ``Fn[Fin[1], Nat & False]``
+    has no member, because its one value has nowhere to go. A variable of a
+    plain sort, or a family into one, assumes nothing a draw can miss.
+    """
+    if not isinstance(term, Forall):
+        return False
+    if term.guard is not None:
+        return True
+    return any(_restricts(domain) for _var, domain in term.binders)
+
+
+def _restricts(domain: Any) -> bool:
+    """Whether a binder's domain, or the values of a family it is, restrict a sort."""
+    if isinstance(domain, FinType | Refined):
+        return True
+    if isinstance(domain, FnType):
+        return _restricts(domain.codomain)
+    return False
+
+
+def _never_satisfied(provenance: dict) -> str | None:
+    """What a property test's record says about the hypotheses, if it is that none held.
+
+    The record is the one :class:`~lanky.oracles.test.TestOracle` leaves when
+    no draw was valid. A draw the goal could not be decided at (an existential
+    no draw witnessed, a division by zero) got past the hypotheses, so a record
+    with any such draw says nothing against them. Neither does a draw of a sort
+    the tester has no sampler for, which never reached them (see
+    :func:`_never_drawn`).
+    """
+    if provenance.get("valid") != 0 or not provenance.get("untested"):
+        return None
+    if provenance.get("undecided") or provenance.get("unsampleable"):
+        return None
+    return f"hypotheses never satisfied in {provenance.get('samples', 0)} draws"
+
+
+def _never_drawn(provenance: dict) -> str | None:
+    """What a property test's record says when no draw reached the hypotheses at all.
+
+    A family over ``Nat`` has no sampler, so every draw of a statement that
+    quantifies over one stops before its hypotheses are evaluated
+    (:class:`~lanky.testing.Unsampleable`). That is no evidence against the
+    hypotheses, so it is no ground for a warning, but it is no evidence for
+    them either, and the stronger oracles are still asked whether they are
+    inconsistent.
+    """
+    if provenance.get("valid") != 0 or provenance.get("undecided"):
+        return None
+    if not provenance.get("unsampleable"):
+        return None
+    return provenance.get("untested") or "no draw could be completed"
+
+
+def _skipped(provenance: dict) -> str | None:
+    """Why a draw could not be completed, when a test's record says one could not.
+
+    An empty ``Fin`` or a refinement no value satisfies is a hypothesis that
+    fails before the guard is reached, and a reader of a warning needs to know
+    which one it was.
+    """
+    skipped = provenance.get("skipped") or ()
+    return f"a draw could not be completed: {skipped[0]}" if skipped else None
 
 
 def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fact:
-    """Sample a fact a stronger oracle established, when the two readings differ.
+    """Sample a fact a stronger oracle established, and record what sampling says.
 
-    Only for a fact carrying a semantics note, and only to record what the
-    sampled reading says. The status a stronger oracle gave stands.
+    Only for a fact that carries a semantics note or has hypotheses (see
+    :func:`has_hypotheses`), and only to record what the sampled reading says.
+    The status a stronger oracle gave stands.
 
-    There are two things worth recording. A counterexample is the loud one: the
-    Python reading is false where the Lean reading was proved. The quiet one is
-    a sampled reading that could not be run at all, which is what a division by
-    zero does: Lean's division is total and Python's raises, so there is no
-    counterexample and no evidence either, and a ledger that said nothing here
-    would suggest the two readings had been compared.
+    Three things are worth recording. A counterexample is the loud one: the
+    Python reading is false where a stronger oracle established the statement,
+    which with one reading of arithmetic for every oracle means that one of them
+    is wrong. The second is a sampled reading that could not be run at all,
+    which is what a division by zero does: Lean's division is total and
+    Python's raises, so there is no counterexample and no evidence either, and a
+    ledger that said nothing here would suggest the two readings had been
+    compared. The third is that no draw satisfied the hypotheses, which is the
+    evidence a vacuous claim leaves (see :func:`_examine_vacuity`); a proof from
+    hypotheses nothing satisfies is valid and says nothing. A test that could
+    not draw at all is recorded as ``untestable``, so that the hypotheses are
+    still examined.
     """
-    if not gaps or fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
+    if fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
+        return fact
+    if not gaps and not has_hypotheses(fact.term):
         return fact
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != 1:
@@ -232,27 +326,153 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
             continue
         if result is None:
             continue
-        if result.status is not Status.REFUTED:
-            undecided = result.provenance.get("untested")
-            if not undecided or not result.provenance.get("undecided"):
-                continue
+        if result.status is Status.REFUTED:
+            counterexample = result.provenance.get("counterexample")
+            if verbose:
+                print(
+                    f"  {oracle.name} refutes the sampled reading of a "
+                    f"{fact.status.value} fact: {counterexample}"
+                )
+            return fact.with_status(
+                fact.status,
+                semantics_disagreement=(
+                    f"{oracle.name} refutes this statement under lanky's Python reading"
+                ),
+                semantics_counterexample=counterexample,
+            )
+        unsatisfied = _never_satisfied(result.provenance)
+        if unsatisfied:
+            if verbose:
+                print(f"  {oracle.name}: {unsatisfied}")
+            return fact.with_status(
+                fact.status,
+                unsatisfied=unsatisfied,
+                unsatisfied_detail=_skipped(result.provenance),
+            )
+        untestable = _never_drawn(result.provenance)
+        if untestable:
+            if verbose:
+                print(f"  {oracle.name}: {untestable}")
+            return fact.with_status(fact.status, untestable=untestable)
+        undecided = result.provenance.get("untested")
+        if gaps and undecided and result.provenance.get("undecided"):
             if verbose:
                 print(f"  {oracle.name} could not run the sampled reading: {undecided}")
             return fact.with_status(fact.status, semantics_undecided=undecided)
-        counterexample = result.provenance.get("counterexample")
-        if verbose:
-            print(
-                f"  {oracle.name} refutes the sampled reading of a "
-                f"{fact.status.value} fact: {counterexample}"
-            )
-        return fact.with_status(
-            fact.status,
-            semantics_disagreement=(
-                f"{oracle.name} refutes this statement under lanky's Python reading"
-            ),
-            semantics_counterexample=counterexample,
-        )
     return fact
+
+
+def _examine_vacuity(fact: Fact, verbose: bool = False) -> Fact:
+    """Ask whether a fact whose hypotheses no draw satisfied is vacuous.
+
+    The property tester's word is evidence and not proof: hypotheses that hold
+    somewhere the sampler rarely looks (``n == 1000`` over naturals drawn up to
+    five) leave the same record as hypotheses that hold nowhere. So the
+    stronger oracles are asked the definite question, whether the hypotheses
+    alone prove ``False`` (:func:`_inconsistency`). When one of them says yes,
+    the fact is marked ``vacuous`` in its provenance, the ledger shows it, and
+    ``lanky check`` exits 1: the claim is true and says nothing, and the usual
+    cause is a mistake in the hypotheses. When none can, the fact keeps
+    ``unsatisfied`` in its provenance and ``lanky check`` prints a warning.
+
+    A test that could not draw at all, because a sort has no sampler, is no
+    evidence either way (:func:`_never_drawn`): the question is asked all the
+    same, and when no oracle answers it nothing is printed, because nothing
+    suggests the claim is vacuous.
+
+    This runs whoever established the fact, so a statement whose goal no
+    oracle can take but whose hypotheses Lean can refute is caught too.
+    """
+    if fact.status is Status.REFUTED or not has_hypotheses(fact.term):
+        return fact
+    unsatisfied = fact.provenance.get("unsatisfied") or _never_satisfied(fact.provenance)
+    untestable = fact.provenance.get("untestable") or _never_drawn(fact.provenance)
+    if not unsatisfied and not untestable:
+        return fact
+    if unsatisfied and "unsatisfied" not in fact.provenance:
+        fact = fact.with_status(
+            fact.status,
+            unsatisfied=unsatisfied,
+            unsatisfied_detail=_skipped(fact.provenance),
+        )
+    found = _inconsistency(fact, verbose=verbose)
+    if found is None:
+        return fact
+    name, result = found
+    if verbose:
+        print(f"  {name} shows the hypotheses of {fact.owner} inconsistent")
+    evidence = {
+        key: value for key, value in result.provenance.items() if key not in ("path", "line")
+    }
+    marks = {} if unsatisfied else {"untestable": untestable}
+    return fact.with_status(
+        fact.status,
+        vacuous=f"the hypotheses are inconsistent: {result.status.value} by {name}",
+        vacuous_by=name,
+        vacuous_evidence=evidence,
+        **marks,
+    )
+
+
+def hypotheses_fact(fact: Fact) -> Fact:
+    """The claim that a fact's hypotheses are inconsistent, as a fact of its own.
+
+    Its term keeps the binders and the guard and replaces the goal by
+    ``False``, so an oracle that establishes it has shown that nothing
+    satisfies the hypotheses. It has an id and a kind of its own, so no
+    tactic pinned to the original fact and no plugin that recognizes the
+    original kind takes it for the original.
+
+    Raises:
+        ValueError: If the fact's term is not a quantified statement, which is
+            the only kind that has hypotheses.
+    """
+    term = fact.term
+    if not isinstance(term, Forall):
+        raise ValueError(f"{fact.id} has no hypotheses: its term is not a quantified statement")
+    return Fact(
+        id=f"{fact.id}:hypotheses",
+        kind="hypotheses",
+        statement=f"the hypotheses of {fact.owner or fact.id} are inconsistent",
+        term=Forall(term.binders, False, term.guard),
+        provenance={
+            key: fact.provenance[key] for key in ("path", "line") if key in fact.provenance
+        },
+        where=fact.where,
+        owner=fact.owner,
+    )
+
+
+def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
+    """The first oracle stronger than a test that proves the hypotheses inconsistent.
+
+    Returns the oracle's name and the fact it established (see
+    :func:`hypotheses_fact`), or ``None`` when no such oracle establishes it.
+    A test cannot: no draw satisfying the hypotheses is exactly what is in
+    question. For consistent hypotheses every attempt fails, so what Lean is
+    asked is its short ladder, which for a goal of ``False`` is the five cheap
+    tactics.
+    """
+    question = hypotheses_fact(fact)
+    for oracle in registry.sorted_oracles():
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["test"]:
+            continue
+        available, _reason = oracle_availability(oracle)
+        if not available:
+            continue
+        try:
+            if not oracle.can_establish(question):
+                continue
+            result = oracle.establish(question)
+        except Exception as exc:  # noqa: BLE001 - one oracle must not stop the rest
+            if verbose:
+                print(f"  {oracle.name} raised {type(exc).__name__}: {exc}")
+            continue
+        if result is None:
+            continue
+        if STATUS_STRENGTH.get(result.status, 0) > STATUS_STRENGTH[Status.TESTED]:
+            return oracle.name, result
+    return None
 
 
 def oracle_lines() -> list[str]:

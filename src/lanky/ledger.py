@@ -11,6 +11,11 @@ through a decision procedure and a proof to a rechecked certificate, plus two
 that are not on that ladder: ``ASSUMED`` (nobody tried, or nobody could) and
 ``REFUTED`` (someone found a counterexample, which is knowledge as definite as a
 proof, and the counterexample lives in the fact's provenance).
+
+One mark sits beside the status rather than in it. A fact whose hypotheses an
+oracle has shown inconsistent is *vacuous*: ``proved`` is still true of it, and
+it says nothing, so the table prints ``proved (vacuous)`` and the provenance
+says who showed it (see :func:`lanky.check.establish`).
 """
 
 from __future__ import annotations
@@ -122,6 +127,11 @@ class Fact:
     where: str = ""
     owner: str = ""
 
+    @property
+    def is_vacuous(self) -> bool:
+        """Whether an oracle has shown that nothing satisfies this fact's hypotheses."""
+        return bool(self.provenance.get("vacuous"))
+
     def with_status(
         self,
         status: Status,
@@ -190,6 +200,10 @@ class Ledger:
         """Every fact with this status, in order."""
         return tuple(fact for fact in self if fact.status is status)
 
+    def vacuous(self) -> tuple[Fact, ...]:
+        """Every fact whose hypotheses were shown inconsistent, in order."""
+        return tuple(fact for fact in self if fact.is_vacuous)
+
     def counts(self) -> dict[str, int]:
         """How many facts of each status, for a one-line summary."""
         out: dict[str, int] = {}
@@ -211,11 +225,14 @@ class Ledger:
         the usual ledger of one file. When two facts from different files share
         a basename the column would be ambiguous, so those rows, and only
         those, grow a parent directory; the full path stays in provenance.
+
+        A vacuous fact's status carries the mark, as in ``proved (vacuous)``,
+        and the summary line counts the vacuous facts after the statuses.
         """
         locations = _locations(list(self))
         rows = [
             (
-                fact.status.value,
+                f"{fact.status.value} (vacuous)" if fact.is_vacuous else fact.status.value,
                 fact.decided_by or "-",
                 locations[index] or "-",
                 fact.owner or "-",
@@ -239,6 +256,9 @@ class Ledger:
             for row in rows
         ]
         summary = ", ".join(f"{n} {name}" for name, n in sorted(self.counts().items()))
+        vacuous = len(self.vacuous())
+        if vacuous:
+            summary += f"; {vacuous} vacuous"
         lines += ["", f"{len(self)} facts: {summary}"]
         return "\n".join(lines)
 

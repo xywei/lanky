@@ -45,10 +45,10 @@ of ``Nat`` finding no witness is not a refutation.
 at no point is not evidence that it holds.
 
 *A division or remainder by zero.* Python raises ``ZeroDivisionError`` where
-Lean's ``Nat`` and ``Int`` division are total (``x / 0`` is ``0``, ``x % 0`` is
-``x``), so the sampled reading has no answer at that draw while the Lean reading
-does. That is a gap between the two readings (:mod:`lanky.semantics` records it
-in the fact's provenance), not evidence against the statement.
+Lean's integer division is total (``Int.fdiv x 0`` is ``0``, ``Int.fmod x 0``
+is ``x``), so the sampled reading has no answer at that draw while the Lean
+reading does. That is a gap between the two readings (:mod:`lanky.semantics`
+records it in the fact's provenance), not evidence against the statement.
 
 *A family applied outside the domain it declares.* ``f(n)`` for an
 ``f : Fn[Fin[n], Nat]`` names a point the statement's own types say is not
@@ -89,6 +89,8 @@ __all__ = [
     "SkipSample",
     "Table",
     "TestReport",
+    "Unevaluable",
+    "Unsampleable",
     "check",
     "in_sort",
     "sample_value",
@@ -108,6 +110,26 @@ REJECTION_FACTOR = 20
 
 class SkipSample(Exception):
     """This draw cannot be completed (an empty domain, say); take another."""
+
+
+class Unsampleable(SkipSample):
+    """No draw of this sort can be completed here, because the tester has no sampler for it.
+
+    A family over ``Nat`` cannot be tabulated, and neither can a sort nothing
+    here knows how to draw. That is the tester's limit and says nothing about
+    the statement, where an empty ``Fin`` or a refinement no draw satisfied is
+    a hypothesis failing: a report that no draw satisfied the hypotheses must
+    not be made of draws that never reached them (see :class:`TestReport`).
+    """
+
+
+class Unevaluable(SkipSample):
+    """A refinement has no answer at this draw, as ``Nat & (10 // n > 1)`` at ``n = 0``.
+
+    That is the refinement's counterpart of a guard that divides by zero, and
+    it is counted the same way, as a draw the statement could not be answered
+    at (``undecided``), not as a draw the hypotheses rejected.
+    """
 
 
 class Table:
@@ -210,7 +232,7 @@ def sample_value(
     if isinstance(sort, FnType):
         domain = sort.domain
         if not isinstance(domain, FinType):
-            raise SkipSample(f"cannot tabulate a family over {domain}")
+            raise Unsampleable(f"cannot tabulate a family over {domain}")
         bound = int(evaluate(domain.bound, context))
         if bound < 0:
             raise SkipSample(f"{domain} has a negative size")
@@ -238,7 +260,7 @@ def sample_value(
         return rng.uniform(-1.0, 1.0)
     if sort is bool:
         return rng.random() < 0.5
-    raise SkipSample(f"no sampler for {sort!r}")
+    raise Unsampleable(f"no sampler for {sort!r}")
 
 
 def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
@@ -258,14 +280,16 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
     Any other value drawn without a name is settled the same way.
 
     Raises:
-        SkipSample: If the codomain is empty at these values, or its refinement
-            names a variable nothing here gives a value.
+        SkipSample: If the codomain is empty at these values.
+        Unsampleable: If its refinement names a variable nothing here gives a
+            value.
+        Unevaluable: If its refinement cannot be evaluated at these values.
     """
     if not isinstance(codomain, Refined):
         return codomain
     unbound = sorted(free_variables(codomain.props) - set(context))
     if unbound:
-        raise SkipSample(
+        raise Unsampleable(
             f"cannot draw an unnamed value of {codomain}, such as a family's "
             f"entry: its refinement names {', '.join(unbound)}, which nothing "
             "drawn so far binds"
@@ -288,12 +312,12 @@ def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
     test at the first such draw.
 
     Raises:
-        SkipSample: If the refinement cannot be evaluated at these values.
+        Unevaluable: If the refinement cannot be evaluated at these values.
     """
     try:
         return sort.holds(context)
     except (Undecided, ZeroDivisionError) as exc:
-        raise SkipSample(
+        raise Unevaluable(
             f"the refinement of {sort} cannot be evaluated at this draw: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
@@ -525,9 +549,15 @@ class TestReport:
     ``undecided`` counts the draws that were dropped because the statement
     could not be answered at them: an existential over a sampled domain that no
     draw witnessed, a universal over a refinement of a sampled domain that no
-    draw satisfied, a division by zero, or a family applied outside its domain
-    (see the module docstring). Such a draw is neither evidence nor a
+    draw satisfied, a division by zero, a family applied outside its domain
+    (see the module docstring), or a refinement that cannot be evaluated
+    (:class:`Unevaluable`). Such a draw is neither evidence nor a
     counterexample, so it is not counted as valid.
+
+    ``unsampleable`` counts the draws that could not be completed because a
+    sort has no sampler (:class:`Unsampleable`). Such a draw never reached the
+    hypotheses, so a report with any of them cannot say that no draw satisfied
+    them, and its reason says that no draw could be completed instead.
     """
 
     ok: bool
@@ -535,6 +565,7 @@ class TestReport:
     samples: int = 0
     valid: int = 0
     undecided: int = 0
+    unsampleable: int = 0
     reason: str = ""
     skipped: list[str] = field(default_factory=list)
 
@@ -560,7 +591,9 @@ def check(
     (:class:`~lanky.terms.Undecided` or a ``ZeroDivisionError``: an existential
     over a sampled domain that found no witness, a universal over a sampled
     refinement that admitted no draw, a division by zero, a family applied
-    outside its domain). Neither is a counterexample, and neither is evidence.
+    outside its domain, and a refinement that raises one of them,
+    :class:`Unevaluable`). Neither is a counterexample, and neither is
+    evidence.
 
     A counterexample names the drawn variables and, when the goal is a
     universal statement, the quantified point at which it fails (see
@@ -585,6 +618,7 @@ def check(
     sorts = dict(variables)
     report = TestReport(ok=True)
     undecided_reason = ""
+    unsampleable_reason = ""
     for _ in range(samples * REJECTION_FACTOR):
         if report.valid >= samples:
             break
@@ -595,6 +629,12 @@ def check(
                 context[name] = sample_value(sort, rng, context, name)
             satisfy_hypotheses(hypotheses, context, sorts)
         except SkipSample as exc:
+            if isinstance(exc, Unsampleable):
+                report.unsampleable += 1
+                unsampleable_reason = unsampleable_reason or str(exc)
+            elif isinstance(exc, Unevaluable):
+                report.undecided += 1
+                undecided_reason = undecided_reason or str(exc)
             if len(report.skipped) < 3:
                 report.skipped.append(str(exc))
             continue
@@ -622,6 +662,8 @@ def check(
     if report.valid == 0:
         if report.undecided:
             report.reason = f"no draw could decide the statement: {undecided_reason}"
+        elif report.unsampleable:
+            report.reason = f"no draw could be completed: {unsampleable_reason}"
         else:
             report.reason = (
                 "no draw satisfied the hypotheses, so nothing was tested"
@@ -736,7 +778,7 @@ def _undecided_reason(exc: Exception) -> str:
     if isinstance(exc, ZeroDivisionError):
         return (
             "the statement divides by zero at this draw, which Python raises on "
-            "and Lean's total Nat and Int division does not, so the two readings "
+            "and Lean's total integer division does not, so the two readings "
             "differ here rather than the statement being false"
         )
     return str(exc)

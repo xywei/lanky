@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from lanky import theorem
+from lanky import cli, theorem
 from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.test import TestOracle
@@ -50,27 +50,386 @@ def test_a_vacuous_pass_is_never_reported_as_tested() -> None:
     assert "hypotheses" in result.provenance["untested"]
 
 
-def test_a_vacuous_pass_is_assumed_in_the_ledger(tmp_path, monkeypatch) -> None:
-    """End to end: the row reads ``assumed`` and says why, and the check passes."""
-    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
-    from lanky.check import check_path
+VACUOUS = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    "@theorem\n"
+    "def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
+    '    """No natural satisfies the hypotheses, so the goal is never at stake."""\n'
+)
 
-    path = tmp_path / "vacuous.py"
-    path.write_text(
-        "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
-        "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
-        "def nothing_satisfies(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
-        '    """Vacuous."""\n',
-        encoding="utf-8",
-    )
+SATISFIABLE = VACUOUS.replace("(n > 2) & (n < 1)) -> n == n + 1", "n > 2) -> n > 1")
+
+
+class ProvesEverything:
+    """A kernel-class stand-in for Lean that proves every fact it is offered.
+
+    It is what Lean does with ``vacuous``: from ``n > 2`` and ``n < 1`` any
+    goal follows, and ``omega`` finds that at once. A stand-in lets the whole
+    path be checked on a machine without Lean.
+    """
+
+    name = "stub-kernel"
+
+    def __init__(self, trust: str = "kernel") -> None:
+        self.trust = trust
+
+    def trust_class(self) -> str:
+        return self.trust
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.term is not None
+
+    def establish(self, fact: Fact, /) -> Fact:
+        return fact.with_status(Status.PROVED, self.name, tactic="stub")
+
+
+class ProvesAllButInconsistency(ProvesEverything):
+    """The same stand-in, declining the question whether hypotheses are inconsistent.
+
+    That is Lean faced with hypotheses that hold somewhere the sampler does not
+    look: the claim is proved, and ``False`` does not follow.
+    """
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.kind != "hypotheses" and super().can_establish(fact)
+
+
+class ProvesOnlyInconsistency(ProvesEverything):
+    """A stand-in that takes nothing but the question of inconsistency.
+
+    That is Lean faced with a goal it cannot state, a reduction say, under
+    hypotheses it can refute.
+    """
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.kind == "hypotheses"
+
+
+@pytest.fixture
+def oracles(monkeypatch):
+    """Replace the registered oracles by the ones a test names, for that test.
+
+    Entry points are loaded first, so that ``check_path`` finds nothing left
+    to add to the list the test installed.
+    """
+    import lanky.oracles  # noqa: F401 - registers the built-in oracles
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+
+    def install(*chosen) -> None:
+        monkeypatch.setattr(registry, "oracles", list(chosen))
+
+    return install
+
+
+def _write(tmp_path, text: str, name: str = "vacuous.py") -> str:
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_a_vacuous_pass_is_assumed_in_the_ledger(tmp_path, oracles, capsys) -> None:
+    """With the tester as the only oracle the row reads ``assumed``, and says why.
+
+    This used to hold only because the test switched Lean off; with Lean the
+    same file was ``proved`` and nothing said it was vacuous. The oracles are
+    chosen here instead, so the test means the same thing on every machine.
+    Nothing can show the hypotheses inconsistent, so the check warns and exits
+    0: the row is ``assumed``, which never passes for evidence.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, VACUOUS)
     ledger = check_path(path)
     (fact,) = list(ledger)
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
     assert fact.provenance["valid"] == 0
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    assert not fact.is_vacuous
     assert "assumed" in ledger.render()
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING vacuous at vacuous.py:7: hypotheses never satisfied in 4000 draws" in printed
+    assert "VACUOUS" not in printed
+    assert fact.provenance["unsatisfied_detail"] is None
+
+
+@pytest.mark.parametrize("trust", ["kernel", "decision-procedure"])
+def test_a_proof_from_inconsistent_hypotheses_is_marked_vacuous(
+    tmp_path, oracles, capsys, trust
+) -> None:
+    """#5: a claim nothing is at stake in says so, and fails the check.
+
+    The stand-in proves the claim, as Lean does, and the tester's cross-check
+    finds that no draw satisfied the hypotheses. The stand-in is then asked
+    whether the hypotheses alone prove ``False``; it says yes, so the fact is
+    marked ``vacuous`` in its provenance, the table reads ``proved (vacuous)``,
+    ``--json`` carries the mark, and ``lanky check`` exits 1. The status stays
+    ``proved``, because that is true. A decision procedure is stronger than a
+    test as well, and gets the same treatment.
+    """
+    oracles(ProvesEverything(trust), TestOracle())
+    path = _write(tmp_path, VACUOUS)
+    ledger = check_path(path)
+    (fact,) = list(ledger)
+    assert fact.status is Status.PROVED
+    assert fact.decided_by == "stub-kernel"
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"] == "the hypotheses are inconsistent: proved by stub-kernel"
+    assert fact.provenance["vacuous_by"] == "stub-kernel"
+    assert fact.provenance["vacuous_evidence"] == {"tactic": "stub"}
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    rendered = ledger.render()
+    assert "proved (vacuous)  stub-kernel" in rendered
+    assert "1 facts: 1 proved; 1 vacuous" in rendered
+
+    out_json = tmp_path / "ledger.json"
+    assert cli.main(["check", path, "--json", str(out_json)]) == 1
+    printed = capsys.readouterr().out
+    assert "VACUOUS vacuous at vacuous.py:7: n : Nat | n > 2 and n < 1 |- n == n + 1" in printed
+    assert "the hypotheses are inconsistent: proved by stub-kernel" in printed
+    assert "WARNING" not in printed
+    (entry,) = json.loads(out_json.read_text(encoding="utf-8"))
+    assert entry["status"] == "proved"
+    assert entry["provenance"]["vacuous"]
+
+
+def test_a_satisfiable_hypothesis_under_a_proved_goal_carries_no_flag(
+    tmp_path, oracles, capsys
+) -> None:
+    """``h: n > 2`` with the goal ``n > 1``: a draw satisfies it, nothing changes."""
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(tmp_path, SATISFIABLE)
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert "unsatisfied" not in fact.provenance
+    assert "semantics_disagreement" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING" not in printed
+    assert "VACUOUS" not in printed
+    assert "(vacuous)" not in printed
+
+
+def test_hypotheses_no_oracle_can_refute_leave_a_warning(tmp_path, oracles, capsys) -> None:
+    """No draw satisfied them and nothing proves them inconsistent: warn, exit 0.
+
+    That is the record ``n == 1000`` leaves with naturals drawn up to five, and
+    the tester cannot tell it from hypotheses that hold nowhere, so the check
+    says what it saw and does not fail.
+    """
+    oracles(ProvesAllButInconsistency(), TestOracle())
+    path = _write(tmp_path, VACUOUS)
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING vacuous at vacuous.py:7: hypotheses never satisfied in 4000 draws" in printed
+    assert "no oracle could show them inconsistent" in printed
+    assert "(vacuous)" not in printed
+
+
+def test_a_goal_no_oracle_can_state_does_not_hide_vacuous_hypotheses(
+    tmp_path, oracles, capsys
+) -> None:
+    """The hypotheses are examined whoever established the fact, or nobody.
+
+    A reduction is outside core Lean, so the claim stays ``assumed``, but
+    hypotheses Lean can refute are refuted all the same, and a claim that
+    nothing is ever at stake in fails the check.
+    """
+    oracles(ProvesOnlyInconsistency(), TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace("-> n == n + 1", "-> 2 * sum(i for i in Fin[n + 1]) == 7"),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert fact.is_vacuous
+    assert cli.main(["check", path]) == 1
+    assert "assumed (vacuous)" in capsys.readouterr().out
+
+
+def test_an_empty_domain_is_an_inconsistent_hypothesis(tmp_path, oracles) -> None:
+    """``i : Fin[0]`` assumes ``0 ≤ i < 0``, which is exactly as vacuous."""
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace("n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1", "i: Fin[0]) -> i == 1"),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.is_vacuous
+    assert fact.provenance["unsatisfied_detail"] == "a draw could not be completed: Fin(0) is empty"
+
+
+def test_a_family_with_nowhere_to_put_its_values_is_an_inconsistent_hypothesis(
+    tmp_path, oracles, capsys
+) -> None:
+    """``f : Fn[Fin[1], Nat & False]`` has no member, so no draw has an ``f``.
+
+    Only a guard, a ``Fin`` or a refinement used to count as a hypothesis, so
+    a statement over such a family was never examined: the row read
+    ``assumed`` and nothing was printed. A family whose values are restricted
+    counts now. Lean erases the restriction, so only the warning can say it.
+    """
+    from lanky.check import has_hypotheses
+
+    oracles(TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace(
+            "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+            "f: Fn[Fin[1], Nat & False]) -> f(0) == 1",
+        ).replace("import Fin, Nat", "import Fin, Fn, Nat"),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    assert cli.main(["check", path]) == 0
+    assert "WARNING vacuous at vacuous.py:7" in capsys.readouterr().out
+    f = Var("f")
+    assert has_hypotheses(Forall(((f, Fn[Fin[2], Fin[3]]),), f(0) >= 0))
+    assert has_hypotheses(Forall(((f, Fn[Fin[2], Fn[Fin[2], Nat & False]]),), f(0)(0) >= 0))
+    assert not has_hypotheses(Forall(((f, Fn[Fin[2], Nat]),), f(0) >= 0))
+
+
+def test_a_refinement_that_never_evaluates_is_undecided_not_unsatisfied(
+    tmp_path, oracles, capsys
+) -> None:
+    """``Nat & (10 // (n - n) > 1)`` raises at every draw, as the same guard would.
+
+    A guard that divides by zero makes its draw undecided, which is no evidence
+    against the hypotheses. A refinement that did the same was counted as a
+    draw the hypotheses rejected, so the stronger oracles were asked about
+    ``Int.fdiv 10 0 > 1``, which Lean's total division makes false, and the
+    claim was marked vacuous on a reading Python never ran. The refinement's
+    draw is undecided now too.
+    """
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace("n: Nat, h: (n > 2) & (n < 1))", "n: Nat & (10 // (n - n) > 1))"),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert "unsatisfied" not in fact.provenance
+    assert "cannot be evaluated" in fact.provenance["semantics_undecided"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "VACUOUS" not in printed
+    assert "WARNING" not in printed
+
+
+UNTABULATED = VACUOUS.replace(
+    "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+    "f: Fn[Nat, Nat], n: Nat, h: f(n) >= 1) -> f(n) + 1 >= 2",
+).replace("import Fin, Nat", "import Fin, Fn, Nat")
+
+
+@pytest.mark.parametrize("stronger", [True, False])
+def test_a_sort_the_tester_cannot_draw_is_not_unsatisfied_hypotheses(
+    tmp_path, oracles, capsys, stronger
+) -> None:
+    """A family over ``Nat`` stops every draw before the hypotheses are reached.
+
+    The record then has no valid draw, as a vacuous claim's has, and it used to
+    be reported as one: "hypotheses never satisfied in 4000 draws", with a
+    warning, for a hypothesis that was never evaluated and that holds wherever
+    ``f(n)`` is positive. Now the tester says that no draw could be completed,
+    the fact carries no ``unsatisfied``, and nothing is printed under the
+    table, with a stronger oracle that proves the claim or with the tester
+    alone.
+    """
+    if stronger:
+        oracles(ProvesAllButInconsistency(), TestOracle())
+    else:
+        oracles(TestOracle())
+    path = _write(tmp_path, UNTABULATED)
+    (fact,) = list(check_path(path))
+    assert fact.status is (Status.PROVED if stronger else Status.ASSUMED)
+    assert "unsatisfied" not in fact.provenance
+    assert not fact.is_vacuous
+    if stronger:
+        assert fact.provenance["untestable"] == (
+            "no draw could be completed: cannot tabulate a family over Nat"
+        )
+    else:
+        assert fact.provenance["untested"] == (
+            "no draw could be completed: cannot tabulate a family over Nat"
+        )
+        assert fact.provenance["unsampleable"] == 4000
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING" not in printed
+    assert "VACUOUS" not in printed
+
+
+def test_inconsistent_hypotheses_over_a_sort_the_tester_cannot_draw_are_vacuous(
+    tmp_path, oracles, capsys
+) -> None:
+    """The tester draws nothing, and the stronger oracle is still asked.
+
+    No draw is not evidence that the hypotheses fail, but a proof that they do
+    is, whatever the tester managed: ``n > 2`` and ``n < 1`` are inconsistent
+    next to a family over ``Nat`` as anywhere else.
+    """
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace("n: Nat, h:", "f: Fn[Nat, Nat], n: Nat, h:").replace(
+            "import Fin, Nat", "import Fin, Fn, Nat"
+        ),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.is_vacuous
+    assert "unsatisfied" not in fact.provenance
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "VACUOUS vacuous at vacuous.py:7" in printed
+    assert "  no draw could be completed: cannot tabulate a family over Nat" in printed
+    assert "WARNING" not in printed
+
+
+def test_a_refutation_under_a_stronger_proof_is_recorded(tmp_path, oracles, capsys) -> None:
+    """The cross-check keeps a counterexample it finds, with or without a note.
+
+    With one reading of arithmetic a counterexample to a proved claim means
+    one of the oracles is wrong, which a ledger must not swallow; the proof's
+    status stands and the disagreement is printed under ``SEMANTICS``.
+    """
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(tmp_path, VACUOUS.replace("(n > 2) & (n < 1)) -> n == n + 1", "n > 2) -> n > 5"))
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert "semantics" not in fact.provenance
+    assert fact.provenance["semantics_counterexample"]["n"] in (3, 4, 5)
+    assert cli.main(["check", path]) == 0
+    assert "SEMANTICS vacuous at vacuous.py:7" in capsys.readouterr().out
+
+
+def test_hypotheses_fact_asks_for_false_under_the_same_hypotheses() -> None:
+    """The question put to the stronger oracles, as the fact they are offered."""
+    from lanky.check import has_hypotheses, hypotheses_fact
+
+    fact = unsatisfiable.fact()
+    question = hypotheses_fact(fact)
+    assert question.kind == "hypotheses"
+    assert question.id == f"{fact.id}:hypotheses"
+    assert question.term.body is False
+    assert structurally_equal(question.term.guard, fact.term.guard)
+    assert structurally_equal(question.term.binders, fact.term.binders)
+    assert has_hypotheses(fact.term)
+    assert not has_hypotheses(Forall(((Var("n"), Nat),), Var("n") >= 0))
+    assert has_hypotheses(Forall(((Var("i"), Fin[3]),), Var("i") >= 0))
+    assert not has_hypotheses(Var("n") >= 0)
+    with pytest.raises(ValueError, match="no hypotheses"):
+        hypotheses_fact(Fact(id="t", kind="theorem", statement="t", term=Var("n") >= 0))
 
 
 # }}}
