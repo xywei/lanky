@@ -124,11 +124,22 @@ jobs:
         run: uv run pytest -q
 
       # The row the README leads with, shown rather than claimed: the README
-      # has to have a `proved lean` row, and the check has to print it. The
-      # README trims the statement column to fit and ends the row in "...".
+      # has to have a `proved lean` row, and the check has to print a row that
+      # starts with it. The README trims the statement column to fit and ends
+      # the row in "...", so what is left of it is compared as a prefix.
       - name: Check the worked example, and the README's proved-lean row
         run: |
           set -euo pipefail
           uv run lanky check examples/gauss.py | tee ledger.txt
           row=$(grep -m1 '^proved  lean ' README.md)
-          grep -qF -- "${row%...}" ledger.txt
+          prefix=${row%...}
+          found=0
+          while IFS= read -r line; do
+            if [[ "${line}" == "${prefix}"* ]]; then
+              found=1
+            fi
+          done < ledger.txt
+          if (( found == 0 )); then
+            echo "no row lanky check printed starts with the README's: ${row}" >&2
+            exit 1
+          fi
