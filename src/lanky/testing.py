@@ -181,7 +181,7 @@ def sample_value(
     if isinstance(sort, Refined):
         for _ in range(64):
             value = sample_value(sort.base, rng, context, name)
-            if name is None or sort.holds({**context, name: value}):
+            if name is None or _refinement_holds(sort, {**context, name: value}):
                 return value
         raise SkipSample(f"no draw of {sort} satisfied its refinement")
     if isinstance(sort, FinType):
@@ -250,12 +250,33 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
             f"cannot draw the entries of a family into {codomain}: its "
             f"refinement names {', '.join(unbound)}, which no entry binds"
         )
-    if not codomain.holds(context):
+    if not _refinement_holds(codomain, context):
         raise SkipSample(
             f"{codomain} is empty at this draw, so there is no family into it "
             "with a point in its domain"
         )
     return codomain.base
+
+
+def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
+    """Whether the refinement of ``sort`` holds here; skip a draw it cannot judge.
+
+    A refinement is evaluated like any other proposition, and one that divides
+    by a drawn size, ``Nat & (10 // n > 1)``, has no answer at ``n = 0``. That
+    is one draw that cannot be completed and not a test that cannot run, but
+    the ``ZeroDivisionError`` used to escape the sampler and end the whole
+    test at the first such draw.
+
+    Raises:
+        SkipSample: If the refinement cannot be evaluated at these values.
+    """
+    try:
+        return sort.holds(context)
+    except (Undecided, ZeroDivisionError) as exc:
+        raise SkipSample(
+            f"the refinement of {sort} cannot be evaluated at this draw: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def in_sort(value: Any, sort: Any, context: dict[str, Any]) -> bool:

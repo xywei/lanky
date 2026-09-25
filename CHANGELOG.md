@@ -253,7 +253,10 @@ listed because it changes behaviour a reader could already have depended on.
   refuted. A refinement that names only variables already drawn is now
   evaluated once per table, and an empty codomain means there is no draw; one
   that names anything else skips the draw; a family over an empty domain
-  still needs no entry.
+  still needs no entry. A refinement that cannot be evaluated at a draw, such
+  as `Nat & (10 // n > 1)` at `n = 0`, skips that draw, for a codomain and for
+  a named variable alike, where its `ZeroDivisionError` used to end the whole
+  test.
 - **Two families are equal when their values are.** `lanky.testing.Table`
   had no equality of its own, so `f == g` compared two drawn tables by
   identity, and over `Fn[Fin[0], Nat]`, where it is true because there is one

@@ -997,6 +997,31 @@ def test_a_codomain_refinement_is_judged_where_it_can_be() -> None:
     assert len(table) == 2
 
 
+def test_a_refinement_that_cannot_be_evaluated_skips_the_draw() -> None:
+    """``Nat & (10 // n > 1)`` has no answer at ``n = 0``, and that is one draw.
+
+    The ``ZeroDivisionError`` escaped the sampler and ended the whole test at
+    the first draw of ``n = 0``: a named refinement always did that, and once a
+    codomain's refinement was evaluated too, a statement that used to be tested
+    could no longer run at all. The goal is false at ``n = 0``, so a draw taken
+    there regardless would refute it.
+    """
+
+    @theorem
+    def into_a_ratio(n: Nat, f: Fn[Fin[2], Nat & (10 // n > 1)]) -> n >= 1:
+        """Such an ``f`` exists only where ``10 // n > 1``, so ``n`` is positive."""
+
+    @theorem
+    def named_ratio(n: Nat, k: Nat & (10 // n > 1)) -> n >= 1:
+        """The same condition on a named variable."""
+
+    for statement in (into_a_ratio, named_ratio):
+        report = statement.report(n=30)
+        assert report.ok
+        assert report.valid == 30
+        assert any("cannot be evaluated" in reason for reason in report.skipped)
+
+
 def test_two_families_compare_by_their_values() -> None:
     """Two empty families over ``Fin[0]`` are the one function there is.
 
