@@ -84,7 +84,10 @@ An exponent is the one operand ``Int`` does not take: Lean's ``^`` on ``Int``
 wants a ``Nat``. A literal is printed as it is, a ``Nat`` or ``Fin`` variable as
 ``e.toNat`` (which is ``e``, given ``0 ≤ e``), and a family's natural value
 without its cast; anything else could be negative, where Python's ``**`` gives a
-float, and is declined.
+float, and is declined. A literal base is ascribed, ``(2 : Int) ^ m.toNat``:
+with its variable only in the ``Nat`` exponent, nothing else would tell Lean
+that ``1 - 2 ** m`` is integer arithmetic, and it would read a numeral with no
+typed neighbour as a ``Nat``.
 
 The printer is a recursive descent with Lean's own operator precedences, so the
 emitted source is the source a Lean user would have written, and it is worth
@@ -453,6 +456,24 @@ def _render_exponent(expr: Any, types: _Types) -> str:
     )
 
 
+def _render_base(expr: Any, types: _Types) -> str:
+    """Print the base of a power, ascribing ``Int`` to a literal one.
+
+    Lean gives a numeral the type its neighbours have, and ``Nat`` when none
+    of them has one. A variable that appears only in an exponent is printed as
+    ``n.toNat``, a ``Nat``, which gives the base no type at all, so ``1 - 2 **
+    m >= 0`` would elaborate as a statement about ``Nat``, where the
+    subtraction truncates and the claim is true, while Python computes ``-1``
+    at ``m = 1``. Ascribing the literal base, ``(2 : Int) ^ m.toNat``, gives
+    every numeral around it the type ``Int``. Any other base is typed already:
+    it has a variable, a cast or a call in it that is an ``Int``, or it is a
+    power whose own base this rule has typed.
+    """
+    if isinstance(expr, int) and not isinstance(expr, bool):
+        return f"({expr} : Int)"
+    return _render(expr, _POW + 1, types)
+
+
 def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
     """Print ``∀`` or ``∃`` one binder at a time, each guard next to its binder.
 
@@ -571,7 +592,7 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
             "floor division Nat and Int have"
         )
     if isinstance(expr, prim.Power):
-        text = f"{_render(expr.base, _POW + 1, types)} ^ {_render_exponent(expr.exponent, types)}"
+        text = f"{_render_base(expr.base, types)} ^ {_render_exponent(expr.exponent, types)}"
         return _parens(text, _POW, outer)
     if isinstance(expr, prim.Call | prim.Subscript):
         text = _application_text(expr, types)

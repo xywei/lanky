@@ -298,8 +298,11 @@ listed because it changes behaviour a reader could already have depended on.
   type, `Int → Nat`, and an application used as a number is cast,
   `(f i : Int)`. A family over `Nat` is applied only where the argument can
   be shown non-negative, and an exponent has to be a literal, a natural
-  variable (printed `n.toNat`) or a natural value. `truncated` is now refuted
-  with and without Lean, and `n - 1 <= n` is still proved. The notes
+  variable (printed `n.toNat`) or a natural value. A literal base is ascribed,
+  `(2 : Int) ^ m.toNat`: with its variable only in the `Nat` exponent,
+  `1 - 2 ** m >= 0` had no `Int` in it, Lean read its numerals as `Nat`, and
+  proved it. `truncated` is now refuted with and without Lean, and
+  `n - 1 <= n` is still proved. The notes
   `lanky.semantics.NAT_SUBTRACTION` and `INT_DIVISION` are gone with the gaps
   they named, and so are `uses_subtraction` and `uses_floor_division`;
   `DIVISION_BY_ZERO` stays, because `Int.fdiv x 0` is `0` where Python

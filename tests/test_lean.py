@@ -714,10 +714,46 @@ def test_an_exponent_is_a_natural() -> None:
 
     assert print_lean(fine.term) == (
         "∀ k : Int, ∀ m : Int, 0 ≤ m → ∀ f : Int → Nat, "
-        "k ^ m.toNat * k ^ 2 ≥ 2 ^ f 0 - 2 ^ f 0"
+        "k ^ m.toNat * k ^ 2 ≥ (2 : Int) ^ f 0 - (2 : Int) ^ f 0"
     )
     with pytest.raises(UnsupportedTerm, match="exponent"):
         print_lean(Forall(((a, Int),), a**a >= 0))
+
+
+def _make_power_below_one():
+    """``1 - 2 ** m >= 0`` over ``Nat``: false at ``m = 1``, true only in ``Nat``.
+
+    Built inside a function because it is false, and a module-level theorem is
+    collected and run by lanky's own pytest plugin.
+    """
+
+    @theorem
+    def power_below_one(m: Nat) -> 1 - 2**m >= 0:
+        """Its variable is only in the exponent, so nothing else types the numerals."""
+
+    return power_below_one
+
+
+_power_below_one = _make_power_below_one()
+
+
+def test_a_literal_base_is_an_integer() -> None:
+    """A numeral with no typed neighbour is a ``Nat`` to Lean, so a literal base is not.
+
+    ``m`` appears only in the exponent, as ``m.toNat``, which is a ``Nat``. Printed
+    as ``1 - 2 ^ m.toNat ≥ 0`` every numeral in the statement defaulted to
+    ``Nat``, whose subtraction truncates, so Lean proved a claim Python refutes
+    at ``m = 1``, and ``lanky check`` exited 0 with Lean and 1 without, which
+    is #6 again. The ascription makes it integer arithmetic; a base that is not
+    a literal is typed by what is in it and is left alone.
+    """
+    assert print_lean(_power_below_one.term) == "∀ m : Int, 0 ≤ m → 1 - (2 : Int) ^ m.toNat ≥ 0"
+    assert print_lean(Forall(((n, Nat),), (-1) ** n <= 1)) == (
+        "∀ n : Int, 0 ≤ n → (-1 : Int) ^ n.toNat ≤ 1"
+    )
+    assert print_lean(Forall(((n, Nat),), (n + 1) ** n >= 1)) == (
+        "∀ n : Int, 0 ≤ n → (n + 1) ^ n.toNat ≥ 1"
+    )
 
 
 # }}}
@@ -1096,6 +1132,61 @@ def test_lean_does_not_prove_what_only_truncation_makes_true(
     assert proved.provenance["tactic"] == "omega"
 
 
+@pytest.mark.parametrize("lean", ["as installed", "disabled"])
+def test_a_variable_only_in_an_exponent_does_not_make_the_claim_natural(
+    lean_oracle: LeanOracle, tmp_path, monkeypatch, capsys, lean
+) -> None:
+    """``1 - 2 ** m >= 0`` is refuted, and exits 1, with Lean and without.
+
+    Its only variable sits in an exponent, which Lean takes as a ``Nat``, so
+    before the literal base was ascribed nothing typed the numerals, Lean read
+    the claim over ``Nat`` and proved it, and the check exited 0 where Lean was
+    installed. The tester refutes it at ``m = 1``.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    assert lean_oracle.establish(_power_below_one.fact()).status is Status.ASSUMED
+    if lean == "disabled":
+        monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "power.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Nat\n\n\n"
+        "@theorem\n"
+        "def power_below_one(m: Nat) -> 1 - 2**m >= 0:\n"
+        '    """False at m = 1."""\n',
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.REFUTED
+    assert fact.decided_by == "property-test"
+    assert cli.main(["check", str(path)]) == 1
+    assert "REFUTED power_below_one" in capsys.readouterr().out
+
+
+def test_hypotheses_with_a_power_are_not_found_inconsistent_by_truncation(
+    lean_oracle: LeanOracle,
+) -> None:
+    """``2 ** m - 5 < 0`` holds at ``m = 0``; over ``Nat`` it held nowhere.
+
+    Together with ``n == 1000`` no draw satisfies the hypotheses, so Lean is
+    asked whether they prove ``False``. Read over ``Nat``, ``2 ^ m - 5`` is
+    never below zero and ``omega`` said yes, which marked a satisfiable claim
+    vacuous and failed the check.
+    """
+    from lanky.check import hypotheses_fact
+
+    @theorem
+    def rare_power(m: Nat, n: Nat, h: (2**m - 5 < 0) & (n == 1000)) -> n > 999:
+        """Satisfied at m = 0 and n = 1000, where no draw looks."""
+
+    question = hypotheses_fact(rare_power.fact())
+    assert "(2 : Int) ^ m.toNat - 5 < 0" in print_lean(question.term)
+    assert lean_oracle.establish(question).status is Status.ASSUMED
+
+
 def test_lean_reads_floor_division_the_way_python_does(lean_oracle: LeanOracle) -> None:
     """Division by a positive literal still proves, and a negative divisor floors.
 
@@ -1137,9 +1228,15 @@ def test_the_printed_integer_reading_elaborates(lean_oracle: LeanOracle) -> None
         """A statement that uses every construct the integer reading prints."""
 
     source = print_lean(everything.term)
-    for construct in ("Int.fdiv k (m + 1)", "Int.fmod k (m + 1)", "2 ^ m.toNat", "(off 0 : Int)"):
+    for construct in (
+        "Int.fdiv k (m + 1)",
+        "Int.fmod k (m + 1)",
+        "(2 : Int) ^ m.toNat",
+        "(off 0 : Int)",
+    ):
         assert construct in source
-    for claim in (everything, _truncated, one_below, scan_monotone, chained_in_bounds):
+    claims = (everything, _truncated, one_below, scan_monotone, chained_in_bounds, _power_below_one)
+    for claim in claims:
         closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(claim.term)}\n")
         assert closed, detail
 
