@@ -34,10 +34,10 @@ them is one:
 of ``Nat`` finding no witness is not a refutation.
 
 *A division or remainder by zero.* Python raises ``ZeroDivisionError`` where
-Lean's ``Nat`` and ``Int`` division are total (``x / 0`` is ``0``, ``x % 0`` is
-``x``), so the sampled reading has no answer at that draw while the Lean reading
-does. That is a gap between the two readings (:mod:`lanky.semantics` records it
-in the fact's provenance), not evidence against the statement.
+Lean's integer division is total (``Int.fdiv x 0`` is ``0``, ``Int.fmod x 0``
+is ``x``), so the sampled reading has no answer at that draw while the Lean
+reading does. That is a gap between the two readings (:mod:`lanky.semantics`
+records it in the fact's provenance), not evidence against the statement.
 
 *A family applied outside the domain it declares.* ``f(n)`` for an
 ``f : Fn[Fin[n], Nat]`` names a point the statement's own types say is not
@@ -666,7 +666,7 @@ def _undecided_reason(exc: Exception) -> str:
     if isinstance(exc, ZeroDivisionError):
         return (
             "the statement divides by zero at this draw, which Python raises on "
-            "and Lean's total Nat and Int division does not, so the two readings "
+            "and Lean's total integer division does not, so the two readings "
             "differ here rather than the statement being false"
         )
     return str(exc)

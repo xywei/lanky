@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from lanky import cli
 from lanky.check import check_path, oracle_lines
 from lanky.ledger import Status
@@ -110,35 +112,40 @@ def test_an_imported_file_does_not_stay_in_sys_modules(tmp_path) -> None:
     assert not [name for name in sys.modules if name.startswith("lanky_checked_")]
 
 
-def test_a_semantics_gap_is_recorded_and_cross_checked(tmp_path, monkeypatch) -> None:
-    """``n - 1 >= 0`` is true in Lean and false in Python at ``n = 0``.
+@pytest.mark.parametrize("lean", ["as installed", "disabled"])
+def test_subtraction_over_nat_is_refuted_with_or_without_lean(
+    tmp_path, monkeypatch, capsys, lean
+) -> None:
+    """#6: ``n - 1 >= 0`` has one verdict and one exit code on every machine.
 
-    Whatever establishes it, the ledger has to say that the statement has two
-    readings. With no Lean here the property tester refutes it outright; with
-    Lean it is proved and the disagreement is recorded instead. Both are
-    honest, and neither is silent.
+    Lean used to prove it, because its ``Nat`` subtraction truncates, while
+    the property tester refuted it at ``n = 0``; the check exited 0 where Lean
+    was installed and 1 where it was not, and this test accepted either. Every
+    oracle reads the statement over the integers now, so there is no semantics
+    note, the fact is refuted, and ``lanky check`` exits 1, with Lean and
+    without it. On a machine with Lean both parameters run.
     """
-    from lanky.semantics import NAT_SUBTRACTION
-
-    path = tmp_path / "gap.py"
+    if lean == "disabled":
+        monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "truncated.py"
     path.write_text(
-        "from __future__ import annotations\n\n"
         "from __future__ import annotations\n\n"
         "from lanky import theorem\n"
         "from lanky.prelude import Nat\n\n\n"
         "@theorem\n"
         "def truncated(n: Nat) -> n - 1 >= 0:\n"
-        '    """Nat subtraction truncates in Lean and goes negative in Python."""\n',
+        '    """True where Nat subtraction truncates; false at n = 0 in integers."""\n',
         encoding="utf-8",
     )
-    ledger = check_path(path)
-    (fact,) = list(ledger)
-    assert NAT_SUBTRACTION in fact.provenance["semantics"]
-    if fact.status is Status.REFUTED:
-        assert fact.provenance["counterexample"] == {"n": 0}
-    else:
-        assert fact.status is Status.PROVED
-        assert fact.provenance["semantics_counterexample"] == {"n": 0}
+    (fact,) = list(check_path(path))
+    assert "semantics" not in fact.provenance
+    assert fact.status is Status.REFUTED
+    assert fact.decided_by == "property-test"
+    assert fact.provenance["counterexample"] == {"n": 0}
+    assert cli.main(["check", str(path)]) == 1
+    printed = capsys.readouterr().out
+    assert "REFUTED truncated" in printed
+    assert "SEMANTICS" not in printed
 
 
 CLOSED = '''

@@ -3,27 +3,50 @@
 The design idea. Lean is the platform lanky is hosted on, so a lanky statement
 has to arrive there as something Lean can elaborate on its own, with no Mathlib
 and no ``lake exe cache get``. That constraint decides almost everything in this
-module: what can be printed is exactly what core Lean's ``Nat``, ``Int`` and
+module: what can be printed is exactly what core Lean's ``Int``, ``Nat`` and
 ``Bool``, its arithmetic, and its logical connectives can say. A reduction
 (:class:`lanky.terms.Sum`) needs ``Finset.sum`` and an absolute value needs the
 ``abs`` of an ordered ring; both are Mathlib, so both raise
 :exc:`UnsupportedTerm` rather than emit source Lean would reject with a puzzling
 elaboration error. ``Real`` is out for the same reason.
 
-Two representation choices are worth stating, because a reader of the emitted
-source will notice them and because they are what makes ``omega`` effective.
+*One reading of arithmetic, the integer one.* A statement means what it
+computes when the file runs: the property tester draws a ``Nat`` as a Python
+integer, so ``n - 1`` is ``-1`` at ``n = 0``, and isl reads index arithmetic
+the same way. The printer states that same statement to Lean. A ``Nat`` or
+``Fin`` variable is an ``Int`` whose bounds are hypotheses, ``0 ≤ n`` and, for
+``Fin[m]``, ``n < m`` as well; every operation is ``Int``'s; and ``//`` and
+``%`` are ``Int.fdiv`` and ``Int.fmod``, which round toward negative infinity
+as Python's do. Lean's truncated ``Nat`` subtraction never appears, so
+``n - 1 ≥ 0`` is as false in Lean as it is under the tester, and what Lean
+proves is what the tester tests. Truncation could not have been matched on the
+Python side anyway: pymbolic has no subtraction node, so ``a - b + c`` is one
+flattened sum and has lost the association truncation depends on, while
+integer arithmetic does not depend on it.
 
-*A bounded quantifier is a ``Nat`` quantifier with a guard.* ``Fin[n]`` prints as
-``∀ i : Nat, i < n → ...`` and not as ``∀ i : Fin n, ...``. The ``Fin`` form
-would be closer to the lanky type, but every arithmetic step then carries a
-coercion ``(↑i : Nat)`` and a wraparound: ``i + 1`` in ``Fin n`` is not ``i + 1``
-in the statement lanky means, and ``omega``, which is the workhorse tactic here,
-reasons about linear arithmetic over ``Nat`` and ``Int`` rather than about
-coercions out of ``Fin``. The guarded form says the same thing with nothing to
-unfold, so the goals the tactic ladder sees are the goals it is good at.
+Two choices keep ``omega``, the workhorse tactic here, effective without
+changing what anything means. A divisor that is a positive literal prints as
+``/`` and ``%``, which on ``Int`` are Euclidean division and its remainder: for
+a positive divisor those are floor division and its remainder exactly, and
+``omega`` reasons about them where it knows nothing of ``Int.fdiv``. And a
+family's natural values stay ``Nat`` (see below) and are cast to ``Int`` where
+they are used as numbers, so that ``omega`` knows they are not negative without
+being told. The one place the readings still part is division by zero:
+``Int.fdiv x 0`` is ``0`` and Python raises, which :mod:`lanky.semantics`
+records as a note.
 
-*A family is a total function.* ``Fn[Fin[n], Nat]`` prints as ``Nat → Nat``, not
-as ``Fin n → Nat``. The bound lives in the guards of the quantifiers that apply
+*A bounded quantifier is an ``Int`` quantifier with guards.* ``Fin[n]`` prints
+as ``∀ i : Int, 0 ≤ i → i < n → ...`` and not as ``∀ i : Fin n, ...``. The
+``Fin`` form would be closer to the lanky type, but every arithmetic step then
+carries a coercion ``(↑i : Nat)`` and a wraparound: ``i + 1`` in ``Fin n`` is not
+``i + 1`` in the statement lanky means, and ``omega`` reasons about linear
+arithmetic over ``Nat`` and ``Int`` rather than about coercions out of ``Fin``.
+The guarded form says the same thing with nothing to unfold, so the goals the
+tactic ladder sees are the goals it is good at.
+
+*A family is a total function.* ``Fn[Fin[n], Nat]`` prints as ``Int → Nat``,
+not as ``Fin n → Nat``, and an application of it used as a number is cast,
+``(f i : Int)``. The bound lives in the guards of the quantifiers that apply
 the family, so the printed statement constrains the family exactly where the
 lanky statement does and leaves it unconstrained outside. That is sound exactly
 as far as its premise goes: a statement that never mentions a point cannot
@@ -37,7 +60,9 @@ something about a point outside the domain. What "in bounds" means here is
 against the bounds the ``Fin`` binders and the ``Nat`` sorts give, so
 ``off(r + 1)`` against ``Fn[Fin[n + 1], Nat]`` with ``r`` in ``Fin[n]`` goes
 through and anything the affine reading cannot settle is declined rather than
-assumed. Declining costs a proof at worst; assuming costs soundness.
+assumed. Declining costs a proof at worst; assuming costs soundness. A family
+over ``Nat`` erases to a function from ``Int`` as well, so its arguments have
+to be shown non-negative in the same way.
 
 Three things follow from taking that seriously. An application chain is checked
 level by level: ``f(i)(j)`` for a family of families erases to ``f i j``, so
@@ -55,22 +80,23 @@ generator's first domain is evaluated before its binder exists, so the bound in
 binder it would be the binder itself, and the statement vacuous, so a binder
 that captures a name its own domain mentions is declined.
 
-Two places where Lean's arithmetic is not Python's are worth knowing, because a
-statement that uses them means in Lean what Lean's operators mean and not what a
-sampled Python run would compute. Subtraction on ``Nat`` is truncated, so
-``n - 1`` is ``0`` at ``n = 0`` in the emitted source while lanky's property
-tester, which samples naturals as Python integers, lets it go negative. Division
-and remainder on ``Int`` round the way Lean rounds them and not the way Python's
-``//`` floors. Statements over ``Nat`` with no subtraction, which is what index
-arithmetic is, are unaffected; the rest is recorded as a known gap.
+An exponent is the one operand ``Int`` does not take: Lean's ``^`` on ``Int``
+wants a ``Nat``. A literal is printed as it is, a ``Nat`` or ``Fin`` variable as
+``e.toNat`` (which is ``e``, given ``0 ≤ e``), and a family's natural value
+without its cast; anything else could be negative, where Python's ``**`` gives a
+float, and is declined.
 
 The printer is a recursive descent with Lean's own operator precedences, so the
 emitted source is the source a Lean user would have written, and it is worth
-reading on its own and not only as oracle input.
+reading on its own and not only as oracle input. It carries a scope, the lanky
+type of every name bound around the subterm it prints, which is how it knows
+that ``f i`` is a natural to cast and ``n`` a natural whose exponent form is
+``n.toNat``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
@@ -95,6 +121,7 @@ __all__ = [
     "UnsupportedTerm",
     "check_applications",
     "domain_guards",
+    "is_natural",
     "lean_type",
     "print_lean",
     "statement_of",
@@ -140,20 +167,30 @@ def _parens(text: str, inner: int, outer: int) -> str:
 
 # {{{ sorts and types
 
-#: The scalar sorts core Lean has, and their Lean names.
-_SORT_NAMES = {"Nat": "Nat", "Int": "Int", "Bool": "Bool", "Prop": "Prop"}
+#: The scalar sorts core Lean has, and the Lean type a variable of each gets. A
+#: natural is an ``Int`` whose non-negativity is a hypothesis (see
+#: :func:`domain_guards`), so that its arithmetic is integer arithmetic.
+_SORT_NAMES = {"Nat": "Int", "Int": "Int", "Bool": "Bool", "Prop": "Prop"}
+
+#: What the printer knows about the names bound around a subterm: the lanky
+#: type of each, read off the binder that bound it.
+_Types = Mapping[str, Any]
 
 
 def lean_type(obj: Any) -> str:
-    """The Lean type of a lanky type.
+    """The Lean type of a variable of a lanky type.
 
-    ``Fin[n]`` has no type of its own here: its points are naturals and its
-    bound is a guard (see the module docstring), so it prints as ``Nat``.
+    A natural is an ``Int`` here, and so is a point of ``Fin[n]``: their bounds
+    are hypotheses (:func:`domain_guards`), and their arithmetic is integer
+    arithmetic (see the module docstring).
 
-    A family whose domain is itself a family needs brackets around the domain,
+    A family is a function from ``Int``, and its values keep their own type:
+    ``Fn[Fin[n], Nat]`` is ``Int → Nat``, and an application of it that is used
+    as a number is cast to ``Int`` where it stands (see :func:`_render`). A
+    family whose domain is itself a family needs brackets around the domain,
     because ``→`` is right associative: ``Fn[Fn[Fin[n], Nat], Nat]`` is
-    ``(Nat → Nat) → Nat``, and without the brackets it would read as the
-    two-argument ``Nat → Nat → Nat``, which is a different type and the one a
+    ``(Int → Nat) → Nat``, and without the brackets it would read as the
+    two-argument ``Int → Int → Nat``, which is a different type and the one a
     family of families already prints as.
     """
     if isinstance(obj, Sort):
@@ -165,15 +202,40 @@ def lean_type(obj: Any) -> str:
             )
         return name
     if isinstance(obj, FinType):
-        return "Nat"
+        return "Int"
     if isinstance(obj, FnType):
         domain = lean_type(obj.domain)
         if isinstance(_unrefined(obj.domain), FnType):
             domain = f"({domain})"
-        return f"{domain} → {lean_type(obj.codomain)}"
+        return f"{domain} → {_value_type(obj.codomain)}"
     if isinstance(obj, Refined):
         return lean_type(obj.base)
     raise UnsupportedTerm(f"cannot print the type {obj!r} in Lean")
+
+
+def is_natural(obj: Any) -> bool:
+    """Whether the inhabitants of a lanky type are naturals.
+
+    ``Nat``, ``Fin[n]`` and a refinement of either. A variable of such a type
+    prints as an ``Int`` with ``0 ≤ x`` among its hypotheses, which is what a
+    tactic script has to trade back for a ``Nat`` before it can induce on it.
+    """
+    base = _unrefined(obj)
+    return isinstance(base, FinType) or (isinstance(base, Sort) and base.name == "Nat")
+
+
+def _value_type(obj: Any) -> str:
+    """The Lean type of a family's values; a natural value stays a ``Nat``.
+
+    A value is never bound by a binder, so there is nowhere to state its
+    non-negativity as a hypothesis, and ``Nat`` says it for free: ``omega``
+    knows that ``(f i : Int)`` is not negative when ``f i`` is a ``Nat``.
+    Every application used as a number is cast to ``Int``, so the arithmetic is
+    integer arithmetic all the same.
+    """
+    if is_natural(obj):
+        return "Nat"
+    return lean_type(obj)
 
 
 def _unrefined(obj: Any) -> Any:
@@ -200,17 +262,29 @@ def _scalar_bounds(domain: Any) -> tuple[Any, Any]:
     return None, None
 
 
-def domain_guards(var: Var, domain: Any) -> list[str]:
+def domain_guards(var: Var, domain: Any, types: _Types | None = None) -> list[str]:
     """The propositions a binder's domain imposes on its variable.
 
-    ``Fin[n]`` gives ``i < n``; a refinement gives its own propositions; a plain
-    sort gives nothing, because the Lean type already says it.
+    ``Nat`` gives ``0 ≤ n`` and ``Fin[n]`` gives ``0 ≤ i`` and ``i < n``,
+    because both print as ``Int`` (:func:`lean_type`); a refinement gives its
+    base's guards and then its own propositions; any other sort gives nothing,
+    because the Lean type already says it.
+
+    ``types`` gives the lanky type of every name bound around the binder (see
+    :func:`_render`). A ``Fin`` bound is read with those names, and a
+    refinement's propositions with the variable itself added, since they are
+    about that variable.
     """
+    types = types or {}
+    name = _render(var, _CMP + 1, types)
+    if isinstance(domain, Sort) and domain.name == "Nat":
+        return [f"0 ≤ {name}"]
     if isinstance(domain, FinType):
-        return [f"{_render(var, _CMP + 1)} < {_render(domain.bound, _CMP + 1)}"]
+        return [f"0 ≤ {name}", f"{name} < {_render(domain.bound, _CMP + 1, types)}"]
     if isinstance(domain, Refined):
-        return domain_guards(var, domain.base) + [
-            _render_prop(p, _ARROW + 1) for p in domain.props
+        inner = {**types, var.name: domain}
+        return domain_guards(var, domain.base, types) + [
+            _render_prop(p, _ARROW + 1, inner) for p in domain.props
         ]
     return []
 
@@ -265,56 +339,156 @@ def _negated(child: Any) -> tuple[bool, Any] | None:
     return None
 
 
-def _render_sum(expr: prim.Sum) -> str:
+def _render_sum(expr: prim.Sum, types: _Types) -> str:
     """Print an addition, reading a negated summand back as a subtraction.
 
     Subtraction is not a node: pymbolic builds ``a - b`` as a sum with ``(-1) *
-    b`` in it, and ``-1`` is not a ``Nat``, so printing the sum literally would
-    not even elaborate. Over ``Nat`` the ``-`` this emits is Lean's truncated
-    subtraction, which is what ``omega`` models.
+    b`` in it, and it prints as the ``-`` it was written as. Every operand is an
+    ``Int`` (see the module docstring), so this is integer subtraction, which is
+    what the property tester computes too; association does not matter to it,
+    which is why the flattened sum can be printed as it stands.
     """
     parts = []
     for position, child in enumerate(expr.children):
         negation = _negated(child)
         if negation is None:
-            text = _render(child, _ADD)
+            text = _render(child, _ADD, types)
             parts.append(text if position == 0 else f" + {text}")
         else:
-            text = _render(negation[1], _MUL)
+            text = _render(negation[1], _MUL, types)
             parts.append(f"-{text}" if position == 0 else f" - {text}")
     return "".join(parts)
 
 
-def _render_quantifier(expr: Forall | Exists, outer: int) -> str:
+def _is_positive_literal(expr: Any) -> bool:
+    """Whether a divisor is an integer literal that is plainly above zero."""
+    return isinstance(expr, int) and not isinstance(expr, bool) and expr > 0
+
+
+def _render_division(expr: prim.FloorDiv | prim.Remainder, outer: int, types: _Types) -> str:
+    """Print ``//`` or ``%`` with Python's rounding, which is floor rounding.
+
+    ``Int.fdiv`` and ``Int.fmod`` round toward negative infinity as Python's
+    ``//`` and ``%`` do, so they are what a divisor gets whose sign Lean cannot
+    see. A positive literal divisor prints as ``/`` and ``%`` instead. Lean's
+    ``Int`` division is Euclidean (``Int.ediv`` and ``Int.emod``), which for a
+    positive divisor is floor division and its remainder exactly, and ``omega``
+    reasons about it where it knows nothing of ``Int.fdiv``. A zero divisor
+    prints as ``Int.fdiv x 0``, which Lean evaluates to ``0`` where Python
+    raises; :mod:`lanky.semantics` records that gap.
+    """
+    floor = isinstance(expr, prim.FloorDiv)
+    if _is_positive_literal(expr.denominator):
+        symbol = "/" if floor else "%"
+        text = (
+            f"{_render(expr.numerator, _MUL, types)} {symbol} "
+            f"{_render(expr.denominator, _MUL + 1, types)}"
+        )
+        return _parens(text, _MUL, outer)
+    function = "Int.fdiv" if floor else "Int.fmod"
+    text = (
+        f"{function} {_render(expr.numerator, _ATOM, types)} "
+        f"{_render(expr.denominator, _ATOM, types)}"
+    )
+    return _parens(text, _APP, outer)
+
+
+def _application_type(expr: Any, types: _Types) -> Any:
+    """The lanky type of an application's value, when its family is in scope.
+
+    ``f(i)(j)`` for an ``f : Fn[Fin[n], Fn[Fin[m], Nat]]`` is a ``Nat``, and
+    ``f(i)`` alone is a family. ``None`` when the head is not a family the
+    statement binds, as in an open term, or when the chain applies it more
+    often than its type allows, which :func:`check_applications` refuses.
+    """
+    found = _spine(expr)
+    if found is None:
+        return None
+    name, arguments = found
+    current = types.get(name)
+    for _ in arguments:
+        base = _unrefined(current)
+        if not isinstance(base, FnType):
+            return None
+        current = base.codomain
+    return current
+
+
+def _application_text(expr: prim.Call | prim.Subscript, types: _Types) -> str:
+    """Print an application as Lean writes one, ``f a b``, with no cast."""
+    if isinstance(expr, prim.Call):
+        head, arguments = expr.function, tuple(expr.parameters)
+    else:
+        head = expr.aggregate
+        arguments = expr.index if isinstance(expr.index, tuple) else (expr.index,)
+    args = " ".join(_render(arg, _ATOM, types) for arg in arguments)
+    return f"{_render(head, _APP, types)} {args}"
+
+
+def _render_exponent(expr: Any, types: _Types) -> str:
+    """Print an exponent, which Lean's ``^`` on ``Int`` takes as a ``Nat``.
+
+    A non-negative literal elaborates as a ``Nat`` as it stands. A natural
+    variable is an ``Int`` in the printed statement, and ``n.toNat`` is ``n``
+    given the ``0 ≤ n`` among its hypotheses. A family's natural value is a
+    ``Nat`` already and is printed without its cast. Anything else could be
+    negative, where Python's ``**`` answers a float and Lean has no ``^`` at
+    all, so it is declined.
+
+    Raises:
+        UnsupportedTerm: For an exponent that is not one of the three.
+    """
+    if isinstance(expr, int) and not isinstance(expr, bool) and expr >= 0:
+        return str(expr)
+    if isinstance(expr, Var | prim.Variable) and is_natural(types.get(expr.name)):
+        return f"{expr.name}.toNat"
+    if isinstance(expr, prim.Call | prim.Subscript) and is_natural(
+        _application_type(expr, types)
+    ):
+        return _application_text(expr, types)
+    raise UnsupportedTerm(
+        f"the exponent {render(expr)} is not a literal, a natural variable or a "
+        "natural value: Lean's ^ on Int takes a Nat, and a negative exponent is "
+        "a float in Python"
+    )
+
+
+def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
     """Print ``∀`` or ``∃`` one binder at a time, each guard next to its binder.
 
     Nesting the binders rather than grouping them keeps every guard beside the
     variable it constrains, which is how a Lean user writes it and how the
-    oracle's ``intro`` list lines up with the statement.
+    oracle's ``intro`` list lines up with the statement. Each binder's guards
+    are printed with the binders before it in scope, and the body and the
+    generator's guard with all of them.
     """
     universal = isinstance(expr, Forall)
     word = "∀" if universal else "∃"
     guards = list(conjuncts(expr.guard))
+    layers = [dict(types)]
+    for var, domain in expr.binders:
+        layers.append({**layers[-1], var.name: domain})
+    inner = layers[-1]
     if not expr.binders:
         # A closed statement whose hypotheses are its only parameters: there is
         # no variable to quantify, but the guard is still the antecedent and
         # dropping it would print a strictly stronger claim than was written.
-        text = _render_prop(expr.body, _ARROW if universal else _AND + 1)
+        text = _render_prop(expr.body, _ARROW if universal else _AND + 1, inner)
         for guard in reversed(guards):
             joiner = "→" if universal else "∧"
-            text = f"{_render_prop(guard, _ARROW + 1)} {joiner} {text}"
+            text = f"{_render_prop(guard, _ARROW + 1, inner)} {joiner} {text}"
         if not guards:
-            return _render_prop(expr.body, outer)
+            return _render_prop(expr.body, outer, inner)
         return _parens(text, _ARROW if universal else _AND, outer)
     # A universal's body is the rightmost thing in the formula, and an arrow is
     # right associative, so it never needs brackets; an existential's body sits
     # to the right of a conjunction, where a quantifier would swallow the rest.
-    text = _render_prop(expr.body, _QUANT if universal else _AND + 1)
+    text = _render_prop(expr.body, _QUANT if universal else _AND + 1, inner)
     for position in reversed(range(len(expr.binders))):
         var, domain = expr.binders[position]
-        conditions = domain_guards(var, domain)
+        conditions = domain_guards(var, domain, layers[position])
         if position == len(expr.binders) - 1:
-            conditions += [_render_prop(guard, _ARROW + 1) for guard in guards]
+            conditions += [_render_prop(guard, _ARROW + 1, inner) for guard in guards]
         if universal:
             for condition in reversed(conditions):
                 text = f"{condition} → {text}"
@@ -325,7 +499,7 @@ def _render_quantifier(expr: Forall | Exists, outer: int) -> str:
     return _parens(text, _QUANT, outer)
 
 
-def _render_prop(expr: Any, outer: int) -> str:
+def _render_prop(expr: Any, outer: int, types: _Types) -> str:
     """Print a term that stands where Lean expects a proposition.
 
     The one term that reads differently in the two positions is a Boolean
@@ -339,11 +513,17 @@ def _render_prop(expr: Any, outer: int) -> str:
     """
     if isinstance(expr, bool):
         return "True" if expr else "False"
-    return _render(expr, outer)
+    return _render(expr, outer, types)
 
 
-def _render(expr: Any, outer: int) -> str:
-    """Print ``expr`` as Lean source, parenthesized for a context of ``outer``."""
+def _render(expr: Any, outer: int, types: _Types) -> str:
+    """Print ``expr`` as Lean source, parenthesized for a context of ``outer``.
+
+    ``types`` maps the names bound around ``expr`` to their lanky types. It is
+    what tells an application of a family with natural values, which is cast
+    to ``Int`` where it is used as a number, from anything else; a name it does
+    not know, a free variable of an open term, is printed as it stands.
+    """
     if isinstance(expr, Var | prim.Variable):
         return expr.name
     if isinstance(expr, int | float | Fraction | bool):
@@ -351,7 +531,7 @@ def _render(expr: Any, outer: int) -> str:
     if expr is None:
         raise UnsupportedTerm("cannot print an empty term in Lean")
     if isinstance(expr, Forall | Exists):
-        return _render_quantifier(expr, outer)
+        return _render_quantifier(expr, outer, types)
     if isinstance(expr, Sum):
         raise UnsupportedTerm(
             "a reduction needs Finset.sum, which is Mathlib; core Lean cannot "
@@ -365,43 +545,40 @@ def _render(expr: Any, outer: int) -> str:
         relation = _RELATIONS.get(expr.operator)
         if relation is None:
             raise UnsupportedTerm(f"unknown comparison operator {expr.operator!r}")
-        text = f"{_render(expr.left, _CMP + 1)} {relation} {_render(expr.right, _CMP + 1)}"
+        text = (
+            f"{_render(expr.left, _CMP + 1, types)} {relation} "
+            f"{_render(expr.right, _CMP + 1, types)}"
+        )
         return _parens(text, _CMP, outer)
     if isinstance(expr, prim.LogicalAnd):
-        text = " ∧ ".join(_render_prop(child, _AND + 1) for child in expr.children)
+        text = " ∧ ".join(_render_prop(child, _AND + 1, types) for child in expr.children)
         return _parens(text, _AND, outer)
     if isinstance(expr, prim.LogicalOr):
-        text = " ∨ ".join(_render_prop(child, _OR + 1) for child in expr.children)
+        text = " ∨ ".join(_render_prop(child, _OR + 1, types) for child in expr.children)
         return _parens(text, _OR, outer)
     if isinstance(expr, prim.LogicalNot):
-        return _parens(f"¬{_render_prop(expr.child, _APP)}", _NOT, outer)
+        return _parens(f"¬{_render_prop(expr.child, _APP, types)}", _NOT, outer)
     if isinstance(expr, prim.Sum):
-        return _parens(_render_sum(expr), _ADD, outer)
+        return _parens(_render_sum(expr, types), _ADD, outer)
     if isinstance(expr, prim.Product):
-        text = " * ".join(_render(child, _MUL + 1) for child in expr.children)
+        text = " * ".join(_render(child, _MUL + 1, types) for child in expr.children)
         return _parens(text, _MUL, outer)
-    if isinstance(expr, prim.FloorDiv):
-        text = f"{_render(expr.numerator, _MUL)} / {_render(expr.denominator, _MUL + 1)}"
-        return _parens(text, _MUL, outer)
-    if isinstance(expr, prim.Remainder):
-        text = f"{_render(expr.numerator, _MUL)} % {_render(expr.denominator, _MUL + 1)}"
-        return _parens(text, _MUL, outer)
+    if isinstance(expr, prim.FloorDiv | prim.Remainder):
+        return _render_division(expr, outer, types)
     if isinstance(expr, prim.Quotient):
         raise UnsupportedTerm(
             "true division needs a field, which is Mathlib; use // for the "
             "floor division Nat and Int have"
         )
     if isinstance(expr, prim.Power):
-        text = f"{_render(expr.base, _POW + 1)} ^ {_render(expr.exponent, _POW)}"
+        text = f"{_render(expr.base, _POW + 1, types)} ^ {_render_exponent(expr.exponent, types)}"
         return _parens(text, _POW, outer)
-    if isinstance(expr, prim.Call):
-        args = " ".join(_render(arg, _ATOM) for arg in expr.parameters)
-        text = f"{_render(expr.function, _APP)} {args}"
-        return _parens(text, _APP, outer)
-    if isinstance(expr, prim.Subscript):
-        index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
-        args = " ".join(_render(i, _ATOM) for i in index)
-        text = f"{_render(expr.aggregate, _APP)} {args}"
+    if isinstance(expr, prim.Call | prim.Subscript):
+        text = _application_text(expr, types)
+        if is_natural(_application_type(expr, types)):
+            # A natural value is a Nat in Lean (see _value_type); used as a
+            # number it is cast, so that its arithmetic is integer arithmetic.
+            return f"({text} : Int)"
         return _parens(text, _APP, outer)
     raise UnsupportedTerm(f"cannot print {type(expr).__name__} in Lean: {expr!r}")
 
@@ -419,7 +596,7 @@ def print_lean(expr: Any) -> str:
             a family outside the domain it declares (:func:`check_applications`).
     """
     check_applications(expr)
-    return _render_prop(expr, _QUANT)
+    return _render_prop(expr, _QUANT, {})
 
 
 # }}}
@@ -579,6 +756,20 @@ def _fits(argument: Any, domain: FinType, scope: _Scope) -> bool:
     highest = _resolve(_add(_add(arg, _scale(limit, -1)), {_CONSTANT: 1}), scope, True)
     if highest is None or highest > 0:
         return False
+    return _nonnegative(argument, scope)
+
+
+def _nonnegative(argument: Any, scope: _Scope) -> bool:
+    """Whether ``argument`` is at least zero for every value in scope.
+
+    This is the whole obligation for a family over ``Nat``, which prints as a
+    function from ``Int`` like every family: ``f(n - 1)`` for an
+    ``f : Fn[Nat, Nat]`` names the point ``-1`` at ``n = 0``, which the family
+    does not have.
+    """
+    arg = _affine(argument)
+    if arg is None:
+        return False
     lowest = _resolve(arg, scope, False)
     return lowest is not None and lowest >= 0
 
@@ -590,7 +781,7 @@ def _spine(expr: Any) -> tuple[str, tuple[Any, ...]] | None:
     codomain is itself a family is applied again. The outer call's function is
     then the inner call rather than a variable, so reading only the innermost
     one would leave ``j`` unchecked while Lean, which sees the erased total
-    ``Nat → Nat → Nat``, is free to reason about it. A subscript is the same
+    ``Int → Int → Nat``, is free to reason about it. A subscript is the same
     application written differently, and a multi-argument call or a multi-index
     subscript is the same chain again: both print as successive applications.
     """
@@ -642,18 +833,22 @@ def _check_chain(
         if isinstance(domain, Refined):
             raise UnsupportedTerm(
                 f"{render(expr)} applies {name} over the refined domain "
-                f"({domain}): a family prints as a total Nat function and its "
+                f"({domain}): a family prints as a total function and its "
                 "bounds live in the guards, which carry nothing about a "
                 "refinement, and lanky discharges an argument by affine "
                 "arithmetic over the binders rather than by a solver, so it "
                 "cannot show that the argument is a point of the domain"
             )
-        if isinstance(domain, FinType) and not _fits(argument, domain, scope):
+        natural_domain = isinstance(domain, Sort) and domain.name == "Nat"
+        if (isinstance(domain, FinType) and not _fits(argument, domain, scope)) or (
+            natural_domain and not _nonnegative(argument, scope)
+        ):
             raise UnsupportedTerm(
                 f"{render(expr)} applies {name} outside the domain it declares "
                 f"({domain}): lanky cannot show that {render(argument)} is a point "
-                f"of {domain}, and a family prints as a total Nat function, so Lean "
-                "would be reasoning about a value the statement does not have"
+                f"of {domain}, and a family prints as a total function from Int, "
+                "so Lean would be reasoning about a value the statement does not "
+                "have"
             )
         current = base.codomain
 
@@ -715,7 +910,7 @@ def _check_capture(var: Var, domain: Any) -> None:
     statement: the ``Fin[i]`` is evaluated before the generator binds its
     ``i``, so it means the parameter, and the statement is false at ``i = 1``.
     The printed guard sits after the binder, where Lean reads it as the inner
-    ``i``: ``∀ i : Nat, i < i → i > 0`` is vacuous, ``omega`` proves it, and the
+    ``i``: ``∀ i : Int, 0 ≤ i → i < i → i > 0`` is vacuous, ``omega`` proves it, and the
     ledger would say ``proved``. Declining leaves the fact to the tester, which
     reads it the way Python does; renaming the binder in the printed source
     would keep the proof, and is the natural next step if a real statement is
@@ -769,7 +964,7 @@ def _check(expr: Any, scope: _Scope) -> None:
 def check_applications(term: Any) -> None:
     """Refuse a statement that applies a family outside the domain it declares.
 
-    This is what makes the erasure of ``Fn[Fin[n], B]`` to ``Nat → B`` sound
+    This is what makes the erasure of ``Fn[Fin[n], B]`` to ``Int → B`` sound
     rather than merely usual (see the module docstring). Only a family the
     statement's own binders declare is checked: a bare ``f(a)`` with no binder
     for ``f`` is an open term, and an open term is somebody else's statement.
@@ -808,6 +1003,10 @@ class LeanStatement:
     only more readable: it gives every hypothesis a name, and a tactic script
     cannot do induction without naming the hypothesis it induces on.
 
+    A binder's own guards (``0 ≤ n``, and ``i < n`` for a point of ``Fin[n]``)
+    follow it in the parameter list, and the statement's hypotheses follow
+    the last binder, which is where :func:`print_lean` puts them too.
+
     Attributes:
         name: The theorem's Lean name.
         binders: ``(name, Lean type)`` pairs, in order.
@@ -817,7 +1016,12 @@ class LeanStatement:
         goal_term: The conclusion as a lanky term, which is what a tactic
             strategy inspects to decide what to induce on.
         hypothesis_terms: The hypotheses as lanky terms, in the order of
-            ``hypotheses``.
+            ``hypotheses``; ``None`` for a guard a binder's domain gave.
+        anchors: For each hypothesis, how many binders precede it in the
+            parameter list. Empty means every hypothesis follows every binder.
+        types: The lanky type of each binder, which the printer needs to
+            render a hypothesis again (it decides where a family's value is
+            cast to ``Int``).
     """
 
     name: str
@@ -826,12 +1030,25 @@ class LeanStatement:
     goal: str
     goal_term: Any = None
     hypothesis_terms: tuple[Any, ...] = field(default_factory=tuple)
+    anchors: tuple[int, ...] = field(default_factory=tuple)
+    types: dict[str, Any] = field(default_factory=dict)
+
+    def _parameters(self) -> list[tuple[bool, int]]:
+        """The parameters in order, as ``(is_hypothesis, index)`` pairs."""
+        anchors = self.anchors or (len(self.binders),) * len(self.hypotheses)
+        order: list[tuple[bool, int]] = []
+        for position in range(len(self.binders) + 1):
+            order += [(True, index) for index, at in enumerate(anchors) if at == position]
+            if position < len(self.binders):
+                order.append((False, position))
+        return order
 
     @property
     def parameters(self) -> str:
         """The binders and hypotheses as Lean binder syntax."""
         return " ".join(
-            f"({name} : {text})" for name, text in (*self.binders, *self.hypotheses)
+            "({} : {})".format(*(self.hypotheses if hypothesis else self.binders)[index])
+            for hypothesis, index in self._parameters()
         )
 
     @property
@@ -843,14 +1060,16 @@ class LeanStatement:
         the term is rendered again rather than the text reused.
         """
         text = self.goal
-        for position in reversed(range(len(self.hypotheses))):
-            prop = self.hypotheses[position][1]
-            term = self.hypothesis_terms[position] if self.hypothesis_terms else None
+        for hypothesis, index in reversed(self._parameters()):
+            if not hypothesis:
+                name, sort = self.binders[index]
+                text = f"∀ {name} : {sort}, {text}"
+                continue
+            prop = self.hypotheses[index][1]
+            term = self.hypothesis_terms[index] if self.hypothesis_terms else None
             if term is not None:
-                prop = _render_prop(term, _ARROW + 1)
+                prop = _render_prop(term, _ARROW + 1, self.types)
             text = f"{prop} → {text}"
-        for name, sort in reversed(self.binders):
-            text = f"∀ {name} : {sort}, {text}"
         return text
 
     def source(self, tactic: str) -> str:
@@ -879,7 +1098,9 @@ def statement_of(term: Any, name: str = "lanky_claim") -> LeanStatement:
     """Arrange a closed lanky term as a Lean theorem.
 
     The top-level quantifier becomes the theorem's parameters and its guard
-    becomes the named hypotheses; everything below stays a proposition.
+    becomes the named hypotheses; everything below stays a proposition. A
+    natural variable is an ``Int`` parameter followed by ``0 ≤ n``, as
+    :func:`lean_type` and :func:`domain_guards` have it.
 
     Raises:
         UnsupportedTerm: If any part of the statement leaves the fragment, or
@@ -894,21 +1115,29 @@ def statement_of(term: Any, name: str = "lanky_claim") -> LeanStatement:
     binders: list[tuple[str, str]] = []
     hypotheses: list[tuple[str, str]] = []
     hypothesis_terms: list[Any] = []
+    anchors: list[int] = []
+    types: dict[str, Any] = {}
     for var, domain in term.binders:
+        guards = domain_guards(var, domain, types)
+        types = {**types, var.name: domain}
         binders.append((var.name, lean_type(domain)))
-        for guard in domain_guards(var, domain):
+        for guard in guards:
             hypotheses.append((f"h{len(hypotheses)}", guard))
             hypothesis_terms.append(None)
+            anchors.append(len(binders))
     for guard in conjuncts(term.guard):
-        hypotheses.append((f"h{len(hypotheses)}", _render_prop(guard, _QUANT)))
+        hypotheses.append((f"h{len(hypotheses)}", _render_prop(guard, _QUANT, types)))
         hypothesis_terms.append(guard)
+        anchors.append(len(binders))
     return LeanStatement(
         name=lean_name,
         binders=tuple(binders),
         hypotheses=tuple(hypotheses),
-        goal=_render_prop(term.body, _QUANT),
+        goal=_render_prop(term.body, _QUANT, types),
         goal_term=term.body,
         hypothesis_terms=tuple(hypothesis_terms),
+        anchors=tuple(anchors),
+        types=types,
     )
 
 

@@ -11,16 +11,19 @@ hand or rechecked later by ``certify``.
 
 Core Lean 4 only, no Mathlib: the fragment is what :mod:`lanky.lean` can print,
 and the tactics are the ones core Lean ships (``omega``, ``decide``, ``simp``,
-``simp_all``, ``induction``, ``rcases``).
+``simp_all``, ``obtain``, ``induction``, ``by_cases``).
 
-The ladder is not proof search. It is four cheap attempts and then one strategy
+The ladder is not proof search. It is five cheap attempts and then one strategy
 that is derived from the shape of the statement: a statement of the form "for
 all ``a`` and ``b`` below a bound, with ``a <= b``, ``f a <= f b``" is proved by
 induction on ``b`` with a case split on whether ``a`` has been reached yet, and
 that is the shape every scan postcondition has. What makes it a strategy rather
 than a hand-written proof of one theorem is that the induction variable, the
 variable to split on, and the hypotheses to instantiate are all read off the
-term (see :func:`induction_scripts`).
+term (see :func:`induction_scripts`). The statement is the integer reading of
+the lanky one (see :mod:`lanky.lean`), so a natural is an ``Int`` with ``0 ≤ b``
+among its hypotheses, and the strategy trades it for a ``Nat`` before it
+induces.
 
 A fact the ladder does not close is returned unchanged, with what was tried in
 its provenance, so the weaker oracles still run and the ledger still shows the
@@ -49,7 +52,13 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
-from lanky.lean import LeanStatement, UnsupportedTerm, domain_guards, statement_of
+from lanky.lean import (
+    LeanStatement,
+    UnsupportedTerm,
+    domain_guards,
+    is_natural,
+    statement_of,
+)
 from lanky.ledger import Fact, Status
 from lanky.terms import Forall, Var, conjuncts
 
@@ -66,10 +75,16 @@ __all__ = [
 DEFAULT_TIMEOUT = float(os.environ.get("LANKY_LEAN_TIMEOUT", "60"))
 
 #: The cheap tactics, tried on the goal as printed, before any script is built.
-BASE_TACTICS: tuple[str, ...] = ("omega", "decide", "simp", "simp_all")
+#: The last one is for a goal ``simp_all`` reduces to linear arithmetic over
+#: ``Int``: a natural is an ``Int`` with ``0 ≤ n`` as a hypothesis, so a fact
+#: such as ``0 < n + 1``, which ``simp`` knows for a ``Nat``, is one for
+#: ``omega`` once the hypothesis is in play.
+BASE_TACTICS: tuple[str, ...] = ("omega", "decide", "simp", "simp_all", "simp_all <;> omega")
 
-#: What a compound attempt falls back through once the context is set up.
-_CLOSERS = "first | omega | simp_all | (simp_all <;> omega)"
+#: What a compound attempt falls back through once the context is set up. Each
+#: arm has to close the goal: a ``simp_all`` that only simplifies would end the
+#: ``first`` with the goal still open, and the arms after it would never run.
+_CLOSERS = "first | omega | (simp_all; done) | (simp_all <;> omega)"
 
 
 # {{{ choosing a Lean version
@@ -316,32 +331,39 @@ def _fresh(stem: str, used: set[str]) -> str:
     return name
 
 
-def _goal_intro(statement: LeanStatement) -> tuple[list[str], list[Var], list[Any]]:
+def _goal_intro(
+    statement: LeanStatement,
+) -> tuple[list[str], list[Var], list[Any], dict[str, str]]:
     """What ``intro`` must name to strip the goal's own quantifier.
 
-    The printer emits one binder at a time with its bound as a guard right after
-    it (``∀ a : Nat, a < n + 1 → ...``), so the names alternate variable, guard,
-    variable, guard, and the generator's own guard comes last. Returning the
-    binder variables and the guards as terms as well is what lets a strategy
-    decide which variable to induce on.
+    The printer emits one binder at a time with its guards right after it
+    (``∀ a : Int, 0 ≤ a → a < n + 1 → ...``), so the names are a variable, its
+    guards, the next variable, its guards, and the generator's own guard comes
+    last. Returning the binder variables and the guards as terms as well is
+    what lets a strategy decide which variable to induce on, and the fourth
+    value names, for each natural variable, the hypothesis ``0 ≤ a`` that makes
+    it one, which is what an induction on it has to start from.
     """
     goal = statement.goal_term
     if not isinstance(goal, Forall):
-        return [], [], []
+        return [], [], [], {}
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     names: list[str] = []
     variables: list[Var] = []
+    naturals: dict[str, str] = {}
     guards = list(conjuncts(goal.guard))
     for position, (var, domain) in enumerate(goal.binders):
         names.append(var.name)
         used.add(var.name)
         variables.append(var)
-        for _ in domain_guards(var, domain):
+        for index, _ in enumerate(domain_guards(var, domain)):
             names.append(_fresh("hd", used))
+            if index == 0 and is_natural(domain):
+                naturals[var.name] = names[-1]
         if position == len(goal.binders) - 1:
             for _ in guards:
                 names.append(_fresh("hg", used))
-    return names, variables, guards
+    return names, variables, guards, naturals
 
 
 def _induction_target(variables: list[Var], guards: list[Any]) -> tuple[Var | None, str | None]:
@@ -362,18 +384,21 @@ def _induction_target(variables: list[Var], guards: list[Any]) -> tuple[Var | No
     return (variables[-1] if variables else None), None
 
 
-def _bounded_hypotheses(statement: LeanStatement) -> list[str]:
-    """The names of the hypotheses that are themselves bounded quantifiers.
+def _bounded_hypotheses(statement: LeanStatement) -> list[tuple[str, int]]:
+    """The hypotheses that are themselves bounded quantifiers, and their premises.
 
     Such a hypothesis is the recurrence (``off (r + 1) = off r + cnt r`` for
     every ``r`` below ``n``), and the successor case of an induction is exactly
-    where it has to be instantiated.
+    where it has to be instantiated. The count is how many premises follow the
+    variable once it is applied: its domain's guards (two for a point of a
+    ``Fin``) and its own generator guard.
     """
-    names = []
+    found = []
     for (name, _), term in zip(statement.hypotheses, statement.hypothesis_terms, strict=False):
         if isinstance(term, Forall) and len(term.binders) == 1:
-            names.append(name)
-    return names
+            var, domain = term.binders[0]
+            found.append((name, len(domain_guards(var, domain)) + len(conjuncts(term.guard))))
+    return found
 
 
 def induction_scripts(statement: LeanStatement) -> list[str]:
@@ -383,43 +408,73 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     on whether the other variable has been reached, and induction without it.
     Every name in them is read off the statement, so the scripts are a strategy
     and not a proof of one theorem.
+
+    The variable is an ``Int`` with ``0 ≤ b`` among its hypotheses, because that
+    is how a natural prints (see :mod:`lanky.lean`), and core Lean has no
+    induction on an ``Int`` from a lower bound. So the script first trades it
+    for the natural it is: ``Int.eq_ofNat_of_zero_le`` gives ``b = ↑b`` for a
+    new ``Nat`` that takes the old name, and the induction is on that. In the
+    successor case ``↑(k + 1)`` is rewritten to ``↑k + 1``, the form a
+    recurrence instantiated at ``k`` produces, so that ``omega`` sees one atom
+    where it would otherwise see two. In the base case the variable split
+    against lies between ``0`` and ``↑0``, and is substituted away. A variable
+    that is not a natural has nothing to trade, and is not induced on.
     """
-    names, variables, guards = _goal_intro(statement)
+    names, variables, guards, naturals = _goal_intro(statement)
     target, companion = _induction_target(variables, guards)
-    if target is None:
+    if target is None or target.name not in naturals:
         return []
     used = set(names) | {name for name, _ in statement.binders}
     used |= {name for name, _ in statement.hypotheses}
     step = _fresh("k", used)
     hypothesis = _fresh("ih", used)
-    instantiations = [
-        f"  first | (have {_fresh('hstep', used)} := {name} {step} (by omega)) | skip"
-        for name in _bounded_hypotheses(statement)
-    ]
-    apply_ih = (
-        f"first | (have {_fresh('hih', used)} := {hypothesis} (by omega) (by omega))"
-        f" | (have {_fresh('hih', used)} := {hypothesis} (by omega))"
-        f" | (have {_fresh('hih', used)} := {hypothesis}) | skip"
+    cast = _fresh("hcast", used)
+    instantiations = []
+    for name, premises in _bounded_hypotheses(statement):
+        instance = _fresh("hstep", used)
+        instantiations.append(
+            f"  first | (have {instance} := {name} {step}{' (by omega)' * premises}) | skip"
+        )
+    # The induction reverts every hypothesis that mentions the variable, and
+    # the hypothesis it gets back takes them as premises again; at most every
+    # name introduced after the variable, and the attempts count down from there.
+    later = len(names) - names.index(target.name) - 1
+    applied = _fresh("hih", used)
+    apply_ih = " | ".join(
+        f"(have {applied} := {hypothesis}{' (by omega)' * count})"
+        for count in range(later, -1, -1)
     )
+    apply_ih = f"first | {apply_ih} | skip"
+    zero = _CLOSERS
+    if companion is not None:
+        pinned = _fresh("hzero", used)
+        zero = (
+            f"first | omega | (have {pinned} : {companion} = ((0 : Nat) : Int) := "
+            f"(by omega); subst {pinned}; {_CLOSERS}) | (simp_all; done) "
+            "| (simp_all <;> omega)"
+        )
     head = [f"intro {' '.join(names)}"] if names else []
     head += [
+        f"obtain ⟨{target.name}, rfl⟩ := Int.eq_ofNat_of_zero_le {naturals[target.name]}",
         f"induction {target.name} with",
         "| zero =>",
-        f"  {_CLOSERS}",
+        f"  {zero}",
         f"| succ {step} {hypothesis} =>",
+        f"  have {cast} : (({step} + 1 : Nat) : Int) = ({step} : Int) + 1 := (by omega)",
+        f"  try simp only [{cast}] at *",
     ]
 
     scripts = []
     if companion is not None:
         equality = _fresh("heq", used)
-        less, greater = _fresh("hlt", used), _fresh("hge", used)
+        less = _fresh("hlt", used)
         scripts.append(
             "\n".join(
                 [
                     *head,
                     *instantiations,
-                    f"  rcases Nat.lt_or_ge {step} {companion} with {less} | {greater}",
-                    f"  · have {equality} : {companion} = {step} + 1 := by omega",
+                    f"  by_cases {less} : ({step} : Int) < {companion}",
+                    f"  · have {equality} : {companion} = ({step} : Int) + 1 := (by omega)",
                     f"    subst {equality}",
                     f"    {_CLOSERS}",
                     f"  · {apply_ih}",
@@ -433,7 +488,7 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
 
 def tactic_ladder(statement: LeanStatement) -> list[str]:
     """Every script the oracle tries, cheapest and most general first."""
-    names, _, _ = _goal_intro(statement)
+    names, _, _, _ = _goal_intro(statement)
     ladder = list(BASE_TACTICS)
     if names:
         introduction = f"intro {' '.join(names)}"
@@ -554,10 +609,18 @@ def use_tactic(claim: Any, script: str) -> None:
     and applies to every Lean oracle in the registry, so a file can pin a script
     next to the theorem it belongs to::
 
-        use_tactic(scan_monotone, "intro a ha b hb hab\n  induction b with ...")
+        use_tactic(
+            scan_monotone,
+            "intro a ha0 ha b hb0 hb hab\n"
+            "obtain ⟨b, rfl⟩ := Int.eq_ofNat_of_zero_le hb0\n"
+            "induction b with ...",
+        )
 
-    The ledger still records which script closed the goal, so a pinned proof is
-    as visible as a found one.
+    The script proves the statement as it is printed, which is the integer
+    reading (see :mod:`lanky.lean`): a natural is an ``Int`` followed by its
+    ``0 ≤ b``, which is why the script above trades ``b`` for a ``Nat`` before
+    inducing. The ledger still records which script closed the goal, so a
+    pinned proof is as visible as a found one.
     """
     import lanky.oracles  # noqa: F401 - importing registers the built-in oracles
     from lanky.plugins import registry
