@@ -6,11 +6,15 @@ registered theory is asked what facts that object claims; each fact is offered t
 the oracles from the strongest trust class that is willing to take it down to the
 weakest; whatever nobody establishes is recorded as ``ASSUMED`` rather than
 dropped. The result is a ledger that reads like the source file.
+
+A check collects the claims the file itself defines, and none from the modules
+it imports: ``lanky check a.py b.py`` is how two files are checked together.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import sys
 from pathlib import Path
 from typing import Any
@@ -172,83 +176,81 @@ def oracle_lines() -> list[str]:
     return lines
 
 
-def _release_local_modules(before: set[str], directory: Path) -> None:
-    """Withdraw the modules the checked file's directory supplied to this import.
+def _owned(obj: Any, path: Path, module: Any) -> bool | None:
+    """Whether ``obj`` was defined by this check's import of the file at ``path``.
 
-    ``import_path`` withdraws the checked file's own module, but a claim can
-    live in a module the file imports, and Python imports a module once per
-    process: the first check of ``main.py`` executes ``helper.py`` and collects
-    its theorems, and a second check finds ``helper`` cached, executes nothing,
-    and returns a ledger without them. Withdrawing what the import brought in
-    makes every check of a file see the same claims.
+    The answer comes from the function the object wraps: the object itself
+    when it is a function, or what its ``__wrapped__`` chain leads to, which
+    :func:`functools.update_wrapper` sets and which ``@theorem`` and loopty's
+    decorators both use. Two things have to agree. The function's code was
+    compiled from ``path``, which is where it was defined; and its globals are
+    the namespace of the module :func:`import_path` just executed, which tells
+    this execution of the file apart from another one in the same process. A
+    package whose ``__init__`` imports the checked file runs it a second time,
+    under its real name, when the check imports the package (a relative
+    import in the file does), and the claims that copy registers are the same
+    claims again.
 
-    Only modules that were not imported before this check started, and that
-    were found *through* ``directory`` (the one ``import_path`` puts on
-    ``sys.path``), are withdrawn: a module ``a.b`` whose file is
-    ``directory/a/b.py`` or ``directory/a/b/__init__.py``, or a namespace
-    package whose path is ``directory/a``. That is the file's own
-    neighbourhood and nothing else. The expected place is resolved the way the
-    module's own file is, so a neighbouring directory that is a symbolic link
-    still counts as the neighbourhood. An installed package imported for the
-    first time stays put even when its files happen to sit below the directory
-    (a virtual environment in the project root, say), because a second copy of
-    a package such as numpy is not something a process survives, and a plugin
-    re-imported under the registry that already holds its first copy would no
-    longer recognize its own objects.
-
-    For the same reason a submodule stays put when its top-level package was
-    imported before the check, even if the submodule itself is new and sits
-    next to the file (a plugin whose source tree is the checked file's
-    directory, loaded earlier through its entry point). Withdrawing it alone
-    would split the package: its next import executes the submodule again and
-    rebinds the package's attribute to the new copy, while every module that
-    imported from the old one keeps the old classes.
+    ``None`` when the object wraps no function, so that nothing about it says
+    where it was written; :func:`check_path` then asks each of its facts for
+    the path it records.
     """
-    for name in [name for name in sys.modules if name not in before]:
-        if name.split(".", 1)[0] in before:
-            continue
-        module = sys.modules.get(name)
-        expected = directory.joinpath(*name.split("."))
-        origin = getattr(module, "__file__", None)
-        if origin is not None:
-            found = Path(origin).resolve()
-            stem = found.name.split(".", 1)[0]
-            local = (found.parent, stem) in (
-                (expected.parent.resolve(), expected.name),
-                (expected.resolve(), "__init__"),
-            )
-        else:
-            local = any(
-                Path(entry).resolve() == expected.resolve()
-                for entry in getattr(module, "__path__", ())
-            )
-        if local:
-            del sys.modules[name]
+    try:
+        function = inspect.unwrap(obj)
+    except ValueError:  # a cycle of ``__wrapped__``: nothing to read
+        return None
+    code = getattr(function, "__code__", None)
+    if code is None:
+        return None
+    if Path(code.co_filename).resolve() != path:
+        return False
+    return getattr(function, "__globals__", None) is vars(module)
+
+
+def _recorded_in(fact: Fact, path: Path) -> bool:
+    """Whether ``fact`` records ``path`` as its source, or records no path at all.
+
+    A fact that records nothing is kept: its object was decorated while the
+    file was imported, nothing says it was written anywhere else, and a claim
+    the ledger drops is a claim nobody sees.
+    """
+    recorded = fact.provenance.get("path")
+    return recorded is None or Path(str(recorded)).resolve() == path
 
 
 def check_path(path: str | Path, verbose: bool = False) -> Ledger:
-    """Check one file and return its ledger.
+    """Check one file and return the ledger of the claims it defines.
 
-    Only the objects this import registers are checked, so checking several
-    files in one process keeps their ledgers apart, and they are released again
-    afterwards, so a process that checks many files does not accumulate them.
-    The modules next to the file that its import brought in are released too
-    (see :func:`_release_local_modules`), so that checking a file twice
-    collects the claims it imports twice rather than once.
+    A claim belongs to the file it was written in. An object decorated while
+    the file is imported is checked when it was defined by the file itself
+    (see :func:`_owned`), and a claim that lives in a module the file imports
+    is not collected, on the first check or any other: ``lanky check main.py
+    helpers.py`` checks both files, each for its own claims. Ownership is read
+    off where each object was defined rather than off the order of the
+    imports, so a module that was imported before the check, and runs nothing
+    now, changes nothing, and checking a file twice gives the same ledger
+    twice. Nothing is withdrawn from ``sys.modules`` for that: an imported
+    module stays imported, as it would anywhere else.
+
+    Only the objects this import registers are considered, and they are
+    released from the registry afterwards, so checking several files in one
+    process keeps their ledgers apart and does not accumulate them.
     """
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
 
     registry.load_entry_points()
-    before = set(sys.modules)
-    try:
-        with registry.collecting() as decorated:
-            import_path(path)
-    finally:
-        _release_local_modules(before, Path(path).resolve().parent)
+    path = Path(path).resolve()
+    with registry.collecting() as decorated:
+        module = import_path(path)
     ledger = Ledger()
     for obj in decorated:
+        owned = _owned(obj, path, module)
+        if owned is False:
+            continue
         for theory in registry.theories:
             for fact in theory.facts(obj):
+                if owned is None and not _recorded_in(fact, path):
+                    continue
                 if verbose:
                     print(f"{fact.where} {fact.owner}: {fact.statement}")
                 ledger.add(establish(fact, verbose=verbose))

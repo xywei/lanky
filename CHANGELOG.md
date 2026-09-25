@@ -45,8 +45,8 @@ prints a ledger naming who decided what.
   declaration per attempt down a ladder of `omega`, `decide`, `simp`, `simp_all`,
   two intro-plus-closer scripts and an induction strategy read off the term. Core
   Lean only: no Mathlib is fetched or needed. Install it with the `lean` extra.
-- **Commands.** `lanky check FILE [--json OUT] [--verbose]`, exit code 1 when any
-  fact is refuted; `lanky --version`; plugin verbs appear as subcommands, which
+- **Commands.** `lanky check FILE... [--json OUT] [--verbose]`, exit code 1 when
+  any fact is refuted; `lanky --version`; plugin verbs appear as subcommands, which
   is how `lanky run` reaches loopty's executor.
 - **pytest plugin.** Registered under `pytest11`, so `pytest a_file_of_theorems.py`
   collects each theorem as a test item.
@@ -206,17 +206,20 @@ listed because it changes behaviour a reader could already have depended on.
   itself by opening a data file that is not there. The target's existence is
   now checked before it is imported, and an error raised inside it is an
   import failure with its traceback and exit code 1.
-- **Checking a file twice collects the claims it imports twice.** `check_path`
-  withdrew the checked module from `sys.modules` but not the modules it
-  imported, so a second check of a file that imports a theorem from a
-  neighbouring module found the neighbour cached and returned a ledger
-  without its claims. The modules the file's own directory supplied to the
-  import (a module `a.b` found as `a/b.py` or `a/b/__init__.py` next to the
-  file, or through a neighbouring directory that is a symbolic link) are now
-  withdrawn too; an installed package imported for the first time stays
-  imported, even when it sits below the file's directory, and so does a new
-  submodule of a package that was imported before the check, which would
-  otherwise be split between two copies.
+- **A check collects the claims the file defines, and only those.**
+  `check_path` handed the theories every object the import registered, so a
+  theorem imported from a neighbouring module was in the first check of a
+  file and missing from the second, which found the neighbour cached and ran
+  nothing. An object is now collected when the checked file defined it,
+  which is read off the function it wraps (the file its code was compiled
+  from, and the module namespace it was defined in) or, for an object that
+  wraps no function, off the path its facts record; the order of the imports
+  plays no part. A claim that lives in an imported module is checked by
+  checking its file, and `lanky check` takes several files (`lanky check
+  main.py helpers.py`), printing each file's ledger under a `==> FILE <==`
+  heading; `--json` writes one list of all their facts. Nothing is withdrawn
+  from `sys.modules` for this: an imported module stays imported, as it
+  would anywhere else.
 - **A refutation names the quantified point that made it false.** The
   property tester built a counterexample from the drawn variables alone, and
   a quantifier's binding lived in the evaluator's own copy of the context, so

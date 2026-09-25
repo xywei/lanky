@@ -359,120 +359,177 @@ def helper_claim(n: Nat) -> n + 0 == n:
 '''
 
 
-def test_a_claim_imported_from_a_neighbour_is_collected_on_every_check(
-    tmp_path, monkeypatch
-) -> None:
-    """Checking a file twice must collect the claims it imports twice.
-
-    Python imports a module once per process. The first check of the file
-    executed its neighbour and collected the neighbour's theorem; the second
-    found the neighbour cached, executed nothing, and returned a ledger
-    without it. A module found elsewhere on the path is not the checked file's
-    to release, and it stays imported.
-    """
-    import sys
-
-    neighbour = "lanky_test_neighbour_claims"
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    (elsewhere / "lanky_test_elsewhere.py").write_text("VALUE = 1\n", encoding="utf-8")
-    monkeypatch.syspath_prepend(str(elsewhere))
-
+def _neighbourhood(tmp_path, neighbour: str) -> tuple:
+    """A project holding FILE, importing a claim from a module next to it."""
     project = tmp_path / "project"
     project.mkdir()
-    (project / f"{neighbour}.py").write_text(HELPER, encoding="utf-8")
+    helper = project / f"{neighbour}.py"
+    helper.write_text(HELPER, encoding="utf-8")
     main = project / "main_claims.py"
     main.write_text(
         FILE.replace(
             "from lanky.prelude import Fin, Nat\n",
-            "from lanky.prelude import Fin, Nat\n"
-            f"from {neighbour} import helper_claim\n"
-            "from lanky_test_elsewhere import VALUE\n",
+            f"from lanky.prelude import Fin, Nat\nfrom {neighbour} import helper_claim\n",
         ),
         encoding="utf-8",
     )
-
-    try:
-        first = [fact.owner for fact in check_path(main)]
-        second = [fact.owner for fact in check_path(main)]
-        assert first == ["helper_claim", "true_claim", "false_claim"]
-        assert second == first
-        assert neighbour not in sys.modules
-        assert "lanky_test_elsewhere" in sys.modules
-    finally:
-        for name in (neighbour, "lanky_test_elsewhere"):
-            sys.modules.pop(name, None)
+    return main, helper
 
 
-def test_a_neighbour_behind_a_symbolic_link_is_collected_on_every_check(tmp_path) -> None:
-    """A neighbouring directory that is a link is still the neighbourhood.
+def test_a_claim_imported_from_a_neighbour_is_not_collected(tmp_path) -> None:
+    """A check collects the claims the file defines, and none that it imports.
 
-    The neighbour's file was resolved through the link and the place it was
-    expected at was not, so the two never matched: the neighbour stayed
-    imported, and a second check returned a ledger without its claim.
+    Python imports a module once per process, so collecting whatever an
+    import happened to register made the neighbour's theorem part of the
+    first check of the file and missing from the second. Ownership is now
+    read off where each object was defined, so every check of the file agrees,
+    and the neighbour is left imported like any other module. Its claim is
+    checked by checking its file, which finds it even though the module is
+    cached.
     """
-    import os
     import sys
 
-    shared = tmp_path / "shared"
-    shared.mkdir()
-    (shared / "__init__.py").write_text("", encoding="utf-8")
-    (shared / "linked_claims.py").write_text(HELPER, encoding="utf-8")
-    project = tmp_path / "project"
-    project.mkdir()
-    os.symlink(shared, project / "lanky_test_linked")
-    main = project / "main_linked.py"
-    main.write_text(
-        "from __future__ import annotations\n\n"
-        "from lanky_test_linked.linked_claims import helper_claim  # noqa: F401\n",
-        encoding="utf-8",
-    )
-
+    neighbour = "lanky_test_neighbour_claims"
+    main, helper = _neighbourhood(tmp_path, neighbour)
     try:
         first = [fact.owner for fact in check_path(main)]
+        cached = sys.modules[neighbour]
         second = [fact.owner for fact in check_path(main)]
-        assert first == ["helper_claim"]
+        assert first == ["true_claim", "false_claim"]
         assert second == first
-        assert "lanky_test_linked" not in sys.modules
+        assert sys.modules[neighbour] is cached
+        assert [fact.owner for fact in check_path(helper)] == ["helper_claim"]
     finally:
-        for name in ("lanky_test_linked", "lanky_test_linked.linked_claims"):
-            sys.modules.pop(name, None)
+        sys.modules.pop(neighbour, None)
 
 
-def test_a_package_imported_before_the_check_is_never_split(tmp_path, monkeypatch) -> None:
-    """A new submodule of a package the process already holds stays imported.
-
-    The package sits next to the checked file, as a plugin's source tree does
-    when a file at its root is checked, and the process imported it before
-    the check began. Withdrawing only the submodule the file imported made the
-    next import execute it again: the package's attribute then named the new
-    copy, and every module that had imported from the old one held other
-    classes.
-    """
+def test_a_neighbour_imported_before_the_check_changes_nothing(tmp_path, monkeypatch) -> None:
+    """Import order is not ownership: a neighbour that runs nothing now is no different."""
     import importlib
     import sys
 
-    project = tmp_path / "project"
-    (project / "lanky_test_plugin").mkdir(parents=True)
-    (project / "lanky_test_plugin" / "__init__.py").write_text("", encoding="utf-8")
-    (project / "lanky_test_plugin" / "kinds.py").write_text(
-        "class Kind:\n    pass\n", encoding="utf-8"
-    )
-    monkeypatch.syspath_prepend(str(project))
-    importlib.import_module("lanky_test_plugin")
-    main = project / "main_plugin.py"
-    main.write_text(
-        "from __future__ import annotations\n\n"
-        "from lanky_test_plugin.kinds import Kind  # noqa: F401\n",
-        encoding="utf-8",
-    )
+    from lanky.plugins import registry
 
+    neighbour = "lanky_test_early_neighbour"
+    main, _helper = _neighbourhood(tmp_path, neighbour)
+    monkeypatch.syspath_prepend(str(main.parent))
     try:
-        check_path(main)
-        kinds = sys.modules["lanky_test_plugin.kinds"]
-        check_path(main)
-        assert sys.modules["lanky_test_plugin.kinds"] is kinds
-        assert sys.modules["lanky_test_plugin"].kinds is kinds
+        with registry.collecting():
+            importlib.import_module(neighbour)
+        assert [fact.owner for fact in check_path(main)] == ["true_claim", "false_claim"]
     finally:
-        for name in ("lanky_test_plugin", "lanky_test_plugin.kinds"):
-            sys.modules.pop(name, None)
+        sys.modules.pop(neighbour, None)
+
+
+def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, capsys) -> None:
+    """``lanky check main.py helper.py`` is how two files are checked together.
+
+    Each file gets its own ledger under a heading, since a fact id is unique
+    within one file's ledger and not across files, and each claim is checked
+    once: the helper's theorem under the helper, whichever order the files
+    are listed in. ``--json`` writes one list of both files' facts.
+    """
+    import sys
+
+    neighbour = "lanky_test_listed_neighbour"
+    main, helper = _neighbourhood(tmp_path, neighbour)
+    out_json = tmp_path / "ledger.json"
+    try:
+        for files in ([main, helper], [helper, main]):
+            code = cli.main(["check", *map(str, files), "--json", str(out_json)])
+            printed = capsys.readouterr().out
+            assert code == 1  # false_claim
+            assert printed.startswith(f"==> {files[0]} <==\n")
+            assert f"\n\n==> {files[1]} <==\n" in printed
+            assert printed.count("helper_claim") == 1
+            assert "2 facts: 1 refuted, 1 tested" in printed
+            assert "1 facts: 1 tested" in printed
+            data = json.loads(out_json.read_text(encoding="utf-8"))
+            assert sorted(entry["owner"] for entry in data) == [
+                "false_claim",
+                "helper_claim",
+                "true_claim",
+            ]
+    finally:
+        sys.modules.pop(neighbour, None)
+
+
+def test_the_cli_checks_nothing_when_one_of_several_files_is_missing(tmp_path, capsys) -> None:
+    path = write_file(tmp_path)
+    assert cli.main(["check", path, str(tmp_path / "absent.py")]) == 2
+    printed = capsys.readouterr().out
+    assert printed == f"lanky check: no such file: {tmp_path / 'absent.py'}\n"
+
+
+def test_a_file_that_does_not_import_does_not_stop_the_others(tmp_path, capsys) -> None:
+    broken = tmp_path / "broken.py"
+    broken.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+    assert cli.main(["check", str(broken), write_file(tmp_path)]) == 1
+    printed = capsys.readouterr().out
+    assert "could not be imported" in printed
+    assert "REFUTED false_claim" in printed
+
+
+def test_the_check_verb_reads_a_namespace_with_one_file(tmp_path, capsys) -> None:
+    """``loopty check`` builds a namespace with ``file`` and hands it to the verb."""
+    import argparse
+
+    text = FILE.split("@theorem\ndef false_claim")[0]
+    namespace = argparse.Namespace(file=write_file(tmp_path, text), json=None, verbose=False)
+    assert cli.CheckVerb().run(namespace) == 0
+    printed = capsys.readouterr().out
+    assert "==>" not in printed
+    assert "1 facts: 1 tested" in printed
+
+
+PLAIN = """
+from lanky.plugins import registry
+
+
+class Plain:
+    def __init__(self, label, path=None):
+        self.label = label
+        self.path = path
+        registry.register_object(self)
+
+
+Plain("here", __file__)
+Plain("elsewhere", "/nowhere/else.py")
+Plain("unrecorded")
+"""
+
+
+def test_an_object_with_no_function_is_placed_by_the_path_its_fact_records(
+    tmp_path, monkeypatch
+) -> None:
+    """A plugin's object that wraps no function is placed by its facts.
+
+    A fact recording another file is not this file's claim; one recording no
+    path at all is kept, because nothing says it was written anywhere else and
+    a claim the ledger drops is a claim nobody sees.
+    """
+    from lanky.ledger import Fact
+    from lanky.plugins import registry
+
+    class PlainTheory:
+        name = "plain"
+
+        def facts(self, obj, /):
+            if type(obj).__name__ != "Plain":
+                return ()
+            provenance = {"path": obj.path} if obj.path else {}
+            return (
+                Fact(
+                    id=f"plain:{obj.label}",
+                    kind="plain",
+                    statement=obj.label,
+                    provenance=provenance,
+                    owner=obj.label,
+                ),
+            )
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "theories", [*registry.theories, PlainTheory()])
+    path = tmp_path / "plain.py"
+    path.write_text(PLAIN, encoding="utf-8")
+    assert [fact.owner for fact in check_path(path)] == ["here", "unrecorded"]
