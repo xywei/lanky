@@ -78,6 +78,7 @@ __all__ = [
     "render",
     "structurally_equal",
     "sum_",
+    "truth_value",
 ]
 
 
@@ -755,6 +756,38 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
 # {{{ evaluation at concrete values
 
 
+def truth_value(value: Any, prop: Any) -> bool:
+    """``value`` as the truth value of ``prop``, refusing what is not one.
+
+    A statement is a proposition, so what it evaluates to at a draw has to be a
+    truth value. ``bool()`` takes anything: ``def t(n: Nat) -> n + 1`` claims
+    nothing, and Lean declines it because its goal has type ``Nat``, but
+    Python's truthiness made every draw of it a pass and the malformed claim
+    was reported ``TESTED``. A hypothesis was read the same way, and so was
+    every operand of a connective and every body of a quantifier, so
+    ``(n + 1) | (n > 5)`` passed as well. A numpy boolean, which a comparison
+    of numpy values answers, is a truth value; a number, a table or ``None``
+    is not.
+
+    Raises:
+        TypeError: If ``value`` is not a Boolean. The property-test oracle
+            reports that as a test that could not run, so the fact stays
+            ``ASSUMED`` with the reason in its provenance.
+    """
+    if isinstance(value, bool):
+        return value
+    # numpy is a dependency but nothing else here needs it, so it is imported
+    # only on the way to refusing a value
+    import numpy
+
+    if isinstance(value, numpy.bool_):
+        return bool(value)
+    raise TypeError(
+        f"{render(prop)} is not a proposition: it evaluates to {value!r}, which "
+        f"is a {type(value).__name__} and not a truth value"
+    )
+
+
 class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     """Evaluate a lanky term at concrete values.
 
@@ -770,6 +803,11 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     survives that: a ``forall`` that fails at a drawn point really is false
     there, but an ``exists`` that finds no witness among four draws has learned
     nothing, so it declines rather than answering ``False``.
+
+    Wherever a proposition's truth is read, in a connective, a guard or the
+    body of a quantifier, the value has to be a truth value
+    (:func:`truth_value`). pymbolic's own connectives apply Python's
+    truthiness, which reads a number as a proposition.
     """
 
     def __init__(
@@ -829,7 +867,23 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
 
     def _holds(self, expr: Any) -> bool:
         """Whether a guard holds under the current assignment."""
-        return expr is None or bool(self.rec(expr))
+        return expr is None or self._truth(expr)
+
+    def _truth(self, expr: Any) -> bool:
+        """Evaluate a proposition, refusing a value that is not a truth value."""
+        return truth_value(self.rec(expr), expr)
+
+    def map_logical_and(self, expr: prim.LogicalAnd) -> bool:
+        """Every operand, left to right, stopping at the first false one."""
+        return all(self._truth(child) for child in expr.children)
+
+    def map_logical_or(self, expr: prim.LogicalOr) -> bool:
+        """Some operand, left to right, stopping at the first true one."""
+        return any(self._truth(child) for child in expr.children)
+
+    def map_logical_not(self, expr: prim.LogicalNot) -> bool:
+        """The negation of the operand."""
+        return not self._truth(expr.child)
 
     def map_forall(self, expr: Forall) -> Any:
         """True when the body holds at every point of the guarded domain.
@@ -845,7 +899,7 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         """
         with closing(self.assignments(expr.binders)) as walk:
             for _ in walk:
-                if self._holds(expr.guard) and not self.rec(expr.body):
+                if self._holds(expr.guard) and not self._truth(expr.body):
                     return False
         return True
 
@@ -859,7 +913,7 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         """
         with closing(self.assignments(expr.binders)) as walk:
             for _ in walk:
-                if self._holds(expr.guard) and self.rec(expr.body):
+                if self._holds(expr.guard) and self._truth(expr.body):
                     return True
         sampled = [
             domain for _var, domain in expr.binders if not self.is_exhaustive(domain)
@@ -930,6 +984,9 @@ def evaluate(
         Undecided: If an existential over a domain ``sampler`` supplied found no
             witness. Sampled points are not the domain, so there is no ``False``
             to return, and the caller drops the draw instead.
+        TypeError: If an operand of a connective, a guard or the body of a
+            quantifier is not a truth value (:func:`truth_value`). What the
+            whole of ``expr`` evaluates to is the caller's to judge.
     """
     if not isinstance(expr, prim.ExpressionNode):
         return expr

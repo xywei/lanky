@@ -45,8 +45,8 @@ prints a ledger naming who decided what.
   declaration per attempt down a ladder of `omega`, `decide`, `simp`, `simp_all`,
   two intro-plus-closer scripts and an induction strategy read off the term. Core
   Lean only: no Mathlib is fetched or needed. Install it with the `lean` extra.
-- **Commands.** `lanky check FILE [--json OUT] [--verbose]`, exit code 1 when any
-  fact is refuted; `lanky --version`; plugin verbs appear as subcommands, which
+- **Commands.** `lanky check FILE... [--json OUT] [--verbose]`, exit code 1 when
+  any fact is refuted; `lanky --version`; plugin verbs appear as subcommands, which
   is how `lanky run` reaches loopty's executor.
 - **pytest plugin.** Registered under `pytest11`, so `pytest a_file_of_theorems.py`
   collects each theorem as a test item.
@@ -187,6 +187,104 @@ listed because it changes behaviour a reader could already have depended on.
   so the outer `i < 2` was answered at the inner `i = 0`. The restoration is
   now in a `finally` and the walk is closed explicitly on every exit path, so
   the statement evaluates to `False` and the tester reports `REFUTED`.
+- **A function-typed domain is bracketed in Lean.** `lanky.lean.lean_type`
+  printed `Fn[Fn[Fin[n], Nat], Nat]` as `Nat → Nat → Nat`, which the right
+  associativity of `→` reads as a family of families and not as
+  `(Nat → Nat) → Nat`, so a higher-order parameter applied to a family did
+  not elaborate. A domain whose type is an arrow, refined or not, is now
+  parenthesized; a codomain needs no brackets and gets none.
+- **An availability probe that raises makes its oracle unavailable.**
+  `lanky.plugins.oracle_availability` let an exception from an oracle's
+  `availability()` escape, and `establish` and `oracle_lines` both ask it
+  before any per-oracle handler, so one broken optional oracle aborted the
+  check and `lanky check` reported the checked file as unimportable. The
+  exception is now the reason the oracle is unavailable, and the other
+  oracles run.
+- **`lanky check` asks whether the file exists rather than reading it off an
+  exception.** Every `FileNotFoundError` out of `check_path` was reported as
+  "no such file" with exit code 2, including one the checked file raised
+  itself by opening a data file that is not there. The target's existence is
+  now checked before it is imported, and an error raised inside it is an
+  import failure with its traceback and exit code 1.
+- **A check collects the claims the file defines, and only those.**
+  `check_path` handed the theories every object the import registered, so a
+  theorem imported from a neighbouring module was in the first check of a
+  file and missing from the second, which found the neighbour cached and ran
+  nothing. An object is now collected when the checked file defined it,
+  which is read off the function it wraps (the file its code was compiled
+  from, and the module namespace it was defined in) or, for an object that
+  wraps no function, off the path its facts record; the order of the imports
+  plays no part. A claim that lives in an imported module is checked by
+  checking its file, and `lanky check` takes several files (`lanky check
+  main.py helpers.py`), printing each file's ledger under a `==> FILE <==`
+  heading; `--json` writes one list of all their facts. Nothing is withdrawn
+  from `sys.modules` for this: an imported module stays imported, as it
+  would anywhere else.
+- **A checked file inside a package can import relatively.** `import_path`
+  loaded every file as a top-level module named `lanky_checked_<stem>`, so
+  `from .helpers import claim` in `pkg/mod.py` failed with "attempted
+  relative import with no known parent package" and `lanky check` reported
+  an import failure. The module keeps that name and is given its package:
+  `__package__` and `__spec__.parent` both name it, and the directory the
+  package is found from is on `sys.path` while the file executes. The
+  package is imported by the file's first relative import, the ordinary way;
+  a file with no relative import never runs its package's `__init__`. When
+  the package's `__init__` imports the checked file itself, that copy's
+  claims are not collected a second time. A package of the same name that
+  the process already imported from another directory, as the first file of
+  `lanky check a/pkg/mod.py b/pkg/mod.py` leaves behind, is refused with
+  `ImportError` rather than lent to the second file, whose relative imports
+  would otherwise have been answered by the first tree's modules.
+- **A refutation names the quantified point that made it false.** The
+  property tester built a counterexample from the drawn variables alone, and
+  a quantifier's binding lived in the evaluator's own copy of the context, so
+  `all(i < 2 for i in Fin[n + 3])` was refuted at `{'n': 3}` with nothing
+  saying `i = 2`. The goal is now walked along its universal quantifiers and
+  conjunctions, one point at a time in the evaluator's order, and the first
+  failing point joins the counterexample; a binder that shadows a drawn
+  variable does not overwrite it.
+- **A goal or a hypothesis that is not a proposition is refused.**
+  `def t(n: Nat) -> n + 1` claims nothing, and Lean declines it because its
+  goal has type `Nat`, but the property tester applied Python's truthiness to
+  every draw and reported it `TESTED`; a hypothesis was coerced the same way,
+  and so was every operand of `&`, `|` and `~`, every guard and every body of
+  a quantifier, so `(n + 1) | (n > 5)` and `any(i + 1 for i in Fin[n + 2])`
+  passed too, and so did a refinement by a number. The new
+  `lanky.terms.truth_value` (also exported from `lanky.testing`) accepts a
+  `bool` or a numpy boolean and raises `TypeError` for anything else; the
+  evaluator reads every connective, guard and quantifier body through it,
+  and the tester, `Theorem.__call__` and `Refined.holds` read what a whole
+  proposition evaluates to the same way, so such a fact stays `ASSUMED` with
+  the reason in its provenance.
+- **A binder that captures a name its own domain mentions is declined by the
+  Lean printer.** In `def bad(i: Nat) -> all(i > 0 for i in Fin[i])` the
+  `Fin[i]` is evaluated before the generator binds its `i`, so it is the
+  parameter, and the statement is false at `i = 1`; printed with its guard
+  after the binder it read `∀ i : Nat, i < i → i > 0`, which `omega` proves,
+  so with Lean installed the ledger said `proved`. `check_applications` now
+  raises `UnsupportedTerm` for such a binder, and the tester refutes the
+  statement.
+- **A refined codomain is honoured when a family's entries are drawn.** An
+  entry has no name, so `sample_value` accepted every value of a refined
+  codomain's base: `f : Fn[Fin[1], Nat & False]` got a table holding an
+  ordinary natural, and `-> False`, true because no such `f` exists, was
+  refuted. A refinement that names only variables already drawn is now
+  evaluated once per table, and an empty codomain means there is no draw; one
+  that names anything else skips the draw; a family over an empty domain
+  still needs no entry. A refinement that cannot be evaluated at a draw, such
+  as `Nat & (10 // n > 1)` at `n = 0`, skips that draw, for a codomain and for
+  a named variable alike, where its `ZeroDivisionError` used to end the whole
+  test.
+- **A theorem needs a goal.** `@theorem` on a function with no return
+  annotation, or with `-> None`, raises `TypeError` naming the function and
+  its line. Such a theorem read as `True` when it was called or sampled, and
+  as `assumed` in the ledger, where no oracle takes a fact without a term.
+- **Two families are equal when their values are.** `lanky.testing.Table`
+  had no equality of its own, so `f == g` compared two drawn tables by
+  identity, and over `Fn[Fin[0], Nat]`, where it is true because there is one
+  function out of an empty domain, it was refuted. A table now compares its
+  values, recursively for a family of families, and is unhashable like the
+  list it wraps.
 
 ### Notes
 

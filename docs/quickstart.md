@@ -102,6 +102,14 @@ This is the command the project exists for. It imported the file, read the
 registry the decorators filled, turned each theorem into a `Fact`, and offered
 each fact to the oracles strongest first.
 
+The table holds the claims defined in `gauss.py` itself. A theorem the file
+imports from another module is not in it, whether or not that module was
+imported before, so checking a file twice gives the same table twice. To check
+the other module's claims, list its file as well: `lanky check a.py b.py`
+prints one ledger per file, each under a `==> a.py <==` heading. A file inside
+a package may use relative imports; it is given its package while it is
+checked.
+
 The two rows differ, and the difference is the product.
 
 - `scan_monotone` is `proved` by `lean`. The Lean oracle printed the statement as
@@ -245,6 +253,9 @@ why lanky does not simply truncate the evaluator instead.
   for `def impossible() -> 1 == 2` as well, which has no variable to name in a
   counterexample: Python answers the annotation itself, the term is the `bool`
   `False`, and the row still reads `refuted` with an empty witness.
+- Leave off a theorem's return annotation. `@theorem` raises `TypeError`
+  where the function is defined, because a theorem needs a goal, and
+  `lanky check` reports the file as one that does not import.
 - Write a theorem whose hypotheses no sample can satisfy. The fact comes back
   `assumed`, rather than passing vacuously, and its provenance carries
   `untested` with the reason and `valid: 0`. Under `pytest` the same theorem is

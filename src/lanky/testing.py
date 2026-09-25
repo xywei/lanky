@@ -54,6 +54,7 @@ counterexample.
 from __future__ import annotations
 
 import random
+from contextlib import closing
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
@@ -68,6 +69,7 @@ from lanky.terms import (
     evaluate,
     free_variables,
     render,
+    truth_value,
 )
 
 __all__ = [
@@ -78,6 +80,7 @@ __all__ = [
     "in_sort",
     "sample_value",
     "sampling_order",
+    "truth_value",
 ]
 
 #: Largest natural number drawn. Small on purpose: quantifiers are enumerated.
@@ -143,6 +146,22 @@ class Table:
         """Iterate the values."""
         return iter(self.values)
 
+    def __eq__(self, other: Any) -> bool:
+        """Compare two families by their values, which is what equality of families is.
+
+        A statement such as ``f == g`` over two families is evaluated by
+        comparing the tables the sampler drew, and without this the comparison
+        fell back to identity: two empty tables over ``Fin[0]`` are the one
+        function there is out of an empty domain, and they were reported as a
+        counterexample to their own equality. The values are compared as lists,
+        so a family of families compares its entries by this same rule.
+        Defining equality makes a table unhashable, like the mutable list it
+        wraps, and nothing keys a container by one.
+        """
+        if not isinstance(other, Table):
+            return NotImplemented
+        return self.values == other.values
+
     def __repr__(self) -> str:
         """Print as the list of values."""
         return f"Table({self.values!r})"
@@ -162,7 +181,7 @@ def sample_value(
     if isinstance(sort, Refined):
         for _ in range(64):
             value = sample_value(sort.base, rng, context, name)
-            if name is None or sort.holds({**context, name: value}):
+            if name is None or _refinement_holds(sort, {**context, name: value}):
                 return value
         raise SkipSample(f"no draw of {sort} satisfied its refinement")
     if isinstance(sort, FinType):
@@ -177,8 +196,11 @@ def sample_value(
         bound = int(evaluate(domain.bound, context))
         if bound < 0:
             raise SkipSample(f"{domain} has a negative size")
+        # A family over an empty domain exists whatever its codomain is, so the
+        # codomain is only consulted when there is an entry to draw.
+        codomain = _entry_sort(sort.codomain, context) if bound else sort.codomain
         return Table(
-            (sample_value(sort.codomain, rng, context) for _ in range(bound)),
+            (sample_value(codomain, rng, context) for _ in range(bound)),
             name=name or "a family",
         )
     if isinstance(sort, Sort):
@@ -199,6 +221,62 @@ def sample_value(
     if sort is bool:
         return rng.random() < 0.5
     raise SkipSample(f"no sampler for {sort!r}")
+
+
+def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
+    """The sort a family's entries are drawn from, with its refinement settled.
+
+    An entry has no name, so :func:`sample_value` is asked for one without a
+    ``name`` and used to accept every value of a refined codomain's base
+    unchecked: ``f : Fn[Fin[1], Nat & False]`` got a table holding an ordinary
+    natural, and a statement that is true because no such ``f`` exists was
+    refuted by it. A refinement that names only variables already drawn is a
+    condition on the codomain as a whole, and it is settled here once: when it
+    holds, every value of the base is an entry, and when it fails the codomain
+    is empty and no family with a point in its domain exists, so there is no
+    draw to take. A refinement that names anything else cannot be judged at an
+    entry, and drawing from the base as though it were absent would put values
+    outside the declared sort into the table, so that draw is not taken either.
+
+    Raises:
+        SkipSample: If the codomain is empty at these values, or its refinement
+            names a variable nothing here gives a value.
+    """
+    if not isinstance(codomain, Refined):
+        return codomain
+    unbound = sorted(free_variables(codomain.props) - set(context))
+    if unbound:
+        raise SkipSample(
+            f"cannot draw the entries of a family into {codomain}: its "
+            f"refinement names {', '.join(unbound)}, which no entry binds"
+        )
+    if not _refinement_holds(codomain, context):
+        raise SkipSample(
+            f"{codomain} is empty at this draw, so there is no family into it "
+            "with a point in its domain"
+        )
+    return codomain.base
+
+
+def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
+    """Whether the refinement of ``sort`` holds here; skip a draw it cannot judge.
+
+    A refinement is evaluated like any other proposition, and one that divides
+    by a drawn size, ``Nat & (10 // n > 1)``, has no answer at ``n = 0``. That
+    is one draw that cannot be completed and not a test that cannot run, but
+    the ``ZeroDivisionError`` used to escape the sampler and end the whole
+    test at the first such draw.
+
+    Raises:
+        SkipSample: If the refinement cannot be evaluated at these values.
+    """
+    try:
+        return sort.holds(context)
+    except (Undecided, ZeroDivisionError) as exc:
+        raise SkipSample(
+            f"the refinement of {sort} cannot be evaluated at this draw: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def in_sort(value: Any, sort: Any, context: dict[str, Any]) -> bool:
@@ -447,11 +525,17 @@ def check(
     applied outside its domain). Neither is a counterexample, and neither is
     evidence.
 
+    A counterexample names the drawn variables and, when the goal is a
+    universal statement, the quantified point at which it fails (see
+    :func:`_falsify`), so that the refutation can be replayed from what the
+    report says.
+
     A goal that is already a concrete value is not sampled. A theorem with no
     binders and no hypotheses whose return annotation evaluated to a ``bool``
-    has nothing to draw, so it is answered once, and a missing return
-    annotation claims nothing and is read as ``True``, which is what
-    :meth:`lanky.theory.Theorem.__call__` has always answered there.
+    has nothing to draw, so it is answered once. A ``goal`` of ``None``
+    claims nothing and is read as ``True``; only a direct caller can pass
+    one, because :class:`lanky.theory.Theorem` refuses a function with no
+    return annotation.
     """
     if goal is None:
         goal = True
@@ -477,9 +561,9 @@ def check(
             continue
         sampler = sort_sampler(rng, context)
         try:
-            if not all(bool(evaluate(h, context, sampler)) for h in hypotheses):
+            if not all(truth_value(evaluate(h, context, sampler), h) for h in hypotheses):
                 continue
-            satisfied = bool(evaluate(goal, context, sampler))
+            satisfied, witness = _falsify(goal, context, sampler)
         except (Undecided, ZeroDivisionError) as exc:
             report.undecided += 1
             undecided_reason = undecided_reason or _undecided_reason(exc)
@@ -489,7 +573,11 @@ def check(
         report.valid += 1
         if not satisfied:
             report.ok = False
-            report.counterexample = {k: _describe(v) for k, v in context.items()}
+            # The drawn variables come first and win a clash of names: they are
+            # what the statement is false at, and a quantified point that
+            # shadows one of them is detail about why.
+            found = {**context, **{k: v for k, v in witness.items() if k not in context}}
+            report.counterexample = {k: _describe(v) for k, v in found.items()}
             report.reason = "the goal is false at this assignment"
             return report
     if report.valid == 0:
@@ -504,6 +592,49 @@ def check(
     return report
 
 
+def _falsify(
+    goal: Any,
+    context: dict[str, Any],
+    sampler: Any,
+) -> tuple[bool, dict[str, Any]]:
+    """Evaluate ``goal``, and when it is false say at which quantified point.
+
+    The drawn variables are not the whole of a counterexample when the goal
+    quantifies: ``all(i < 2 for i in Fin[n + 3])`` is false because of
+    ``i = 2``, and the evaluator's binding of ``i`` lives in its own copy of
+    the context and is gone by the time the report is written, so the
+    refutation used to name ``n`` alone, which does not say why. This walks the
+    part of the goal where "the point that made it false" is well defined, a
+    universal quantifier and a conjunction and whatever nests in them, one
+    point at a time in the order the evaluator visits them, and returns the
+    first failing assignment along with the answer. Everything else is left to
+    :func:`~lanky.terms.evaluate`, so the answer is the one it gives. A name
+    already in the counterexample is not overwritten by an inner binder that
+    shadows it.
+    """
+    if isinstance(goal, Forall):
+        scope = dict(context)
+        with closing(binder_assignments(goal.binders, scope, sampler)) as walk:
+            for _ in walk:
+                if goal.guard is not None and not truth_value(
+                    evaluate(goal.guard, scope, sampler), goal.guard
+                ):
+                    continue
+                holds, witness = _falsify(goal.body, scope, sampler)
+                if not holds:
+                    point = {var.name: scope[var.name] for var, _ in goal.binders}
+                    point.update((k, v) for k, v in witness.items() if k not in point)
+                    return False, point
+        return True, {}
+    if isinstance(goal, prim.LogicalAnd):
+        for child in goal.children:
+            holds, witness = _falsify(child, context, sampler)
+            if not holds:
+                return False, witness
+        return True, {}
+    return truth_value(evaluate(goal, context, sampler), goal), {}
+
+
 def _constant_report(goal: Any) -> TestReport:
     """The report for a statement that is already a concrete value.
 
@@ -515,7 +646,7 @@ def _constant_report(goal: Any) -> TestReport:
     counterexample is empty on purpose, because no assignment is what makes the
     statement false.
     """
-    if bool(goal):
+    if truth_value(goal, goal):
         return TestReport(ok=True, samples=1, valid=1)
     return TestReport(
         ok=False,

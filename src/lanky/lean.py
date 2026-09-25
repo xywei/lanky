@@ -49,6 +49,12 @@ for proves anything. And a family whose *domain* is refined is declined where it
 is applied: the erasure keeps nothing of the refinement, and affine arithmetic
 over the binders cannot establish one.
 
+A name has to mean in the printed source what it meant in Python, too. A
+generator's first domain is evaluated before its binder exists, so the bound in
+``all(i > 0 for i in Fin[i])`` is an outer ``i``; printed as a guard after the
+binder it would be the binder itself, and the statement vacuous, so a binder
+that captures a name its own domain mentions is declined.
+
 Two places where Lean's arithmetic is not Python's are worth knowing, because a
 statement that uses them means in Lean what Lean's operators mean and not what a
 sampled Python run would compute. Subtraction on ``Nat`` is truncated, so
@@ -72,7 +78,17 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky.prelude import FinType, FnType, Refined, Sort
-from lanky.terms import Abs, Exists, Forall, Sum, Var, conjuncts, init_args, render
+from lanky.terms import (
+    Abs,
+    Exists,
+    Forall,
+    Sum,
+    Var,
+    conjuncts,
+    free_variables,
+    init_args,
+    render,
+)
 
 __all__ = [
     "LeanStatement",
@@ -133,6 +149,12 @@ def lean_type(obj: Any) -> str:
 
     ``Fin[n]`` has no type of its own here: its points are naturals and its
     bound is a guard (see the module docstring), so it prints as ``Nat``.
+
+    A family whose domain is itself a family needs brackets around the domain,
+    because ``→`` is right associative: ``Fn[Fn[Fin[n], Nat], Nat]`` is
+    ``(Nat → Nat) → Nat``, and without the brackets it would read as the
+    two-argument ``Nat → Nat → Nat``, which is a different type and the one a
+    family of families already prints as.
     """
     if isinstance(obj, Sort):
         name = _SORT_NAMES.get(obj.name)
@@ -145,10 +167,20 @@ def lean_type(obj: Any) -> str:
     if isinstance(obj, FinType):
         return "Nat"
     if isinstance(obj, FnType):
-        return f"{lean_type(obj.domain)} → {lean_type(obj.codomain)}"
+        domain = lean_type(obj.domain)
+        if isinstance(_unrefined(obj.domain), FnType):
+            domain = f"({domain})"
+        return f"{domain} → {lean_type(obj.codomain)}"
     if isinstance(obj, Refined):
         return lean_type(obj.base)
     raise UnsupportedTerm(f"cannot print the type {obj!r} in Lean")
+
+
+def _unrefined(obj: Any) -> Any:
+    """The type a refinement refines, or ``obj`` itself; a refinement prints as its base."""
+    while isinstance(obj, Refined):
+        obj = obj.base
+    return obj
 
 
 def _scalar_bounds(domain: Any) -> tuple[Any, Any]:
@@ -658,11 +690,59 @@ def _check_domain(domain: Any, scope: _Scope, refined: _Scope) -> None:
         _check_domain(domain.codomain, scope, scope)
 
 
+def _names_in_domain(domain: Any) -> frozenset[str]:
+    """The variables a binder's domain mentions, apart from its own refinement.
+
+    A refinement's predicates are about the variable being bound (``k : Nat &
+    (k > 0)``) and are printed after it on purpose, so they are not counted.
+    Everything else in the domain, a ``Fin`` bound above all, was evaluated by
+    Python before the binder existed and talks about whatever the name meant
+    there.
+    """
+    if isinstance(domain, Refined):
+        return _names_in_domain(domain.base)
+    if isinstance(domain, FinType):
+        return free_variables(domain.bound)
+    if isinstance(domain, FnType):
+        return _names_in_domain(domain.domain) | _names_in_domain(domain.codomain)
+    return frozenset()
+
+
+def _check_capture(var: Var, domain: Any) -> None:
+    """Refuse a binder whose own domain mentions a variable of the same name.
+
+    ``def bad(i: Nat) -> all(i > 0 for i in Fin[i])`` is a sound Python
+    statement: the ``Fin[i]`` is evaluated before the generator binds its
+    ``i``, so it means the parameter, and the statement is false at ``i = 1``.
+    The printed guard sits after the binder, where Lean reads it as the inner
+    ``i``: ``∀ i : Nat, i < i → i > 0`` is vacuous, ``omega`` proves it, and the
+    ledger would say ``proved``. Declining leaves the fact to the tester, which
+    reads it the way Python does; renaming the binder in the printed source
+    would keep the proof, and is the natural next step if a real statement is
+    ever declined here.
+
+    Raises:
+        UnsupportedTerm: If the binder captures a name its domain mentions.
+    """
+    if var.name in _names_in_domain(domain):
+        raise UnsupportedTerm(
+            f"the binder {var.name} in {domain} captures the {var.name} its own "
+            f"domain mentions: Python reads {domain} before {var.name} is bound, "
+            "and Lean would read the printed guard as the bound variable itself"
+        )
+
+
 def _check(expr: Any, scope: _Scope) -> None:
-    """Check every application below ``expr``, under the binders it sits in."""
+    """Check every application below ``expr``, under the binders it sits in.
+
+    Every binder is also checked for capturing a name its own domain mentions
+    (:func:`_check_capture`), which the printed source would otherwise read
+    as a different statement.
+    """
     if isinstance(expr, Forall | Exists | Sum):
         inner = scope
         for var, domain in expr.binders:
+            _check_capture(var, domain)
             preceding = inner
             inner = inner.extended(((var, domain),))
             _check_domain(domain, preceding, inner)
@@ -699,10 +779,15 @@ def check_applications(term: Any) -> None:
     nested family types and the refinement predicates. Every level of a chained
     application is checked against its own domain.
 
+    The same walk refuses a binder that captures a name its own domain
+    mentions (:func:`_check_capture`), which is a different way for the
+    printed statement to stop being the one lanky holds.
+
     Raises:
         UnsupportedTerm: If an application cannot be shown to stay in bounds,
-            if the domain of the family it applies is refined, or if it applies
-            a family more times than its type has arguments.
+            if the domain of the family it applies is refined, if it applies
+            a family more times than its type has arguments, or if a binder
+            captures a name its own domain mentions.
     """
     _check(term, _Scope())
 

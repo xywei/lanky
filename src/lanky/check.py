@@ -6,11 +6,17 @@ registered theory is asked what facts that object claims; each fact is offered t
 the oracles from the strongest trust class that is willing to take it down to the
 weakest; whatever nobody establishes is recorded as ``ASSUMED`` rather than
 dropped. The result is a ledger that reads like the source file.
+
+A check collects the claims the file itself defines, and none from the modules
+it imports: ``lanky check a.py b.py`` is how two files are checked together.
 """
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
+import inspect
+import keyword
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,6 +28,84 @@ from lanky.plugins import TRUST_STRENGTH, oracle_availability, registry
 __all__ = ["check_path", "establish", "import_path", "oracle_lines"]
 
 
+class _PackageSpec(importlib.machinery.ModuleSpec):
+    """A module spec whose parent package is given rather than read off its name.
+
+    ``ModuleSpec.parent`` is the dotted name without its last part, and the
+    name :func:`import_path` gives a checked file has no dots, so its parent
+    would be empty. A relative import finds its package through
+    ``__package__`` and warns when that disagrees with ``__spec__.parent``
+    (``__package__`` itself is deprecated in favour of the spec), so the two
+    are made to agree here rather than only ``__package__`` being set.
+    """
+
+    def __init__(self, spec: importlib.machinery.ModuleSpec, package: str) -> None:
+        super().__init__(
+            spec.name, spec.loader, origin=spec.origin, loader_state=spec.loader_state
+        )
+        self.submodule_search_locations = spec.submodule_search_locations
+        self.has_location = spec.has_location
+        self._package = package
+
+    @property
+    def parent(self) -> str:
+        """The package the checked file sits in."""
+        return self._package
+
+
+def _package_of(path: Path) -> tuple[str, Path] | None:
+    """The package a file sits in, and the directory that package is found from.
+
+    The walk goes up through the directories that carry an ``__init__.py``
+    and could be imported by name, so ``root/pkg/sub/mod.py`` gives
+    ``("pkg.sub", root)``. A file whose directory is not a package gives
+    ``None``.
+    """
+    parts: list[str] = []
+    directory = path.parent
+    while (
+        directory.name.isidentifier()
+        and not keyword.iskeyword(directory.name)
+        and (directory / "__init__.py").is_file()
+    ):
+        parts.append(directory.name)
+        directory = directory.parent
+    if not parts:
+        return None
+    return ".".join(reversed(parts)), directory
+
+
+def _refuse_a_package_imported_elsewhere(path: Path, package: str, root: Path) -> None:
+    """Raise ``ImportError`` if this process holds another package of the same name.
+
+    A relative import resolves through ``sys.modules`` before it looks at
+    ``sys.path``, so once ``pkg`` (or ``pkg.sub``) has been imported from one
+    source tree, a file of another tree's ``pkg`` would have its ``from
+    .helpers import ...`` answered by the first tree's modules, and its ledger
+    computed from code it does not contain. That happens in ``lanky check
+    a/pkg/mod.py b/pkg/mod.py``. Every level of the package that is already
+    imported has to be the directory the file sits under; a package imported
+    from that same directory, by an earlier check of the same tree, say, is
+    the one the file would get anyway.
+    """
+    parts = package.split(".")
+    for depth in range(1, len(parts) + 1):
+        name = ".".join(parts[:depth])
+        cached = sys.modules.get(name)
+        if cached is None:
+            continue
+        expected = root.joinpath(*parts[:depth]).resolve()
+        locations = [Path(entry).resolve() for entry in getattr(cached, "__path__", None) or ()]
+        if expected not in locations:
+            where = locations[0] if locations else getattr(cached, "__file__", None)
+            raise ImportError(
+                f"{path} sits in the package {package!r}, but {name!r} is already "
+                f"imported from {where or 'somewhere else'} in this process, so a "
+                "relative import in the file would resolve there; check it in a "
+                "process of its own"
+            )
+
+
 def import_path(path: str | Path) -> Any:
     """Import a file as a module, without making it ``__main__``.
 
@@ -31,6 +115,18 @@ def import_path(path: str | Path) -> Any:
     ``sys.modules`` only while the file executes and then withdrawn, so two
     files with the same basename do not share one entry; the module object
     returned here stays usable either way.
+
+    A file inside a package keeps that name as well, and is given the package
+    it sits in (see :func:`_package_of`), so that a relative import in it
+    resolves the way it does when the package imports the file:
+    ``__package__`` and ``__spec__.parent`` name the package, and the
+    directory the package is found from joins ``sys.path`` while the file
+    executes. The package is not imported up front. The file's first relative
+    import imports it the ordinary way, and it then stays imported like any
+    other package; a file with no relative import never runs its package's
+    ``__init__``, as before. A package of the same name already imported
+    from another directory is refused with ``ImportError`` rather than
+    lent to the file (see :func:`_refuse_a_package_imported_elsewhere`).
     """
     path = Path(path).resolve()
     if not path.is_file():
@@ -39,18 +135,23 @@ def import_path(path: str | Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot import {path}")
+    directories = [str(path.parent)]
+    package = _package_of(path)
+    if package is not None:
+        _refuse_a_package_imported_elsewhere(path, *package)
+        spec = _PackageSpec(spec, package[0])
+        directories.append(str(package[1]))
     module = importlib.util.module_from_spec(spec)
-    directory = str(path.parent)
-    added = directory not in sys.path
-    if added:
-        sys.path.insert(0, directory)
+    added = [entry for entry in dict.fromkeys(directories) if entry not in sys.path]
+    for entry in reversed(added):
+        sys.path.insert(0, entry)
     previous = sys.modules.get(name)
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
     finally:
-        if added:
-            sys.path.remove(directory)
+        for entry in added:
+            sys.path.remove(entry)
         # The entry exists so that machinery that looks a class up by its
         # module (dataclasses, pickle) works while the file is executing. It is
         # dropped again afterwards: two files with the same basename would
@@ -172,22 +273,81 @@ def oracle_lines() -> list[str]:
     return lines
 
 
-def check_path(path: str | Path, verbose: bool = False) -> Ledger:
-    """Check one file and return its ledger.
+def _owned(obj: Any, path: Path, module: Any) -> bool | None:
+    """Whether ``obj`` was defined by this check's import of the file at ``path``.
 
-    Only the objects this import registers are checked, so checking several
-    files in one process keeps their ledgers apart, and they are released again
-    afterwards, so a process that checks many files does not accumulate them.
+    The answer comes from the function the object wraps: the object itself
+    when it is a function, or what its ``__wrapped__`` chain leads to, which
+    :func:`functools.update_wrapper` sets and which ``@theorem`` and loopty's
+    decorators both use. Two things have to agree. The function's code was
+    compiled from ``path``, which is where it was defined; and its globals are
+    the namespace of the module :func:`import_path` just executed, which tells
+    this execution of the file apart from another one in the same process. A
+    package whose ``__init__`` imports the checked file runs it a second time,
+    under its real name, when the check imports the package (a relative
+    import in the file does), and the claims that copy registers are the same
+    claims again.
+
+    ``None`` when the object wraps no function, so that nothing about it says
+    where it was written; :func:`check_path` then asks each of its facts for
+    the path it records.
+    """
+    try:
+        function = inspect.unwrap(obj)
+    except ValueError:  # a cycle of ``__wrapped__``: nothing to read
+        return None
+    code = getattr(function, "__code__", None)
+    if code is None:
+        return None
+    if Path(code.co_filename).resolve() != path:
+        return False
+    return getattr(function, "__globals__", None) is vars(module)
+
+
+def _recorded_in(fact: Fact, path: Path) -> bool:
+    """Whether ``fact`` records ``path`` as its source, or records no path at all.
+
+    A fact that records nothing is kept: its object was decorated while the
+    file was imported, nothing says it was written anywhere else, and a claim
+    the ledger drops is a claim nobody sees.
+    """
+    recorded = fact.provenance.get("path")
+    return recorded is None or Path(str(recorded)).resolve() == path
+
+
+def check_path(path: str | Path, verbose: bool = False) -> Ledger:
+    """Check one file and return the ledger of the claims it defines.
+
+    A claim belongs to the file it was written in. An object decorated while
+    the file is imported is checked when it was defined by the file itself
+    (see :func:`_owned`), and a claim that lives in a module the file imports
+    is not collected, on the first check or any other: ``lanky check main.py
+    helpers.py`` checks both files, each for its own claims. Ownership is read
+    off where each object was defined rather than off the order of the
+    imports, so a module that was imported before the check, and runs nothing
+    now, changes nothing, and checking a file twice gives the same ledger
+    twice. Nothing is withdrawn from ``sys.modules`` for that: an imported
+    module stays imported, as it would anywhere else.
+
+    Only the objects this import registers are considered, and they are
+    released from the registry afterwards, so checking several files in one
+    process keeps their ledgers apart and does not accumulate them.
     """
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
 
     registry.load_entry_points()
+    path = Path(path).resolve()
     with registry.collecting() as decorated:
-        import_path(path)
+        module = import_path(path)
     ledger = Ledger()
     for obj in decorated:
+        owned = _owned(obj, path, module)
+        if owned is False:
+            continue
         for theory in registry.theories:
             for fact in theory.facts(obj):
+                if owned is None and not _recorded_in(fact, path):
+                    continue
                 if verbose:
                     print(f"{fact.where} {fact.owner}: {fact.statement}")
                 ledger.add(establish(fact, verbose=verbose))

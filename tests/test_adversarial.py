@@ -19,7 +19,7 @@ from lanky import theorem
 from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.test import TestOracle
-from lanky.prelude import Fin, Fn, Nat
+from lanky.prelude import Bool, Fin, Fn, Nat
 from lanky.terms import Exists, Forall, Undecided, Var, render, structurally_equal
 
 # {{{ a hypothesis no draw can satisfy
@@ -736,6 +736,346 @@ def test_in_sort_knows_the_sorts_it_can_judge() -> None:
     assert in_sort(3, Fin[Var("n")], {})
     # a sort with no membership test accepts, rather than rejecting every draw
     assert in_sort(object(), Fn[Fin[1], Nat], {})
+
+
+# }}}
+
+
+# {{{ a refutation names the quantified point that made it false
+
+
+def test_a_refutation_under_a_quantifier_names_the_point() -> None:
+    """The failing binder value used to be lost with the evaluator's context.
+
+    ``all(i < 2 for i in Fin[n + 3])`` is false because of ``i = 2``, and the
+    counterexample said only what ``n`` was drawn as, so it did not say why.
+    A nest of quantifiers lost every point the same way, in the ledger too.
+    """
+
+    @theorem
+    def bad(n: Nat) -> all(i < 2 for i in Fin[n + 3]):
+        """False at every ``n``, and always because of ``i = 2``."""
+
+    report = bad.report(n=5)
+    assert not report.ok
+    assert set(report.counterexample) == {"n", "i"}
+    assert report.counterexample["i"] == 2
+
+    @theorem
+    def nested(n: Nat) -> all(
+        all(i + j < 3 for j in Fin[n + 1] if j >= i) for i in Fin[n + 1]
+    ):
+        """False from ``n = 2`` on: at ``i = 1, j = 2``, and from 3 on at ``i = 0, j = 3``."""
+
+    def first_failure(size: int) -> tuple[int, int]:
+        # the points are visited in order, outer binder first, so the first
+        # failure is the one the report should name
+        return (1, 2) if size == 2 else (0, 3)
+
+    report = nested.report(n=50)
+    assert not report.ok
+    witness = report.counterexample
+    assert witness["n"] >= 2
+    assert (witness["i"], witness["j"]) == first_failure(witness["n"])
+
+    result = TestOracle(samples=50).establish(nested.fact())
+    assert result is not None
+    assert result.status is Status.REFUTED
+    witness = result.provenance["counterexample"]
+    assert (witness["i"], witness["j"]) == first_failure(witness["n"])
+
+
+def test_a_quantified_point_does_not_overwrite_a_drawn_variable() -> None:
+    """A binder that shadows a parameter is detail; the parameter is the witness.
+
+    ``i`` is drawn, and the generator binds another ``i`` over ``Fin[i]``. The
+    statement is false at every drawn ``i`` from 1 on, where the inner ``i = 0``
+    fails, and the value that reproduces that is the drawn one.
+    """
+
+    @theorem
+    def shadowing(i: Nat) -> all(i > 0 for i in Fin[i]):
+        """The binder's own domain names the parameter it shadows."""
+
+    report = shadowing.report(n=50)
+    assert not report.ok
+    assert report.counterexample["i"] >= 1
+
+
+# }}}
+
+
+# {{{ a theorem with no goal
+
+
+def test_a_theorem_without_a_goal_is_refused_where_it_is_written() -> None:
+    """A missing return annotation is a ``TypeError`` at the decorator.
+
+    Such a theorem claims nothing. It read as ``True`` when it was called or
+    sampled, and as ``assumed`` under ``lanky check``, because its fact had no
+    term for an oracle to take: one statement with two answers. It is now
+    refused where it is written, and so is ``-> None``, which evaluates to
+    the same missing goal.
+    """
+    with pytest.raises(TypeError, match="a theorem needs a goal"):
+
+        @theorem
+        def no_goal(n: Nat, h: n > 1):
+            """Hypotheses and no conclusion: it claims nothing."""
+
+    with pytest.raises(TypeError, match="no_none_goal at .*: a theorem needs a goal"):
+
+        @theorem
+        def no_none_goal(n: Nat) -> None:
+            """``None`` is not a proposition either."""
+
+
+def test_a_file_with_a_goalless_theorem_does_not_import(tmp_path, capsys) -> None:
+    """Under ``lanky check`` the refusal is an import failure with its reason."""
+    from lanky import cli
+
+    path = tmp_path / "goalless.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Nat\n\n\n"
+        "@theorem\n"
+        "def goalless(n: Nat, h: n > 1):\n"
+        '    """No return annotation."""\n',
+        encoding="utf-8",
+    )
+    assert cli.main(["check", str(path)]) == 1
+    printed = capsys.readouterr().out
+    assert "could not be imported" in printed
+    assert "TypeError: goalless at goalless.py:7: a theorem needs a goal" in printed
+
+
+def test_the_tester_still_reads_a_missing_goal_as_true() -> None:
+    """``lanky.testing.check`` takes ``goal=None`` from a direct caller as ``True``."""
+    from lanky.testing import check
+
+    report = check([("n", Nat)], [], None, samples=5)
+    assert report.ok
+    assert report.valid == 5
+
+
+# }}}
+
+
+# {{{ a statement that is not a proposition
+
+
+def test_a_goal_that_is_not_a_proposition_is_never_tested() -> None:
+    """``-> n + 1`` claims nothing, and Python's truthiness made it a pass.
+
+    Lean declines it because its goal has type ``Nat``, while the tester read
+    every nonzero draw as true and the ledger said ``tested``. The value is now
+    refused wherever the statement is run, and the oracle's fact stays
+    assumed with the reason in its provenance.
+    """
+
+    @theorem
+    def not_a_prop(n: Nat) -> n + 1:
+        """A number where a proposition should be."""
+
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_prop.report(n=5)
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_prop(n=1)
+    result = TestOracle(samples=5).establish(not_a_prop.fact())
+    assert result is not None
+    assert result.status is Status.ASSUMED
+    assert result.decided_by is None
+    assert "not a proposition" in result.provenance["reason"]
+
+
+def test_a_hypothesis_that_is_not_a_proposition_is_refused_too() -> None:
+    """A hypothesis was coerced the same way, so it filtered by truthiness."""
+
+    @theorem
+    def not_a_hypothesis(n: Nat, h: n + 1) -> n >= 0:
+        """A number where a hypothesis should be."""
+
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_hypothesis.report(n=5)
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_hypothesis(n=1)
+
+
+def test_a_numpy_boolean_is_a_truth_value() -> None:
+    """A comparison of numpy values answers a numpy bool, and that is one."""
+    import numpy as np
+
+    from lanky.testing import truth_value
+
+    assert truth_value(np.bool_(True), "p") is True
+    assert truth_value(np.int64(3) > np.int64(2), "p") is True
+    assert truth_value(False, "p") is False
+    with pytest.raises(TypeError, match="not a proposition"):
+        truth_value(np.int64(1), "p")
+
+    @theorem
+    def ordered(f: Fn[Fin[2], Nat]) -> f(1) >= f(0):
+        """Run at a numpy array, whose comparisons answer numpy bools."""
+
+    assert ordered(f=np.array([0, 1])).holds
+    assert not ordered(f=np.array([1, 0])).holds
+
+
+def test_a_number_inside_a_proposition_is_refused_too() -> None:
+    """One connective down, a number still passed as a proposition.
+
+    Only the value of the whole goal and of each hypothesis was checked. The
+    connectives and the quantifiers read their operands by Python's
+    truthiness, so ``(n + 1) | (n > 5)`` and ``any(i + 1 for i in Fin[n + 2])``
+    were ``TESTED``, and calling them answered that they held. A family of
+    ``Bool`` given as numbers was refused as ``mask(0)`` and accepted under
+    ``all``, and a refinement by a number refined by nothing.
+    """
+
+    @theorem
+    def in_a_disjunction(n: Nat) -> (n + 1) | (n > 5):
+        """A number as one side of a disjunction."""
+
+    @theorem
+    def as_a_witness(n: Nat) -> any(i + 1 for i in Fin[n + 2]):
+        """A number as the body of an existential."""
+
+    @theorem
+    def in_a_hypothesis(n: Nat, h: (n + 1) | (n < 0)) -> n >= 0:
+        """A number inside a disjunctive hypothesis."""
+
+    for statement in (in_a_disjunction, as_a_witness, in_a_hypothesis):
+        with pytest.raises(TypeError, match="not a proposition"):
+            statement.report(n=5)
+        result = TestOracle(samples=5).establish(statement.fact())
+        assert result is not None
+        assert result.status is Status.ASSUMED
+        assert "not a proposition" in result.provenance["reason"]
+    with pytest.raises(TypeError, match="not a proposition"):
+        in_a_disjunction(n=1)
+    with pytest.raises(TypeError, match="not a proposition"):
+        as_a_witness(n=1)
+
+    @theorem
+    def all_set(n: Nat, mask: Fn[Fin[n], Bool]) -> all(mask(i) for i in Fin[n]):
+        """Every entry of a family of Booleans is set."""
+
+    with pytest.raises(TypeError, match="not a proposition"):
+        all_set(n=2, mask=[1, 1])
+    assert all_set(n=2, mask=[True, True]).holds
+
+    k = Var("k")
+    with pytest.raises(TypeError, match="not a proposition"):
+        (Nat & (k + 1)).holds({"k": 3})
+
+
+# }}}
+
+
+# {{{ a family's codomain, and equality of families
+
+
+def test_a_family_into_an_empty_codomain_is_not_a_counterexample() -> None:
+    """``Fn[Fin[1], Nat & False]`` has no inhabitant, so ``-> False`` over it holds.
+
+    An entry has no name to bind a refinement to, so the refinement of a
+    codomain was dropped when an entry was drawn: the table held an ordinary
+    natural, and a statement that is true because no such ``f`` exists was
+    refuted by it. Now no draw is taken, and the fact stays assumed.
+    """
+
+    @theorem
+    def vacuous(f: Fn[Fin[1], Nat & False]) -> False:
+        """True, because nothing can be passed for ``f``."""
+
+    report = vacuous.report(n=20)
+    assert report.ok
+    assert report.valid == 0
+    assert "empty" in report.skipped[0]
+    result = TestOracle(samples=20).establish(vacuous.fact())
+    assert result is not None
+    assert result.status is Status.ASSUMED
+
+
+def test_a_codomain_refinement_is_judged_where_it_can_be() -> None:
+    """A refinement naming only drawn variables is a condition, and it is kept.
+
+    As a codomain ``Nat & (n > 0)`` is empty at ``n = 0`` and all of ``Nat``
+    otherwise, so a draw at ``n = 0`` is not taken; it used to be, and it
+    refuted the statement. A refinement that names nothing drawn cannot be
+    judged at an entry, and its draw is not taken either. A family over an
+    empty domain needs no entry, so its codomain is never consulted.
+    """
+    import random
+
+    from lanky.testing import SkipSample, sample_value
+
+    @theorem
+    def sized(n: Nat, f: Fn[Fin[2], Nat & (n > 0)]) -> n > 0:
+        """Whenever such an ``f`` exists, ``n`` is positive."""
+
+    report = sized.report(n=30)
+    assert report.ok
+    assert report.valid == 30
+
+    rng = random.Random(0)
+    with pytest.raises(SkipSample, match="names x"):
+        sample_value(Fn[Fin[1], Nat & (Var("x") > 0)], rng, {}, "f")
+    assert sample_value(Fn[Fin[0], Nat & False], rng, {}, "f").values == []
+    table = sample_value(Fn[Fin[2], Nat & (Var("n") > 0)], rng, {"n": 1}, "f")
+    assert len(table) == 2
+
+
+def test_a_refinement_that_cannot_be_evaluated_skips_the_draw() -> None:
+    """``Nat & (10 // n > 1)`` has no answer at ``n = 0``, and that is one draw.
+
+    The ``ZeroDivisionError`` escaped the sampler and ended the whole test at
+    the first draw of ``n = 0``: a named refinement always did that, and once a
+    codomain's refinement was evaluated too, a statement that used to be tested
+    could no longer run at all. The goal is false at ``n = 0``, so a draw taken
+    there regardless would refute it.
+    """
+
+    @theorem
+    def into_a_ratio(n: Nat, f: Fn[Fin[2], Nat & (10 // n > 1)]) -> n >= 1:
+        """Such an ``f`` exists only where ``10 // n > 1``, so ``n`` is positive."""
+
+    @theorem
+    def named_ratio(n: Nat, k: Nat & (10 // n > 1)) -> n >= 1:
+        """The same condition on a named variable."""
+
+    for statement in (into_a_ratio, named_ratio):
+        report = statement.report(n=30)
+        assert report.ok
+        assert report.valid == 30
+        assert any("cannot be evaluated" in reason for reason in report.skipped)
+
+
+def test_two_families_compare_by_their_values() -> None:
+    """Two empty families over ``Fin[0]`` are the one function there is.
+
+    A table had no equality of its own, so ``f == g`` compared two drawn
+    tables by identity and was refuted by the only pair there is.
+    """
+    from lanky.testing import Table
+
+    @theorem
+    def empty_equal(f: Fn[Fin[0], Nat], g: Fn[Fin[0], Nat]) -> f == g:
+        """There is exactly one function out of an empty domain."""
+
+    report = empty_equal.report(n=10)
+    assert report.ok
+    assert report.valid == 10
+    result = TestOracle(samples=10).establish(empty_equal.fact())
+    assert result is not None
+    assert result.status is Status.TESTED
+    assert empty_equal(f=[], g=[]).holds
+
+    assert Table([1, 2]) == Table([1, 2])
+    assert Table([1, 2]) != Table([2, 1])
+    assert Table([Table([0])]) == Table([Table([0])])
+    assert Table([Table([0])]) != Table([Table([1])])
 
 
 # }}}

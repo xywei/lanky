@@ -226,7 +226,9 @@ never read as a counterexample.
 
 Decorators are inert and registering: `@theorem` returns a callable object that
 runs natively and puts itself in the registry. `lanky check FILE` imports the
-file and reads the registry. No environment variable changes what the code means.
+file and reads the registry, keeping the claims defined in that file and none
+from the modules it imports; `lanky check a.py b.py` checks both, each for its
+own. No environment variable changes what the code means.
 
 ## Name
 

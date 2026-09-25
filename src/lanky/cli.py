@@ -20,26 +20,32 @@ statement.
 from __future__ import annotations
 
 import argparse
+import json
 import traceback
 from pathlib import Path
 from typing import Any
 
 from lanky.check import check_path, oracle_lines
-from lanky.ledger import Status
+from lanky.ledger import Ledger, Status
 from lanky.plugins import registry
 
 __all__ = ["CheckVerb", "build_parser", "main"]
 
 
 class CheckVerb:
-    """``lanky check FILE``: print the ledger of everything the file claims."""
+    """``lanky check FILE...``: print the ledger of everything each file claims."""
 
     name = "check"
-    help = "check a file: print every obligation and who decided it"
+    help = "check files: print every obligation and who decided it"
 
     def add_arguments(self, parser: argparse.ArgumentParser, /) -> None:
         """Declare the arguments of ``check``."""
-        parser.add_argument("file", help="the Python file to check")
+        parser.add_argument(
+            "files",
+            nargs="+",
+            metavar="FILE",
+            help="a Python file to check for the claims it defines (several may be listed)",
+        )
         parser.add_argument("--json", metavar="OUT", help="also write the ledger as JSON")
         parser.add_argument(
             "--verbose",
@@ -48,31 +54,68 @@ class CheckVerb:
         )
 
     def run(self, args: argparse.Namespace, /) -> int:
-        """Check the file, print the ledger, and report refutations.
+        """Check each file, print its ledger, and report refutations.
 
-        Exit code 1 on any refutation, and 1 with the traceback when the file
+        Exit code 1 on any refutation, and 1 with the traceback when a file
         itself cannot be imported, because a file that does not import is a
         broken claim too. Exit code 2 when there is no such file, which is a
-        mistake in the command rather than in the file. A semantics
-        disagreement is printed but does not fail the check: nothing was
-        refuted, two readings differ.
+        mistake in the command rather than in the file, and then nothing is
+        checked. A semantics disagreement is printed but does not fail the
+        check: nothing was refuted, two readings differ.
+
+        Whether a file exists is asked before anything is imported rather than
+        read off a ``FileNotFoundError``, because the file can raise one of its
+        own: a checked file that opens a data file which is not there is a
+        file that does not import, and deserves its traceback and exit code 1,
+        not a claim that the file being checked is missing.
+
+        Each file is checked for the claims it defines (see
+        :func:`lanky.check.check_path`), so a claim imported from another
+        module is checked by listing that module's file too. With several
+        files each gets its own ledger under a ``==> FILE <==`` heading, since
+        fact ids are unique within one file's ledger and not across files;
+        one that does not import does not stop the others, and ``--json``
+        writes the facts of every file that imported into one list. A
+        namespace carrying a single ``file`` rather than ``files``, which is
+        what ``loopty check`` builds, is read as a list of one.
         """
+        files = getattr(args, "files", None) or [args.file]
+        missing = [file for file in files if not Path(file).is_file()]
+        if missing:
+            for file in missing:
+                print(f"lanky check: no such file: {file}")
+            return 2
         if args.verbose:
             for line in oracle_lines():
                 print(line)
             print()
-        try:
-            ledger = check_path(args.file, verbose=args.verbose)
-        except FileNotFoundError:
-            print(f"lanky check: no such file: {args.file}")
-            return 2
-        except Exception:  # noqa: BLE001 - the file is the user's, so show why
-            print(f"lanky check: {args.file} could not be imported")
-            print(traceback.format_exc().rstrip())
-            return 1
+        code = 0
+        checked = 0
+        facts: list[dict] = []
+        for index, file in enumerate(files):
+            if len(files) > 1:
+                if index:
+                    print()
+                print(f"==> {file} <==")
+            try:
+                ledger = check_path(file, verbose=args.verbose)
+            except Exception:  # noqa: BLE001 - the file is the user's, so show why
+                print(f"lanky check: {file} could not be imported")
+                print(traceback.format_exc().rstrip())
+                code = 1
+                continue
+            checked += 1
+            facts.extend(fact.to_dict() for fact in ledger)
+            if self._report(ledger):
+                code = 1
+        if args.json and checked:
+            Path(args.json).write_text(json.dumps(facts, indent=2, default=str), encoding="utf-8")
+        return code
+
+    @staticmethod
+    def _report(ledger: Ledger) -> bool:
+        """Print one ledger and what follows it; whether anything was refuted."""
         print(ledger.render())
-        if args.json:
-            Path(args.json).write_text(ledger.to_json(), encoding="utf-8")
         for fact in ledger:
             disagreement = fact.provenance.get(
                 "semantics_disagreement"
@@ -87,21 +130,21 @@ class CheckVerb:
             for note in fact.provenance.get("semantics", ()):
                 print(f"  {note}")
         refuted = ledger.by_status(Status.REFUTED)
-        if refuted:
-            print()
-            for fact in refuted:
-                print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
-                if "counterexample" not in fact.provenance:
-                    continue
-                witness = fact.provenance["counterexample"]
-                print(f"  counterexample: {witness}")
-                if not witness and fact.provenance.get("reason"):
-                    # A closed statement such as ``-> 1 == 2`` is false at no
-                    # assignment in particular. The empty witness is the honest
-                    # one and says nothing on its own, so the reason follows it.
-                    print(f"  {fact.provenance['reason']}")
-            return 1
-        return 0
+        if not refuted:
+            return False
+        print()
+        for fact in refuted:
+            print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
+            if "counterexample" not in fact.provenance:
+                continue
+            witness = fact.provenance["counterexample"]
+            print(f"  counterexample: {witness}")
+            if not witness and fact.provenance.get("reason"):
+                # A closed statement such as ``-> 1 == 2`` is false at no
+                # assignment in particular. The empty witness is the honest
+                # one and says nothing on its own, so the reason follows it.
+                print(f"  {fact.provenance['reason']}")
+        return True
 
 
 def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Any]]:
