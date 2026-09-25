@@ -1173,6 +1173,71 @@ def test_a_refinement_that_rejects_every_draw_leaves_the_fact_assumed() -> None:
     assert "witness" in fact.provenance["untested"]
 
 
+def test_a_refinement_that_rejects_every_draw_stops_at_the_draw_budget() -> None:
+    """Every draw is undecided, and the test ends at its budget of draws.
+
+    The binder's draws are a fixed handful per assignment and the refinement
+    only filters them, so nothing redraws until the refinement is satisfied:
+    the test is ``samples * REJECTION_FACTOR`` attempts, each of them counted
+    as undecided, and it ends.
+    """
+    from lanky.testing import REJECTION_FACTOR
+
+    n, k = Var("n"), Var("k")
+    far = Forall(((n, Nat),), Forall(((k, Nat & (k > 100)),), k < 0))
+    fact = TestOracle(samples=30).establish(
+        Fact(id="far", kind="theorem", statement="far", term=far)
+    )
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["samples"] == 30 * REJECTION_FACTOR
+    assert fact.provenance["undecided"] == 30 * REJECTION_FACTOR
+
+
+def test_a_refinement_that_admits_few_draws_is_tested_on_the_ones_it_admits() -> None:
+    """``Nat & (k == 3)`` admits about one draw in six: tested, and never at another k.
+
+    A walk that admitted no draw is undecided and is not counted as valid, so
+    the valid draws are the ones that evaluated the body at ``k = 3``.
+    """
+    n, k = Var("n"), Var("k")
+    true = Forall(((n, Nat),), Forall(((k, Nat & (k == 3)),), k == 3))
+    fact = _establish("three", true)
+    assert fact.status is Status.TESTED
+    assert fact.provenance["valid"] == 200
+    assert fact.provenance["undecided"] > 0
+    false = Forall(((n, Nat),), Forall(((k, Nat & (k == 3)),), k == 4))
+    fact = _establish("four", false)
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["k"] == 3
+
+
+def test_a_refinement_that_names_an_earlier_binder_is_read_at_its_point() -> None:
+    """``k`` in ``Fin[n] & (k > j)`` ranges above the ``j`` bound just before it.
+
+    Both quantifiers see exactly the pairs with ``j < k``: the universal is
+    refuted at a pair inside the domain and the existential that needs
+    ``k == j`` has no witness among them.
+    """
+    n, j, k = Var("n"), Var("j"), Var("k")
+    binders = ((j, Fin[n]), (k, Fin[n] & (k > j)))
+    assert _establish("above", Forall(((n, Nat),), Forall(binders, k > j))).status is (
+        Status.TESTED
+    )
+    fact = _establish("far_above", Forall(((n, Nat),), Forall(binders, k > j + 1)))
+    assert fact.status is Status.REFUTED
+    point = fact.provenance["counterexample"]
+    assert point["j"] < point["k"] < point["n"]
+    assert point["k"] == point["j"] + 1
+    fact = _establish("equal", Forall(((n, Nat),), Exists(binders, k == j)))
+    assert fact.status is Status.REFUTED
+    assert "every point was tried" in fact.provenance["reason"]
+    # nested rather than grouped, the inner refinement reads the outer binder
+    nested = Forall(((j, Fin[n]),), Exists(((k, Fin[n] & (k > j)),), k == j + 1))
+    fact = _establish("next", Forall(((n, Nat),), nested))
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["j"] == fact.provenance["counterexample"]["n"] - 1
+
+
 def test_a_definition_over_a_refined_domain_is_assigned_only_inside_it() -> None:
     """``f(i) == 0`` at the points of ``Fin[3] & (i > 0)`` says nothing of ``f(0)``.
 

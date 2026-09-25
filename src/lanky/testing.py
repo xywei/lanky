@@ -471,7 +471,9 @@ def satisfy_hypotheses(
     for i in Fin[n] & (i > 0))`` says nothing about ``f(0)``, which keeps its
     drawn value. A refinement that cannot be answered at some point ends the
     walk and leaves the hypothesis to the filter, which meets the same
-    question there and drops the draw.
+    question there: a division by zero or an undecided point drops the draw,
+    and a refinement that is not a proposition stops the test, as it does
+    wherever a proposition is read.
 
     Raises:
         SkipSample: If a definition demands a value the codomain does not have.
