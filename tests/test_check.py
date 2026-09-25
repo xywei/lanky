@@ -533,3 +533,121 @@ def test_an_object_with_no_function_is_placed_by_the_path_its_fact_records(
     path = tmp_path / "plain.py"
     path.write_text(PLAIN, encoding="utf-8")
     assert [fact.owner for fact in check_path(path)] == ["here", "unrecorded"]
+
+
+def _package(tmp_path, name: str, init: str = "") -> tuple:
+    """``project/<name>/`` with a helper, a module using it, and a subpackage."""
+    root = tmp_path / "project" / name
+    (root / "sub").mkdir(parents=True)
+    (root / "__init__.py").write_text(init, encoding="utf-8")
+    (root / "helpers.py").write_text(HELPER + "\nVALUE = 2\n", encoding="utf-8")
+    (root / "sub" / "__init__.py").write_text("", encoding="utf-8")
+    header = (
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Nat\n"
+    )
+    mod = root / "mod.py"
+    mod.write_text(
+        header
+        + "\nfrom . import helpers\nfrom .helpers import VALUE, helper_claim  # noqa: F401\n\n\n"
+        "@theorem\ndef mod_claim(n: Nat) -> n * helpers.VALUE == n + n:\n"
+        '    """Uses what a relative import brought in."""\n',
+        encoding="utf-8",
+    )
+    deep = root / "sub" / "deep.py"
+    deep.write_text(
+        header + "\nfrom ..helpers import VALUE\n\n\n"
+        "@theorem\ndef deep_claim(n: Nat) -> n + VALUE > n:\n"
+        '    """Two levels down."""\n',
+        encoding="utf-8",
+    )
+    return mod, deep
+
+
+def test_a_file_inside_a_package_can_import_relatively(tmp_path) -> None:
+    """``from .helpers import ...`` in ``pkg/mod.py`` works under ``lanky check``.
+
+    The file was loaded as a top-level module with an empty ``__package__``,
+    so a relative import failed with "attempted relative import with no known
+    parent package" and the check reported an import failure. The module
+    keeps its own name and is given its package; ``__spec__.parent`` agrees
+    with ``__package__``, so the import system does not warn about the pair.
+    """
+    import sys
+    import warnings
+
+    from lanky.check import import_path
+    from lanky.plugins import registry
+
+    name = "lanky_test_pkg"
+    mod, deep = _package(tmp_path, name)
+    path_before = list(sys.path)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message="__package__ != __spec__")
+            assert [fact.owner for fact in check_path(mod)] == ["mod_claim"]
+            assert [fact.owner for fact in check_path(deep)] == ["deep_claim"]
+            with registry.collecting():
+                module = import_path(mod)
+                deeper = import_path(deep)
+        assert module.__name__ == "lanky_checked_mod"
+        assert module.__package__ == module.__spec__.parent == name
+        assert deeper.__package__ == deeper.__spec__.parent == f"{name}.sub"
+        assert sys.path == path_before
+        assert f"{name}.helpers" in sys.modules
+    finally:
+        for key in [key for key in sys.modules if key.split(".")[0] == name]:
+            sys.modules.pop(key, None)
+
+
+def test_a_package_that_imports_the_checked_file_does_not_double_its_claims(tmp_path) -> None:
+    """The package's own copy of the checked file is not this check's.
+
+    When ``pkg/__init__.py`` imports ``pkg.mod`` and the checked ``pkg/mod.py``
+    imports relatively, the first check runs the file twice, once as the
+    package's submodule and once under the check's own name, and both copies
+    register the same theorem from the same file. Only the copy the check
+    executed is collected, so the first ledger is the second one.
+    """
+    import sys
+
+    name = "lanky_test_pkg_imports_mod"
+    mod, _deep = _package(tmp_path, name, init="from . import mod  # noqa: F401\n")
+    try:
+        first = [fact.owner for fact in check_path(mod)]
+        assert f"{name}.mod" in sys.modules
+        second = [fact.owner for fact in check_path(mod)]
+        assert first == second == ["mod_claim"]
+    finally:
+        for key in [key for key in sys.modules if key.split(".")[0] == name]:
+            sys.modules.pop(key, None)
+
+
+def test_a_package_init_is_checked_in_its_own_package(tmp_path) -> None:
+    """``pkg/__init__.py`` resolves ``.helpers`` in ``pkg``, and its claim is collected once.
+
+    Its relative import imports ``pkg``, which runs the same ``__init__.py``
+    again under the package's name; that copy's theorem is not this check's.
+    """
+    import sys
+
+    name = "lanky_test_pkg_init"
+    init = (
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Nat\n\n"
+        "from .helpers import VALUE\n\n\n"
+        "@theorem\n"
+        "def init_claim(n: Nat) -> n + VALUE > n:\n"
+        '    """Written in the package itself."""\n'
+    )
+    mod, _deep = _package(tmp_path, name, init=init)
+    try:
+        first = [fact.owner for fact in check_path(mod.parent / "__init__.py")]
+        assert name in sys.modules
+        second = [fact.owner for fact in check_path(mod.parent / "__init__.py")]
+        assert first == second == ["init_claim"]
+    finally:
+        for key in [key for key in sys.modules if key.split(".")[0] == name]:
+            sys.modules.pop(key, None)

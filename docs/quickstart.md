@@ -106,7 +106,9 @@ The table holds the claims defined in `gauss.py` itself. A theorem the file
 imports from another module is not in it, whether or not that module was
 imported before, so checking a file twice gives the same table twice. To check
 the other module's claims, list its file as well: `lanky check a.py b.py`
-prints one ledger per file, each under a `==> a.py <==` heading.
+prints one ledger per file, each under a `==> a.py <==` heading. A file inside
+a package may use relative imports; it is given its package while it is
+checked.
 
 The two rows differ, and the difference is the product.
 

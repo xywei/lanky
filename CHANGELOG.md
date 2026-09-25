@@ -220,6 +220,17 @@ listed because it changes behaviour a reader could already have depended on.
   heading; `--json` writes one list of all their facts. Nothing is withdrawn
   from `sys.modules` for this: an imported module stays imported, as it
   would anywhere else.
+- **A checked file inside a package can import relatively.** `import_path`
+  loaded every file as a top-level module named `lanky_checked_<stem>`, so
+  `from .helpers import claim` in `pkg/mod.py` failed with "attempted
+  relative import with no known parent package" and `lanky check` reported
+  an import failure. The module keeps that name and is given its package:
+  `__package__` and `__spec__.parent` both name it, and the directory the
+  package is found from is on `sys.path` while the file executes. The
+  package is imported by the file's first relative import, the ordinary way;
+  a file with no relative import never runs its package's `__init__`. When
+  the package's `__init__` imports the checked file itself, that copy's
+  claims are not collected a second time.
 - **A refutation names the quantified point that made it false.** The
   property tester built a counterexample from the drawn variables alone, and
   a quantifier's binding lived in the evaluator's own copy of the context, so

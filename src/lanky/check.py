@@ -13,8 +13,10 @@ it imports: ``lanky check a.py b.py`` is how two files are checked together.
 
 from __future__ import annotations
 
+import importlib.machinery
 import importlib.util
 import inspect
+import keyword
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,53 @@ from lanky.plugins import TRUST_STRENGTH, oracle_availability, registry
 __all__ = ["check_path", "establish", "import_path", "oracle_lines"]
 
 
+class _PackageSpec(importlib.machinery.ModuleSpec):
+    """A module spec whose parent package is given rather than read off its name.
+
+    ``ModuleSpec.parent`` is the dotted name without its last part, and the
+    name :func:`import_path` gives a checked file has no dots, so its parent
+    would be empty. A relative import finds its package through
+    ``__package__`` and warns when that disagrees with ``__spec__.parent``
+    (``__package__`` itself is deprecated in favour of the spec), so the two
+    are made to agree here rather than only ``__package__`` being set.
+    """
+
+    def __init__(self, spec: importlib.machinery.ModuleSpec, package: str) -> None:
+        super().__init__(
+            spec.name, spec.loader, origin=spec.origin, loader_state=spec.loader_state
+        )
+        self.submodule_search_locations = spec.submodule_search_locations
+        self.has_location = spec.has_location
+        self._package = package
+
+    @property
+    def parent(self) -> str:
+        """The package the checked file sits in."""
+        return self._package
+
+
+def _package_of(path: Path) -> tuple[str, Path] | None:
+    """The package a file sits in, and the directory that package is found from.
+
+    The walk goes up through the directories that carry an ``__init__.py``
+    and could be imported by name, so ``root/pkg/sub/mod.py`` gives
+    ``("pkg.sub", root)``. A file whose directory is not a package gives
+    ``None``.
+    """
+    parts: list[str] = []
+    directory = path.parent
+    while (
+        directory.name.isidentifier()
+        and not keyword.iskeyword(directory.name)
+        and (directory / "__init__.py").is_file()
+    ):
+        parts.append(directory.name)
+        directory = directory.parent
+    if not parts:
+        return None
+    return ".".join(reversed(parts)), directory
+
+
 def import_path(path: str | Path) -> Any:
     """Import a file as a module, without making it ``__main__``.
 
@@ -35,6 +84,16 @@ def import_path(path: str | Path) -> Any:
     ``sys.modules`` only while the file executes and then withdrawn, so two
     files with the same basename do not share one entry; the module object
     returned here stays usable either way.
+
+    A file inside a package keeps that name as well, and is given the package
+    it sits in (see :func:`_package_of`), so that a relative import in it
+    resolves the way it does when the package imports the file:
+    ``__package__`` and ``__spec__.parent`` name the package, and the
+    directory the package is found from joins ``sys.path`` while the file
+    executes. The package is not imported up front. The file's first relative
+    import imports it the ordinary way, and it then stays imported like any
+    other package; a file with no relative import never runs its package's
+    ``__init__``, as before.
     """
     path = Path(path).resolve()
     if not path.is_file():
@@ -43,18 +102,22 @@ def import_path(path: str | Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot import {path}")
+    directories = [str(path.parent)]
+    package = _package_of(path)
+    if package is not None:
+        spec = _PackageSpec(spec, package[0])
+        directories.append(str(package[1]))
     module = importlib.util.module_from_spec(spec)
-    directory = str(path.parent)
-    added = directory not in sys.path
-    if added:
-        sys.path.insert(0, directory)
+    added = [entry for entry in dict.fromkeys(directories) if entry not in sys.path]
+    for entry in reversed(added):
+        sys.path.insert(0, entry)
     previous = sys.modules.get(name)
     sys.modules[name] = module
     try:
         spec.loader.exec_module(module)
     finally:
-        if added:
-            sys.path.remove(directory)
+        for entry in added:
+            sys.path.remove(entry)
         # The entry exists so that machinery that looks a class up by its
         # module (dataclasses, pickle) works while the file is executing. It is
         # dropped again afterwards: two files with the same basename would
