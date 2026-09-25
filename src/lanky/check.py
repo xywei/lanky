@@ -75,6 +75,37 @@ def _package_of(path: Path) -> tuple[str, Path] | None:
     return ".".join(reversed(parts)), directory
 
 
+def _refuse_a_package_imported_elsewhere(path: Path, package: str, root: Path) -> None:
+    """Raise ``ImportError`` if this process holds another package of the same name.
+
+    A relative import resolves through ``sys.modules`` before it looks at
+    ``sys.path``, so once ``pkg`` (or ``pkg.sub``) has been imported from one
+    source tree, a file of another tree's ``pkg`` would have its ``from
+    .helpers import ...`` answered by the first tree's modules, and its ledger
+    computed from code it does not contain. That happens in ``lanky check
+    a/pkg/mod.py b/pkg/mod.py``. Every level of the package that is already
+    imported has to be the directory the file sits under; a package imported
+    from that same directory, by an earlier check of the same tree, say, is
+    the one the file would get anyway.
+    """
+    parts = package.split(".")
+    for depth in range(1, len(parts) + 1):
+        name = ".".join(parts[:depth])
+        cached = sys.modules.get(name)
+        if cached is None:
+            continue
+        expected = root.joinpath(*parts[:depth]).resolve()
+        locations = [Path(entry).resolve() for entry in getattr(cached, "__path__", None) or ()]
+        if expected not in locations:
+            where = locations[0] if locations else getattr(cached, "__file__", None)
+            raise ImportError(
+                f"{path} sits in the package {package!r}, but {name!r} is already "
+                f"imported from {where or 'somewhere else'} in this process, so a "
+                "relative import in the file would resolve there; check it in a "
+                "process of its own"
+            )
+
+
 def import_path(path: str | Path) -> Any:
     """Import a file as a module, without making it ``__main__``.
 
@@ -93,7 +124,9 @@ def import_path(path: str | Path) -> Any:
     executes. The package is not imported up front. The file's first relative
     import imports it the ordinary way, and it then stays imported like any
     other package; a file with no relative import never runs its package's
-    ``__init__``, as before.
+    ``__init__``, as before. A package of the same name already imported
+    from another directory is refused with ``ImportError`` rather than
+    lent to the file (see :func:`_refuse_a_package_imported_elsewhere`).
     """
     path = Path(path).resolve()
     if not path.is_file():
@@ -105,6 +138,7 @@ def import_path(path: str | Path) -> Any:
     directories = [str(path.parent)]
     package = _package_of(path)
     if package is not None:
+        _refuse_a_package_imported_elsewhere(path, *package)
         spec = _PackageSpec(spec, package[0])
         directories.append(str(package[1]))
     module = importlib.util.module_from_spec(spec)

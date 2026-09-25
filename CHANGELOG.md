@@ -230,7 +230,11 @@ listed because it changes behaviour a reader could already have depended on.
   package is imported by the file's first relative import, the ordinary way;
   a file with no relative import never runs its package's `__init__`. When
   the package's `__init__` imports the checked file itself, that copy's
-  claims are not collected a second time.
+  claims are not collected a second time. A package of the same name that
+  the process already imported from another directory, as the first file of
+  `lanky check a/pkg/mod.py b/pkg/mod.py` leaves behind, is refused with
+  `ImportError` rather than lent to the second file, whose relative imports
+  would otherwise have been answered by the first tree's modules.
 - **A refutation names the quantified point that made it false.** The
   property tester built a counterexample from the drawn variables alone, and
   a quantifier's binding lived in the evaluator's own copy of the context, so

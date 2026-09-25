@@ -651,3 +651,32 @@ def test_a_package_init_is_checked_in_its_own_package(tmp_path) -> None:
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] == name]:
             sys.modules.pop(key, None)
+
+
+def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path, capsys) -> None:
+    """``lanky check a/pkg/mod.py b/pkg/mod.py`` must not check b with a's modules.
+
+    The first file's relative import leaves ``pkg`` and ``pkg.helpers`` in
+    ``sys.modules``, and a relative import resolves through that cache before
+    it looks at ``sys.path``, so the second file's ``from . import helpers``
+    was answered by the first tree. The second file is refused instead, with
+    the reason, and the first tree's package can still be checked again.
+    """
+    import sys
+
+    name = "lanky_test_twin"
+    first, _deep = _package(tmp_path / "a", name)
+    second, _deep = _package(tmp_path / "b", name)
+    try:
+        assert [fact.owner for fact in check_path(first)] == ["mod_claim"]
+        assert cli.main(["check", str(second), str(first)]) == 1
+        printed = capsys.readouterr().out
+        assert "could not be imported" in printed
+        assert (
+            f"ImportError: {second.resolve()} sits in the package {name!r}, but "
+            f"{name!r} is already imported from {first.parent.resolve()} in this process"
+        ) in printed
+        assert printed.count("1 facts: 1 tested") == 1
+    finally:
+        for key in [key for key in sys.modules if key.split(".")[0] == name]:
+            sys.modules.pop(key, None)
