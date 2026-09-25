@@ -42,7 +42,8 @@ proved  lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat
 ```
 
 (Abridged: the statement column is trimmed here to fit the page, and this run
-is on a machine with the `lean` extra installed.
+is on a machine with the `lean` extra installed. CI runs it on one too, and
+checks this table against what it prints.
 [docs/quickstart.md](docs/quickstart.md) has the untrimmed table.)
 
 That second row is what the project is for. The same file, on a machine without
@@ -111,7 +112,8 @@ sharp.
   `-> 1 == 2` is `refuted` with an empty counterexample and `lanky check` exits
   1 on it.
 - The Lean oracle over core Lean 4, with a tactic ladder and an induction
-  strategy read off the term. No Mathlib is fetched or needed.
+  strategy read off the term. No Mathlib is fetched or needed. CI runs the
+  suite against Lean v4.29.1 as well as without Lean.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
 
@@ -173,15 +175,28 @@ a Lean toolchain on `PATH`:
 uv add "lanky[lean]"
 ```
 
-Without it, every Lean test skips with a one-line reason and the weaker oracles
-do the work. `lanky check --verbose` prints each oracle and whether it is
-available. The first use builds a Lean REPL, which takes about a minute and the
-network, and caches it in `$XDG_CACHE_HOME/lanky/lean-repl` (`~/.cache/lanky`
-by default), outside the virtual environment so that a reinstall does not throw
-it away. Useful environment variables: `LANKY_LEAN_DISABLE=1` makes the oracle
-a declared no-op (this is what CI sets), `LANKY_LEAN_VERSION` pins a toolchain
-and skips the probe, `LANKY_LEAN_CACHE_DIR` moves the cache, and
-`LANKY_LEAN_TIMEOUT` caps each tactic attempt.
+The toolchain the oracle runs on has to be one the Lean REPL has a build for.
+With lean-interact 0.11.5 that is a Lean release up to v4.32.0 (or
+v4.33.0-rc1), which elan's current `stable` is not. Given a newer `lean`, the
+oracle tries each other toolchain elan has installed, newest first, and then
+the newest version the REPL has, which elan downloads when the REPL is first
+built. CI uses v4.29.1:
+
+```sh
+elan toolchain install leanprover/lean4:v4.29.1
+elan default leanprover/lean4:v4.29.1
+```
+
+Without the extra, every Lean test skips with a one-line reason and the weaker
+oracles do the work. `lanky check --verbose` prints each oracle and whether it
+is available. The first use builds a Lean REPL, which takes about a minute and
+the network, and caches it in `$XDG_CACHE_HOME/lanky/lean-repl`
+(`~/.cache/lanky` by default), outside the virtual environment so that a
+reinstall does not throw it away. Useful environment variables:
+`LANKY_LEAN_DISABLE=1` makes the oracle a declared no-op (the main CI job sets
+it), `LANKY_LEAN_VERSION` pins a toolchain and skips the probe,
+`LANKY_LEAN_CACHE_DIR` moves the cache, and `LANKY_LEAN_TIMEOUT` caps each
+tactic attempt.
 
 For work on lanky itself:
 
@@ -190,6 +205,17 @@ uv sync --group dev --extra lean
 uv run pytest -q
 uv run ruff check .
 ```
+
+CI runs the suite twice. The main job, on Python 3.12 and 3.13, installs no
+Lean and sets `LANKY_LEAN_DISABLE=1`, so it sees what a user without the extra
+sees. The job named `test with Lean` installs elan, Lean v4.29.1 and the `lean`
+extra, caches the toolchain and the built REPL between runs, and runs the same
+suite with the oracle on and `LANKY_LEAN_TEST_REQUIRED=1`, under which a Lean
+test that cannot get a Lean session fails instead of skipping. It then runs
+`lanky check examples/gauss.py` and checks that the `proved lean` row at the top
+of this page is a row the check printed. The suite compares the rest of that
+table, and the quickstart's, with the real output in both jobs, reading the
+row as `tested property-test` in the main one.
 
 A file that carries statements needs `from __future__ import annotations` and a
 ruff `F821` per-file ignore, because a size such as `n` is a symbolic variable
