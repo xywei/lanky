@@ -6,7 +6,10 @@ else. ``check`` is built in; every other verb arrives through the
 subcommand of ``lanky`` without lanky knowing what loopty is.
 
 ``check`` exits 1 when any fact is ``REFUTED``, so it works in CI: a refuted
-fact is a broken claim, while an assumed one is a claim nobody got to.
+fact is a broken claim, while an assumed one is a claim nobody got to. Each
+refuted fact is repeated under the table with what explains it: its
+counterexample, its reason, or a line saying that nothing was recorded (see
+:func:`refutation_lines`).
 
 One more thing is printed under the table and does not change the exit code: a
 statement whose Lean reading and whose Python reading disagree, or whose Python
@@ -26,10 +29,10 @@ from pathlib import Path
 from typing import Any
 
 from lanky.check import check_path, oracle_lines
-from lanky.ledger import Ledger, Status
+from lanky.ledger import Fact, Ledger, Status
 from lanky.plugins import registry
 
-__all__ = ["CheckVerb", "build_parser", "main"]
+__all__ = ["CheckVerb", "build_parser", "main", "refutation_lines"]
 
 
 class CheckVerb:
@@ -135,16 +138,56 @@ class CheckVerb:
         print()
         for fact in refuted:
             print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
-            if "counterexample" not in fact.provenance:
-                continue
-            witness = fact.provenance["counterexample"]
-            print(f"  counterexample: {witness}")
-            if not witness and fact.provenance.get("reason"):
-                # A closed statement such as ``-> 1 == 2`` is false at no
-                # assignment in particular. The empty witness is the honest
-                # one and says nothing on its own, so the reason follows it.
-                print(f"  {fact.provenance['reason']}")
+            for line in refutation_lines(fact):
+                print(f"  {line}")
         return True
+
+
+def _recorded(value: Any) -> bool:
+    """Whether a provenance entry says something: present, and not empty.
+
+    Asked with ``is None`` and ``len`` rather than truthiness, because an entry
+    can be a lanky term, whose truth value is not a question Python may ask.
+    """
+    if value is None:
+        return False
+    try:
+        return len(value) > 0
+    except TypeError:
+        return True
+
+
+def refutation_lines(fact: Fact) -> list[str]:
+    """The lines ``lanky check`` prints under a fact's ``REFUTED`` line.
+
+    The counterexample, when there is one that names something; then the
+    fact's ``reason``, whenever it has one, since a refutation with no
+    assignment to show (loopty's fact about a body it cannot trace) is
+    explained by nothing else, and one with an assignment is explained better
+    with it; and, when there is neither, a line saying so, so that a bare
+    ``REFUTED`` is never read as having been explained somewhere. A plugin's
+    own ``witness`` (loopty's isl oracle records one) counts as a witness for
+    that last line; it is not printed, and stays in the JSON with the rest of
+    the provenance. A reason of several lines comes back as several, so that
+    each is indented under the ``REFUTED`` line and not only the first.
+
+    An empty counterexample is not printed. A closed statement such as ``-> 1
+    == 2`` carries one on purpose, because no assignment is what makes it
+    false, and it used to be printed as ``counterexample: {}`` above the
+    reason, a line that says nothing; the reason is what explains it. The
+    JSON ledger keeps the empty counterexample, as it keeps every field.
+    """
+    provenance = fact.provenance
+    lines = []
+    counterexample = provenance.get("counterexample")
+    if _recorded(counterexample):
+        lines.append(f"counterexample: {counterexample}")
+    reason = provenance.get("reason")
+    if _recorded(reason):
+        lines.extend(str(reason).splitlines())
+    if not lines and not _recorded(provenance.get("witness")):
+        lines.append("no witness recorded")
+    return lines
 
 
 def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Any]]:

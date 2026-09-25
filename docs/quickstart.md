@@ -249,10 +249,13 @@ why lanky does not simply truncate the evaluator instead.
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
-  counterexample is in the provenance, and `lanky check` exits 1. That holds
+  counterexample is in the provenance, `lanky check` repeats the fact under
+  the table with the counterexample and the reason, and it exits 1. That holds
   for `def impossible() -> 1 == 2` as well, which has no variable to name in a
   counterexample: Python answers the annotation itself, the term is the `bool`
-  `False`, and the row still reads `refuted` with an empty witness.
+  `False`, and the row still reads `refuted`, with the reason (the statement
+  is the constant `False`) printed where a counterexample would be. The JSON
+  keeps the empty counterexample.
 - Leave off a theorem's return annotation. `@theorem` raises `TypeError`
   where the function is defined, because a theorem needs a goal, and
   `lanky check` reports the file as one that does not import.

@@ -285,6 +285,20 @@ listed because it changes behaviour a reader could already have depended on.
   function out of an empty domain, it was refuted. A table now compares its
   values, recursively for a family of families, and is unhashable like the
   list it wraps.
+- **Every refuted fact says what refuted it.** `lanky check` printed the
+  details of a `REFUTED` fact only when its provenance had a
+  `counterexample`, so a fact refuted with a reason and no assignment to show,
+  which is what loopty reports for a kernel body it cannot trace, got a bare
+  `REFUTED` line and its reason was in the JSON alone; loopty put an empty
+  counterexample into the fact to have it printed. Under each `REFUTED` line
+  there is now the counterexample when it names something, then the fact's
+  `reason` whenever it has one, each of its lines indented, and
+  `no witness recorded` when there is neither (a plugin's own `witness`, as
+  loopty's isl oracle records, counts as one and stays in the JSON). An empty
+  counterexample is no longer printed: `-> 1 == 2` shows its reason without
+  the `counterexample: {}` line above it. The JSON ledger keeps every field,
+  the empty counterexample included. The new `lanky.cli.refutation_lines`
+  builds the block.
 
 ### Notes
 
