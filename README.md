@@ -147,7 +147,11 @@ sharp.
   a `forall` that a draw breaks is really refuted, but an `any` that no draw
   witnesses is undecided, not false, so the tester declines the draw and the
   fact stays `ASSUMED`. Over `Fin` the domain is enumerated and both answers
-  hold.
+  hold. A quantifier over a refined domain `T & p`, which a plugin building
+  terms by hand can write, ranges over the points of `T` where `p` holds, as
+  the Lean printer reads it: enumerated when `T` is, filtered draws when it is
+  sampled, and a `forall` whose refinement rejects every draw is undecided
+  rather than passed.
 
 **Not yet.**
 

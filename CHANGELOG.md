@@ -299,6 +299,28 @@ listed because it changes behaviour a reader could already have depended on.
   the `counterexample: {}` line above it. The JSON ledger keeps every field,
   the empty counterexample included. The new `lanky.cli.refutation_lines`
   builds the block.
+- **A quantifier over a refined domain reads the refinement.** The property
+  tester read a binder over `Fin[n] & p` or `Nat & p`, which a plugin
+  building terms by hand can write, as if `p` were not there: the domain had
+  no `points`, so it went to the sampler, which drew from the base without
+  judging `p`. `∀ k ∈ Fin[n + 2] & (k > 0), k > 0` was refuted at `k = 0`,
+  outside its own domain, and `∃ k ∈ Fin[n + 2] & (k > 0), k == 0` was
+  `tested` on a witness the domain excludes, while the Lean printer read both
+  correctly. `lanky.terms.LankyEvaluationMapper` now gives a refined domain
+  the points of its base at which the refinement holds, judged with the
+  binder bound, as a guard is judged, and the domain is enumerated exactly
+  when its base is, so the first statement is `tested` and the second is
+  refuted with a reason saying that no point of the enumerated domain is a
+  witness. A `forall` over a sampled refinement that rejects every draw
+  (`Nat & (k == 1000)`) raises `Undecided` (the new
+  `lanky.terms.decline_empty_walk`) rather than passing on no point, so the
+  fact stays `ASSUMED` with the reason; an existential over one was already
+  undecided. A definitional hypothesis over a refined domain is assigned at
+  the admitted points only, where the walk used to fail and end the test. A
+  value of a refined sort drawn without a variable name is judged as a
+  family's entry is instead of being drawn from the base, and
+  `lanky.terms.free_variables` counts the names a refined binder domain
+  mentions, which it used to miss.
 
 ### Notes
 

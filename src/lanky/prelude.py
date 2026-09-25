@@ -275,6 +275,16 @@ class Refined(LankyType):
 
     Chaining is flat: ``T & p & q`` carries both propositions, so a checker sees
     a conjunction and not a nest.
+
+    The propositions talk about the variable being refined, which the type does
+    not know: ``k: Nat & (k > 0)`` names it as a parameter, and a quantifier's
+    binder names it as ``(k, Fin[n] & (k > 0))``. As a binder domain its points
+    are the points of ``T`` at which every proposition holds, with the binder
+    bound to each; :class:`lanky.terms.LankyEvaluationMapper` walks or samples
+    ``T`` and keeps those, and the domain is enumerated exactly when ``T`` is.
+    The generator syntax cannot write such a binder (a ``Refined`` is not
+    iterable, and the refinement would be read before its binder exists), so it
+    comes from a plugin that builds its terms directly.
     """
 
     base: Any

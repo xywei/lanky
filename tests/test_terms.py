@@ -7,11 +7,12 @@ from contextlib import closing
 
 import pytest
 
-from lanky.prelude import Fin, Fn, Nat
+from lanky.prelude import Fin, Fn, Nat, Refined
 from lanky.terms import (
     Comparison,
     Exists,
     Forall,
+    LankyEvaluationMapper,
     Scope,
     Sum,
     SymbolicBoolError,
@@ -24,6 +25,7 @@ from lanky.terms import (
     evaluate_annotations,
     exists,
     forall,
+    free_variables,
     render,
     structurally_equal,
     sum_,
@@ -341,3 +343,101 @@ def test_a_binderless_quantifier_renders_as_a_sequent() -> None:
     guard = Var("p") > 1
     assert render(Forall((), body, guard)) == "p > 1 |- p > 0"
     assert render(Forall((), body, None)) == "p > 0"
+
+
+# {{{ a quantifier over a refined domain
+
+
+def test_a_refined_domain_is_its_base_filtered_by_the_refinement() -> None:
+    """``Fin[4] & (k > 0)`` is ``{1, 2, 3}``, and both quantifiers see exactly that.
+
+    The evaluator used to read the domain as if the refinement were not there:
+    it had no ``points``, so it was handed to the sampler (and without one it
+    could not be walked at all), and the sampler drew from ``Fin[4]`` unfiltered.
+    """
+    k = Var("k")
+    domain = Fin[4] & (k > 0)
+    assert evaluate(Forall(((k, domain),), k > 0), {}) is True
+    assert evaluate(Exists(((k, domain),), k == 0), {}) is False
+    assert evaluate(Exists(((k, domain),), k == 3), {}) is True
+    assert evaluate(Sum(((k, domain),), k), {}) == 6
+    # a refinement of a refinement keeps both, the inner one read first
+    nested = Refined(Refined(Fin[6], (k > 0,)), (6 // k > 1,))
+    assert evaluate(Sum(((k, nested),), k), {}) == 1 + 2 + 3
+    # the refinement may name other variables in scope, read where it is bound
+    n = Var("n")
+    assert evaluate(Sum(((k, Fin[5] & (k < n)),), k), {"n": 3}) == 0 + 1 + 2
+
+
+def test_a_refined_domain_is_enumerated_when_its_base_is() -> None:
+    k, n = Var("k"), Var("n")
+    assert LankyEvaluationMapper.is_exhaustive(Fin[n] & (k > 0))
+    assert LankyEvaluationMapper.is_exhaustive(Refined(Fin[n] & (k > 0), (k < 5,)))
+    assert not LankyEvaluationMapper.is_exhaustive(Nat & (k > 0))
+
+
+def test_a_sampled_refined_domain_keeps_only_the_draws_it_admits() -> None:
+    """``Nat & (k > 0)`` is sampled from ``Nat`` and filtered, never read as ``Nat``."""
+    k = Var("k")
+    claim = Forall(((k, Nat & (k > 0)),), k > 0)
+    for seed in range(20):
+        assert evaluate(claim, {}, sort_sampler(random.Random(seed), {})) is True
+    seen: list[int] = []
+    context: dict[str, object] = {}
+    walk = binder_assignments(((k, Nat & (k > 0)),), context, sort_sampler(random.Random(0), {}))
+    with closing(walk):
+        for _ in walk:
+            seen.append(context["k"])
+    assert seen
+    assert all(point > 0 for point in seen)
+
+
+def test_a_forall_no_draw_of_a_refinement_reaches_is_undecided() -> None:
+    """A ``forall`` that looked at no point has not been shown to hold anywhere.
+
+    ``Nat & (k == 1000)`` rejects every draw, so answering ``True`` would be a
+    vacuous pass. Over an enumerated base an empty domain is really empty, and
+    the vacuous answer is the right one.
+    """
+    k = Var("k")
+    sampler = sort_sampler(random.Random(0), {})
+    with pytest.raises(Undecided, match="satisfied its refinement"):
+        evaluate(Forall(((k, Nat & (k == 1000)),), k == 1000), {}, sampler)
+    with pytest.raises(Undecided, match="undecided"):
+        evaluate(Exists(((k, Nat & (k == 1000)),), k == 1000), {}, sampler)
+    assert evaluate(Forall(((k, Fin[3] & (k > 5)),), k == 1000), {}) is True
+    assert evaluate(Exists(((k, Fin[3] & (k > 5)),), k == k), {}) is False
+
+
+def test_a_refinement_that_cannot_be_answered_raises_as_a_guard_does() -> None:
+    """``Fin[3] & (6 // k > 1)`` has no answer at ``k = 0``, and says so."""
+    k = Var("k")
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(((k, Fin[3] & (6 // k > 1)),), k >= 0), {})
+    with pytest.raises(TypeError, match="not a truth value"):
+        evaluate(Forall(((k, Fin[3] & (k + 1)),), k >= 0), {})
+
+
+def test_a_filtered_walk_restores_the_binding_it_replaced() -> None:
+    """A rejected point is bound to be judged; the old binding still comes back."""
+    k = Var("k")
+    context = {"k": 7}
+    with closing(binder_assignments(((k, Fin[3] & (k > 5)),), context)) as walk:
+        assert list(walk) == []
+    assert context["k"] == 7
+    shadowing = Forall(((k, Fin[3]),), Exists(((k, Fin[3] & (k > 1)),), k == 2) & (k < 2))
+    assert evaluate(shadowing, {}) is False
+
+
+def test_free_variables_see_inside_a_refined_binder_domain() -> None:
+    """``Fin[n] & (k < m)`` for the binder ``k`` mentions ``n`` and ``m``.
+
+    The domain was read through ``bound``, which a refinement does not have, so
+    neither name was found.
+    """
+    k, n, m = Var("k"), Var("n"), Var("m")
+    assert free_variables(Forall(((k, Fin[n] & (k < m)),), k >= 0)) == {"n", "m"}
+    assert free_variables(Exists(((k, Nat & (k > 0)),), k == 1)) == frozenset()
+
+
+# }}}
