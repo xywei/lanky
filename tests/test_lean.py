@@ -1161,6 +1161,76 @@ def test_lean_closes_an_existential_over_an_index_type(lean_oracle: LeanOracle) 
     assert proved.provenance["tactic"] == "simp_all <;> omega"
 
 
+_VACUOUS = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    "@theorem\n"
+    "def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
+    '    """No natural satisfies the hypotheses, so the goal is never at stake."""\n'
+)
+
+
+def test_lean_shows_a_vacuous_claim_vacuous(lean_oracle: LeanOracle, tmp_path, capsys) -> None:
+    """#5 with a real Lean: the claim is proved, marked vacuous, and fails the check.
+
+    ``omega`` closes ``n = n + 1`` from ``n > 2`` and ``n < 1``, which is a
+    valid proof of a claim that says nothing. The tester finds no draw that
+    satisfies the hypotheses, and Lean proves them inconsistent on their own.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "vacuous.py"
+    path.write_text(_VACUOUS, encoding="utf-8")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert fact.decided_by == "lean"
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous_by"] == "lean"
+    assert ": False := by" in fact.provenance["vacuous_evidence"]["lean_source"]
+    assert cli.main(["check", str(path)]) == 1
+    assert "proved (vacuous)  lean" in capsys.readouterr().out
+
+
+def test_lean_leaves_hypotheses_the_sampler_misses_to_a_warning(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """``n == 1000`` holds where no draw looks, and ``False`` does not follow from it."""
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "rare.py"
+    path.write_text(
+        _VACUOUS.replace("(n > 2) & (n < 1)) -> n == n + 1", "n == 1000) -> n > 999"),
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    assert cli.main(["check", str(path)]) == 0
+    assert "WARNING vacuous at rare.py:7" in capsys.readouterr().out
+
+
+def test_lean_refutes_hypotheses_under_a_goal_it_cannot_state(
+    lean_oracle: LeanOracle, tmp_path
+) -> None:
+    """A reduction keeps the goal from Lean, and the hypotheses still reach it."""
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "reduction.py"
+    path.write_text(
+        _VACUOUS.replace("-> n == n + 1", "-> 2 * sum(i for i in Fin[n + 1]) == 7"),
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert fact.is_vacuous
+    assert cli.main(["check", str(path)]) == 1
+
+
 def test_the_statement_the_oracle_sends_is_the_one_it_records(
     lean_oracle: LeanOracle,
 ) -> None:

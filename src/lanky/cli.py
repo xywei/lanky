@@ -5,16 +5,22 @@ else. ``check`` is built in; every other verb arrives through the
 ``lanky.verbs`` entry-point group, which is how ``loopty run`` becomes a
 subcommand of ``lanky`` without lanky knowing what loopty is.
 
-``check`` exits 1 when any fact is ``REFUTED``, so it works in CI: a refuted
-fact is a broken claim, while an assumed one is a claim nobody got to.
+``check`` exits 1 when any fact is ``REFUTED`` or vacuous, so it works in CI:
+a refuted fact is a broken claim, and a vacuous one is a claim whose hypotheses
+an oracle has shown inconsistent, which is true and says nothing, while an
+assumed one is a claim nobody got to. Every oracle reads a statement the same
+way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
+refuted does not depend on whether Lean is installed. What Lean adds is proofs,
+and the proof that a claim is vacuous, which fails a check that without it only
+warns (see below).
 
-One more thing is printed under the table and does not change the exit code: a
-statement whose Lean reading and whose Python reading disagree, or whose Python
-reading could not be run at all (subtraction over ``Nat``, division over
-``Int``, division by zero; see :mod:`lanky.semantics`). The fact keeps the
-status its oracle gave it, because the oracle was right about the statement it
-read; what is reported is that there are two readings and they are not the same
-statement.
+Two more things are printed under the table and do not change the exit code. A
+statement whose sampled reading could not be run where a stronger oracle's
+could, or disagrees with it, is reported under ``SEMANTICS`` (a division by
+zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
+status its oracle gave it. And a statement whose hypotheses no draw satisfied,
+and that no oracle could show inconsistent, gets a ``WARNING`` line: the claim
+may be vacuous, or its hypotheses may hold only where the sampler does not look.
 """
 
 from __future__ import annotations
@@ -56,12 +62,12 @@ class CheckVerb:
     def run(self, args: argparse.Namespace, /) -> int:
         """Check each file, print its ledger, and report refutations.
 
-        Exit code 1 on any refutation, and 1 with the traceback when a file
-        itself cannot be imported, because a file that does not import is a
-        broken claim too. Exit code 2 when there is no such file, which is a
-        mistake in the command rather than in the file, and then nothing is
-        checked. A semantics disagreement is printed but does not fail the
-        check: nothing was refuted, two readings differ.
+        Exit code 1 on any refutation or vacuous fact, and 1 with the traceback
+        when a file itself cannot be imported, because a file that does not
+        import is a broken claim too. Exit code 2 when there is no such file,
+        which is a mistake in the command rather than in the file, and then
+        nothing is checked. A semantics disagreement and a warning about
+        hypotheses no draw satisfied are printed but do not fail the check.
 
         Whether a file exists is asked before anything is imported rather than
         read off a ``FileNotFoundError``, because the file can raise one of its
@@ -114,7 +120,10 @@ class CheckVerb:
 
     @staticmethod
     def _report(ledger: Ledger) -> bool:
-        """Print one ledger and what follows it; whether anything was refuted."""
+        """Print one ledger and what follows it; whether anything failed.
+
+        A fact fails when it is refuted or vacuous.
+        """
         print(ledger.render())
         for fact in ledger:
             disagreement = fact.provenance.get(
@@ -129,9 +138,10 @@ class CheckVerb:
                 print(f"  counterexample: {counterexample}")
             for note in fact.provenance.get("semantics", ()):
                 print(f"  {note}")
+        vacuous = CheckVerb._report_hypotheses(ledger)
         refuted = ledger.by_status(Status.REFUTED)
         if not refuted:
-            return False
+            return vacuous
         print()
         for fact in refuted:
             print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
@@ -145,6 +155,40 @@ class CheckVerb:
                 # one and says nothing on its own, so the reason follows it.
                 print(f"  {fact.provenance['reason']}")
         return True
+
+    @staticmethod
+    def _report_hypotheses(ledger: Ledger) -> bool:
+        """Print what is known about hypotheses no draw satisfied; whether any are vacuous.
+
+        A fact an oracle showed vacuous gets a ``VACUOUS`` block, and fails the
+        check. One whose hypotheses no draw satisfied and no oracle could show
+        inconsistent gets a ``WARNING`` line with the tester's reason under it,
+        and does not: the sampler may simply not reach where they hold.
+        """
+        for fact in ledger:
+            unsatisfied = fact.provenance.get("unsatisfied")
+            if not unsatisfied or fact.is_vacuous:
+                continue
+            print()
+            print(f"WARNING {fact.owner} at {fact.where}: {unsatisfied}")
+            print("  no oracle could show them inconsistent, so the claim may be vacuous")
+            CheckVerb._print_detail(fact)
+        vacuous = ledger.vacuous()
+        for fact in vacuous:
+            print()
+            print(f"VACUOUS {fact.owner} at {fact.where}: {fact.statement}")
+            print(f"  {fact.provenance['vacuous']}, so the goal is never at stake")
+            if fact.provenance.get("unsatisfied"):
+                print(f"  {fact.provenance['unsatisfied']}")
+            CheckVerb._print_detail(fact)
+        return bool(vacuous)
+
+    @staticmethod
+    def _print_detail(fact: Any) -> None:
+        """The reason a draw could not be completed, when the tester recorded one."""
+        detail = fact.provenance.get("unsatisfied_detail")
+        if detail:
+            print(f"  {detail}")
 
 
 def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Any]]:

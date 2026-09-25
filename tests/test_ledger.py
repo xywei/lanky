@@ -76,6 +76,32 @@ def test_render_is_a_fixed_width_table() -> None:
     assert Ledger().render() == "ledger is empty"
 
 
+def test_a_vacuous_fact_is_marked_beside_its_status() -> None:
+    """``proved`` is true of a vacuous fact, and the table says what else is.
+
+    The mark is the provenance's ``vacuous`` entry; the status column reads
+    ``proved (vacuous)``, the summary counts vacuous facts after the statuses,
+    and a ledger with none renders exactly as before.
+    """
+    vacuous = make_fact(
+        "v",
+        Status.PROVED,
+        decided_by="lean",
+        provenance={"vacuous": "the hypotheses are inconsistent: proved by lean"},
+    )
+    plain = make_fact("p", Status.PROVED, decided_by="lean")
+    ledger = Ledger([vacuous, plain])
+    assert vacuous.is_vacuous
+    assert not plain.is_vacuous
+    assert ledger.vacuous() == (vacuous,)
+    lines = ledger.render().splitlines()
+    assert lines[2].startswith("proved (vacuous)  lean")
+    assert lines[3].startswith("proved            lean")
+    assert lines[-1] == "2 facts: 2 proved; 1 vacuous"
+    assert Ledger([plain]).render().splitlines()[-1] == "1 facts: 1 proved"
+    assert ledger.counts() == {"proved": 2}
+
+
 def test_to_json_round_trips() -> None:
     ledger = Ledger([make_fact("a", Status.TESTED, decided_by="property-test")])
     data = json.loads(ledger.to_json())
