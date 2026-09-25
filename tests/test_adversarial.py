@@ -298,6 +298,34 @@ def test_a_family_with_nowhere_to_put_its_values_is_an_inconsistent_hypothesis(
     assert not has_hypotheses(Forall(((f, Fn[Fin[2], Nat]),), f(0) >= 0))
 
 
+def test_a_refinement_that_never_evaluates_is_undecided_not_unsatisfied(
+    tmp_path, oracles, capsys
+) -> None:
+    """``Nat & (10 // (n - n) > 1)`` raises at every draw, as the same guard would.
+
+    A guard that divides by zero makes its draw undecided, which is no evidence
+    against the hypotheses. A refinement that did the same was counted as a
+    draw the hypotheses rejected, so the stronger oracles were asked about
+    ``Int.fdiv 10 0 > 1``, which Lean's total division makes false, and the
+    claim was marked vacuous on a reading Python never ran. The refinement's
+    draw is undecided now too.
+    """
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace("n: Nat, h: (n > 2) & (n < 1))", "n: Nat & (10 // (n - n) > 1))"),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert "unsatisfied" not in fact.provenance
+    assert "cannot be evaluated" in fact.provenance["semantics_undecided"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "VACUOUS" not in printed
+    assert "WARNING" not in printed
+
+
 UNTABULATED = VACUOUS.replace(
     "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
     "f: Fn[Nat, Nat], n: Nat, h: f(n) >= 1) -> f(n) + 1 >= 2",

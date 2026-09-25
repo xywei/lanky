@@ -336,7 +336,10 @@ listed because it changes behaviour a reader could already have depended on.
   `Nat`, `lanky.testing.Unsampleable`), is not taken for hypotheses that
   never held: its reason says that no draw could be completed, the stronger
   oracles are still asked, and nothing is printed when none can answer. A
-  satisfiable hypothesis changes nothing. A counterexample the cross-check
+  refinement that raises at a draw, as `Nat & (10 // n > 1)` does at `n = 0`,
+  makes the draw undecided, as the same guard does
+  (`lanky.testing.Unevaluable`), so it is not taken for a hypothesis that
+  failed. A satisfiable hypothesis changes nothing. A counterexample the cross-check
   finds under a stronger oracle's proof is recorded under `SEMANTICS` whether
   or not the fact carries a note, since with one reading of arithmetic it
   means one of the oracles is wrong.

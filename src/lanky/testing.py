@@ -76,6 +76,7 @@ __all__ = [
     "SkipSample",
     "Table",
     "TestReport",
+    "Unevaluable",
     "Unsampleable",
     "check",
     "in_sort",
@@ -106,6 +107,15 @@ class Unsampleable(SkipSample):
     the statement, where an empty ``Fin`` or a refinement no draw satisfied is
     a hypothesis failing: a report that no draw satisfied the hypotheses must
     not be made of draws that never reached them (see :class:`TestReport`).
+    """
+
+
+class Unevaluable(SkipSample):
+    """A refinement has no answer at this draw, as ``Nat & (10 // n > 1)`` at ``n = 0``.
+
+    That is the refinement's counterpart of a guard that divides by zero, and
+    it is counted the same way, as a draw the statement could not be answered
+    at (``undecided``), not as a draw the hypotheses rejected.
     """
 
 
@@ -254,6 +264,7 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
         SkipSample: If the codomain is empty at these values.
         Unsampleable: If its refinement names a variable nothing here gives a
             value.
+        Unevaluable: If its refinement cannot be evaluated at these values.
     """
     if not isinstance(codomain, Refined):
         return codomain
@@ -281,12 +292,12 @@ def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
     test at the first such draw.
 
     Raises:
-        SkipSample: If the refinement cannot be evaluated at these values.
+        Unevaluable: If the refinement cannot be evaluated at these values.
     """
     try:
         return sort.holds(context)
     except (Undecided, ZeroDivisionError) as exc:
-        raise SkipSample(
+        raise Unevaluable(
             f"the refinement of {sort} cannot be evaluated at this draw: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
@@ -501,8 +512,9 @@ class TestReport:
 
     ``undecided`` counts the draws that were dropped because the statement
     could not be answered at them: an existential over a sampled domain that no
-    draw witnessed, a division by zero, or a family applied outside its domain
-    (see the module docstring). Such a draw is neither evidence nor a
+    draw witnessed, a division by zero, a family applied outside its domain
+    (see the module docstring), or a refinement that cannot be evaluated
+    (:class:`Unevaluable`). Such a draw is neither evidence nor a
     counterexample, so it is not counted as valid.
 
     ``unsampleable`` counts the draws that could not be completed because a
@@ -541,7 +553,8 @@ def check(
     value outside its codomain) and when the statement cannot be answered at it
     (:class:`~lanky.terms.Undecided` or a ``ZeroDivisionError``: an existential
     over a sampled domain that found no witness, a division by zero, a family
-    applied outside its domain). Neither is a counterexample, and neither is
+    applied outside its domain, and a refinement that raises one of them,
+    :class:`Unevaluable`). Neither is a counterexample, and neither is
     evidence.
 
     A counterexample names the drawn variables and, when the goal is a
@@ -579,6 +592,9 @@ def check(
             if isinstance(exc, Unsampleable):
                 report.unsampleable += 1
                 unsampleable_reason = unsampleable_reason or str(exc)
+            elif isinstance(exc, Unevaluable):
+                report.undecided += 1
+                undecided_reason = undecided_reason or str(exc)
             if len(report.skipped) < 3:
                 report.skipped.append(str(exc))
             continue
