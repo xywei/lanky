@@ -187,14 +187,26 @@ def _release_local_modules(before: set[str], directory: Path) -> None:
     ``sys.path``), are withdrawn: a module ``a.b`` whose file is
     ``directory/a/b.py`` or ``directory/a/b/__init__.py``, or a namespace
     package whose path is ``directory/a``. That is the file's own
-    neighbourhood and nothing else. An installed package imported for the
+    neighbourhood and nothing else. The expected place is resolved the way the
+    module's own file is, so a neighbouring directory that is a symbolic link
+    still counts as the neighbourhood. An installed package imported for the
     first time stays put even when its files happen to sit below the directory
     (a virtual environment in the project root, say), because a second copy of
     a package such as numpy is not something a process survives, and a plugin
     re-imported under the registry that already holds its first copy would no
     longer recognize its own objects.
+
+    For the same reason a submodule stays put when its top-level package was
+    imported before the check, even if the submodule itself is new and sits
+    next to the file (a plugin whose source tree is the checked file's
+    directory, loaded earlier through its entry point). Withdrawing it alone
+    would split the package: its next import executes the submodule again and
+    rebinds the package's attribute to the new copy, while every module that
+    imported from the old one keeps the old classes.
     """
     for name in [name for name in sys.modules if name not in before]:
+        if name.split(".", 1)[0] in before:
+            continue
         module = sys.modules.get(name)
         expected = directory.joinpath(*name.split("."))
         origin = getattr(module, "__file__", None)
@@ -202,12 +214,13 @@ def _release_local_modules(before: set[str], directory: Path) -> None:
             found = Path(origin).resolve()
             stem = found.name.split(".", 1)[0]
             local = (found.parent, stem) in (
-                (expected.parent, expected.name),
-                (expected, "__init__"),
+                (expected.parent.resolve(), expected.name),
+                (expected.resolve(), "__init__"),
             )
         else:
             local = any(
-                Path(entry).resolve() == expected for entry in getattr(module, "__path__", ())
+                Path(entry).resolve() == expected.resolve()
+                for entry in getattr(module, "__path__", ())
             )
         if local:
             del sys.modules[name]

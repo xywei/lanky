@@ -212,8 +212,11 @@ listed because it changes behaviour a reader could already have depended on.
   neighbouring module found the neighbour cached and returned a ledger
   without its claims. The modules the file's own directory supplied to the
   import (a module `a.b` found as `a/b.py` or `a/b/__init__.py` next to the
-  file) are now withdrawn too; an installed package imported for the first
-  time stays imported, even when it sits below the file's directory.
+  file, or through a neighbouring directory that is a symbolic link) are now
+  withdrawn too; an installed package imported for the first time stays
+  imported, even when it sits below the file's directory, and so does a new
+  submodule of a package that was imported before the check, which would
+  otherwise be split between two copies.
 - **A refutation names the quantified point that made it false.** The
   property tester built a counterexample from the drawn variables alone, and
   a quantifier's binding lived in the evaluator's own copy of the context, so

@@ -402,3 +402,77 @@ def test_a_claim_imported_from_a_neighbour_is_collected_on_every_check(
     finally:
         for name in (neighbour, "lanky_test_elsewhere"):
             sys.modules.pop(name, None)
+
+
+def test_a_neighbour_behind_a_symbolic_link_is_collected_on_every_check(tmp_path) -> None:
+    """A neighbouring directory that is a link is still the neighbourhood.
+
+    The neighbour's file was resolved through the link and the place it was
+    expected at was not, so the two never matched: the neighbour stayed
+    imported, and a second check returned a ledger without its claim.
+    """
+    import os
+    import sys
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "__init__.py").write_text("", encoding="utf-8")
+    (shared / "linked_claims.py").write_text(HELPER, encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    os.symlink(shared, project / "lanky_test_linked")
+    main = project / "main_linked.py"
+    main.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky_test_linked.linked_claims import helper_claim  # noqa: F401\n",
+        encoding="utf-8",
+    )
+
+    try:
+        first = [fact.owner for fact in check_path(main)]
+        second = [fact.owner for fact in check_path(main)]
+        assert first == ["helper_claim"]
+        assert second == first
+        assert "lanky_test_linked" not in sys.modules
+    finally:
+        for name in ("lanky_test_linked", "lanky_test_linked.linked_claims"):
+            sys.modules.pop(name, None)
+
+
+def test_a_package_imported_before_the_check_is_never_split(tmp_path, monkeypatch) -> None:
+    """A new submodule of a package the process already holds stays imported.
+
+    The package sits next to the checked file, as a plugin's source tree does
+    when a file at its root is checked, and the process imported it before
+    the check began. Withdrawing only the submodule the file imported made the
+    next import execute it again: the package's attribute then named the new
+    copy, and every module that had imported from the old one held other
+    classes.
+    """
+    import importlib
+    import sys
+
+    project = tmp_path / "project"
+    (project / "lanky_test_plugin").mkdir(parents=True)
+    (project / "lanky_test_plugin" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "lanky_test_plugin" / "kinds.py").write_text(
+        "class Kind:\n    pass\n", encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(project))
+    importlib.import_module("lanky_test_plugin")
+    main = project / "main_plugin.py"
+    main.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky_test_plugin.kinds import Kind  # noqa: F401\n",
+        encoding="utf-8",
+    )
+
+    try:
+        check_path(main)
+        kinds = sys.modules["lanky_test_plugin.kinds"]
+        check_path(main)
+        assert sys.modules["lanky_test_plugin.kinds"] is kinds
+        assert sys.modules["lanky_test_plugin"].kinds is kinds
+    finally:
+        for name in ("lanky_test_plugin", "lanky_test_plugin.kinds"):
+            sys.modules.pop(name, None)
