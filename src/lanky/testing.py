@@ -76,6 +76,7 @@ __all__ = [
     "SkipSample",
     "Table",
     "TestReport",
+    "Unsampleable",
     "check",
     "in_sort",
     "sample_value",
@@ -95,6 +96,17 @@ REJECTION_FACTOR = 20
 
 class SkipSample(Exception):
     """This draw cannot be completed (an empty domain, say); take another."""
+
+
+class Unsampleable(SkipSample):
+    """No draw of this sort can be completed here, because the tester has no sampler for it.
+
+    A family over ``Nat`` cannot be tabulated, and neither can a sort nothing
+    here knows how to draw. That is the tester's limit and says nothing about
+    the statement, where an empty ``Fin`` or a refinement no draw satisfied is
+    a hypothesis failing: a report that no draw satisfied the hypotheses must
+    not be made of draws that never reached them (see :class:`TestReport`).
+    """
 
 
 class Table:
@@ -192,7 +204,7 @@ def sample_value(
     if isinstance(sort, FnType):
         domain = sort.domain
         if not isinstance(domain, FinType):
-            raise SkipSample(f"cannot tabulate a family over {domain}")
+            raise Unsampleable(f"cannot tabulate a family over {domain}")
         bound = int(evaluate(domain.bound, context))
         if bound < 0:
             raise SkipSample(f"{domain} has a negative size")
@@ -220,7 +232,7 @@ def sample_value(
         return rng.uniform(-1.0, 1.0)
     if sort is bool:
         return rng.random() < 0.5
-    raise SkipSample(f"no sampler for {sort!r}")
+    raise Unsampleable(f"no sampler for {sort!r}")
 
 
 def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
@@ -239,14 +251,15 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
     outside the declared sort into the table, so that draw is not taken either.
 
     Raises:
-        SkipSample: If the codomain is empty at these values, or its refinement
-            names a variable nothing here gives a value.
+        SkipSample: If the codomain is empty at these values.
+        Unsampleable: If its refinement names a variable nothing here gives a
+            value.
     """
     if not isinstance(codomain, Refined):
         return codomain
     unbound = sorted(free_variables(codomain.props) - set(context))
     if unbound:
-        raise SkipSample(
+        raise Unsampleable(
             f"cannot draw the entries of a family into {codomain}: its "
             f"refinement names {', '.join(unbound)}, which no entry binds"
         )
@@ -491,6 +504,11 @@ class TestReport:
     draw witnessed, a division by zero, or a family applied outside its domain
     (see the module docstring). Such a draw is neither evidence nor a
     counterexample, so it is not counted as valid.
+
+    ``unsampleable`` counts the draws that could not be completed because a
+    sort has no sampler (:class:`Unsampleable`). Such a draw never reached the
+    hypotheses, so a report with any of them cannot say that no draw satisfied
+    them, and its reason says that no draw could be completed instead.
     """
 
     ok: bool
@@ -498,6 +516,7 @@ class TestReport:
     samples: int = 0
     valid: int = 0
     undecided: int = 0
+    unsampleable: int = 0
     reason: str = ""
     skipped: list[str] = field(default_factory=list)
 
@@ -546,6 +565,7 @@ def check(
     sorts = dict(variables)
     report = TestReport(ok=True)
     undecided_reason = ""
+    unsampleable_reason = ""
     for _ in range(samples * REJECTION_FACTOR):
         if report.valid >= samples:
             break
@@ -556,6 +576,9 @@ def check(
                 context[name] = sample_value(sort, rng, context, name)
             satisfy_hypotheses(hypotheses, context, sorts)
         except SkipSample as exc:
+            if isinstance(exc, Unsampleable):
+                report.unsampleable += 1
+                unsampleable_reason = unsampleable_reason or str(exc)
             if len(report.skipped) < 3:
                 report.skipped.append(str(exc))
             continue
@@ -583,6 +606,8 @@ def check(
     if report.valid == 0:
         if report.undecided:
             report.reason = f"no draw could decide the statement: {undecided_reason}"
+        elif report.unsampleable:
+            report.reason = f"no draw could be completed: {unsampleable_reason}"
         else:
             report.reason = (
                 "no draw satisfied the hypotheses, so nothing was tested"

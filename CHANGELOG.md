@@ -329,7 +329,11 @@ listed because it changes behaviour a reader could already have depended on.
   none can, the provenance records `unsatisfied` ("hypotheses never satisfied
   in 4000 draws") and a `WARNING` line follows the table, with exit code 0:
   hypotheses that hold only where the sampler does not look, such as
-  `n == 1000` over naturals drawn up to five, leave the same record. A
+  `n == 1000` over naturals drawn up to five, leave the same record. A test
+  that could not draw at all, because a sort has no sampler (a family over
+  `Nat`, `lanky.testing.Unsampleable`), is not taken for hypotheses that
+  never held: its reason says that no draw could be completed, the stronger
+  oracles are still asked, and nothing is printed when none can answer. A
   satisfiable hypothesis changes nothing. A counterexample the cross-check
   finds under a stronger oracle's proof is recorded under `SEMANTICS` whether
   or not the fact carries a note, since with one reading of arithmetic it

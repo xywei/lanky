@@ -178,8 +178,9 @@ class CheckVerb:
             print()
             print(f"VACUOUS {fact.owner} at {fact.where}: {fact.statement}")
             print(f"  {fact.provenance['vacuous']}, so the goal is never at stake")
-            if fact.provenance.get("unsatisfied"):
-                print(f"  {fact.provenance['unsatisfied']}")
+            sampled = fact.provenance.get("unsatisfied") or fact.provenance.get("untestable")
+            if sampled:
+                print(f"  {sampled}")
             CheckVerb._print_detail(fact)
         return bool(vacuous)
 

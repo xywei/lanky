@@ -238,22 +238,40 @@ def _never_satisfied(provenance: dict) -> str | None:
     The record is the one :class:`~lanky.oracles.test.TestOracle` leaves when
     no draw was valid. A draw the goal could not be decided at (an existential
     no draw witnessed, a division by zero) got past the hypotheses, so a record
-    with any such draw says nothing against them.
+    with any such draw says nothing against them. Neither does a draw of a sort
+    the tester has no sampler for, which never reached them (see
+    :func:`_never_drawn`).
     """
     if provenance.get("valid") != 0 or not provenance.get("untested"):
         return None
-    if provenance.get("undecided"):
+    if provenance.get("undecided") or provenance.get("unsampleable"):
         return None
     return f"hypotheses never satisfied in {provenance.get('samples', 0)} draws"
+
+
+def _never_drawn(provenance: dict) -> str | None:
+    """What a property test's record says when no draw reached the hypotheses at all.
+
+    A family over ``Nat`` has no sampler, so every draw of a statement that
+    quantifies over one stops before its hypotheses are evaluated
+    (:class:`~lanky.testing.Unsampleable`). That is no evidence against the
+    hypotheses, so it is no ground for a warning, but it is no evidence for
+    them either, and the stronger oracles are still asked whether they are
+    inconsistent.
+    """
+    if provenance.get("valid") != 0 or provenance.get("undecided"):
+        return None
+    if not provenance.get("unsampleable"):
+        return None
+    return provenance.get("untested") or "no draw could be completed"
 
 
 def _skipped(provenance: dict) -> str | None:
     """Why a draw could not be completed, when a test's record says one could not.
 
-    An empty ``Fin`` or a refinement no value satisfies is an inconsistent
-    hypothesis too, and a family over a domain the tester cannot tabulate is
-    the tester's limit and nothing else; the reason tells them apart, and a
-    reader of a warning needs it.
+    An empty ``Fin`` or a refinement no value satisfies is a hypothesis that
+    fails before the guard is reached, and a reader of a warning needs to know
+    which one it was.
     """
     skipped = provenance.get("skipped") or ()
     return f"a draw could not be completed: {skipped[0]}" if skipped else None
@@ -275,7 +293,9 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
     ledger that said nothing here would suggest the two readings had been
     compared. The third is that no draw satisfied the hypotheses, which is the
     evidence a vacuous claim leaves (see :func:`_examine_vacuity`); a proof from
-    hypotheses nothing satisfies is valid and says nothing.
+    hypotheses nothing satisfies is valid and says nothing. A test that could
+    not draw at all is recorded as ``untestable``, so that the hypotheses are
+    still examined.
     """
     if fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
         return fact
@@ -318,6 +338,11 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
                 unsatisfied=unsatisfied,
                 unsatisfied_detail=_skipped(result.provenance),
             )
+        untestable = _never_drawn(result.provenance)
+        if untestable:
+            if verbose:
+                print(f"  {oracle.name}: {untestable}")
+            return fact.with_status(fact.status, untestable=untestable)
         undecided = result.provenance.get("untested")
         if gaps and undecided and result.provenance.get("undecided"):
             if verbose:
@@ -339,15 +364,21 @@ def _examine_vacuity(fact: Fact, verbose: bool = False) -> Fact:
     cause is a mistake in the hypotheses. When none can, the fact keeps
     ``unsatisfied`` in its provenance and ``lanky check`` prints a warning.
 
+    A test that could not draw at all, because a sort has no sampler, is no
+    evidence either way (:func:`_never_drawn`): the question is asked all the
+    same, and when no oracle answers it nothing is printed, because nothing
+    suggests the claim is vacuous.
+
     This runs whoever established the fact, so a statement whose goal no
     oracle can take but whose hypotheses Lean can refute is caught too.
     """
     if fact.status is Status.REFUTED or not has_hypotheses(fact.term):
         return fact
     unsatisfied = fact.provenance.get("unsatisfied") or _never_satisfied(fact.provenance)
-    if not unsatisfied:
+    untestable = fact.provenance.get("untestable") or _never_drawn(fact.provenance)
+    if not unsatisfied and not untestable:
         return fact
-    if "unsatisfied" not in fact.provenance:
+    if unsatisfied and "unsatisfied" not in fact.provenance:
         fact = fact.with_status(
             fact.status,
             unsatisfied=unsatisfied,
@@ -362,11 +393,13 @@ def _examine_vacuity(fact: Fact, verbose: bool = False) -> Fact:
     evidence = {
         key: value for key, value in result.provenance.items() if key not in ("path", "line")
     }
+    marks = {} if unsatisfied else {"untestable": untestable}
     return fact.with_status(
         fact.status,
         vacuous=f"the hypotheses are inconsistent: {result.status.value} by {name}",
         vacuous_by=name,
         vacuous_evidence=evidence,
+        **marks,
     )
 
 

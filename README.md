@@ -136,7 +136,9 @@ sharp.
   hold nowhere from hypotheses that hold only where it does not look
   (`n == 1000`, with naturals drawn up to five). Both get the warning until an
   oracle proves the hypotheses inconsistent; without one, a vacuous claim
-  warns and does not fail the check.
+  warns and does not fail the check. A statement over a sort the tester cannot
+  draw, such as a family over `Nat`, gets no warning, because no draw reached
+  its hypotheses.
 - Python's `and` between two propositions in a generator's `if` clause happens
   to produce the conjunction that was written, because of how CPython compiles
   a comprehension filter, so it is not refused. It cannot be told apart from

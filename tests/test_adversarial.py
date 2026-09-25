@@ -268,6 +268,76 @@ def test_an_empty_domain_is_an_inconsistent_hypothesis(tmp_path, oracles) -> Non
     assert fact.provenance["unsatisfied_detail"] == "a draw could not be completed: Fin(0) is empty"
 
 
+UNTABULATED = VACUOUS.replace(
+    "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+    "f: Fn[Nat, Nat], n: Nat, h: f(n) >= 1) -> f(n) + 1 >= 2",
+).replace("import Fin, Nat", "import Fin, Fn, Nat")
+
+
+@pytest.mark.parametrize("stronger", [True, False])
+def test_a_sort_the_tester_cannot_draw_is_not_unsatisfied_hypotheses(
+    tmp_path, oracles, capsys, stronger
+) -> None:
+    """A family over ``Nat`` stops every draw before the hypotheses are reached.
+
+    The record then has no valid draw, as a vacuous claim's has, and it used to
+    be reported as one: "hypotheses never satisfied in 4000 draws", with a
+    warning, for a hypothesis that was never evaluated and that holds wherever
+    ``f(n)`` is positive. Now the tester says that no draw could be completed,
+    the fact carries no ``unsatisfied``, and nothing is printed under the
+    table, with a stronger oracle that proves the claim or with the tester
+    alone.
+    """
+    if stronger:
+        oracles(ProvesAllButInconsistency(), TestOracle())
+    else:
+        oracles(TestOracle())
+    path = _write(tmp_path, UNTABULATED)
+    (fact,) = list(check_path(path))
+    assert fact.status is (Status.PROVED if stronger else Status.ASSUMED)
+    assert "unsatisfied" not in fact.provenance
+    assert not fact.is_vacuous
+    if stronger:
+        assert fact.provenance["untestable"] == (
+            "no draw could be completed: cannot tabulate a family over Nat"
+        )
+    else:
+        assert fact.provenance["untested"] == (
+            "no draw could be completed: cannot tabulate a family over Nat"
+        )
+        assert fact.provenance["unsampleable"] == 4000
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING" not in printed
+    assert "VACUOUS" not in printed
+
+
+def test_inconsistent_hypotheses_over_a_sort_the_tester_cannot_draw_are_vacuous(
+    tmp_path, oracles, capsys
+) -> None:
+    """The tester draws nothing, and the stronger oracle is still asked.
+
+    No draw is not evidence that the hypotheses fail, but a proof that they do
+    is, whatever the tester managed: ``n > 2`` and ``n < 1`` are inconsistent
+    next to a family over ``Nat`` as anywhere else.
+    """
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(
+        tmp_path,
+        VACUOUS.replace("n: Nat, h:", "f: Fn[Nat, Nat], n: Nat, h:").replace(
+            "import Fin, Nat", "import Fin, Fn, Nat"
+        ),
+    )
+    (fact,) = list(check_path(path))
+    assert fact.is_vacuous
+    assert "unsatisfied" not in fact.provenance
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "VACUOUS vacuous at vacuous.py:7" in printed
+    assert "  no draw could be completed: cannot tabulate a family over Nat" in printed
+    assert "WARNING" not in printed
+
+
 def test_a_refutation_under_a_stronger_proof_is_recorded(tmp_path, oracles, capsys) -> None:
     """The cross-check keeps a counterexample it finds, with or without a note.
 
