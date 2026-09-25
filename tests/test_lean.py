@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 from typing import NoReturn
 
 import pytest
@@ -654,6 +655,69 @@ def test_a_pinned_tactic_reaches_the_registered_oracle() -> None:
     assert pinned == ["omega"]
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+#: The command both documents show the ledger of, as the quickstart spells it.
+CHECK_GAUSS = "uv run lanky check examples/gauss.py"
+
+
+def _printed_after(document: str, command: str) -> list[str]:
+    """What a console block in ``document`` shows ``$ command`` printing.
+
+    The lines after the prompt, up to the next prompt or the end of the block,
+    without the trailing spaces a Markdown file does not keep. A comment after
+    the command is not part of it.
+    """
+    lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
+    start = next(
+        index for index, line in enumerate(lines) if line.split("#")[0].strip() == f"$ {command}"
+    )
+    shown = []
+    for line in lines[start + 1 :]:
+        if line.startswith(("$ ", "```")):
+            break
+        shown.append(line.rstrip())
+    return shown
+
+
+def _check_gauss(capsys) -> list[str]:
+    """``lanky check examples/gauss.py``, as the lines it prints."""
+    from lanky import cli
+
+    assert cli.main(["check", str(ROOT / "examples" / "gauss.py")]) == 0
+    return [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+
+
+def _abridges(shown: str, printed: str) -> bool:
+    """Whether a line of the README's table is the printed one, or it trimmed to fit.
+
+    The README ends a row whose statement it trimmed in ``...``, and shortens
+    the rule under the header to the same width.
+    """
+    if shown == printed:
+        return True
+    if shown.endswith("..."):
+        return printed.startswith(shown.removesuffix("..."))
+    return bool(shown) and set(shown) <= {"-", " "} and printed.startswith(shown)
+
+
+def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) -> None:
+    """On a machine without Lean the README's ``proved lean`` row reads ``tested``.
+
+    That is the README's other claim about the table: the status column changes
+    and nothing else does, the exit code included. The columns keep their
+    widths, because the property tester decided the other row already.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    expected = [
+        line.replace(f"proved  {'lean':13}", f"tested  {'property-test':13}").replace(
+            "2 facts: 1 proved, 1 tested", "2 facts: 2 tested"
+        )
+        for line in _printed_after("docs/quickstart.md", CHECK_GAUSS)
+    ]
+    assert _check_gauss(capsys) == expected
+
+
 # }}}
 
 
@@ -826,6 +890,23 @@ def test_checking_the_example_file_proves_the_scan(lean_oracle: LeanOracle) -> N
     assert by_owner["scan_monotone"].decided_by == "lean"
     # Gauss's sum is outside core Lean, so the property tester keeps it.
     assert by_owner["gauss"].status is Status.TESTED
+
+
+def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, capsys) -> None:
+    """The README's table and the quickstart's are what ``lanky check`` prints.
+
+    Both were copied from a terminal with Lean installed, and the row they are
+    there to show is ``scan_monotone`` reading ``proved lean``, so a machine
+    with Lean is the one place they can be checked. The quickstart has the
+    whole table; the README's is abridged to fit the page.
+    """
+    printed = _check_gauss(capsys)
+    assert _printed_after("docs/quickstart.md", CHECK_GAUSS) == printed
+    readme = _printed_after("README.md", "lanky check examples/gauss.py")
+    assert len(readme) == len(printed)
+    for shown, line in zip(readme, printed, strict=True):
+        assert _abridges(shown, line), (shown, line)
+    assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
 
 
 def test_the_printed_proposition_elaborates(lean_oracle: LeanOracle) -> None:
