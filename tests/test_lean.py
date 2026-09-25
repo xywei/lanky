@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from typing import NoReturn
 
 import pytest
 
@@ -597,9 +598,9 @@ def test_availability_does_not_claim_a_repl_it_has_not_built(monkeypatch) -> Non
     monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
     oracle = LeanOracle(session=LeanSession())
     available, reason = oracle.availability()
-    if not available:  # no Lean here: the reason is the one-line explanation
+    if not available:  # no Lean here, so nothing to overstate
         assert reason
-        return
+        _without_lean(f"no Lean oracle here: {reason}")
     assert "untested until the first fact" in reason
     # and the line the CLI prints carries that reason rather than dropping it
     from lanky.check import oracle_lines
@@ -659,22 +660,69 @@ def test_a_pinned_tactic_reaches_the_registered_oracle() -> None:
 # {{{ the oracle, with Lean
 
 
+def _without_lean(reason: str) -> NoReturn:
+    """Skip a test that needs Lean, or fail it where Lean was promised.
+
+    A machine without Lean must still have a green suite, so the default is a
+    skip that says why. The CI job that installs Lean sets
+    ``LANKY_LEAN_TEST_REQUIRED=1``, and there a missing oracle is a failure: a
+    toolchain that stopped installing, or a REPL that stopped building, would
+    otherwise turn every Lean test into a quiet skip and leave the job green.
+    """
+    if os.environ.get("LANKY_LEAN_TEST_REQUIRED"):
+        pytest.fail(f"LANKY_LEAN_TEST_REQUIRED is set, but {reason}", pytrace=False)
+    pytest.skip(reason)
+
+
+def _open_lean_oracle() -> LeanOracle:
+    """A Lean oracle whose session is open, or the reason there is none."""
+    if os.environ.get("LANKY_LEAN_DISABLE"):
+        _without_lean("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
+    oracle = LeanOracle(timeout=float(os.environ.get("LANKY_LEAN_TEST_TIMEOUT", "120")))
+    available, reason = oracle.availability()
+    if not available:
+        _without_lean(f"no Lean oracle here: {reason}")
+    if not oracle.session.start():
+        _without_lean(f"the Lean REPL could not be built: {oracle.session.error}")
+    return oracle
+
+
+def test_a_required_lean_fails_where_it_would_have_skipped(monkeypatch) -> None:
+    """``LANKY_LEAN_TEST_REQUIRED=1`` turns the Lean tests' skip into a failure.
+
+    Without it a missing oracle skips, which keeps a machine without Lean
+    green. With it, as in the CI job that installs Lean, the same reason fails
+    the test, so that job cannot pass by running none of what it is for.
+    """
+    monkeypatch.delenv("LANKY_LEAN_TEST_REQUIRED", raising=False)
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    with pytest.raises(pytest.skip.Exception, match="disabled by LANKY_LEAN_DISABLE"):
+        _open_lean_oracle()
+
+    monkeypatch.setenv("LANKY_LEAN_TEST_REQUIRED", "1")
+    with pytest.raises(
+        pytest.fail.Exception,
+        match="LANKY_LEAN_TEST_REQUIRED is set, but the Lean oracle is disabled",
+    ):
+        _open_lean_oracle()
+
+    # and a Lean that is simply not there is a failure too, not only a disabled one
+    monkeypatch.delenv("LANKY_LEAN_DISABLE")
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(pytest.fail.Exception, match="lean is not on PATH"):
+        _open_lean_oracle()
+
+
 @pytest.fixture(scope="module")
 def lean_oracle() -> Iterator[LeanOracle]:
     """One Lean session for the whole module, or a skip explaining why not.
 
     The first session ever opened on a machine builds the REPL, which takes
     minutes and wants the network; afterwards it is a second. A suite that
-    cannot pay for that says so and moves on.
+    cannot pay for that says so and moves on, unless it was told that it can
+    (see :func:`_without_lean`).
     """
-    if os.environ.get("LANKY_LEAN_DISABLE"):
-        pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
-    oracle = LeanOracle(timeout=float(os.environ.get("LANKY_LEAN_TEST_TIMEOUT", "120")))
-    available, reason = oracle.availability()
-    if not available:
-        pytest.skip(f"no Lean oracle here: {reason}")
-    if not oracle.session.start():
-        pytest.skip(f"the Lean REPL could not be built: {oracle.session.error}")
+    oracle = _open_lean_oracle()
     yield oracle
     oracle.session.close()
 
