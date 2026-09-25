@@ -739,3 +739,94 @@ def test_in_sort_knows_the_sorts_it_can_judge() -> None:
 
 
 # }}}
+
+
+# {{{ a refutation names the quantified point that made it false
+
+
+def test_a_refutation_under_a_quantifier_names_the_point() -> None:
+    """The failing binder value used to be lost with the evaluator's context.
+
+    ``all(i < 2 for i in Fin[n + 3])`` is false because of ``i = 2``, and the
+    counterexample said only what ``n`` was drawn as, so it did not say why.
+    A nest of quantifiers lost every point the same way, in the ledger too.
+    """
+
+    @theorem
+    def bad(n: Nat) -> all(i < 2 for i in Fin[n + 3]):
+        """False at every ``n``, and always because of ``i = 2``."""
+
+    report = bad.report(n=5)
+    assert not report.ok
+    assert set(report.counterexample) == {"n", "i"}
+    assert report.counterexample["i"] == 2
+
+    @theorem
+    def nested(n: Nat) -> all(
+        all(i + j < 3 for j in Fin[n + 1] if j >= i) for i in Fin[n + 1]
+    ):
+        """False from ``n = 2`` on: at ``i = 1, j = 2``, and from 3 on at ``i = 0, j = 3``."""
+
+    def first_failure(size: int) -> tuple[int, int]:
+        # the points are visited in order, outer binder first, so the first
+        # failure is the one the report should name
+        return (1, 2) if size == 2 else (0, 3)
+
+    report = nested.report(n=50)
+    assert not report.ok
+    witness = report.counterexample
+    assert witness["n"] >= 2
+    assert (witness["i"], witness["j"]) == first_failure(witness["n"])
+
+    result = TestOracle(samples=50).establish(nested.fact())
+    assert result is not None
+    assert result.status is Status.REFUTED
+    witness = result.provenance["counterexample"]
+    assert (witness["i"], witness["j"]) == first_failure(witness["n"])
+
+
+def test_a_quantified_point_does_not_overwrite_a_drawn_variable() -> None:
+    """A binder that shadows a parameter is detail; the parameter is the witness.
+
+    ``i`` is drawn, and the generator binds another ``i`` over ``Fin[i]``. The
+    statement is false at every drawn ``i`` from 1 on, where the inner ``i = 0``
+    fails, and the value that reproduces that is the drawn one.
+    """
+
+    @theorem
+    def shadowing(i: Nat) -> all(i > 0 for i in Fin[i]):
+        """The binder's own domain names the parameter it shadows."""
+
+    report = shadowing.report(n=50)
+    assert not report.ok
+    assert report.counterexample["i"] >= 1
+
+
+# }}}
+
+
+# {{{ a theorem with no goal
+
+
+def test_a_theorem_without_a_goal_claims_true_everywhere() -> None:
+    """A missing return annotation reads as ``True`` in every way of running it.
+
+    ``statement`` and ``__call__`` said ``True`` while ``report`` handed
+    ``None`` to the tester, which read it as false and returned a
+    counterexample, so the pytest plugin failed a theorem its own call passed.
+    The second round of fixes on the MVP made them agree; this pins it.
+    """
+
+    @theorem
+    def no_goal(n: Nat, h: n > 1):
+        """Hypotheses and no conclusion: it claims nothing."""
+
+    assert no_goal.statement == "n : Nat | n > 1 |- True"
+    assert no_goal(n=3).holds
+    assert no_goal.test(n=5) == (True, None)
+    report = no_goal.report(n=5)
+    assert report.ok
+    assert report.valid == 5
+
+
+# }}}

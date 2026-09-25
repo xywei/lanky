@@ -214,6 +214,14 @@ listed because it changes behaviour a reader could already have depended on.
   import (a module `a.b` found as `a/b.py` or `a/b/__init__.py` next to the
   file) are now withdrawn too; an installed package imported for the first
   time stays imported, even when it sits below the file's directory.
+- **A refutation names the quantified point that made it false.** The
+  property tester built a counterexample from the drawn variables alone, and
+  a quantifier's binding lived in the evaluator's own copy of the context, so
+  `all(i < 2 for i in Fin[n + 3])` was refuted at `{'n': 0}` with nothing
+  saying `i = 2`. The goal is now walked along its universal quantifiers and
+  conjunctions, one point at a time in the evaluator's order, and the first
+  failing point joins the counterexample; a binder that shadows a drawn
+  variable does not overwrite it.
 
 ### Notes
 

@@ -54,6 +54,7 @@ counterexample.
 from __future__ import annotations
 
 import random
+from contextlib import closing
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
@@ -447,6 +448,11 @@ def check(
     applied outside its domain). Neither is a counterexample, and neither is
     evidence.
 
+    A counterexample names the drawn variables and, when the goal is a
+    universal statement, the quantified point at which it fails (see
+    :func:`_falsify`), so that the refutation can be replayed from what the
+    report says.
+
     A goal that is already a concrete value is not sampled. A theorem with no
     binders and no hypotheses whose return annotation evaluated to a ``bool``
     has nothing to draw, so it is answered once, and a missing return
@@ -479,7 +485,7 @@ def check(
         try:
             if not all(bool(evaluate(h, context, sampler)) for h in hypotheses):
                 continue
-            satisfied = bool(evaluate(goal, context, sampler))
+            satisfied, witness = _falsify(goal, context, sampler)
         except (Undecided, ZeroDivisionError) as exc:
             report.undecided += 1
             undecided_reason = undecided_reason or _undecided_reason(exc)
@@ -489,7 +495,11 @@ def check(
         report.valid += 1
         if not satisfied:
             report.ok = False
-            report.counterexample = {k: _describe(v) for k, v in context.items()}
+            # The drawn variables come first and win a clash of names: they are
+            # what the statement is false at, and a quantified point that
+            # shadows one of them is detail about why.
+            found = {**context, **{k: v for k, v in witness.items() if k not in context}}
+            report.counterexample = {k: _describe(v) for k, v in found.items()}
             report.reason = "the goal is false at this assignment"
             return report
     if report.valid == 0:
@@ -502,6 +512,47 @@ def check(
                 else "no draw could be completed"
             )
     return report
+
+
+def _falsify(
+    goal: Any,
+    context: dict[str, Any],
+    sampler: Any,
+) -> tuple[bool, dict[str, Any]]:
+    """Evaluate ``goal``, and when it is false say at which quantified point.
+
+    The drawn variables are not the whole of a counterexample when the goal
+    quantifies: ``all(i < 2 for i in Fin[n + 3])`` is false because of
+    ``i = 2``, and the evaluator's binding of ``i`` lives in its own copy of
+    the context and is gone by the time the report is written, so the
+    refutation used to name ``n`` alone, which does not say why. This walks the
+    part of the goal where "the point that made it false" is well defined, a
+    universal quantifier and a conjunction and whatever nests in them, one
+    point at a time in the order the evaluator visits them, and returns the
+    first failing assignment along with the answer. Everything else is left to
+    :func:`~lanky.terms.evaluate`, so the answer is the one it gives. A name
+    already in the counterexample is not overwritten by an inner binder that
+    shadows it.
+    """
+    if isinstance(goal, Forall):
+        scope = dict(context)
+        with closing(binder_assignments(goal.binders, scope, sampler)) as walk:
+            for _ in walk:
+                if goal.guard is not None and not evaluate(goal.guard, scope, sampler):
+                    continue
+                holds, witness = _falsify(goal.body, scope, sampler)
+                if not holds:
+                    point = {var.name: scope[var.name] for var, _ in goal.binders}
+                    point.update((k, v) for k, v in witness.items() if k not in point)
+                    return False, point
+        return True, {}
+    if isinstance(goal, prim.LogicalAnd):
+        for child in goal.children:
+            holds, witness = _falsify(child, context, sampler)
+            if not holds:
+                return False, witness
+        return True, {}
+    return bool(evaluate(goal, context, sampler)), {}
 
 
 def _constant_report(goal: Any) -> TestReport:
