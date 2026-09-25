@@ -436,7 +436,7 @@ def test_a_neighbour_imported_before_the_check_changes_nothing(tmp_path, monkeyp
         sys.modules.pop(neighbour, None)
 
 
-def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, capsys) -> None:
+def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, monkeypatch, capsys) -> None:
     """``lanky check main.py helper.py`` is how two files are checked together.
 
     Each file gets its own ledger under a heading, since a fact id is unique
@@ -446,6 +446,9 @@ def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, capsys) -> None:
     """
     import sys
 
+    # Lean proves the helper's claim where it is installed; which oracle takes
+    # it is not what this is about, and the counts below are the tester's.
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     neighbour = "lanky_test_listed_neighbour"
     main, helper = _neighbourhood(tmp_path, neighbour)
     out_json = tmp_path / "ledger.json"
@@ -668,7 +671,9 @@ def test_a_package_init_is_checked_in_its_own_package(tmp_path) -> None:
             sys.modules.pop(key, None)
 
 
-def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path, capsys) -> None:
+def test_a_package_of_the_same_name_from_another_tree_is_refused(
+    tmp_path, monkeypatch, capsys
+) -> None:
     """``lanky check a/pkg/mod.py b/pkg/mod.py`` must not check b with a's modules.
 
     The first file's relative import leaves ``pkg`` and ``pkg.helpers`` in
@@ -679,6 +684,9 @@ def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path, capsy
     """
     import sys
 
+    # As above: the one ledger printed is found by its summary, which reads
+    # "1 proved" rather than "1 tested" where Lean is installed.
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     name = "lanky_test_twin"
     first, _deep = _package(tmp_path / "a", name)
     second, _deep = _package(tmp_path / "b", name)
