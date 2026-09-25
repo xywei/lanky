@@ -79,6 +79,7 @@ __all__ = [
     "in_sort",
     "sample_value",
     "sampling_order",
+    "truth_value",
 ]
 
 #: Largest natural number drawn. Small on purpose: quantifiers are enumerated.
@@ -144,6 +145,22 @@ class Table:
         """Iterate the values."""
         return iter(self.values)
 
+    def __eq__(self, other: Any) -> bool:
+        """Compare two families by their values, which is what equality of families is.
+
+        A statement such as ``f == g`` over two families is evaluated by
+        comparing the tables the sampler drew, and without this the comparison
+        fell back to identity: two empty tables over ``Fin[0]`` are the one
+        function there is out of an empty domain, and they were reported as a
+        counterexample to their own equality. The values are compared as lists,
+        so a family of families compares its entries by this same rule.
+        Defining equality makes a table unhashable, like the mutable list it
+        wraps, and nothing keys a container by one.
+        """
+        if not isinstance(other, Table):
+            return NotImplemented
+        return self.values == other.values
+
     def __repr__(self) -> str:
         """Print as the list of values."""
         return f"Table({self.values!r})"
@@ -178,8 +195,11 @@ def sample_value(
         bound = int(evaluate(domain.bound, context))
         if bound < 0:
             raise SkipSample(f"{domain} has a negative size")
+        # A family over an empty domain exists whatever its codomain is, so the
+        # codomain is only consulted when there is an entry to draw.
+        codomain = _entry_sort(sort.codomain, context) if bound else sort.codomain
         return Table(
-            (sample_value(sort.codomain, rng, context) for _ in range(bound)),
+            (sample_value(codomain, rng, context) for _ in range(bound)),
             name=name or "a family",
         )
     if isinstance(sort, Sort):
@@ -200,6 +220,41 @@ def sample_value(
     if sort is bool:
         return rng.random() < 0.5
     raise SkipSample(f"no sampler for {sort!r}")
+
+
+def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
+    """The sort a family's entries are drawn from, with its refinement settled.
+
+    An entry has no name, so :func:`sample_value` is asked for one without a
+    ``name`` and used to accept every value of a refined codomain's base
+    unchecked: ``f : Fn[Fin[1], Nat & False]`` got a table holding an ordinary
+    natural, and a statement that is true because no such ``f`` exists was
+    refuted by it. A refinement that names only variables already drawn is a
+    condition on the codomain as a whole, and it is settled here once: when it
+    holds, every value of the base is an entry, and when it fails the codomain
+    is empty and no family with a point in its domain exists, so there is no
+    draw to take. A refinement that names anything else cannot be judged at an
+    entry, and drawing from the base as though it were absent would put values
+    outside the declared sort into the table, so that draw is not taken either.
+
+    Raises:
+        SkipSample: If the codomain is empty at these values, or its refinement
+            names a variable nothing here gives a value.
+    """
+    if not isinstance(codomain, Refined):
+        return codomain
+    unbound = sorted(free_variables(codomain.props) - set(context))
+    if unbound:
+        raise SkipSample(
+            f"cannot draw the entries of a family into {codomain}: its "
+            f"refinement names {', '.join(unbound)}, which no entry binds"
+        )
+    if not codomain.holds(context):
+        raise SkipSample(
+            f"{codomain} is empty at this draw, so there is no family into it "
+            "with a point in its domain"
+        )
+    return codomain.base
 
 
 def in_sort(value: Any, sort: Any, context: dict[str, Any]) -> bool:
@@ -483,7 +538,7 @@ def check(
             continue
         sampler = sort_sampler(rng, context)
         try:
-            if not all(bool(evaluate(h, context, sampler)) for h in hypotheses):
+            if not all(truth_value(evaluate(h, context, sampler), h) for h in hypotheses):
                 continue
             satisfied, witness = _falsify(goal, context, sampler)
         except (Undecided, ZeroDivisionError) as exc:
@@ -552,7 +607,7 @@ def _falsify(
             if not holds:
                 return False, witness
         return True, {}
-    return bool(evaluate(goal, context, sampler)), {}
+    return truth_value(evaluate(goal, context, sampler), goal), {}
 
 
 def _constant_report(goal: Any) -> TestReport:
@@ -566,7 +621,7 @@ def _constant_report(goal: Any) -> TestReport:
     counterexample is empty on purpose, because no assignment is what makes the
     statement false.
     """
-    if bool(goal):
+    if truth_value(goal, goal):
         return TestReport(ok=True, samples=1, valid=1)
     return TestReport(
         ok=False,
@@ -578,6 +633,36 @@ def _constant_report(goal: Any) -> TestReport:
             "assumes nothing, so there is no assignment to blame and nothing "
             "that could make it true"
         ),
+    )
+
+
+def truth_value(value: Any, prop: Any) -> bool:
+    """``value`` as the truth value of ``prop``, refusing what is not one.
+
+    A statement is a proposition, so what it evaluates to at a draw has to be a
+    truth value. ``bool()`` takes anything: ``def t(n: Nat) -> n + 1`` claims
+    nothing, and Lean declines it because its goal has type ``Nat``, but
+    Python's truthiness made every draw of it a pass and the malformed claim
+    was reported ``TESTED``. A hypothesis was read the same way. A numpy
+    boolean, which a comparison of numpy values answers, is a truth value; a
+    number, a table or ``None`` is not.
+
+    Raises:
+        TypeError: If ``value`` is not a Boolean. The property-test oracle
+            reports that as a test that could not run, so the fact stays
+            ``ASSUMED`` with the reason in its provenance.
+    """
+    if isinstance(value, bool):
+        return value
+    # numpy is a dependency but nothing else here needs it, so it is imported
+    # only on the way to refusing a value
+    import numpy
+
+    if isinstance(value, numpy.bool_):
+        return bool(value)
+    raise TypeError(
+        f"{render(prop)} is not a proposition: it evaluates to {value!r}, which "
+        f"is a {type(value).__name__} and not a truth value"
     )
 
 

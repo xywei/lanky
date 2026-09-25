@@ -830,3 +830,149 @@ def test_a_theorem_without_a_goal_claims_true_everywhere() -> None:
 
 
 # }}}
+
+
+# {{{ a statement that is not a proposition
+
+
+def test_a_goal_that_is_not_a_proposition_is_never_tested() -> None:
+    """``-> n + 1`` claims nothing, and Python's truthiness made it a pass.
+
+    Lean declines it because its goal has type ``Nat``, while the tester read
+    every nonzero draw as true and the ledger said ``tested``. The value is now
+    refused wherever the statement is run, and the oracle's fact stays
+    assumed with the reason in its provenance.
+    """
+
+    @theorem
+    def not_a_prop(n: Nat) -> n + 1:
+        """A number where a proposition should be."""
+
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_prop.report(n=5)
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_prop(n=1)
+    result = TestOracle(samples=5).establish(not_a_prop.fact())
+    assert result is not None
+    assert result.status is Status.ASSUMED
+    assert result.decided_by is None
+    assert "not a proposition" in result.provenance["reason"]
+
+
+def test_a_hypothesis_that_is_not_a_proposition_is_refused_too() -> None:
+    """A hypothesis was coerced the same way, so it filtered by truthiness."""
+
+    @theorem
+    def not_a_hypothesis(n: Nat, h: n + 1) -> n >= 0:
+        """A number where a hypothesis should be."""
+
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_hypothesis.report(n=5)
+    with pytest.raises(TypeError, match="not a proposition"):
+        not_a_hypothesis(n=1)
+
+
+def test_a_numpy_boolean_is_a_truth_value() -> None:
+    """A comparison of numpy values answers a numpy bool, and that is one."""
+    import numpy as np
+
+    from lanky.testing import truth_value
+
+    assert truth_value(np.bool_(True), "p") is True
+    assert truth_value(np.int64(3) > np.int64(2), "p") is True
+    assert truth_value(False, "p") is False
+    with pytest.raises(TypeError, match="not a proposition"):
+        truth_value(np.int64(1), "p")
+
+    @theorem
+    def ordered(f: Fn[Fin[2], Nat]) -> f(1) >= f(0):
+        """Run at a numpy array, whose comparisons answer numpy bools."""
+
+    assert ordered(f=np.array([0, 1])).holds
+    assert not ordered(f=np.array([1, 0])).holds
+
+
+# }}}
+
+
+# {{{ a family's codomain, and equality of families
+
+
+def test_a_family_into_an_empty_codomain_is_not_a_counterexample() -> None:
+    """``Fn[Fin[1], Nat & False]`` has no inhabitant, so ``-> False`` over it holds.
+
+    An entry has no name to bind a refinement to, so the refinement of a
+    codomain was dropped when an entry was drawn: the table held an ordinary
+    natural, and a statement that is true because no such ``f`` exists was
+    refuted by it. Now no draw is taken, and the fact stays assumed.
+    """
+
+    @theorem
+    def vacuous(f: Fn[Fin[1], Nat & False]) -> False:
+        """True, because nothing can be passed for ``f``."""
+
+    report = vacuous.report(n=20)
+    assert report.ok
+    assert report.valid == 0
+    assert "empty" in report.skipped[0]
+    result = TestOracle(samples=20).establish(vacuous.fact())
+    assert result is not None
+    assert result.status is Status.ASSUMED
+
+
+def test_a_codomain_refinement_is_judged_where_it_can_be() -> None:
+    """A refinement naming only drawn variables is a condition, and it is kept.
+
+    As a codomain ``Nat & (n > 0)`` is empty at ``n = 0`` and all of ``Nat``
+    otherwise, so a draw at ``n = 0`` is not taken; it used to be, and it
+    refuted the statement. A refinement that names nothing drawn cannot be
+    judged at an entry, and its draw is not taken either. A family over an
+    empty domain needs no entry, so its codomain is never consulted.
+    """
+    import random
+
+    from lanky.testing import SkipSample, sample_value
+
+    @theorem
+    def sized(n: Nat, f: Fn[Fin[2], Nat & (n > 0)]) -> n > 0:
+        """Whenever such an ``f`` exists, ``n`` is positive."""
+
+    report = sized.report(n=30)
+    assert report.ok
+    assert report.valid == 30
+
+    rng = random.Random(0)
+    with pytest.raises(SkipSample, match="names x"):
+        sample_value(Fn[Fin[1], Nat & (Var("x") > 0)], rng, {}, "f")
+    assert sample_value(Fn[Fin[0], Nat & False], rng, {}, "f").values == []
+    table = sample_value(Fn[Fin[2], Nat & (Var("n") > 0)], rng, {"n": 1}, "f")
+    assert len(table) == 2
+
+
+def test_two_families_compare_by_their_values() -> None:
+    """Two empty families over ``Fin[0]`` are the one function there is.
+
+    A table had no equality of its own, so ``f == g`` compared two drawn
+    tables by identity and was refuted by the only pair there is.
+    """
+    from lanky.testing import Table
+
+    @theorem
+    def empty_equal(f: Fn[Fin[0], Nat], g: Fn[Fin[0], Nat]) -> f == g:
+        """There is exactly one function out of an empty domain."""
+
+    report = empty_equal.report(n=10)
+    assert report.ok
+    assert report.valid == 10
+    result = TestOracle(samples=10).establish(empty_equal.fact())
+    assert result is not None
+    assert result.status is Status.TESTED
+    assert empty_equal(f=[], g=[]).holds
+
+    assert Table([1, 2]) == Table([1, 2])
+    assert Table([1, 2]) != Table([2, 1])
+    assert Table([Table([0])]) == Table([Table([0])])
+    assert Table([Table([0])]) != Table([Table([1])])
+
+
+# }}}

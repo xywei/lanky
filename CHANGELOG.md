@@ -222,6 +222,36 @@ listed because it changes behaviour a reader could already have depended on.
   conjunctions, one point at a time in the evaluator's order, and the first
   failing point joins the counterexample; a binder that shadows a drawn
   variable does not overwrite it.
+- **A goal or a hypothesis that is not a proposition is refused.**
+  `def t(n: Nat) -> n + 1` claims nothing, and Lean declines it because its
+  goal has type `Nat`, but the property tester applied Python's truthiness to
+  every draw and reported it `TESTED`; a hypothesis was coerced the same way.
+  The new `lanky.testing.truth_value` accepts a `bool` or a numpy boolean and
+  raises `TypeError` for anything else, and the tester and
+  `Theorem.__call__` both go through it, so such a fact stays `ASSUMED` with
+  the reason in its provenance.
+- **A binder that captures a name its own domain mentions is declined by the
+  Lean printer.** In `def bad(i: Nat) -> all(i > 0 for i in Fin[i])` the
+  `Fin[i]` is evaluated before the generator binds its `i`, so it is the
+  parameter, and the statement is false at `i = 1`; printed with its guard
+  after the binder it read `∀ i : Nat, i < i → i > 0`, which `omega` proves,
+  so with Lean installed the ledger said `proved`. `check_applications` now
+  raises `UnsupportedTerm` for such a binder, and the tester refutes the
+  statement.
+- **A refined codomain is honoured when a family's entries are drawn.** An
+  entry has no name, so `sample_value` accepted every value of a refined
+  codomain's base: `f : Fn[Fin[1], Nat & False]` got a table holding an
+  ordinary natural, and `-> False`, true because no such `f` exists, was
+  refuted. A refinement that names only variables already drawn is now
+  evaluated once per table, and an empty codomain means there is no draw; one
+  that names anything else skips the draw; a family over an empty domain
+  still needs no entry.
+- **Two families are equal when their values are.** `lanky.testing.Table`
+  had no equality of its own, so `f == g` compared two drawn tables by
+  identity, and over `Fn[Fin[0], Nat]`, where it is true because there is one
+  function out of an empty domain, it was refuted. A table now compares its
+  values, recursively for a family of families, and is unhashable like the
+  list it wraps.
 
 ### Notes
 

@@ -441,6 +441,63 @@ def test_a_refinement_whose_applications_are_in_bounds_still_prints() -> None:
     )
 
 
+@theorem
+def _captured_binder(i: Nat) -> all(i > 0 for i in Fin[i]):
+    """A binder whose own domain names the parameter it shadows.
+
+    ``Fin[i]`` is evaluated before the generator binds its ``i``, so it is the
+    parameter's ``i`` and the statement is false at ``i = 1``. Printed with the
+    guard after the binder it is ``∀ i : Nat, i < i → i > 0``, which is
+    vacuous. The name is private so that the pytest plugin does not collect a
+    false statement.
+    """
+
+
+def test_a_binder_that_captures_a_name_its_domain_mentions_is_declined() -> None:
+    """The printed guard would bind a name Python had already resolved.
+
+    The translation was a different statement, vacuously true, and with Lean
+    on the machine the ledger read ``proved`` for a false claim, with no
+    semantics note to trigger a cross-check. It is declined now, and the
+    tester, which reads the domain the way Python does, refutes it.
+    """
+    with pytest.raises(UnsupportedTerm, match="captures"):
+        print_lean(_captured_binder.term)
+    with pytest.raises(UnsupportedTerm, match="captures"):
+        statement_of(_captured_binder.term, "captured_binder")
+    oracle = LeanOracle(session=LeanSession())
+    assert not oracle.can_establish(_captured_binder.fact())
+    with pytest.raises(UnsupportedTerm, match="captures"):
+        print_lean(Exists(((i, FinType(i)),), i == 0))
+
+    from lanky.oracles.test import TestOracle
+
+    refuted = TestOracle(samples=20).establish(_captured_binder.fact())
+    assert refuted is not None
+    assert refuted.status is Status.REFUTED
+    assert refuted.provenance["counterexample"]["i"] >= 1
+
+
+def test_a_binder_that_captures_nothing_still_prints() -> None:
+    """A fresh name, a shadowing that is not a capture, and a refinement of its own.
+
+    A refinement's predicates are about the variable being bound, so ``k`` in
+    ``Fin[m] & (k > 0)`` is not a capture; nor is an inner ``i`` whose domain
+    does not mention the outer one it shadows.
+    """
+
+    @theorem
+    def fresh(m: Nat) -> all(j >= 0 for j in Fin[m]):
+        """The same shape as the captured one, with a name of its own."""
+
+    assert print_lean(fresh.term) == "∀ m : Nat, ∀ j : Nat, j < m → j ≥ 0"
+    shadowing = Forall(((i, FinType(n)),), Exists(((i, FinType(1)),), i == 0))
+    assert print_lean(shadowing) == "∀ i : Nat, i < n → ∃ i : Nat, i < 1 ∧ i = 0"
+    k = Var("k")
+    refined = Forall(((k, Fin[n] & (k > 0)),), k < n)
+    assert print_lean(refined) == "∀ k : Nat, k < n → k > 0 → k < n"
+
+
 def test_a_closed_boolean_statement_prints_as_a_proposition() -> None:
     """``-> 1 == 2`` is the Prop ``False``, not the ``Bool`` literal ``false``.
 
@@ -800,6 +857,15 @@ def test_lean_is_never_asked_about_an_application_out_of_bounds(
     assert fact.status is not Status.PROVED
     assert fact.status is Status.ASSUMED
     assert "outside the domain" in fact.provenance["untested"]
+
+
+def test_lean_is_never_asked_about_a_captured_binder(lean_oracle: LeanOracle) -> None:
+    """With Lean here the vacuous translation was proved; the row is refuted now."""
+    from lanky.check import establish
+
+    assert not lean_oracle.can_establish(_captured_binder.fact())
+    fact = establish(_captured_binder.fact())
+    assert fact.status is Status.REFUTED
 
 
 def test_the_statement_the_oracle_sends_is_the_one_it_records(
