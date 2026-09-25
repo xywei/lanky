@@ -8,7 +8,8 @@ import pytest
 
 from lanky import cli
 from lanky.check import check_path, oracle_lines
-from lanky.ledger import Status
+from lanky.ledger import Fact, Ledger, Status
+from lanky.terms import Var
 
 FILE = '''
 """Two claims, one of them false."""
@@ -71,6 +72,8 @@ def test_cli_exits_one_on_a_refutation(tmp_path, capsys) -> None:
     printed = capsys.readouterr().out
     assert "REFUTED false_claim" in printed
     assert "counterexample" in printed
+    # the reason follows the counterexample
+    assert "  the goal is false at this assignment" in printed
     data = json.loads(out_json.read_text(encoding="utf-8"))
     assert {entry["status"] for entry in data} == {"tested", "refuted"}
 
@@ -177,14 +180,26 @@ def test_cli_exits_one_on_a_false_closed_claim(tmp_path, capsys) -> None:
     """
     path = tmp_path / "closed.py"
     path.write_text(CLOSED, encoding="utf-8")
-    code = cli.main(["check", str(path)])
+    out_json = tmp_path / "ledger.json"
+    code = cli.main(["check", str(path), "--json", str(out_json)])
     printed = capsys.readouterr().out
     assert code == 1
     assert "REFUTED impossible" in printed
-    # empty on purpose, and printed rather than dropped: no assignment is what
-    # makes this statement false
-    assert "counterexample: {}" in printed
-    assert "constant False" in printed
+    # the reason is what explains it; the empty witness said nothing, and is
+    # left out of the terminal while the JSON keeps it
+    block = printed.split("REFUTED impossible", 1)[1].splitlines()[1:]
+    assert block == [
+        "  the statement is the constant False: it binds no variable and assumes "
+        "nothing, so there is no assignment to blame and nothing that could make "
+        "it true"
+    ]
+    assert "counterexample" not in printed
+    (entry,) = [
+        entry for entry in json.loads(out_json.read_text(encoding="utf-8"))
+        if entry["owner"] == "impossible"
+    ]
+    assert entry["provenance"]["counterexample"] == {}
+    assert "constant False" in entry["provenance"]["reason"]
 
 
 def test_a_true_closed_claim_is_tested_rather_than_assumed(tmp_path, monkeypatch) -> None:
@@ -428,7 +443,7 @@ def test_a_neighbour_imported_before_the_check_changes_nothing(tmp_path, monkeyp
         sys.modules.pop(neighbour, None)
 
 
-def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, capsys) -> None:
+def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, monkeypatch, capsys) -> None:
     """``lanky check main.py helper.py`` is how two files are checked together.
 
     Each file gets its own ledger under a heading, since a fact id is unique
@@ -438,6 +453,9 @@ def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, capsys) -> None:
     """
     import sys
 
+    # Lean proves the helper's claim where it is installed; which oracle takes
+    # it is not what this is about, and the counts below are the tester's.
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     neighbour = "lanky_test_listed_neighbour"
     main, helper = _neighbourhood(tmp_path, neighbour)
     out_json = tmp_path / "ledger.json"
@@ -660,7 +678,9 @@ def test_a_package_init_is_checked_in_its_own_package(tmp_path) -> None:
             sys.modules.pop(key, None)
 
 
-def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path, capsys) -> None:
+def test_a_package_of_the_same_name_from_another_tree_is_refused(
+    tmp_path, monkeypatch, capsys
+) -> None:
     """``lanky check a/pkg/mod.py b/pkg/mod.py`` must not check b with a's modules.
 
     The first file's relative import leaves ``pkg`` and ``pkg.helpers`` in
@@ -671,6 +691,9 @@ def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path, capsy
     """
     import sys
 
+    # As above: the one ledger printed is found by its summary, which reads
+    # "1 proved" rather than "1 tested" where Lean is installed.
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     name = "lanky_test_twin"
     first, _deep = _package(tmp_path / "a", name)
     second, _deep = _package(tmp_path / "b", name)
@@ -687,3 +710,96 @@ def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path, capsy
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] == name]:
             sys.modules.pop(key, None)
+
+
+# {{{ what is printed under a REFUTED line
+
+
+def _refuted(**provenance) -> Fact:
+    """A refuted fact carrying exactly this provenance."""
+    return Fact(
+        id="theorem:claim",
+        kind="theorem",
+        statement="n : Nat |- n == n + 1",
+        status=Status.REFUTED,
+        decided_by="an-oracle",
+        where="claims.py:7",
+        owner="claim",
+        provenance=provenance,
+    )
+
+
+def _block(capsys, fact: Fact) -> list[str]:
+    """The lines ``lanky check`` prints under the fact's ``REFUTED`` line."""
+    assert cli.CheckVerb._report(Ledger([fact])) is True
+    printed = capsys.readouterr().out
+    head = "REFUTED claim at claims.py:7: n : Nat |- n == n + 1"
+    assert head in printed
+    return printed.split(head, 1)[1].splitlines()[1:]
+
+
+def test_a_refutation_with_a_reason_and_no_counterexample_prints_the_reason(
+    capsys,
+) -> None:
+    """loopty's trace fact is refuted with a reason and no assignment to show.
+
+    Only a fact with a ``counterexample`` got anything under its line, so the
+    reason, which names the fix, was in the JSON alone, and loopty put an empty
+    counterexample into the fact to have it printed.
+    """
+    fact = _refuted(reason="TraceError: the body branches on a loop index")
+    assert _block(capsys, fact) == ["  TraceError: the body branches on a loop index"]
+    assert cli.refutation_lines(fact) == ["TraceError: the body branches on a loop index"]
+    # a reason of several lines is indented line by line under the REFUTED line
+    fact = _refuted(reason="TraceError: the body branches\nwrite 'with when(...):' instead")
+    assert _block(capsys, fact) == [
+        "  TraceError: the body branches",
+        "  write 'with when(...):' instead",
+    ]
+
+
+def test_a_refutation_prints_its_counterexample_and_then_its_reason(capsys) -> None:
+    """The counterexample is printed as before, and the reason follows it."""
+    fact = _refuted(
+        counterexample={"n": 0},
+        reason="the goal is false at this assignment",
+    )
+    assert _block(capsys, fact) == [
+        "  counterexample: {'n': 0}",
+        "  the goal is false at this assignment",
+    ]
+
+
+def test_a_refutation_with_only_a_counterexample_is_printed_as_before(capsys) -> None:
+    assert _block(capsys, _refuted(counterexample={"n": 0})) == [
+        "  counterexample: {'n': 0}"
+    ]
+
+
+def test_an_empty_counterexample_is_not_printed(capsys) -> None:
+    """``{}`` names nothing; the reason beside it is what explains the fact."""
+    fact = _refuted(counterexample={}, reason="false at no assignment in particular")
+    assert _block(capsys, fact) == ["  false at no assignment in particular"]
+
+
+def test_a_refutation_that_records_nothing_says_so(capsys) -> None:
+    """A bare REFUTED line must not read as explained somewhere below it."""
+    assert _block(capsys, _refuted()) == ["  no witness recorded"]
+    assert _block(capsys, _refuted(counterexample={}, reason="")) == [
+        "  no witness recorded"
+    ]
+
+
+def test_a_plugin_witness_counts_as_a_witness(capsys) -> None:
+    """loopty's isl oracle records ``witness``; that is not "no witness".
+
+    It is not printed (the JSON has it, with its rendering), and neither is
+    anything else, so its block is empty, as it was.
+    """
+    fact = _refuted(witness=((0, 8), (1, 7)), witness_text="[t=0, i=8] -> [t=1, i=7]")
+    assert _block(capsys, fact) == []
+    # a term in the provenance is not asked for its truth value
+    assert cli.refutation_lines(_refuted(witness=Var("n"))) == []
+
+
+# }}}

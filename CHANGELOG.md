@@ -285,6 +285,57 @@ listed because it changes behaviour a reader could already have depended on.
   function out of an empty domain, it was refuted. A table now compares its
   values, recursively for a family of families, and is unhashable like the
   list it wraps.
+- **CI runs the suite with Lean as well.** The Lean tests skipped in CI, all
+  seventeen of them, so nothing there showed the `proved lean` row the README
+  leads with. A second job, `test with Lean`, installs elan, Lean v4.29.1 (a
+  toolchain lean-interact 0.11.5's REPL has a build for, which v4.34 is not)
+  and the `lean` extra, caches the toolchain and the built REPL, and runs the
+  whole suite with the oracle on. It sets `LANKY_LEAN_TEST_REQUIRED=1`, under
+  which a Lean test that cannot get a Lean session fails where it used to
+  skip, so the job cannot pass by running none of them; the availability test
+  that passed without Lean by returning early now skips there instead. The job
+  then runs `lanky check examples/gauss.py` and asserts the README's `proved
+  lean` row, and the suite compares the README's abridged table and the
+  quickstart's full one with what the check prints, with Lean and, reading
+  the row as `tested`, without it. The first run with Lean failed two tests
+  of multi-file checking that counted `1 facts: 1 tested` for a claim Lean
+  proves; they now pin the decider with `LANKY_LEAN_DISABLE`.
+- **Every refuted fact says what refuted it.** `lanky check` printed the
+  details of a `REFUTED` fact only when its provenance had a
+  `counterexample`, so a fact refuted with a reason and no assignment to show,
+  which is what loopty reports for a kernel body it cannot trace, got a bare
+  `REFUTED` line and its reason was in the JSON alone; loopty put an empty
+  counterexample into the fact to have it printed. Under each `REFUTED` line
+  there is now the counterexample when it names something, then the fact's
+  `reason` whenever it has one, each of its lines indented, and
+  `no witness recorded` when there is neither (a plugin's own `witness`, as
+  loopty's isl oracle records, counts as one and stays in the JSON). An empty
+  counterexample is no longer printed: `-> 1 == 2` shows its reason without
+  the `counterexample: {}` line above it. The JSON ledger keeps every field,
+  the empty counterexample included. The new `lanky.cli.refutation_lines`
+  builds the block.
+- **A quantifier over a refined domain reads the refinement.** The property
+  tester read a binder over `Fin[n] & p` or `Nat & p`, which a plugin
+  building terms by hand can write, as if `p` were not there: the domain had
+  no `points`, so it went to the sampler, which drew from the base without
+  judging `p`. `∀ k ∈ Fin[n + 2] & (k > 0), k > 0` was refuted at `k = 0`,
+  outside its own domain, and `∃ k ∈ Fin[n + 2] & (k > 0), k == 0` was
+  `tested` on a witness the domain excludes, while the Lean printer read both
+  correctly. `lanky.terms.LankyEvaluationMapper` now gives a refined domain
+  the points of its base at which the refinement holds, judged with the
+  binder bound, as a guard is judged, and the domain is enumerated exactly
+  when its base is, so the first statement is `tested` and the second is
+  refuted with a reason saying that no point of the enumerated domain is a
+  witness. A `forall` over a sampled refinement that rejects every draw
+  (`Nat & (k == 1000)`) raises `Undecided` (the new
+  `lanky.terms.decline_empty_walk`) rather than passing on no point, so the
+  fact stays `ASSUMED` with the reason; an existential over one was already
+  undecided. A definitional hypothesis over a refined domain is assigned at
+  the admitted points only, where the walk used to fail and end the test. A
+  value of a refined sort drawn without a variable name is judged as a
+  family's entry is instead of being drawn from the base, and
+  `lanky.terms.free_variables` counts the names a refined binder domain
+  mentions, which it used to miss.
 - **Every oracle reads a statement as integer arithmetic.** The Lean
   printer wrote a `Nat` variable as a Lean `Nat`, whose subtraction truncates
   at zero, so `def truncated(n: Nat) -> n - 1 >= 0` was `proved` by Lean while
@@ -352,8 +403,9 @@ listed because it changes behaviour a reader could already have depended on.
 - A file carrying statements needs `from __future__ import annotations` and a
   ruff `F821` per-file ignore: a size such as `n` is a symbolic variable lanky
   invents and has no binding a static checker can see.
-- The Lean toolchain is not installed in CI, so the Lean tests skip there and the
-  facts Lean would prove are tested instead. The ledger says which happened.
+- CI runs the suite twice: without Lean, on Python 3.12 and 3.13, where the Lean
+  tests skip and the facts Lean would prove are tested instead, and with Lean
+  v4.29.1, where they run. The ledger says which happened.
 - Python's `and` between two propositions in a generator's `if` clause is *not*
   refused: CPython compiles a conjunction in a comprehension filter into two
   successive tests, so both halves are captured and the guard is the one that

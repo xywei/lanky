@@ -25,13 +25,24 @@ than reported as a pass. An assignment has to land inside the family's codomain
 ``Fn[Fin[1], Nat]`` is unsatisfiable rather than a licence to put ``-1`` into the
 draw, so the draw is dropped instead.
 
-A draw that the statement cannot be answered at is dropped the same way. Three
-things do that, and all three raise or are read as
+A quantifier over a refined domain ``T & p`` ranges over the points of ``T``
+at which ``p`` holds, which is how the Lean printer reads it too (``T`` plus the
+guard ``p``). The evaluator walks or samples ``T``, binds each point, and skips
+the ones ``p`` rejects (:class:`~lanky.terms.LankyEvaluationMapper`), so a
+counterexample never names a point outside the domain and ``Fin[n] & p`` is
+still enumerated, which is what lets an existential over it be refuted.
+
+A draw that the statement cannot be answered at is dropped the same way. Four
+things do that, and all four raise or are read as
 :class:`~lanky.terms.Undecided` rather than as a counterexample, because none of
 them is one:
 
 *An existential over a sampled domain that no draw witnesses.* Four points out
 of ``Nat`` finding no witness is not a refutation.
+
+*A universal over a refinement of a sampled domain that no draw satisfies.*
+``Nat & (k == 1000)`` rejects every draw of ``Nat``, and a ``forall`` that held
+at no point is not evidence that it holds.
 
 *A division or remainder by zero.* Python raises ``ZeroDivisionError`` where
 Lean's integer division is total (``Int.fdiv x 0`` is ``0``, ``Int.fmod x 0``
@@ -63,9 +74,11 @@ import pymbolic.primitives as prim
 
 from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import (
+    Exists,
     Forall,
     Undecided,
     binder_assignments,
+    decline_empty_walk,
     evaluate,
     free_variables,
     render,
@@ -198,12 +211,17 @@ def sample_value(
     """Draw one value of ``sort``, using ``context`` for any symbolic size.
 
     ``name`` is the variable the value is for, which a refinement needs: the
-    propositions of ``Nat & (n > 0)`` talk about ``n``.
+    propositions of ``Nat & (n > 0)`` talk about ``n``. A value drawn without a
+    name is judged the way a family's entry is (:func:`_entry_sort`), rather
+    than drawn from the base as though the refinement were not there, which is
+    what a quantifier over a refined domain used to get.
     """
     if isinstance(sort, Refined):
+        if name is None:
+            return sample_value(_entry_sort(sort, context), rng, context)
         for _ in range(64):
             value = sample_value(sort.base, rng, context, name)
-            if name is None or _refinement_holds(sort, {**context, name: value}):
+            if _refinement_holds(sort, {**context, name: value}):
                 return value
         raise SkipSample(f"no draw of {sort} satisfied its refinement")
     if isinstance(sort, FinType):
@@ -259,6 +277,7 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
     draw to take. A refinement that names anything else cannot be judged at an
     entry, and drawing from the base as though it were absent would put values
     outside the declared sort into the table, so that draw is not taken either.
+    Any other value drawn without a name is settled the same way.
 
     Raises:
         SkipSample: If the codomain is empty at these values.
@@ -271,13 +290,14 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
     unbound = sorted(free_variables(codomain.props) - set(context))
     if unbound:
         raise Unsampleable(
-            f"cannot draw the entries of a family into {codomain}: its "
-            f"refinement names {', '.join(unbound)}, which no entry binds"
+            f"cannot draw an unnamed value of {codomain}, such as a family's "
+            f"entry: its refinement names {', '.join(unbound)}, which nothing "
+            "drawn so far binds"
         )
     if not _refinement_holds(codomain, context):
         raise SkipSample(
-            f"{codomain} is empty at this draw, so there is no family into it "
-            "with a point in its domain"
+            f"{codomain} is empty at this draw, so it has no value to draw and "
+            "no family into it has a point in its domain"
         )
     return codomain.base
 
@@ -396,7 +416,9 @@ def sort_sampler(rng: random.Random, context: dict[str, Any]) -> Any:
     """A sampler for quantifier domains that are sorts rather than index types.
 
     ``Fin`` is enumerated by the evaluator; a quantifier over ``Nat`` has to be
-    sampled, and this is where the draws come from.
+    sampled, and this is where the draws come from. A refined domain is not
+    handed here whole: the evaluator asks for draws of what it refines and
+    judges the refinement itself, with the binder bound.
     """
 
     def sample(domain: Any) -> list[Any]:
@@ -468,6 +490,15 @@ def satisfy_hypotheses(
     ``sorts`` maps a variable name to its declared sort, and is what keeps a
     synthesized value inside the family's codomain.
 
+    A quantified definition is assigned at the points of its domain, so over a
+    refined domain only at the points the refinement admits: ``all(f(i) == 0
+    for i in Fin[n] & (i > 0))`` says nothing about ``f(0)``, which keeps its
+    drawn value. A refinement that cannot be answered at some point ends the
+    walk and leaves the hypothesis to the filter, which meets the same
+    question there: a division by zero or an undecided point drops the draw,
+    and a refinement that is not a proposition stops the test, as it does
+    wherever a proposition is read.
+
     Raises:
         SkipSample: If a definition demands a value the codomain does not have.
     """
@@ -481,8 +512,13 @@ def satisfy_hypotheses(
             definition = _definition(prop.body)
             if definition is None:
                 continue
-            for _ in binder_assignments(prop.binders, context):
-                _try(lambda d=definition: _assign_definition(d[0], d[1], context, sorts))
+            try:
+                for _ in binder_assignments(prop.binders, context):
+                    _try(
+                        lambda d=definition: _assign_definition(d[0], d[1], context, sorts)
+                    )
+            except (Undecided, ZeroDivisionError, TypeError):
+                continue
 
 
 def _try(action: Any) -> None:
@@ -512,7 +548,8 @@ class TestReport:
 
     ``undecided`` counts the draws that were dropped because the statement
     could not be answered at them: an existential over a sampled domain that no
-    draw witnessed, a division by zero, a family applied outside its domain
+    draw witnessed, a universal over a refinement of a sampled domain that no
+    draw satisfied, a division by zero, a family applied outside its domain
     (see the module docstring), or a refinement that cannot be evaluated
     (:class:`Unevaluable`). Such a draw is neither evidence nor a
     counterexample, so it is not counted as valid.
@@ -552,15 +589,18 @@ def check(
     (:class:`SkipSample`, including a definitional hypothesis that would put a
     value outside its codomain) and when the statement cannot be answered at it
     (:class:`~lanky.terms.Undecided` or a ``ZeroDivisionError``: an existential
-    over a sampled domain that found no witness, a division by zero, a family
-    applied outside its domain, and a refinement that raises one of them,
+    over a sampled domain that found no witness, a universal over a sampled
+    refinement that admitted no draw, a division by zero, a family applied
+    outside its domain, and a refinement that raises one of them,
     :class:`Unevaluable`). Neither is a counterexample, and neither is
     evidence.
 
     A counterexample names the drawn variables and, when the goal is a
     universal statement, the quantified point at which it fails (see
     :func:`_falsify`), so that the refutation can be replayed from what the
-    report says.
+    report says. The report's ``reason`` says why the goal is false there, and
+    for an existential that no point of an enumerated domain witnesses it says
+    that (:func:`_refutation_reason`).
 
     A goal that is already a concrete value is not sampled. A theorem with no
     binders and no hypotheses whose return annotation evaluated to a ``bool``
@@ -602,7 +642,7 @@ def check(
         try:
             if not all(truth_value(evaluate(h, context, sampler), h) for h in hypotheses):
                 continue
-            satisfied, witness = _falsify(goal, context, sampler)
+            satisfied, witness, failing = _falsify(goal, context, sampler)
         except (Undecided, ZeroDivisionError) as exc:
             report.undecided += 1
             undecided_reason = undecided_reason or _undecided_reason(exc)
@@ -617,7 +657,7 @@ def check(
             # shadows one of them is detail about why.
             found = {**context, **{k: v for k, v in witness.items() if k not in context}}
             report.counterexample = {k: _describe(v) for k, v in found.items()}
-            report.reason = "the goal is false at this assignment"
+            report.reason = _refutation_reason(failing)
             return report
     if report.valid == 0:
         if report.undecided:
@@ -637,7 +677,7 @@ def _falsify(
     goal: Any,
     context: dict[str, Any],
     sampler: Any,
-) -> tuple[bool, dict[str, Any]]:
+) -> tuple[bool, dict[str, Any], Any]:
     """Evaluate ``goal``, and when it is false say at which quantified point.
 
     The drawn variables are not the whole of a counterexample when the goal
@@ -652,28 +692,59 @@ def _falsify(
     :func:`~lanky.terms.evaluate`, so the answer is the one it gives. A name
     already in the counterexample is not overwritten by an inner binder that
     shadows it.
+
+    The third value is the part of the goal that is false at that assignment,
+    the innermost one this walk reached, or ``None`` when the goal holds; it is
+    what :func:`_refutation_reason` explains. The walk declines a ``forall``
+    that reached no point of a sampled refinement, as the evaluator does
+    (:func:`~lanky.terms.decline_empty_walk`).
     """
     if isinstance(goal, Forall):
         scope = dict(context)
+        visited = 0
         with closing(binder_assignments(goal.binders, scope, sampler)) as walk:
             for _ in walk:
+                visited += 1
                 if goal.guard is not None and not truth_value(
                     evaluate(goal.guard, scope, sampler), goal.guard
                 ):
                     continue
-                holds, witness = _falsify(goal.body, scope, sampler)
+                holds, witness, failing = _falsify(goal.body, scope, sampler)
                 if not holds:
                     point = {var.name: scope[var.name] for var, _ in goal.binders}
                     point.update((k, v) for k, v in witness.items() if k not in point)
-                    return False, point
-        return True, {}
+                    return False, point, failing
+        if not visited:
+            decline_empty_walk(goal)
+        return True, {}, None
     if isinstance(goal, prim.LogicalAnd):
         for child in goal.children:
-            holds, witness = _falsify(child, context, sampler)
+            holds, witness, failing = _falsify(child, context, sampler)
             if not holds:
-                return False, witness
-        return True, {}
-    return truth_value(evaluate(goal, context, sampler), goal), {}
+                return False, witness, failing
+        return True, {}, None
+    holds = truth_value(evaluate(goal, context, sampler), goal)
+    return holds, {}, None if holds else goal
+
+
+def _refutation_reason(failing: Any) -> str:
+    """Why the goal is false at the counterexample, as a line for a report.
+
+    Usually the assignment says it all. An existential needs one more clause:
+    it is false at an assignment because no point of its domain is a witness,
+    and it can only have come back ``False`` over domains that were enumerated
+    (over a sampled one it is undecided), so every point was tried. Saying so
+    tells a reader that the refutation is not a handful of draws that missed.
+    """
+    if isinstance(failing, Exists) and failing.binders:
+        domains = ", ".join(f"{var.name} in {domain}" for var, domain in failing.binders)
+        guard = "" if failing.guard is None else f" where {render(failing.guard)}"
+        return (
+            f"the goal is false at this assignment: no point of {domains}{guard} "
+            f"is a witness to {render(failing.body)}, and every point was tried, "
+            "because the domain is enumerated"
+        )
+    return "the goal is false at this assignment"
 
 
 def _constant_report(goal: Any) -> TestReport:

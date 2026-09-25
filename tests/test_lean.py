@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -891,9 +893,9 @@ def test_availability_does_not_claim_a_repl_it_has_not_built(monkeypatch) -> Non
     monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
     oracle = LeanOracle(session=LeanSession())
     available, reason = oracle.availability()
-    if not available:  # no Lean here: the reason is the one-line explanation
+    if not available:  # no Lean here, so nothing to overstate
         assert reason
-        return
+        _without_lean(f"no Lean oracle here: {reason}")
     assert "untested until the first fact" in reason
     # and the line the CLI prints carries that reason rather than dropping it
     from lanky.check import oracle_lines
@@ -947,10 +949,173 @@ def test_a_pinned_tactic_reaches_the_registered_oracle() -> None:
     assert pinned == ["omega"]
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+#: The command both documents show the ledger of, as the quickstart spells it.
+CHECK_GAUSS = "uv run lanky check examples/gauss.py"
+
+
+def _printed_after(document: str, command: str) -> list[str]:
+    """What a console block in ``document`` shows ``$ command`` printing.
+
+    The lines after the prompt, up to the next prompt or the end of the block,
+    without the trailing spaces a Markdown file does not keep. A comment after
+    the command is not part of it.
+    """
+    lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
+    starts = [
+        index for index, line in enumerate(lines) if line.split("#")[0].strip() == f"$ {command}"
+    ]
+    assert starts, f"{document} no longer shows `$ {command}`"
+    shown = []
+    for line in lines[starts[0] + 1 :]:
+        if line.startswith(("$ ", "```")):
+            break
+        shown.append(line.rstrip())
+    return shown
+
+
+def _check_gauss(capsys) -> list[str]:
+    """``lanky check examples/gauss.py``, as the lines it prints."""
+    from lanky import cli
+
+    assert cli.main(["check", str(ROOT / "examples" / "gauss.py")]) == 0
+    return [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+
+
+def _abridges(shown: str, printed: str, statement_at: int) -> bool:
+    """Whether a line of the README's table is the printed one, or it trimmed to fit.
+
+    The README ends a row whose statement it trimmed in ``...``, and shortens
+    the rule under the header to the same width. Only the statement column is
+    trimmed: what comes before ``statement_at``, where that column starts, is
+    kept whole, so a row cannot shed its status, location or owner and still
+    count as the printed one.
+    """
+    if shown == printed:
+        return True
+    if shown.endswith("..."):
+        kept = shown.removesuffix("...")
+    elif set(shown) <= {"-", " "}:
+        kept = shown
+    else:
+        return False
+    return len(kept) > statement_at and printed.startswith(kept)
+
+
+def _assert_abridged(readme: list[str], printed: list[str]) -> None:
+    """The README's table is the printed one, row for row, each whole or trimmed."""
+    assert len(readme) == len(printed), (readme, printed)
+    statement_at = printed[0].index("STATEMENT")
+    for shown, line in zip(readme, printed, strict=True):
+        assert _abridges(shown, line, statement_at), (shown, line)
+
+
+def _read_as_tested(line: str) -> str:
+    """A line of the documented table as a machine without Lean prints it."""
+    return line.replace(f"proved  {'lean':13}", f"tested  {'property-test':13}").replace(
+        "2 facts: 1 proved, 1 tested", "2 facts: 2 tested"
+    )
+
+
+def test_an_abridged_row_keeps_every_column_but_the_statement() -> None:
+    """The README check accepts a trimmed statement and nothing looser.
+
+    A row cut back to ``...``, a row whose location moved, and a rule longer
+    than the printed one are not what the check printed, so they must not pass
+    for it.
+    """
+    header = "STATUS  BY    WHERE        OWNER  STATEMENT"
+    rule = "------  ----  -----------  -----  ---------------------"
+    row = "proved  lean  gauss.py:39  scan   n : Nat |- n + 0 == n"
+    at = header.index("STATEMENT")
+    assert _abridges(row, row, at)
+    assert _abridges(row[:-6] + "...", row, at)
+    assert _abridges(rule[:-8], rule, at)
+    assert _abridges("", "", at)
+
+    assert not _abridges("...", row, at)
+    assert not _abridges(row[: at - 2] + "...", row, at)
+    assert not _abridges(row.replace(":39", ":40")[:-6] + "...", row, at)
+    assert not _abridges(row[:-6], row, at)
+    assert not _abridges(rule + "---", rule, at)
+    assert not _abridges("", row, at)
+
+
+def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) -> None:
+    """On a machine without Lean the README's ``proved lean`` row reads ``tested``.
+
+    That is the README's other claim about the table: the status column changes
+    and nothing else does, the exit code included. The columns keep their
+    widths, because the property tester decided the other row already. Both
+    documents are held to it, so the README's rows are checked here too and not
+    only where Lean is installed.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    printed = _check_gauss(capsys)
+    quickstart = _printed_after("docs/quickstart.md", CHECK_GAUSS)
+    assert printed == [_read_as_tested(line) for line in quickstart]
+    readme = _printed_after("README.md", "lanky check examples/gauss.py")
+    _assert_abridged([_read_as_tested(line) for line in readme], printed)
+
+
 # }}}
 
 
 # {{{ the oracle, with Lean
+
+
+def _without_lean(reason: str) -> NoReturn:
+    """Skip a test that needs Lean, or fail it where Lean was promised.
+
+    A machine without Lean must still have a green suite, so the default is a
+    skip that says why. The CI job that installs Lean sets
+    ``LANKY_LEAN_TEST_REQUIRED=1``, and there a missing oracle is a failure: a
+    toolchain that stopped installing, or a REPL that stopped building, would
+    otherwise turn every Lean test into a quiet skip and leave the job green.
+    """
+    if os.environ.get("LANKY_LEAN_TEST_REQUIRED"):
+        pytest.fail(f"LANKY_LEAN_TEST_REQUIRED is set, but {reason}", pytrace=False)
+    pytest.skip(reason)
+
+
+def _open_lean_oracle() -> LeanOracle:
+    """A Lean oracle whose session is open, or the reason there is none."""
+    if os.environ.get("LANKY_LEAN_DISABLE"):
+        _without_lean("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
+    oracle = LeanOracle(timeout=float(os.environ.get("LANKY_LEAN_TEST_TIMEOUT", "120")))
+    available, reason = oracle.availability()
+    if not available:
+        _without_lean(f"no Lean oracle here: {reason}")
+    if not oracle.session.start():
+        _without_lean(f"the Lean REPL could not be built: {oracle.session.error}")
+    return oracle
+
+
+def test_a_required_lean_fails_where_it_would_have_skipped(monkeypatch) -> None:
+    """``LANKY_LEAN_TEST_REQUIRED=1`` turns the Lean tests' skip into a failure.
+
+    Without it a missing oracle skips, which keeps a machine without Lean
+    green. With it, as in the CI job that installs Lean, the same reason fails
+    the test, so that job cannot pass by running none of what it is for.
+    """
+    monkeypatch.delenv("LANKY_LEAN_TEST_REQUIRED", raising=False)
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    with pytest.raises(pytest.skip.Exception, match="disabled by LANKY_LEAN_DISABLE"):
+        _open_lean_oracle()
+
+    monkeypatch.setenv("LANKY_LEAN_TEST_REQUIRED", "1")
+    with pytest.raises(
+        pytest.fail.Exception,
+        match="LANKY_LEAN_TEST_REQUIRED is set, but the Lean oracle is disabled",
+    ):
+        _open_lean_oracle()
+
+    # and a Lean that is simply not there is a failure too, not only a disabled one
+    monkeypatch.delenv("LANKY_LEAN_DISABLE")
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(pytest.fail.Exception, match="lean is not on PATH"):
+        _open_lean_oracle()
 
 
 @pytest.fixture(scope="module")
@@ -959,16 +1124,10 @@ def lean_oracle() -> Iterator[LeanOracle]:
 
     The first session ever opened on a machine builds the REPL, which takes
     minutes and wants the network; afterwards it is a second. A suite that
-    cannot pay for that says so and moves on.
+    cannot pay for that says so and moves on, unless it was told that it can
+    (see :func:`_without_lean`).
     """
-    if os.environ.get("LANKY_LEAN_DISABLE"):
-        pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
-    oracle = LeanOracle(timeout=float(os.environ.get("LANKY_LEAN_TEST_TIMEOUT", "120")))
-    available, reason = oracle.availability()
-    if not available:
-        pytest.skip(f"no Lean oracle here: {reason}")
-    if not oracle.session.start():
-        pytest.skip(f"the Lean REPL could not be built: {oracle.session.error}")
+    oracle = _open_lean_oracle()
     yield oracle
     oracle.session.close()
 
@@ -1072,6 +1231,21 @@ def test_checking_the_example_file_proves_the_scan(lean_oracle: LeanOracle) -> N
     assert by_owner["scan_monotone"].decided_by == "lean"
     # Gauss's sum is outside core Lean, so the property tester keeps it.
     assert by_owner["gauss"].status is Status.TESTED
+
+
+def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, capsys) -> None:
+    """The README's table and the quickstart's are what ``lanky check`` prints.
+
+    Both were copied from a terminal with Lean installed, and the row they are
+    there to show is ``scan_monotone`` reading ``proved lean``, so a machine
+    with Lean is the one place they can be checked. The quickstart has the
+    whole table; the README's is abridged to fit the page.
+    """
+    printed = _check_gauss(capsys)
+    assert _printed_after("docs/quickstart.md", CHECK_GAUSS) == printed
+    readme = _printed_after("README.md", "lanky check examples/gauss.py")
+    _assert_abridged(readme, printed)
+    assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
 
 
 def test_the_printed_proposition_elaborates(lean_oracle: LeanOracle) -> None:

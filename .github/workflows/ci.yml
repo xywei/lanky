@@ -17,25 +17,13 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
     env:
-      # No Lean here, on purpose. The Lean oracle needs an elan toolchain plus a
-      # REPL that lean-interact builds with lake on first use. The v4.34.0 Linux
-      # toolchain is a 580 MB download that unpacks to about 2.9 GB, and the REPL
-      # build after it takes another minute and needs the network, so the step
-      # cannot fit the couple of minutes a lint-and-test job should cost. It
-      # would also not work: lean-interact 0.11.5 pins REPL rev v1.3.18, whose
-      # newest supported toolchain is v4.33.0-rc1, so a v4.34.0 install has no
-      # REPL to build against and the oracle would report itself unavailable
-      # anyway. Mathlib is out of scope either way.
-      #
-      # So the Lean tests skip cleanly and deterministically here: the dev sync
-      # below does not install the `lean` extra, and this variable makes the
-      # oracle a declared no-op even if a runner image ever ships `lean` on PATH.
-      # Everything the Lean oracle would prove is still checked by the weaker
-      # oracles, which is what the ledger's status column is for.
-      #
-      # To run the Lean tests locally instead:
-      #   uv sync --group dev --extra lean
-      #   uv run pytest -q
+      # No Lean in this job, on purpose: it is what a user without the `lean`
+      # extra gets. The dev sync below does not install the extra, and this
+      # variable makes the oracle a declared no-op even if a runner image ever
+      # ships `lean` on PATH, so the Lean tests skip cleanly and the facts Lean
+      # would prove are checked by the weaker oracles, which is what the
+      # ledger's status column is for. The `lean` job below runs the same suite
+      # with the oracle on.
       LANKY_LEAN_DISABLE: "1"
     steps:
       - uses: actions/checkout@v5
@@ -56,3 +44,102 @@ jobs:
 
       - name: Check the worked example
         run: uv run lanky check examples/gauss.py
+
+  lean:
+    name: test with Lean
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The toolchain, pinned, which also spares the oracle its toolchain probe.
+      # It has to be one the REPL has a build for: lean-interact 0.11.5 drives
+      # REPL v1.3.18, which is tagged for each Lean release up to v4.32.0 and
+      # for none of v4.34, the current stable. v4.29.1 is the one the oracle
+      # was developed against. Moving it moves both caches below.
+      LANKY_LEAN_VERSION: v4.29.1
+      ELAN_VERSION: v4.2.4
+      # A Lean test that cannot get a Lean session fails here rather than
+      # skipping, so this job cannot go green by running none of what it is for.
+      LANKY_LEAN_TEST_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # The toolchain is a download of several hundred megabytes that unpacks
+      # to about 2.7 GB, so it is kept between runs.
+      - name: Cache the Lean toolchain
+        id: elan-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.elan
+          key: elan-${{ runner.os }}-${{ env.ELAN_VERSION }}-lean-${{ env.LANKY_LEAN_VERSION }}
+
+      - name: Install elan and the Lean toolchain
+        if: steps.elan-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/leanprover/elan/releases/download/${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/elan-init" -y --no-modify-path --default-toolchain none
+          "${HOME}/.elan/bin/elan" toolchain install "leanprover/lean4:${LANKY_LEAN_VERSION}"
+          "${HOME}/.elan/bin/elan" default "leanprover/lean4:${LANKY_LEAN_VERSION}"
+
+      - name: Put Lean on PATH, and name the REPL cache
+        run: |
+          set -euo pipefail
+          echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
+          echo "LANKY_LEAN_CACHE_DIR=${HOME}/.cache/lanky/lean-repl" >> "${GITHUB_ENV}"
+
+      - name: Show the Lean version
+        run: |
+          set -euo pipefail
+          lean --version | tee lean-version.txt
+          grep -qF "version ${LANKY_LEAN_VERSION#v}," lean-version.txt
+
+      - name: Sync dependencies, with the lean extra
+        run: uv sync --group dev --extra lean --python 3.13
+
+      - name: Read the driver's version
+        id: driver
+        run: |
+          set -euo pipefail
+          version=$(uv run python -c 'from importlib.metadata import version; print(version("lean-interact"))')
+          echo "lean-interact ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      # The REPL lean-interact clones and builds with lake on first use: about a
+      # minute, the network, and 250 MB. What it builds depends on the toolchain
+      # and on the REPL revision the driver pins, which the driver's version
+      # stands for, so both are in the key.
+      - name: Cache the Lean REPL build
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/lanky/lean-repl
+          key: lean-repl-${{ runner.os }}-lean-${{ env.LANKY_LEAN_VERSION }}-lean-interact-${{ steps.driver.outputs.version }}
+
+      - name: Test, with the Lean oracle on
+        run: uv run pytest -q
+
+      # The row the README leads with, shown rather than claimed: the README
+      # has to have a `proved lean` row, and the check has to print a row that
+      # starts with it. The README trims the statement column to fit and ends
+      # the row in "...", so what is left of it is compared as a prefix.
+      - name: Check the worked example, and the README's proved-lean row
+        run: |
+          set -euo pipefail
+          uv run lanky check examples/gauss.py | tee ledger.txt
+          row=$(grep -m1 '^proved  lean ' README.md)
+          prefix=${row%...}
+          found=0
+          while IFS= read -r line; do
+            if [[ "${line}" == "${prefix}"* ]]; then
+              found=1
+            fi
+          done < ledger.txt
+          if (( found == 0 )); then
+            echo "no row lanky check printed starts with the README's: ${row}" >&2
+            exit 1
+          fi

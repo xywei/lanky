@@ -1438,3 +1438,215 @@ def test_two_families_compare_by_their_values() -> None:
 
 
 # }}}
+
+
+# {{{ a quantifier over a refined domain
+
+
+def _establish(name: str, term) -> Fact:
+    """What the property tester makes of a statement a plugin built by hand."""
+    fact = TestOracle().establish(Fact(id=name, kind="theorem", statement=name, term=term))
+    assert fact is not None
+    return fact
+
+
+def test_a_true_statement_about_a_refined_domain_is_not_refuted_outside_it() -> None:
+    """``k > 0`` holds on ``Fin[n + 2] & (k > 0)`` by the domain's own refinement.
+
+    The tester sampled the binder from ``Fin[n + 2]`` as if the refinement were
+    not there, and refuted the statement at ``k = 0``, a point outside the
+    domain, so ``lanky check`` exited 1 on a true statement that Lean proves.
+    """
+    n, k = Var("n"), Var("k")
+    positive = Forall(((n, Nat),), Forall(((k, Fin[n + 2] & (k > 0)),), k > 0))
+    fact = _establish("positive", positive)
+    assert fact.status is Status.TESTED
+    assert fact.provenance["valid"] == 200
+
+
+def test_a_false_existential_over_a_refined_domain_is_refuted_with_the_reason() -> None:
+    """No point of ``Fin[n + 2] & (k > 0)`` is zero, and the tester says that.
+
+    It used to find its witness at ``k = 0``, which the refinement excludes,
+    and report the statement ``tested``. The base is enumerated, so the
+    refutation is that no point of the domain is a witness, not that a draw
+    missed one.
+    """
+    n, k = Var("n"), Var("k")
+    zero = Forall(((n, Nat),), Exists(((k, Fin[n + 2] & (k > 0)),), k == 0))
+    fact = _establish("zero", zero)
+    assert fact.status is Status.REFUTED
+    assert set(fact.provenance["counterexample"]) == {"n"}
+    assert fact.provenance["reason"] == (
+        "the goal is false at this assignment: no point of k in Fin(n + 2) & (k > 0) "
+        "is a witness to k == 0, and every point was tried, because the domain is "
+        "enumerated"
+    )
+    # a witness inside the domain is still found
+    last = Forall(((n, Nat),), Exists(((k, Fin[n + 2] & (k > 0)),), k == n + 1))
+    assert _establish("last", last).status is Status.TESTED
+
+
+def test_a_sampled_refined_domain_never_yields_a_point_outside_it() -> None:
+    """``Nat & (k > 0)`` as a binder domain is sampled from the refined domain.
+
+    The true statement used to be refuted at ``k = 0``; the false one is
+    refuted, and always at ``k = 1``, the one point of the domain that breaks
+    it.
+    """
+    n, k = Var("n"), Var("k")
+    domain = Nat & (k > 0)
+    for seed in range(10):
+        oracle = TestOracle(samples=50, seed=seed)
+        true = Forall(((n, Nat),), Forall(((k, domain),), k > 0))
+        fact = oracle.establish(Fact(id="true", kind="theorem", statement="", term=true))
+        assert fact.status is Status.TESTED
+        false = Forall(((n, Nat),), Forall(((k, domain),), k >= 2))
+        fact = oracle.establish(Fact(id="false", kind="theorem", statement="", term=false))
+        assert fact.status is Status.REFUTED
+        assert fact.provenance["counterexample"]["k"] == 1
+
+
+def test_a_refinement_that_rejects_every_draw_leaves_the_fact_assumed() -> None:
+    """``Nat & (k == 1000)`` rejects every draw of ``Nat``, so nothing is tested.
+
+    The ``forall`` used to be read over the unfiltered draws and refuted at
+    one of them; read over the refined domain it holds at no point, which is
+    a vacuous pass and not evidence. The existential over ``Nat & (k > 0)``
+    used to be witnessed at ``k = 0``, outside its domain, and reported
+    ``tested``; no draw of the domain witnesses it, and over a sampled domain
+    that decides nothing either.
+    """
+    n, k = Var("n"), Var("k")
+    far = Forall(((n, Nat),), Forall(((k, Nat & (k == 1000)),), k == 1000))
+    fact = _establish("far", far)
+    assert fact.status is Status.ASSUMED
+    assert fact.decided_by is None
+    assert fact.provenance["valid"] == 0
+    assert "satisfied its refinement" in fact.provenance["untested"]
+
+    unwitnessed = Forall(((n, Nat),), Exists(((k, Nat & (k > 0)),), k == 0))
+    fact = _establish("unwitnessed", unwitnessed)
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["valid"] == 0
+    assert "witness" in fact.provenance["untested"]
+
+
+def test_a_refinement_that_rejects_every_draw_stops_at_the_draw_budget() -> None:
+    """Every draw is undecided, and the test ends at its budget of draws.
+
+    The binder's draws are a fixed handful per assignment and the refinement
+    only filters them, so nothing redraws until the refinement is satisfied:
+    the test is ``samples * REJECTION_FACTOR`` attempts, each of them counted
+    as undecided, and it ends.
+    """
+    from lanky.testing import REJECTION_FACTOR
+
+    n, k = Var("n"), Var("k")
+    far = Forall(((n, Nat),), Forall(((k, Nat & (k > 100)),), k < 0))
+    fact = TestOracle(samples=30).establish(
+        Fact(id="far", kind="theorem", statement="far", term=far)
+    )
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["samples"] == 30 * REJECTION_FACTOR
+    assert fact.provenance["undecided"] == 30 * REJECTION_FACTOR
+
+
+def test_a_refinement_that_admits_few_draws_is_tested_on_the_ones_it_admits() -> None:
+    """``Nat & (k == 3)`` admits about one draw in six: tested, and never at another k.
+
+    A walk that admitted no draw is undecided and is not counted as valid, so
+    the valid draws are the ones that evaluated the body at ``k = 3``.
+    """
+    n, k = Var("n"), Var("k")
+    true = Forall(((n, Nat),), Forall(((k, Nat & (k == 3)),), k == 3))
+    fact = _establish("three", true)
+    assert fact.status is Status.TESTED
+    assert fact.provenance["valid"] == 200
+    assert fact.provenance["undecided"] > 0
+    false = Forall(((n, Nat),), Forall(((k, Nat & (k == 3)),), k == 4))
+    fact = _establish("four", false)
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["k"] == 3
+
+
+def test_a_refinement_that_names_an_earlier_binder_is_read_at_its_point() -> None:
+    """``k`` in ``Fin[n] & (k > j)`` ranges above the ``j`` bound just before it.
+
+    Both quantifiers see exactly the pairs with ``j < k``: the universal is
+    refuted at a pair inside the domain and the existential that needs
+    ``k == j`` has no witness among them.
+    """
+    n, j, k = Var("n"), Var("j"), Var("k")
+    binders = ((j, Fin[n]), (k, Fin[n] & (k > j)))
+    assert _establish("above", Forall(((n, Nat),), Forall(binders, k > j))).status is (
+        Status.TESTED
+    )
+    fact = _establish("far_above", Forall(((n, Nat),), Forall(binders, k > j + 1)))
+    assert fact.status is Status.REFUTED
+    point = fact.provenance["counterexample"]
+    assert point["j"] < point["k"] < point["n"]
+    assert point["k"] == point["j"] + 1
+    fact = _establish("equal", Forall(((n, Nat),), Exists(binders, k == j)))
+    assert fact.status is Status.REFUTED
+    assert "every point was tried" in fact.provenance["reason"]
+    # nested rather than grouped, the inner refinement reads the outer binder
+    nested = Forall(((j, Fin[n]),), Exists(((k, Fin[n] & (k > j)),), k == j + 1))
+    fact = _establish("next", Forall(((n, Nat),), nested))
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["j"] == fact.provenance["counterexample"]["n"] - 1
+
+
+def test_a_definition_over_a_refined_domain_is_assigned_only_inside_it() -> None:
+    """``f(i) == 0`` at the points of ``Fin[3] & (i > 0)`` says nothing of ``f(0)``.
+
+    A refined domain could not be walked without a sampler, so the assignment
+    pass raised and the whole test with it. It is walked now, and only at the
+    points the refinement admits: ``f(0)`` stays as drawn, a goal about it is
+    refuted, and one about ``f(2)`` is tested.
+    """
+    from lanky.testing import check
+
+    f, i = Var("f"), Var("i")
+    definition = Forall(((i, Fin[3] & (i > 0)),), f(i) == 0)
+    report = check([("f", Fn[Fin[3], Nat])], [definition], f(0) == 0, samples=50)
+    assert not report.ok
+    assert report.counterexample["f"][0] != 0
+    assert report.counterexample["f"][1:] == [0, 0]
+    report = check([("f", Fn[Fin[3], Nat])], [definition], f(2) == 0, samples=50)
+    assert report.ok
+    assert report.valid == 50
+
+
+def test_a_definition_over_a_refinement_that_cannot_be_answered_drops_the_draw() -> None:
+    """The walk meets ``6 // i`` at ``i = 0``; the draw is undecided, not a crash."""
+    from lanky.testing import check
+
+    f, i = Var("f"), Var("i")
+    definition = Forall(((i, Fin[3] & (6 // i > 1)),), f(i) == 0)
+    report = check([("f", Fn[Fin[3], Nat])], [definition], f(1) == 0, samples=20)
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided > 0
+
+
+def test_an_unnamed_draw_of_a_refined_sort_honours_the_refinement() -> None:
+    """A value drawn without a name used to come from the base, unchecked.
+
+    That is how the sampler drew a quantifier's points over a refined domain.
+    It is now judged as a family's entry is: a refinement naming only drawn
+    variables is a condition, and one naming anything else cannot be judged.
+    """
+    import random
+
+    from lanky.testing import SkipSample, sample_value
+
+    rng = random.Random(0)
+    with pytest.raises(SkipSample, match="names k"):
+        sample_value(Nat & (Var("k") > 0), rng, {})
+    with pytest.raises(SkipSample, match="empty"):
+        sample_value(Nat & (Var("n") > 0), rng, {"n": 0})
+    assert sample_value(Nat & (Var("n") > 0), rng, {"n": 1}) in range(6)
+
+
+# }}}

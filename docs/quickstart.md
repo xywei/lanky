@@ -3,7 +3,10 @@
 One file, four commands, and the output each one prints. Everything below was
 run in this repository on 2026-09-25 with `uv run`; the numbers and the Lean
 source are copied from the terminal, not written from memory. The one thing that
-drifts is a timing, which is a property of the machine and not of the claim.
+drifts is a timing, which is a property of the machine and not of the claim. The
+`lanky check` table is held to more than that: the test suite compares it with a
+real run, as it stands where Lean is installed (CI has a job for that) and with
+its `proved` row read as `tested` where it is not.
 
 ```sh
 git clone https://github.com/xywei/lanky.git
@@ -260,10 +263,13 @@ was refuted. `lanky.semantics.notes(term)` is the check.
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
-  counterexample is in the provenance, and `lanky check` exits 1. That holds
+  counterexample is in the provenance, `lanky check` repeats the fact under
+  the table with the counterexample and the reason, and it exits 1. That holds
   for `def impossible() -> 1 == 2` as well, which has no variable to name in a
   counterexample: Python answers the annotation itself, the term is the `bool`
-  `False`, and the row still reads `refuted` with an empty witness.
+  `False`, and the row still reads `refuted`, with the reason (the statement
+  is the constant `False`) printed where a counterexample would be. The JSON
+  keeps the empty counterexample.
 - Leave off a theorem's return annotation. `@theorem` raises `TypeError`
   where the function is defined, because a theorem needs a goal, and
   `lanky check` reports the file as one that does not import.
@@ -311,12 +317,13 @@ was refuted. `lanky.semantics.notes(term)` is the check.
   machine both rows read `proved lean` instead: `simp` finds the witness the
   sampler cannot. The point is what each oracle can honestly say, and the
   status column is where it says it.)
-- `uv sync --group dev --extra lean` and watch a row change from `tested` to
-  `proved`. The first run builds a Lean REPL, takes about a minute, and is
-  cached in `$XDG_CACHE_HOME/lanky/lean-repl` (`~/.cache/lanky/lean-repl` by
-  default), which is outside the virtual environment and survives a reinstall;
-  `LANKY_LEAN_CACHE_DIR` moves it and `LANKY_LEAN_VERSION` skips the toolchain
-  probe.
+- `uv sync --group dev --extra lean`, put a Lean toolchain the REPL supports on
+  `PATH` (the README's Install section says which; CI uses v4.29.1), and watch
+  a row change from `tested` to `proved`. The first run builds a Lean REPL,
+  takes about a minute, and is cached in `$XDG_CACHE_HOME/lanky/lean-repl`
+  (`~/.cache/lanky/lean-repl` by default), which is outside the virtual
+  environment and survives a reinstall; `LANKY_LEAN_CACHE_DIR` moves it and
+  `LANKY_LEAN_VERSION` skips the toolchain probe.
 - Install [loopty](https://github.com/xywei/loopty) in the same environment and
   run `lanky check` on a file of loop kernels. The same table fills with
   in-bounds and disjointness facts decided by isl, and `lanky run` appears as a
