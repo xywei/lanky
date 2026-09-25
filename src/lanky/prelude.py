@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from lanky.terms import current_trace, evaluate, render, structurally_equal
+from lanky.terms import current_trace, evaluate, render, structurally_equal, truth_value
 
 __all__ = [
     "Bool",
@@ -305,8 +305,14 @@ class Refined(LankyType):
         return hash(("Refined", self.base, len(self.props)))
 
     def holds(self, context: dict[str, Any]) -> bool:
-        """Whether every refining proposition holds at these values."""
-        return all(bool(evaluate(p, context)) for p in self.props)
+        """Whether every refining proposition holds at these values.
+
+        A refining proposition is a proposition like any other, so what it
+        evaluates to has to be a truth value (:func:`lanky.terms.truth_value`):
+        ``Nat & (k + 1)`` refines by nothing, and truthiness used to read it as
+        ``k != -1``.
+        """
+        return all(truth_value(evaluate(p, context), p) for p in self.props)
 
 
 def exactness_of(obj: Any) -> str:

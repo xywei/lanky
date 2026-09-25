@@ -69,6 +69,7 @@ from lanky.terms import (
     evaluate,
     free_variables,
     render,
+    truth_value,
 )
 
 __all__ = [
@@ -593,7 +594,9 @@ def _falsify(
         scope = dict(context)
         with closing(binder_assignments(goal.binders, scope, sampler)) as walk:
             for _ in walk:
-                if goal.guard is not None and not evaluate(goal.guard, scope, sampler):
+                if goal.guard is not None and not truth_value(
+                    evaluate(goal.guard, scope, sampler), goal.guard
+                ):
                     continue
                 holds, witness = _falsify(goal.body, scope, sampler)
                 if not holds:
@@ -633,36 +636,6 @@ def _constant_report(goal: Any) -> TestReport:
             "assumes nothing, so there is no assignment to blame and nothing "
             "that could make it true"
         ),
-    )
-
-
-def truth_value(value: Any, prop: Any) -> bool:
-    """``value`` as the truth value of ``prop``, refusing what is not one.
-
-    A statement is a proposition, so what it evaluates to at a draw has to be a
-    truth value. ``bool()`` takes anything: ``def t(n: Nat) -> n + 1`` claims
-    nothing, and Lean declines it because its goal has type ``Nat``, but
-    Python's truthiness made every draw of it a pass and the malformed claim
-    was reported ``TESTED``. A hypothesis was read the same way. A numpy
-    boolean, which a comparison of numpy values answers, is a truth value; a
-    number, a table or ``None`` is not.
-
-    Raises:
-        TypeError: If ``value`` is not a Boolean. The property-test oracle
-            reports that as a test that could not run, so the fact stays
-            ``ASSUMED`` with the reason in its provenance.
-    """
-    if isinstance(value, bool):
-        return value
-    # numpy is a dependency but nothing else here needs it, so it is imported
-    # only on the way to refusing a value
-    import numpy
-
-    if isinstance(value, numpy.bool_):
-        return bool(value)
-    raise TypeError(
-        f"{render(prop)} is not a proposition: it evaluates to {value!r}, which "
-        f"is a {type(value).__name__} and not a truth value"
     )
 
 

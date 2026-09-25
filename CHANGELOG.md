@@ -220,7 +220,7 @@ listed because it changes behaviour a reader could already have depended on.
 - **A refutation names the quantified point that made it false.** The
   property tester built a counterexample from the drawn variables alone, and
   a quantifier's binding lived in the evaluator's own copy of the context, so
-  `all(i < 2 for i in Fin[n + 3])` was refuted at `{'n': 0}` with nothing
+  `all(i < 2 for i in Fin[n + 3])` was refuted at `{'n': 3}` with nothing
   saying `i = 2`. The goal is now walked along its universal quantifiers and
   conjunctions, one point at a time in the evaluator's order, and the first
   failing point joins the counterexample; a binder that shadows a drawn
@@ -228,10 +228,15 @@ listed because it changes behaviour a reader could already have depended on.
 - **A goal or a hypothesis that is not a proposition is refused.**
   `def t(n: Nat) -> n + 1` claims nothing, and Lean declines it because its
   goal has type `Nat`, but the property tester applied Python's truthiness to
-  every draw and reported it `TESTED`; a hypothesis was coerced the same way.
-  The new `lanky.testing.truth_value` accepts a `bool` or a numpy boolean and
-  raises `TypeError` for anything else, and the tester and
-  `Theorem.__call__` both go through it, so such a fact stays `ASSUMED` with
+  every draw and reported it `TESTED`; a hypothesis was coerced the same way,
+  and so was every operand of `&`, `|` and `~`, every guard and every body of
+  a quantifier, so `(n + 1) | (n > 5)` and `any(i + 1 for i in Fin[n + 2])`
+  passed too, and so did a refinement by a number. The new
+  `lanky.terms.truth_value` (also exported from `lanky.testing`) accepts a
+  `bool` or a numpy boolean and raises `TypeError` for anything else; the
+  evaluator reads every connective, guard and quantifier body through it,
+  and the tester, `Theorem.__call__` and `Refined.holds` read what a whole
+  proposition evaluates to the same way, so such a fact stays `ASSUMED` with
   the reason in its provenance.
 - **A binder that captures a name its own domain mentions is declined by the
   Lean printer.** In `def bad(i: Nat) -> all(i > 0 for i in Fin[i])` the

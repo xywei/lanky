@@ -19,7 +19,7 @@ from lanky import theorem
 from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.test import TestOracle
-from lanky.prelude import Fin, Fn, Nat
+from lanky.prelude import Bool, Fin, Fn, Nat
 from lanky.terms import Exists, Forall, Undecided, Var, render, structurally_equal
 
 # {{{ a hypothesis no draw can satisfy
@@ -890,6 +890,54 @@ def test_a_numpy_boolean_is_a_truth_value() -> None:
 
     assert ordered(f=np.array([0, 1])).holds
     assert not ordered(f=np.array([1, 0])).holds
+
+
+def test_a_number_inside_a_proposition_is_refused_too() -> None:
+    """One connective down, a number still passed as a proposition.
+
+    Only the value of the whole goal and of each hypothesis was checked. The
+    connectives and the quantifiers read their operands by Python's
+    truthiness, so ``(n + 1) | (n > 5)`` and ``any(i + 1 for i in Fin[n + 2])``
+    were ``TESTED``, and calling them answered that they held. A family of
+    ``Bool`` given as numbers was refused as ``mask(0)`` and accepted under
+    ``all``, and a refinement by a number refined by nothing.
+    """
+
+    @theorem
+    def in_a_disjunction(n: Nat) -> (n + 1) | (n > 5):
+        """A number as one side of a disjunction."""
+
+    @theorem
+    def as_a_witness(n: Nat) -> any(i + 1 for i in Fin[n + 2]):
+        """A number as the body of an existential."""
+
+    @theorem
+    def in_a_hypothesis(n: Nat, h: (n + 1) | (n < 0)) -> n >= 0:
+        """A number inside a disjunctive hypothesis."""
+
+    for statement in (in_a_disjunction, as_a_witness, in_a_hypothesis):
+        with pytest.raises(TypeError, match="not a proposition"):
+            statement.report(n=5)
+        result = TestOracle(samples=5).establish(statement.fact())
+        assert result is not None
+        assert result.status is Status.ASSUMED
+        assert "not a proposition" in result.provenance["reason"]
+    with pytest.raises(TypeError, match="not a proposition"):
+        in_a_disjunction(n=1)
+    with pytest.raises(TypeError, match="not a proposition"):
+        as_a_witness(n=1)
+
+    @theorem
+    def all_set(n: Nat, mask: Fn[Fin[n], Bool]) -> all(mask(i) for i in Fin[n]):
+        """Every entry of a family of Booleans is set."""
+
+    with pytest.raises(TypeError, match="not a proposition"):
+        all_set(n=2, mask=[1, 1])
+    assert all_set(n=2, mask=[True, True]).holds
+
+    k = Var("k")
+    with pytest.raises(TypeError, match="not a proposition"):
+        (Nat & (k + 1)).holds({"k": 3})
 
 
 # }}}

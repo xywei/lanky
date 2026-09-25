@@ -26,8 +26,16 @@ import pymbolic.primitives as prim
 from lanky.ledger import Fact, Status, fact_id
 from lanky.plugins import registry
 from lanky.prelude import FnType
-from lanky.terms import Forall, LogicalAnd, Var, evaluate, evaluate_annotations, render
-from lanky.testing import Table, TestReport, check, truth_value
+from lanky.terms import (
+    Forall,
+    LogicalAnd,
+    Var,
+    evaluate,
+    evaluate_annotations,
+    render,
+    truth_value,
+)
+from lanky.testing import Table, TestReport, check
 
 __all__ = ["Theorem", "TheoremTheory", "Verdict", "theorem"]
 
@@ -155,10 +163,11 @@ class Theorem:
                 the domain it declares at these values. There is no value to
                 compare there, so there is no verdict either; the property
                 tester drops such a draw for the same reason.
-            TypeError: If a hypothesis or the goal evaluates to something
-                other than a truth value (:func:`lanky.testing.truth_value`):
-                such a statement claims nothing, and the property tester
-                refuses it the same way.
+            TypeError: If a hypothesis or the goal, or any proposition inside
+                one (an operand of ``&``, ``|`` or ``~``, the body of a
+                quantifier), evaluates to something other than a truth value
+                (:func:`lanky.terms.truth_value`): such a statement claims
+                nothing, and the property tester refuses it the same way.
         """
         missing = [name for name, _ in self.variables if name not in concrete]
         if missing:
