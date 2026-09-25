@@ -154,11 +154,22 @@ def oracle_availability(oracle: Any) -> tuple[bool, str]:
 
     An oracle that does not answer the question is assumed available, so the
     common case needs no code.
+
+    An oracle whose answer is an exception is unavailable, with the exception as
+    the reason. The probe is where an optional oracle finds out that a native
+    dependency is missing, so raising there is the ordinary way for it to fail,
+    and it must cost that one oracle and not the check: the callers ask before
+    they reach the per-oracle handler in :func:`lanky.check.establish`, and an
+    exception here used to abort the whole check and make ``lanky check``
+    report the checked file as unimportable.
     """
     query = getattr(oracle, "availability", None)
     if query is None:
         return True, ""
-    available, reason = query()
+    try:
+        available, reason = query()
+    except Exception as exc:  # noqa: BLE001 - one broken oracle must not stop the rest
+        return False, f"its availability check raised {type(exc).__name__}: {exc}"
     return bool(available), str(reason)
 
 

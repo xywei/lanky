@@ -60,6 +60,38 @@ def test_a_family_is_a_total_function() -> None:
     assert lean_type(Fn[Fin[n], Fn[Fin[n], Int]]) == "Nat → Nat → Int"
 
 
+def test_a_function_typed_domain_is_bracketed() -> None:
+    """``→`` is right associative, so only a domain can need brackets.
+
+    ``Fn[Fn[Fin[n], Nat], Nat]`` printed as ``Nat → Nat → Nat``, the type of a
+    family of families, so a higher-order parameter applied to a family did not
+    elaborate and a statement Lean could prove was left assumed. A refinement
+    prints as its base, so a refined function-typed domain is bracketed too,
+    and a function-typed codomain still needs nothing.
+    """
+    assert lean_type(Fn[Fn[Fin[n], Nat], Nat]) == "(Nat → Nat) → Nat"
+    assert lean_type(Fn[Fn[Fin[n], Nat] & (n > 0), Int]) == "(Nat → Nat) → Int"
+    assert lean_type(Fn[Fin[n], Fn[Fn[Fin[n], Nat], Nat]]) == "Nat → (Nat → Nat) → Nat"
+
+    @theorem
+    def higher_order(
+        m: Nat,
+        total: Fn[Fn[Fin[m], Nat], Nat],
+        g: Fn[Fin[m], Nat],
+    ) -> total(g) >= 0:
+        """A family indexed by families, applied to one."""
+
+    statement = statement_of(higher_order.term, "higher_order")
+    assert statement.binders == (
+        ("m", "Nat"),
+        ("total", "(Nat → Nat) → Nat"),
+        ("g", "Nat → Nat"),
+    )
+    assert print_lean(higher_order.term) == (
+        "∀ m : Nat, ∀ total : (Nat → Nat) → Nat, ∀ g : Nat → Nat, total g ≥ 0"
+    )
+
+
 def test_real_has_no_core_lean_type() -> None:
     with pytest.raises(UnsupportedTerm):
         lean_type(Real)

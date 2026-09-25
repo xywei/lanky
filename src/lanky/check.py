@@ -172,18 +172,66 @@ def oracle_lines() -> list[str]:
     return lines
 
 
+def _release_local_modules(before: set[str], directory: Path) -> None:
+    """Withdraw the modules the checked file's directory supplied to this import.
+
+    ``import_path`` withdraws the checked file's own module, but a claim can
+    live in a module the file imports, and Python imports a module once per
+    process: the first check of ``main.py`` executes ``helper.py`` and collects
+    its theorems, and a second check finds ``helper`` cached, executes nothing,
+    and returns a ledger without them. Withdrawing what the import brought in
+    makes every check of a file see the same claims.
+
+    Only modules that were not imported before this check started, and that
+    were found *through* ``directory`` (the one ``import_path`` puts on
+    ``sys.path``), are withdrawn: a module ``a.b`` whose file is
+    ``directory/a/b.py`` or ``directory/a/b/__init__.py``, or a namespace
+    package whose path is ``directory/a``. That is the file's own
+    neighbourhood and nothing else. An installed package imported for the
+    first time stays put even when its files happen to sit below the directory
+    (a virtual environment in the project root, say), because a second copy of
+    a package such as numpy is not something a process survives, and a plugin
+    re-imported under the registry that already holds its first copy would no
+    longer recognize its own objects.
+    """
+    for name in [name for name in sys.modules if name not in before]:
+        module = sys.modules.get(name)
+        expected = directory.joinpath(*name.split("."))
+        origin = getattr(module, "__file__", None)
+        if origin is not None:
+            found = Path(origin).resolve()
+            stem = found.name.split(".", 1)[0]
+            local = (found.parent, stem) in (
+                (expected.parent, expected.name),
+                (expected, "__init__"),
+            )
+        else:
+            local = any(
+                Path(entry).resolve() == expected for entry in getattr(module, "__path__", ())
+            )
+        if local:
+            del sys.modules[name]
+
+
 def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     """Check one file and return its ledger.
 
     Only the objects this import registers are checked, so checking several
     files in one process keeps their ledgers apart, and they are released again
     afterwards, so a process that checks many files does not accumulate them.
+    The modules next to the file that its import brought in are released too
+    (see :func:`_release_local_modules`), so that checking a file twice
+    collects the claims it imports twice rather than once.
     """
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
 
     registry.load_entry_points()
-    with registry.collecting() as decorated:
-        import_path(path)
+    before = set(sys.modules)
+    try:
+        with registry.collecting() as decorated:
+            import_path(path)
+    finally:
+        _release_local_modules(before, Path(path).resolve().parent)
     ledger = Ledger()
     for obj in decorated:
         for theory in registry.theories:

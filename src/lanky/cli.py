@@ -56,16 +56,22 @@ class CheckVerb:
         mistake in the command rather than in the file. A semantics
         disagreement is printed but does not fail the check: nothing was
         refuted, two readings differ.
+
+        Whether the file exists is asked before it is imported rather than
+        read off a ``FileNotFoundError``, because the file can raise one of its
+        own: a checked file that opens a data file which is not there is a
+        file that does not import, and deserves its traceback and exit code 1,
+        not a claim that the file being checked is missing.
         """
+        if not Path(args.file).is_file():
+            print(f"lanky check: no such file: {args.file}")
+            return 2
         if args.verbose:
             for line in oracle_lines():
                 print(line)
             print()
         try:
             ledger = check_path(args.file, verbose=args.verbose)
-        except FileNotFoundError:
-            print(f"lanky check: no such file: {args.file}")
-            return 2
         except Exception:  # noqa: BLE001 - the file is the user's, so show why
             print(f"lanky check: {args.file} could not be imported")
             print(traceback.format_exc().rstrip())

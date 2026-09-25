@@ -253,6 +253,28 @@ def test_a_file_that_does_not_exist_is_a_mistake_in_the_command(capsys) -> None:
     assert "no such file" in capsys.readouterr().out
 
 
+def test_a_missing_file_the_checked_file_opens_is_the_file_failing(tmp_path, capsys) -> None:
+    """A ``FileNotFoundError`` raised inside the file is the file's, not the command's.
+
+    The command-error branch used to catch every ``FileNotFoundError`` out of
+    ``check_path``, so a file that exists and opens a data file that does not
+    was reported as missing itself, with exit code 2 and no traceback.
+    """
+    path = tmp_path / "reads_data.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from pathlib import Path\n\n"
+        "DATA = (Path(__file__).parent / 'missing-data.json').read_text()\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["check", str(path)]) == 1
+    printed = capsys.readouterr().out
+    assert "no such file" not in printed
+    assert "could not be imported" in printed
+    assert "FileNotFoundError" in printed
+    assert "missing-data.json" in printed
+
+
 def test_a_file_that_raises_on_import_fails_the_check(tmp_path, capsys) -> None:
     """A file that does not import is a broken claim, not a clean ledger."""
     from lanky.plugins import registry
@@ -275,3 +297,108 @@ def test_a_file_that_raises_on_import_fails_the_check(tmp_path, capsys) -> None:
     assert "RuntimeError: boom" in printed
     # whatever the file managed to register is released again
     assert len(registry.objects) == before
+
+
+def test_an_oracle_whose_availability_probe_raises_does_not_stop_the_check(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """One broken optional oracle costs itself, not the check.
+
+    The probe used to raise straight out of ``establish`` and ``oracle_lines``,
+    so ``lanky check`` reported the checked file as unimportable and the
+    weaker oracles never ran.
+    """
+    from lanky.plugins import registry
+
+    class BrokenProbe:
+        name = "broken-probe"
+
+        def trust_class(self) -> str:
+            return "decision-procedure"
+
+        def availability(self) -> tuple[bool, str]:
+            raise ImportError("libdemo.so: cannot open shared object file")
+
+        def can_establish(self, fact, /) -> bool:
+            return True
+
+        def establish(self, fact, /):
+            raise AssertionError("an unavailable oracle is never asked")
+
+    # load everything first, so that nothing registered during the test is
+    # lost when the patched list is put back
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, BrokenProbe()])
+
+    ledger = check_path(write_file(tmp_path))
+    assert [fact.status for fact in ledger] == [Status.TESTED, Status.REFUTED]
+    (line,) = [line for line in oracle_lines() if line.startswith("broken-probe ")]
+    assert line.startswith(
+        "broken-probe (decision-procedure): unavailable: its availability check raised "
+        "ImportError: libdemo.so"
+    )
+
+    assert cli.main(["check", write_file(tmp_path), "--verbose"]) == 1
+    printed = capsys.readouterr().out
+    assert "could not be imported" not in printed
+    assert "REFUTED false_claim" in printed
+
+
+HELPER = '''
+"""A claim that lives in a module the checked file imports."""
+
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def helper_claim(n: Nat) -> n + 0 == n:
+    """Collected when the file that imports this module is checked."""
+'''
+
+
+def test_a_claim_imported_from_a_neighbour_is_collected_on_every_check(
+    tmp_path, monkeypatch
+) -> None:
+    """Checking a file twice must collect the claims it imports twice.
+
+    Python imports a module once per process. The first check of the file
+    executed its neighbour and collected the neighbour's theorem; the second
+    found the neighbour cached, executed nothing, and returned a ledger
+    without it. A module found elsewhere on the path is not the checked file's
+    to release, and it stays imported.
+    """
+    import sys
+
+    neighbour = "lanky_test_neighbour_claims"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "lanky_test_elsewhere.py").write_text("VALUE = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(elsewhere))
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / f"{neighbour}.py").write_text(HELPER, encoding="utf-8")
+    main = project / "main_claims.py"
+    main.write_text(
+        FILE.replace(
+            "from lanky.prelude import Fin, Nat\n",
+            "from lanky.prelude import Fin, Nat\n"
+            f"from {neighbour} import helper_claim\n"
+            "from lanky_test_elsewhere import VALUE\n",
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        first = [fact.owner for fact in check_path(main)]
+        second = [fact.owner for fact in check_path(main)]
+        assert first == ["helper_claim", "true_claim", "false_claim"]
+        assert second == first
+        assert neighbour not in sys.modules
+        assert "lanky_test_elsewhere" in sys.modules
+    finally:
+        for name in (neighbour, "lanky_test_elsewhere"):
+            sys.modules.pop(name, None)

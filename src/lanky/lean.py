@@ -133,6 +133,12 @@ def lean_type(obj: Any) -> str:
 
     ``Fin[n]`` has no type of its own here: its points are naturals and its
     bound is a guard (see the module docstring), so it prints as ``Nat``.
+
+    A family whose domain is itself a family needs brackets around the domain,
+    because ``→`` is right associative: ``Fn[Fn[Fin[n], Nat], Nat]`` is
+    ``(Nat → Nat) → Nat``, and without the brackets it would read as the
+    two-argument ``Nat → Nat → Nat``, which is a different type and the one a
+    family of families already prints as.
     """
     if isinstance(obj, Sort):
         name = _SORT_NAMES.get(obj.name)
@@ -145,10 +151,20 @@ def lean_type(obj: Any) -> str:
     if isinstance(obj, FinType):
         return "Nat"
     if isinstance(obj, FnType):
-        return f"{lean_type(obj.domain)} → {lean_type(obj.codomain)}"
+        domain = lean_type(obj.domain)
+        if isinstance(_unrefined(obj.domain), FnType):
+            domain = f"({domain})"
+        return f"{domain} → {lean_type(obj.codomain)}"
     if isinstance(obj, Refined):
         return lean_type(obj.base)
     raise UnsupportedTerm(f"cannot print the type {obj!r} in Lean")
+
+
+def _unrefined(obj: Any) -> Any:
+    """The type a refinement refines, or ``obj`` itself; a refinement prints as its base."""
+    while isinstance(obj, Refined):
+        obj = obj.base
+    return obj
 
 
 def _scalar_bounds(domain: Any) -> tuple[Any, Any]:

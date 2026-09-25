@@ -187,6 +187,33 @@ listed because it changes behaviour a reader could already have depended on.
   so the outer `i < 2` was answered at the inner `i = 0`. The restoration is
   now in a `finally` and the walk is closed explicitly on every exit path, so
   the statement evaluates to `False` and the tester reports `REFUTED`.
+- **A function-typed domain is bracketed in Lean.** `lanky.lean.lean_type`
+  printed `Fn[Fn[Fin[n], Nat], Nat]` as `Nat → Nat → Nat`, which the right
+  associativity of `→` reads as a family of families and not as
+  `(Nat → Nat) → Nat`, so a higher-order parameter applied to a family did
+  not elaborate. A domain whose type is an arrow, refined or not, is now
+  parenthesized; a codomain needs no brackets and gets none.
+- **An availability probe that raises makes its oracle unavailable.**
+  `lanky.plugins.oracle_availability` let an exception from an oracle's
+  `availability()` escape, and `establish` and `oracle_lines` both ask it
+  before any per-oracle handler, so one broken optional oracle aborted the
+  check and `lanky check` reported the checked file as unimportable. The
+  exception is now the reason the oracle is unavailable, and the other
+  oracles run.
+- **`lanky check` asks whether the file exists rather than reading it off an
+  exception.** Every `FileNotFoundError` out of `check_path` was reported as
+  "no such file" with exit code 2, including one the checked file raised
+  itself by opening a data file that is not there. The target's existence is
+  now checked before it is imported, and an error raised inside it is an
+  import failure with its traceback and exit code 1.
+- **Checking a file twice collects the claims it imports twice.** `check_path`
+  withdrew the checked module from `sys.modules` but not the modules it
+  imported, so a second check of a file that imports a theorem from a
+  neighbouring module found the neighbour cached and returned a ledger
+  without its claims. The modules the file's own directory supplied to the
+  import (a module `a.b` found as `a/b.py` or `a/b/__init__.py` next to the
+  file) are now withdrawn too; an installed package imported for the first
+  time stays imported, even when it sits below the file's directory.
 
 ### Notes
 

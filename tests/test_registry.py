@@ -27,6 +27,15 @@ class DemoOracle:
         return None
 
 
+class BrokenProbeOracle(DemoOracle):
+    """An optional oracle whose probe for a native dependency raises."""
+
+    name = "broken-probe"
+
+    def availability(self) -> tuple[bool, str]:
+        raise ImportError("libdemo.so: cannot open shared object file")
+
+
 def test_the_entry_point_groups_are_part_of_the_contract() -> None:
     assert ENTRY_POINT_GROUPS == (
         "lanky.theories",
@@ -146,3 +155,18 @@ def test_collecting_scopes_and_releases_decorated_objects() -> None:
         registry.register_object(inside)
     assert collected == [inside]
     assert registry.objects == [before]
+
+
+def test_an_availability_probe_that_raises_is_an_unavailable_oracle() -> None:
+    """Probing for a missing native dependency is how an optional oracle fails.
+
+    The exception used to escape ``oracle_availability``, which the check
+    calls before it reaches its per-oracle handler, so one broken optional
+    oracle aborted the whole check. It is now the reason the oracle is
+    unavailable, and an oracle with no probe is still available.
+    """
+    available, reason = plugins.oracle_availability(BrokenProbeOracle())
+    assert available is False
+    assert "ImportError" in reason
+    assert "libdemo.so" in reason
+    assert plugins.oracle_availability(DemoOracle()) == (True, "")
