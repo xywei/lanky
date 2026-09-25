@@ -285,6 +285,52 @@ listed because it changes behaviour a reader could already have depended on.
   function out of an empty domain, it was refuted. A table now compares its
   values, recursively for a family of families, and is unhashable like the
   list it wraps.
+- **Every oracle reads a statement as integer arithmetic.** The Lean
+  printer wrote a `Nat` variable as a Lean `Nat`, whose subtraction truncates
+  at zero, so `def truncated(n: Nat) -> n - 1 >= 0` was `proved` by Lean while
+  the property tester refuted it at `n = 0`, and `lanky check` exited 0 where
+  Lean was installed and 1 where it was not (#6). A natural (a `Nat` variable,
+  or a point of `Fin[m]`) now prints as an `Int` with `0 ≤ n`, and `n < m` for
+  `Fin[m]`, as hypotheses; every operation is `Int`'s; and `//` and `%` print
+  as `Int.fdiv` and `Int.fmod`, which round as Python's do, except that a
+  positive literal divisor prints as `/` and `%`, which agree with them there
+  and which `omega` understands. A family's natural values stay `Nat` in its
+  type, `Int → Nat`, and an application used as a number is cast,
+  `(f i : Int)`. A family over `Nat` is applied only where the argument can
+  be shown non-negative, and an exponent has to be a literal, a natural
+  variable (printed `n.toNat`) or a natural value. `truncated` is now refuted
+  with and without Lean, and `n - 1 <= n` is still proved. The notes
+  `lanky.semantics.NAT_SUBTRACTION` and `INT_DIVISION` are gone with the gaps
+  they named, and so are `uses_subtraction` and `uses_floor_division`;
+  `DIVISION_BY_ZERO` stays, because `Int.fdiv x 0` is `0` where Python
+  raises. The induction strategy trades a natural for the `Nat` it is
+  (`Int.eq_ofNat_of_zero_le`) before it induces, so `scan_monotone` is still
+  proved; the cheap ladder ends with `simp_all <;> omega`, because a fact
+  `simp` knew about a `Nat`, such as `0 < n + 1`, is `omega`'s about an
+  `Int`; and an arm of the closers that leaves the goal open no longer ends
+  the `first` it is in. A script pinned with `use_tactic` proves the printed
+  statement, so one written for the `Nat` reading needs the same trade.
+- **A claim with inconsistent hypotheses is vacuous, and the ledger says so.**
+  From `n > 2` and `n < 1`, `omega` proves `n == n + 1`. The row read
+  `proved lean` with nothing under the table, and the property tester, which
+  would have found that no draw satisfied the hypotheses, was never asked
+  (#5). The tester now cross-checks every fact with hypotheses (a guard, or a
+  binder into `Fin` or a refinement) that a stronger oracle established. When
+  no draw satisfies the hypotheses, whoever established the fact, the
+  stronger oracles are asked whether the hypotheses alone prove `False`
+  (`lanky.check.hypotheses_fact`; for Lean that is the cheap ladder). If one
+  does, the provenance records `vacuous`, `vacuous_by` and
+  `vacuous_evidence`, the status column reads `proved (vacuous)`, the summary
+  line counts vacuous facts, a `VACUOUS` block follows the table, and
+  `lanky check` exits 1; the status itself stays what the oracle said. If
+  none can, the provenance records `unsatisfied` ("hypotheses never satisfied
+  in 4000 draws") and a `WARNING` line follows the table, with exit code 0:
+  hypotheses that hold only where the sampler does not look, such as
+  `n == 1000` over naturals drawn up to five, leave the same record. A
+  satisfiable hypothesis changes nothing. A counterexample the cross-check
+  finds under a stronger oracle's proof is recorded under `SEMANTICS` whether
+  or not the fact carries a note, since with one reading of arithmetic it
+  means one of the oracles is wrong.
 
 ### Notes
 
@@ -301,10 +347,11 @@ listed because it changes behaviour a reader could already have depended on.
   successive tests, so both halves are captured and the guard is the one that
   was written. It cannot be told apart from two `if` clauses in the bytecode.
   `&` is still what to write.
-- A statement is read twice and the two readings can differ. `lanky.semantics`
-  reports that rather than reconciling it; the module docstring explains why
-  truncating the evaluator to match Lean would be wrong for a flattened
-  pymbolic sum.
+- A statement is read as integer arithmetic by every oracle, and Lean is given
+  that reading rather than the evaluator being made to truncate: pymbolic has
+  no subtraction node, so `a - b + c` is one flattened sum that has lost the
+  association truncation depends on. Division by zero, total in Lean and an
+  exception in Python, is the gap `lanky.semantics` still reports.
 - The test for the eager (non-`from __future__`) annotation path builds its
   fixture with `compile(..., dont_inherit=True)`. Without that flag `compile`
   inherits the future statements of the test module, so the fixture's
