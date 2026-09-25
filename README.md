@@ -175,11 +175,12 @@ a Lean toolchain on `PATH`:
 uv add "lanky[lean]"
 ```
 
-The toolchain has to be one the Lean REPL has a build for. With lean-interact
-0.11.5 that is a Lean release up to v4.32.0 (or v4.33.0-rc1), which elan's
-current `stable` is not; given a newer `lean`, the oracle falls back to the
-newest version the REPL has, and elan downloads it on first use. CI uses
-v4.29.1:
+The toolchain the oracle runs on has to be one the Lean REPL has a build for.
+With lean-interact 0.11.5 that is a Lean release up to v4.32.0 (or
+v4.33.0-rc1), which elan's current `stable` is not. Given a newer `lean`, the
+oracle tries each other toolchain elan has installed, newest first, and then
+the newest version the REPL has, which elan downloads when the REPL is first
+built. CI uses v4.29.1:
 
 ```sh
 elan toolchain install leanprover/lean4:v4.29.1
