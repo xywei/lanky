@@ -669,11 +669,12 @@ def _printed_after(document: str, command: str) -> list[str]:
     the command is not part of it.
     """
     lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
-    start = next(
+    starts = [
         index for index, line in enumerate(lines) if line.split("#")[0].strip() == f"$ {command}"
-    )
+    ]
+    assert starts, f"{document} no longer shows `$ {command}`"
     shown = []
-    for line in lines[start + 1 :]:
+    for line in lines[starts[0] + 1 :]:
         if line.startswith(("$ ", "```")):
             break
         shown.append(line.rstrip())
@@ -688,17 +689,63 @@ def _check_gauss(capsys) -> list[str]:
     return [line.rstrip() for line in capsys.readouterr().out.splitlines()]
 
 
-def _abridges(shown: str, printed: str) -> bool:
+def _abridges(shown: str, printed: str, statement_at: int) -> bool:
     """Whether a line of the README's table is the printed one, or it trimmed to fit.
 
     The README ends a row whose statement it trimmed in ``...``, and shortens
-    the rule under the header to the same width.
+    the rule under the header to the same width. Only the statement column is
+    trimmed: what comes before ``statement_at``, where that column starts, is
+    kept whole, so a row cannot shed its status, location or owner and still
+    count as the printed one.
     """
     if shown == printed:
         return True
     if shown.endswith("..."):
-        return printed.startswith(shown.removesuffix("..."))
-    return bool(shown) and set(shown) <= {"-", " "} and printed.startswith(shown)
+        kept = shown.removesuffix("...")
+    elif set(shown) <= {"-", " "}:
+        kept = shown
+    else:
+        return False
+    return len(kept) > statement_at and printed.startswith(kept)
+
+
+def _assert_abridged(readme: list[str], printed: list[str]) -> None:
+    """The README's table is the printed one, row for row, each whole or trimmed."""
+    assert len(readme) == len(printed), (readme, printed)
+    statement_at = printed[0].index("STATEMENT")
+    for shown, line in zip(readme, printed, strict=True):
+        assert _abridges(shown, line, statement_at), (shown, line)
+
+
+def _read_as_tested(line: str) -> str:
+    """A line of the documented table as a machine without Lean prints it."""
+    return line.replace(f"proved  {'lean':13}", f"tested  {'property-test':13}").replace(
+        "2 facts: 1 proved, 1 tested", "2 facts: 2 tested"
+    )
+
+
+def test_an_abridged_row_keeps_every_column_but_the_statement() -> None:
+    """The README check accepts a trimmed statement and nothing looser.
+
+    A row cut back to ``...``, a row whose location moved, and a rule longer
+    than the printed one are not what the check printed, so they must not pass
+    for it.
+    """
+    header = "STATUS  BY    WHERE        OWNER  STATEMENT"
+    rule = "------  ----  -----------  -----  ---------------------"
+    row = "proved  lean  gauss.py:39  scan   n : Nat |- n + 0 == n"
+    at = header.index("STATEMENT")
+    assert _abridges(row, row, at)
+    assert _abridges(row[:-6] + "...", row, at)
+    assert _abridges(rule[:-8], rule, at)
+    assert _abridges("", "", at)
+
+    assert not _abridges("...", row, at)
+    assert not _abridges(row[: at - 2] + "...", row, at)
+    assert not _abridges(row.replace(":39", ":40")[:-6] + "...", row, at)
+    assert not _abridges(row[:-6], row, at)
+    assert not _abridges(rule + "---", rule, at)
+    assert not _abridges("", row, at)
 
 
 def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) -> None:
@@ -706,16 +753,16 @@ def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) ->
 
     That is the README's other claim about the table: the status column changes
     and nothing else does, the exit code included. The columns keep their
-    widths, because the property tester decided the other row already.
+    widths, because the property tester decided the other row already. Both
+    documents are held to it, so the README's rows are checked here too and not
+    only where Lean is installed.
     """
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
-    expected = [
-        line.replace(f"proved  {'lean':13}", f"tested  {'property-test':13}").replace(
-            "2 facts: 1 proved, 1 tested", "2 facts: 2 tested"
-        )
-        for line in _printed_after("docs/quickstart.md", CHECK_GAUSS)
-    ]
-    assert _check_gauss(capsys) == expected
+    printed = _check_gauss(capsys)
+    quickstart = _printed_after("docs/quickstart.md", CHECK_GAUSS)
+    assert printed == [_read_as_tested(line) for line in quickstart]
+    readme = _printed_after("README.md", "lanky check examples/gauss.py")
+    _assert_abridged([_read_as_tested(line) for line in readme], printed)
 
 
 # }}}
@@ -903,9 +950,7 @@ def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, 
     printed = _check_gauss(capsys)
     assert _printed_after("docs/quickstart.md", CHECK_GAUSS) == printed
     readme = _printed_after("README.md", "lanky check examples/gauss.py")
-    assert len(readme) == len(printed)
-    for shown, line in zip(readme, printed, strict=True):
-        assert _abridges(shown, line), (shown, line)
+    _assert_abridged(readme, printed)
     assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
 
 

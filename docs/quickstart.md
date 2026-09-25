@@ -5,8 +5,8 @@ run in this repository on 2026-09-18 with `uv run`; the numbers and the Lean
 source are copied from the terminal, not written from memory. The one thing that
 drifts is a timing, which is a property of the machine and not of the claim. The
 `lanky check` table is held to more than that: the test suite compares it with a
-real run, with Lean in CI's Lean job and, with its `proved` row read as
-`tested`, everywhere else.
+real run, as it stands where Lean is installed (CI has a job for that) and with
+its `proved` row read as `tested` where it is not.
 
 ```sh
 git clone https://github.com/xywei/lanky.git

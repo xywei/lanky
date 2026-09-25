@@ -212,8 +212,9 @@ extra, caches the toolchain and the built REPL between runs, and runs the same
 suite with the oracle on and `LANKY_LEAN_TEST_REQUIRED=1`, under which a Lean
 test that cannot get a Lean session fails instead of skipping. It then runs
 `lanky check examples/gauss.py` and checks that the `proved lean` row at the top
-of this page is a row the check printed; the suite compares the rest of that
-table, and the quickstart's, with the real output.
+of this page is a row the check printed. The suite compares the rest of that
+table, and the quickstart's, with the real output in both jobs, reading the
+row as `tested property-test` in the main one.
 
 A file that carries statements needs `from __future__ import annotations` and a
 ruff `F821` per-file ignore, because a size such as `n` is a symbolic variable
