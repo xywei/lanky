@@ -1493,7 +1493,7 @@ class LeanStatement:
     the last binder, which is where :func:`print_lean` puts them too.
 
     Attributes:
-        name: The theorem's Lean name.
+        name: The theorem's Lean name (see :attr:`declared_name`).
         binders: ``(name, Lean type)`` pairs, in order.
         hypotheses: ``(name, Lean proposition)`` pairs; the names are invented
             here, since a lanky guard is a conjunction and carries none.
@@ -1561,13 +1561,27 @@ class LeanStatement:
             text = f"{prop} → {text}"
         return text
 
+    @property
+    def declared_name(self) -> str:
+        """The name the theorem is declared under: :attr:`name`, or ``Lanky.name``.
+
+        A Mathlib statement is declared in the ``Lanky`` namespace. Mathlib
+        declares thousands of lemmas at the root, ``mul_comm``, ``sq_nonneg`` and
+        ``two_mul`` among them, and a claim named after one would be refused as
+        already declared at every attempt, whatever its tactic. Nothing in
+        Mathlib lives under ``Lanky``, and the prefix changes nothing else: the
+        statement's own names are its binders and fully qualified constants.
+        """
+        return f"Lanky.{self.name}" if self.mathlib else self.name
+
     def source(self, tactic: str) -> str:
         """The full Lean declaration proved by ``tactic``.
 
         The tactic block is indented as a block, so a multi-line script can be
-        passed in as written.
+        passed in as written. The theorem is declared under
+        :attr:`declared_name`.
         """
-        head = f"theorem {self.name}"
+        head = f"theorem {self.declared_name}"
         if self.parameters:
             head = f"{head} {self.parameters}"
         body = "\n".join("  " + line if line.strip() else line for line in tactic.splitlines())

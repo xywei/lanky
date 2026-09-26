@@ -410,6 +410,12 @@ def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
     assert divided.hypotheses == (("h0", "y ≠ 0"),)
     assert divided.goal == "((x : ℝ) / y) * y = x"
     assert divided.proposition == "∀ x : ℝ, ∀ y : ℝ, y ≠ 0 → ((x : ℝ) / y) * y = x"
+    # declared in a namespace of its own, where no Mathlib lemma can already have the name
+    assert statement.declared_name == "Lanky.gauss"
+    assert statement.source("omega").startswith("theorem Lanky.gauss (n : Int) (h0 : 0 ≤ n) :")
+    core = statement_of(commutes.term, "commutes")
+    assert core.declared_name == "commutes"
+    assert core.source("omega").startswith("theorem commutes (a : Int)")
 
 
 def test_the_mathlib_ladder_follows_the_core_one() -> None:
@@ -713,7 +719,7 @@ def test_mathlib_proves_gauss_by_induction_on_its_bound(mathlib_oracle: LeanOrac
     assert proved.status is Status.PROVED
     assert proved.decided_by == "lean"
     assert proved.provenance["tactic"].startswith("obtain ⟨n, rfl⟩")
-    assert proved.provenance["lean_source"].startswith("import Mathlib\n\ntheorem gauss")
+    assert proved.provenance["lean_source"].startswith("import Mathlib\n\ntheorem Lanky.gauss")
     assert proved.provenance["lean_mathlib"] == mathlib_oracle.session.mathlib_revision
     assert mathlib_oracle.establish(squares.fact()).status is Status.PROVED
 
@@ -735,6 +741,29 @@ def test_mathlib_mode_still_proves_what_core_lean_proves(mathlib_oracle: LeanOra
     proved = mathlib_oracle.establish(scan_monotone.fact())
     assert proved.status is Status.PROVED
     assert "induction" in proved.provenance["tactic"]
+
+
+@pytest.mark.parametrize(
+    ("owner", "term"),
+    [
+        ("mul_comm", Forall(((x, Real), (y, Real)), x * y == y * x)),
+        ("sq_nonneg", Forall(((x, Real),), x**2 >= 0)),
+        ("two_mul", Forall(((n, Nat),), 2 * n == n + n)),
+    ],
+    ids=["mul_comm", "sq_nonneg", "two_mul"],
+)
+def test_a_claim_named_after_a_mathlib_lemma_is_proved(
+    mathlib_oracle: LeanOracle, owner: str, term: object
+) -> None:
+    """Mathlib has ``mul_comm`` at the root, and a claim of that name was never proved.
+
+    Every attempt was refused with "`mul_comm` has already been declared",
+    whatever its tactic; in the ``Lanky`` namespace the name is free.
+    """
+    fact = Fact(id=owner, kind="theorem", statement=owner, term=term, owner=owner)
+    proved = mathlib_oracle.establish(fact)
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    assert f"\ntheorem Lanky.{owner} " in proved.provenance["lean_source"]
 
 
 def test_a_false_real_claim_is_not_proved_and_not_refuted(mathlib_oracle: LeanOracle) -> None:
