@@ -829,6 +829,21 @@ def test_mathlib_shows_real_hypotheses_inconsistent(
     assert fact.provenance["vacuous_by"] == "lean"
 
 
+def test_a_ring_identity_needs_mathlib(
+    mathlib_project: str | None, mathlib_oracle: LeanOracle, monkeypatch
+) -> None:
+    """``(x + y) ** 2`` expanded is tested in core mode and proved in Mathlib mode."""
+    from lanky.check import establish
+
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    core = establish(binomial.fact())
+    assert (core.status, core.decided_by) == (Status.TESTED, "property-test")
+    monkeypatch.setenv("LANKY_LEAN_MATHLIB", mathlib_project)
+    proved = establish(binomial.fact())
+    assert (proved.status, proved.decided_by) == (Status.PROVED, "lean")
+    assert proved.provenance["lean_source"].startswith("import Mathlib\n")
+
+
 def test_the_quickstarts_mathlib_ledger_is_the_one_check_prints(
     mathlib_project: str | None, mathlib_oracle: LeanOracle, monkeypatch, capsys
 ) -> None:
