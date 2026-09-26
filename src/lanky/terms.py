@@ -1157,15 +1157,24 @@ def _domain_names(var: Var, domain: Any) -> frozenset[str]:
 
 
 def free_variables(expr: Any) -> frozenset[str]:
-    """The names a term mentions that no binder of the term binds."""
+    """The names a term mentions that no binder of the term binds.
+
+    A binder's domain is read with the binders before it bound, and not its
+    own: ``all(j < n for i in Fin[n] for j in Fin[i])`` evaluates ``Fin[i]``
+    after the outer ``i`` is bound, so that ``i`` is the binder and the term
+    mentions ``n`` alone, while in ``all(i > 0 for i in Fin[i])`` the domain is
+    evaluated before its binder exists, and its ``i`` is free. A refinement is
+    about its own binder, which :func:`_domain_names` leaves out.
+    """
     if isinstance(expr, Var):
         return frozenset({expr.name})
     if isinstance(expr, Forall | Exists | Sum):
-        bound = {var.name for var, _ in expr.binders}
-        inner = free_variables(expr.body) | free_variables(expr.guard)
+        bound: set[str] = set()
         domains: frozenset[str] = frozenset()
         for var, domain in expr.binders:
-            domains |= _domain_names(var, domain)
+            domains |= _domain_names(var, domain) - bound
+            bound.add(var.name)
+        inner = free_variables(expr.body) | free_variables(expr.guard)
         return (inner - bound) | domains
     if isinstance(expr, prim.ExpressionNode):
         out: frozenset[str] = frozenset()

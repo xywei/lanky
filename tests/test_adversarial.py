@@ -1650,3 +1650,47 @@ def test_an_unnamed_draw_of_a_refined_sort_honours_the_refinement() -> None:
 
 
 # }}}
+
+
+# {{{ a later binder's domain names an earlier binder
+
+
+def test_a_codomain_refined_by_a_nested_quantifier_is_tested() -> None:
+    """A codomain whose refinement names only drawn variables is judged once per table.
+
+    ``all(j < n for i in Fin[n] for j in Fin[i])`` names ``n`` alone, but its
+    inner ``Fin[i]`` was read as naming a free ``i``, so the tester refused
+    to draw the family's entries and the fact stayed ``assumed``.
+    """
+    from lanky.terms import forall
+    from lanky.testing import check
+
+    f, n = Var("f"), Var("n")
+    nested = Nat & forall(j < n for i in Fin[n] for j in Fin[i])
+    report = check([("n", Nat), ("f", Fn[Fin[2], nested])], [], f(0) >= 0, samples=20)
+    assert report.ok
+    assert report.valid == 20
+    assert report.unsampleable == 0
+
+
+def test_an_inner_binder_named_like_a_parameter_does_not_order_the_draws() -> None:
+    """A sort is drawn after the variables it names, and an inner binder is not one of them.
+
+    ``m``'s refinement binds its own ``i``, which ``Fin[i]`` names; read as
+    the parameter ``i``, it made ``m`` and ``i`` wait for each other, and the
+    order was left as written, so ``i`` was drawn before the ``m`` it names.
+    """
+    from lanky.terms import forall
+    from lanky.testing import check, sampling_order
+
+    i, m = Var("i"), Var("m")
+    i_sort = Nat & (i >= m)
+    m_sort = Nat & forall(j <= i for i in Fin[m] for j in Fin[i])
+    order = sampling_order([("i", i_sort), ("m", m_sort)])
+    assert [name for name, _ in order] == ["m", "i"]
+    report = check([("i", i_sort), ("m", m_sort)], [], i >= m, samples=20)
+    assert report.ok
+    assert report.valid == 20
+
+
+# }}}

@@ -440,4 +440,22 @@ def test_free_variables_see_inside_a_refined_binder_domain() -> None:
     assert free_variables(Exists(((k, Nat & (k > 0)),), k == 1)) == frozenset()
 
 
+def test_free_variables_read_a_later_domain_with_the_earlier_binders_bound() -> None:
+    """``Fin[i]`` after ``i in Fin[n]`` is the binder ``i``, and not a free name.
+
+    The generator ``all(j < n for i in Fin[n] for j in Fin[i])`` evaluates
+    ``Fin[i]`` once the outer ``i`` is bound. The domains used to be collected
+    without subtracting the binders before them, so ``i`` came back free. A
+    binder's own domain is read before it exists, and keeps its free name.
+    """
+    i, j, n, m = Var("i"), Var("j"), Var("n"), Var("m")
+    assert free_variables(Forall(((i, Fin[n]), (j, Fin[i])), j < n)) == {"n"}
+    assert free_variables(Sum(((i, Fin[n]), (j, Fin[i + m])), j)) == {"n", "m"}
+    # a refinement of a later binder may name an earlier one
+    assert free_variables(Exists(((i, Fin[n]), (j, Nat & (j < i))), j == 0)) == {"n"}
+    # a binder's own domain is evaluated before the binder is bound
+    assert free_variables(Forall(((i, Fin[i]),), i > 0)) == {"i"}
+    assert free_variables(Forall(((i, Fin[n]), (j, Fin[j])), j < n)) == {"n", "j"}
+
+
 # }}}
