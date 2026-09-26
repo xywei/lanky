@@ -2024,6 +2024,253 @@ def test_an_inner_binder_named_like_a_parameter_does_not_order_the_draws() -> No
 # }}}
 
 
+# {{{ a goal whose own guard never holds
+
+
+SCAN_GUARD = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Fn, Nat\n\n\n"
+    "@theorem\n"
+    "def flipped(\n"
+    "    n: Nat,\n"
+    "    cnt: Fn[Fin[n], Nat],\n"
+    "    off: Fn[Fin[n + 1], Nat],\n"
+    "    h: (off(0) == 0) & all(off(r + 1) == off(r) + cnt(r) for r in Fin[n]),\n"
+    ") -> all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q)):\n"
+    '    """The guard can never hold, so the goal holds at every draw."""\n'
+)
+
+FLIPPED_WARNING = "the goal's guard p < q and p > q never held in 200 valid draws"
+
+
+class ProvesAllButGoalGuard(ProvesEverything):
+    """The stand-in, declining the question whether the goal's guard is empty.
+
+    That is Lean faced with a guard that holds somewhere the sampler does not
+    look: the goal is proved, and the guard is not empty.
+    """
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.kind != "goal-guard" and super().can_establish(fact)
+
+
+def _recording(shown: list[str]) -> ProvesEverything:
+    """The stand-in that proves everything, keeping the kind of each fact it is shown."""
+
+    class Recording(ProvesEverything):
+        def establish(self, fact: Fact, /) -> Fact:
+            shown.append(fact.kind)
+            return super().establish(fact)
+
+    return Recording()
+
+
+def test_a_goal_whose_guard_never_holds_is_warned_about(tmp_path, oracles, capsys) -> None:
+    """#17: no draw got through the goal's guard, so the tester says so.
+
+    The hypotheses are satisfied by construction, every draw is valid, and the
+    goal held at each of them because ``(p < q) & (p > q)`` held at no point:
+    the row read ``tested`` and nothing was printed. The tester counts, per
+    draw, whether the goal's quantifier got through to a point, and with
+    nothing that could show the guard empty the check warns and exits 0.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+    assert fact.provenance["goal_reached"] == 0
+    assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
+    assert not fact.is_vacuous
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert f"WARNING flipped at scan_guard.py:7: {FLIPPED_WARNING}" in printed
+    assert "no oracle could show it empty, so the goal may be vacuous" in printed
+    assert "VACUOUS" not in printed
+
+
+def test_a_proof_of_a_goal_whose_guard_is_empty_is_vacuous(tmp_path, oracles, capsys) -> None:
+    """#17: a stronger oracle shows the guard empty, and the check fails.
+
+    The stand-in proves the claim, as Lean does from the contradictory guard,
+    and the cross-check finds that no draw got through it. The stand-in is then
+    asked whether the guard is empty for every assignment the hypotheses admit,
+    and says yes, so the fact is ``proved (vacuous)`` and ``lanky check`` exits
+    1, as it does for hypotheses nothing satisfies.
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
+    ledger = check_path(path)
+    (fact,) = list(ledger)
+    assert shown == ["theorem", "goal-guard"]
+    assert fact.status is Status.PROVED
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by stub-kernel"
+    )
+    assert fact.provenance["vacuous_by"] == "stub-kernel"
+    assert fact.provenance["vacuous_evidence"] == {"tactic": "stub"}
+    assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
+    assert "proved (vacuous)  stub-kernel" in ledger.render()
+    out_json = tmp_path / "ledger.json"
+    assert cli.main(["check", path, "--json", str(out_json)]) == 1
+    printed = capsys.readouterr().out
+    assert "VACUOUS flipped at scan_guard.py:7:" in printed
+    assert (
+        "  the goal's guard is empty wherever the hypotheses hold: proved by "
+        "stub-kernel, so the goal is never at stake"
+    ) in printed
+    assert f"  {FLIPPED_WARNING}" in printed
+    assert "WARNING" not in printed
+    (entry,) = json.loads(out_json.read_text(encoding="utf-8"))
+    assert entry["provenance"]["vacuous"]
+    assert entry["provenance"]["goal_reached"] == 0
+
+
+def test_a_goal_guard_no_oracle_can_show_empty_leaves_a_warning(tmp_path, oracles, capsys) -> None:
+    """The guard may hold where the sampler does not look: warn, and exit 0."""
+    oracles(ProvesAllButGoalGuard(), TestOracle())
+    path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert f"WARNING flipped at scan_guard.py:7: {FLIPPED_WARNING}" in printed
+    assert "(vacuous)" not in printed
+
+
+def test_a_guard_empty_only_for_some_outer_values_is_never_flagged(
+    tmp_path, oracles, capsys
+) -> None:
+    """``Fin[n]`` has no point at ``n = 0``, and that is normal.
+
+    Some draw gets through the goal's quantifier, so nothing is recorded and
+    no stronger oracle is asked whether the guard is empty.
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    path = _write(
+        tmp_path,
+        SCAN_GUARD.replace("(p < q) & (p > q)", "p <= q"),
+        "scan_guard.py",
+    )
+    (fact,) = list(check_path(path))
+    assert shown == ["theorem"]
+    assert not fact.is_vacuous
+    assert "goal_reached" not in fact.provenance
+    assert "goal_unreached" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING" not in printed
+    assert "VACUOUS" not in printed
+
+
+def test_a_goal_whose_domain_is_always_empty_is_vacuous_too(tmp_path, oracles, capsys) -> None:
+    """With no guard, the goal's domain is what never has a point: ``Fin[n - n]``."""
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1", "n: Nat) -> all(i < 0 for i in Fin[n - n])"
+    )
+    oracles(TestOracle())
+    path = _write(tmp_path, source)
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+    unreached = "the goal's quantifier reached no point of its domain in 200 valid draws"
+    assert fact.provenance["goal_unreached"] == unreached
+    assert cli.main(["check", path]) == 0
+    assert f"WARNING vacuous at vacuous.py:7: {unreached}" in capsys.readouterr().out
+    oracles(ProvesEverything(), TestOracle())
+    (fact,) = list(check_path(path))
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"].startswith(
+        "the goal's domain is empty wherever the hypotheses hold"
+    )
+    assert cli.main(["check", path]) == 1
+
+
+def test_a_sampled_goal_whose_guard_is_empty_is_vacuous_under_a_proof(
+    tmp_path, oracles, capsys
+) -> None:
+    """Over ``Nat`` a guard no draw passes leaves every draw undecided, and none valid.
+
+    The statement has no hypotheses, so a proof of it was never cross-checked,
+    and ``(k > 5) & (k < 3)`` went unremarked under a ``proved`` row. The goal
+    quantifies, so the tester runs now: no draw got through the guard, and
+    the stronger oracle is asked whether it is empty. With the tester alone
+    the row is ``assumed``, its reason says that no draw passed the guard, and
+    there is no warning, since there was no valid draw to count.
+    """
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+        "n: Nat) -> all(k < 0 for k in Nat if (k > 5) & (k < 3))",
+    )
+    path = _write(tmp_path, source)
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    (fact,) = list(check_path(path))
+    assert shown == ["theorem", "goal-guard"]
+    assert fact.is_vacuous
+    assert "goal_unreached" not in fact.provenance
+    assert cli.main(["check", path]) == 1
+    oracles(TestOracle())
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert "passed the guard" in fact.provenance["untested"]
+    assert fact.provenance["goal_reached"] == 0
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_an_axiom_whose_goal_guard_is_empty_is_vacuous(tmp_path, oracles, capsys) -> None:
+    """An axiom's goal guard is examined as a theorem's is, never the axiom itself."""
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    source = SCAN_GUARD.replace("import theorem", "import axiom").replace(
+        "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
+    )
+    path = _write(tmp_path, source, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert shown == ["goal-guard"]
+    assert fact.status is Status.ASSUMED
+    assert fact.is_vacuous
+    assert cli.main(["check", path]) == 1
+    assert "assumed (axiom) (vacuous)  -" in capsys.readouterr().out
+
+
+def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() -> None:
+    """The question put to the stronger oracles, as the fact they are offered."""
+    from lanky.check import goal_guard_fact
+
+    n, p, q = Var("n"), Var("p"), Var("q")
+    goal = Forall(((p, Fin[n + 1]), (q, Fin[n + 1])), p <= q, (p < q) & (p > q))
+    fact = Fact(
+        id="theorem:t",
+        kind="theorem",
+        statement="t",
+        term=Forall(((n, Nat),), goal, n > 0),
+        owner="t",
+        provenance={"path": "/x/t.py", "line": 3, "tactic": "omega"},
+    )
+    question = goal_guard_fact(fact)
+    assert question.id == "theorem:t:goal-guard"
+    assert question.kind == "goal-guard"
+    assert question.provenance == {"path": "/x/t.py", "line": 3}
+    assert structurally_equal(question.term.binders, fact.term.binders)
+    assert structurally_equal(question.term.guard, fact.term.guard)
+    assert question.term.body.body is False
+    assert structurally_equal(question.term.body.binders, goal.binders)
+    assert structurally_equal(question.term.body.guard, goal.guard)
+    with pytest.raises(ValueError, match="no goal quantifier"):
+        goal_guard_fact(
+            Fact(id="u", kind="theorem", statement="u", term=Forall(((n, Nat),), n >= 0))
+        )
+
+
+# }}}
+
+
 # {{{ the order of the operands of a connective
 
 

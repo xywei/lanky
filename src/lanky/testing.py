@@ -82,6 +82,11 @@ used to end the whole test, because the quantifier over ``Nat`` had no sampler
 to draw from; a draw of ``k`` that breaks it now rejects the value of ``n``,
 and one where it held at every draw leaves the draw undecided.
 
+When the goal is a universal, the tester counts the draws at which its
+quantifier got through to a point of its guarded domain. A goal whose guard
+holds nowhere holds at every draw, and says nothing; the count is what lets
+:func:`lanky.check.establish` notice, and ask whether the guard is empty.
+
 A statement that is already a concrete ``True`` or ``False``, because it binds
 no variable and assumes nothing, is not sampled at all: there is nothing to
 draw, so it is reported once, as a pass or as a refutation with an empty
@@ -120,6 +125,7 @@ __all__ = [
     "Unevaluable",
     "Unsampleable",
     "check",
+    "goal_unreached_reason",
     "in_sort",
     "sample_value",
     "sampling_order",
@@ -612,6 +618,16 @@ class TestReport:
     sort has no sampler (:class:`Unsampleable`). Such a draw never reached the
     hypotheses, so a report with any of them cannot say that no draw satisfied
     them, and its reason says that no draw could be completed instead.
+
+    ``goal_reached`` is for a goal that is a universal, and is ``None`` for any
+    other. It counts the draws the hypotheses admitted at which the goal's
+    quantifier reached a point of its guarded domain: a point of its domain
+    that its refinements and its guard admit. A draw counts whether or not the
+    statement was then decided at it, since a point that got through is a
+    point, and whether the goal held there is another question. When it is
+    zero, the guard held nowhere the tester looked, and the goal may say
+    nothing (see :func:`lanky.check.goal_guard_fact`); a pass over valid draws
+    then carries a ``reason`` that says so (:func:`goal_unreached_reason`).
     """
 
     ok: bool
@@ -622,6 +638,14 @@ class TestReport:
     unsampleable: int = 0
     reason: str = ""
     skipped: list[str] = field(default_factory=list)
+    goal_reached: int | None = None
+
+
+class _Reach:
+    """Whether the walk of a goal's quantifier got through to a point, at one draw."""
+
+    def __init__(self) -> None:
+        self.reached = False
 
 
 def check(
@@ -663,6 +687,11 @@ def check(
     (:func:`~lanky.terms.conjoin`): a hypothesis a draw breaks rejects it,
     whatever an earlier hypothesis could not answer there.
 
+    When the goal is a universal the report counts the draws at which its
+    quantifier reached a point of its guarded domain (``goal_reached``), so
+    that a goal whose guard never holds is not passed over as a goal that
+    always does.
+
     A goal that is already a concrete value is not sampled. A theorem with no
     binders and no hypotheses whose return annotation evaluated to a ``bool``
     has nothing to draw, so it is answered once. A ``goal`` of ``None``
@@ -677,7 +706,7 @@ def check(
     rng = random.Random(seed)
     variables = sampling_order(variables)
     sorts = dict(variables)
-    report = TestReport(ok=True)
+    report = TestReport(ok=True, goal_reached=0 if isinstance(goal, Forall) else None)
     undecided_reason = ""
     unsampleable_reason = ""
     for _ in range(samples * REJECTION_FACTOR):
@@ -702,17 +731,19 @@ def check(
             if len(report.skipped) < 3:
                 report.skipped.append(str(exc))
             continue
-        sampler = sort_sampler(rng, context)
+        reach = _Reach()
         try:
             if not _hypotheses_hold(hypotheses, context, sampler):
                 continue
-            satisfied, witness, failing = _falsify(goal, context, sampler)
+            satisfied, witness, failing = _falsify(goal, context, sampler, reach)
         except (Undecided, ZeroDivisionError) as exc:
+            _count_reach(report, reach)
             report.undecided += 1
             undecided_reason = undecided_reason or _undecided_reason(exc)
             if len(report.skipped) < 3:
                 report.skipped.append(_undecided_reason(exc))
             continue
+        _count_reach(report, reach)
         report.valid += 1
         if not satisfied:
             report.ok = False
@@ -734,7 +765,23 @@ def check(
                 if hypotheses
                 else "no draw could be completed"
             )
+    elif report.goal_reached == 0:
+        report.reason = goal_unreached_reason(goal, report.valid)
     return report
+
+
+def goal_unreached_reason(goal: Forall, valid: int) -> str:
+    """Why a pass of a universal goal whose quantifier reached no point says nothing.
+
+    The line names the guard when the goal has one, since a guard that holds
+    nowhere is what a flipped or off-by-one condition looks like, and the
+    number of valid draws it held at none of.
+    """
+    if goal.guard is not None:
+        what = f"the goal's guard {render(goal.guard)} never held"
+    else:
+        what = "the goal's quantifier reached no point of its domain"
+    return f"{what} in {valid} valid draws"
 
 
 def _hypotheses_hold(hypotheses: Any, context: dict[str, Any], sampler: Any) -> bool:
@@ -756,10 +803,17 @@ def _hypotheses_hold(hypotheses: Any, context: dict[str, Any], sampler: Any) -> 
     )
 
 
+def _count_reach(report: TestReport, reach: _Reach) -> None:
+    """Count a draw at which the goal's quantifier got through to a point."""
+    if reach.reached and report.goal_reached is not None:
+        report.goal_reached += 1
+
+
 def _falsify(
     goal: Any,
     context: dict[str, Any],
     sampler: Any,
+    reach: _Reach | None = None,
 ) -> tuple[bool, dict[str, Any], Any]:
     """Evaluate ``goal``, and when it is false say at which quantified point.
 
@@ -790,12 +844,18 @@ def _falsify(
     A conjunction is read three-valued, as the evaluator reads it
     (:func:`~lanky.terms.conjoin`): a conjunct that cannot be answered at this
     draw does not hide a counterexample in a later one.
+
+    ``reach`` is told when the walk of the goal's own quantifier gets through
+    to a point, before the body is evaluated there, so it knows even when the
+    body then leaves the draw undecided. Only the outermost call is given one.
     """
     if isinstance(goal, Forall):
         scope = dict(context)
         mapper = LankyEvaluationMapper(scope, sampler, Polarity.POSITIVE)
         with closing(mapper.guarded_assignments(goal)) as walk:
             for _ in walk:
+                if reach is not None:
+                    reach.reached = True
                 holds, witness, failing = _falsify(goal.body, scope, sampler)
                 if not holds:
                     point = {var.name: scope[var.name] for var, _ in goal.binders}

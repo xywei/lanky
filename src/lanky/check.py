@@ -26,10 +26,12 @@ from lanky.ledger import STATUS_STRENGTH, Fact, Ledger, Status
 from lanky.plugins import TRUST_STRENGTH, oracle_availability, registry
 from lanky.prelude import FinType, FnType, Refined
 from lanky.terms import Forall
+from lanky.testing import goal_unreached_reason
 
 __all__ = [
     "check_path",
     "establish",
+    "goal_guard_fact",
     "has_hypotheses",
     "hypotheses_fact",
     "import_path",
@@ -187,7 +189,11 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
 
     Last, a fact whose hypotheses no draw satisfied is examined for vacuity
     (:func:`_examine_vacuity`): a claim that nothing is ever at stake in says
-    nothing, however strongly it is established, and the ledger says so.
+    nothing, however strongly it is established, and the ledger says so. So
+    is a fact whose goal is a universal that got through to no point of its
+    guarded domain at any draw (:func:`_examine_goal_guard`): a goal whose
+    guard never holds says nothing either, whatever the hypotheses do. A fact
+    whose goal quantifies is cross-checked for that reason too.
 
     An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted, or
     shown vacuous (see :func:`_examine_axiom`). It is ``assumed`` on its
@@ -222,7 +228,7 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             fact = _cross_check(result, gaps, verbose=verbose)
             break
         fact = result
-    return _examine_vacuity(fact, verbose=verbose)
+    return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
 
 
 def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
@@ -245,9 +251,12 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
     likely as a goal copied down wrong: when a stronger oracle shows them
     inconsistent the axiom is ``vacuous`` and the check fails, and otherwise
     it gets the same warning. That asks the stronger oracles about the
-    hypotheses alone, never about the axiom.
+    hypotheses alone, never about the axiom. A goal whose guard no draw got
+    through is examined the same way (:func:`_examine_goal_guard`), and the
+    stronger oracles are asked about that guard alone.
     """
     marks: dict[str, Any] = {}
+    goal: dict[str, Any] | None = None
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
@@ -268,6 +277,8 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
             if verbose:
                 print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
             return result
+        if goal is None:
+            goal = _goal_marks(result.provenance, fact.term)
         if not marks:
             unsatisfied = _never_satisfied(result.provenance)
             untestable = _never_drawn(result.provenance)
@@ -278,9 +289,10 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
                 }
             elif untestable:
                 marks = {"untestable": untestable}
+    marks.update(goal or {})
     if marks:
         fact = fact.with_status(fact.status, **marks)
-    return _examine_vacuity(fact, verbose=verbose)
+    return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
 
 
 def has_hypotheses(term: Any) -> bool:
@@ -360,9 +372,10 @@ def _skipped(provenance: dict) -> str | None:
 def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fact:
     """Sample a fact a stronger oracle established, and record what sampling says.
 
-    Only for a fact that carries a semantics note or has hypotheses (see
-    :func:`has_hypotheses`), and only to record what the sampled reading says.
-    The status a stronger oracle gave stands.
+    Only for a fact that carries a semantics note, has hypotheses (see
+    :func:`has_hypotheses`) or has a goal that is a universal, and only to
+    record what the sampled reading says. The status a stronger oracle gave
+    stands.
 
     Three things are worth recording. A counterexample is the loud one: the
     Python reading is false where a stronger oracle established the statement,
@@ -376,10 +389,16 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
     hypotheses nothing satisfies is valid and says nothing. A test that could
     not draw at all is recorded as ``untestable``, so that the hypotheses are
     still examined.
+
+    A goal that is a universal whose quantifier got through to no point at any
+    draw is recorded alongside whatever else is (:func:`_goal_marks`): a proof
+    of a goal whose guard never holds is valid and says nothing, as a proof
+    from hypotheses nothing satisfies does, and :func:`_examine_goal_guard`
+    examines it.
     """
     if fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
         return fact
-    if not gaps and not has_hypotheses(fact.term):
+    if not gaps and not has_hypotheses(fact.term) and _goal_quantifier(fact.term) is None:
         return fact
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != 1:
@@ -409,6 +428,9 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
                 ),
                 semantics_counterexample=counterexample,
             )
+        goal = _goal_marks(result.provenance, fact.term)
+        if verbose and goal.get("goal_unreached"):
+            print(f"  {oracle.name}: {goal['goal_unreached']}")
         unsatisfied = _never_satisfied(result.provenance)
         if unsatisfied:
             if verbose:
@@ -417,17 +439,20 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
                 fact.status,
                 unsatisfied=unsatisfied,
                 unsatisfied_detail=_skipped(result.provenance),
+                **goal,
             )
         untestable = _never_drawn(result.provenance)
         if untestable:
             if verbose:
                 print(f"  {oracle.name}: {untestable}")
-            return fact.with_status(fact.status, untestable=untestable)
+            return fact.with_status(fact.status, untestable=untestable, **goal)
         undecided = result.provenance.get("untested")
         if gaps and undecided and result.provenance.get("undecided"):
             if verbose:
                 print(f"  {oracle.name} could not run the sampled reading: {undecided}")
-            return fact.with_status(fact.status, semantics_undecided=undecided)
+            return fact.with_status(fact.status, semantics_undecided=undecided, **goal)
+        if goal:
+            return fact.with_status(fact.status, **goal)
     return fact
 
 
@@ -470,16 +495,108 @@ def _examine_vacuity(fact: Fact, verbose: bool = False) -> Fact:
     name, result = found
     if verbose:
         print(f"  {name} shows the hypotheses of {fact.owner} inconsistent")
-    evidence = {
-        key: value for key, value in result.provenance.items() if key not in ("path", "line")
-    }
     marks = {} if unsatisfied else {"untestable": untestable}
     return fact.with_status(
         fact.status,
         vacuous=f"the hypotheses are inconsistent: {result.status.value} by {name}",
         vacuous_by=name,
-        vacuous_evidence=evidence,
+        vacuous_evidence=_evidence(result),
         **marks,
+    )
+
+
+def _evidence(result: Fact) -> dict:
+    """What a stronger oracle recorded in showing a fact vacuous, less where it is."""
+    return {
+        key: value for key, value in result.provenance.items() if key not in ("path", "line")
+    }
+
+
+def _goal_quantifier(term: Any) -> Forall | None:
+    """The universal a statement's goal is, or ``None`` when its goal is not one.
+
+    A statement is a :class:`~lanky.terms.Forall` whose binders are its
+    variables and whose guard is its hypotheses, and its goal is the body. When
+    the body is a universal too, as the scan postconditions are, that is the
+    goal's quantifier, and its guard is the one a goal can get wrong without
+    the hypotheses knowing: ``if (p < q) & (p > q)`` holds nowhere, and the
+    goal holds everywhere for that reason alone.
+    """
+    if isinstance(term, Forall) and isinstance(term.body, Forall):
+        return term.body
+    return None
+
+
+def _goal_marks(provenance: dict, term: Any) -> dict[str, Any]:
+    """What a property test's record says about the goal's guard, if it held nowhere.
+
+    Empty unless the record has ``goal_reached: 0``, which the property-test
+    oracle leaves when the goal's quantifier got through to no point of its
+    guarded domain at any draw the hypotheses admitted. Then ``goal_reached``
+    is kept, and when there were valid draws ``goal_unreached`` says how many,
+    which is the warning ``lanky check`` prints. With no valid draw there is
+    nothing to warn about that the record does not already say, but the
+    question whether the guard is empty is still worth asking (see
+    :func:`_examine_goal_guard`).
+    """
+    if provenance.get("goal_reached") != 0:
+        return {}
+    marks: dict[str, Any] = {"goal_reached": 0}
+    valid = provenance.get("valid") or 0
+    goal = _goal_quantifier(term)
+    if valid and goal is not None:
+        marks["goal_unreached"] = goal_unreached_reason(goal, valid)
+    return marks
+
+
+def _examine_goal_guard(fact: Fact, verbose: bool = False) -> Fact:
+    """Ask whether a fact whose goal's guard no draw got through is vacuous.
+
+    The property tester counts, per draw the hypotheses admit, whether the
+    goal's quantifier got through to a point of its guarded domain. When it
+    never did, the goal held at every draw because its body was never at
+    stake, which is what a flipped or off-by-one guard does. That is evidence
+    and not proof, as it is for the hypotheses (:func:`_examine_vacuity`), so
+    the stronger oracles are asked the definite question: whether the guard is
+    empty for every assignment the hypotheses admit (:func:`goal_guard_fact`).
+    When one of them says yes, the fact is marked ``vacuous``, the ledger shows
+    it, and ``lanky check`` exits 1. When none can, the fact keeps
+    ``goal_unreached`` in its provenance, which ``lanky check`` prints as a
+    warning, when there were valid draws to count.
+
+    A guard that is empty for some assignments and not others is normal:
+    ``Fin[n]`` has no point at ``n = 0``. Only a guard that is empty wherever
+    the hypotheses hold is vacuous, which is why the question is asked for
+    every assignment at once.
+
+    A fact that is refuted or already vacuous, whose goal is not a universal,
+    or whose record says nothing about the goal (a tester that could not run)
+    is returned as it is.
+    """
+    if fact.status is Status.REFUTED or fact.is_vacuous:
+        return fact
+    goal = _goal_quantifier(fact.term)
+    if goal is None or fact.provenance.get("goal_reached") != 0:
+        return fact
+    if "goal_unreached" not in fact.provenance:
+        unreached = _goal_marks(fact.provenance, fact.term).get("goal_unreached")
+        if unreached:
+            fact = fact.with_status(fact.status, goal_unreached=unreached)
+    found = _stronger_than_a_test(goal_guard_fact(fact), verbose=verbose)
+    if found is None:
+        return fact
+    name, result = found
+    if verbose:
+        print(f"  {name} shows the goal's guard of {fact.owner} empty")
+    part = "guard" if goal.guard is not None else "domain"
+    return fact.with_status(
+        fact.status,
+        vacuous=(
+            f"the goal's {part} is empty wherever the hypotheses hold: "
+            f"{result.status.value} by {name}"
+        ),
+        vacuous_by=name,
+        vacuous_evidence=_evidence(result),
     )
 
 
@@ -512,6 +629,42 @@ def hypotheses_fact(fact: Fact) -> Fact:
     )
 
 
+def goal_guard_fact(fact: Fact) -> Fact:
+    """The claim that a fact's goal quantifies over nothing, as a fact of its own.
+
+    The goal is a universal (see :func:`_goal_quantifier`), and the claim is
+    that its guard is empty for every assignment the hypotheses admit:
+    ``∀ outer, hypotheses → ∀ inner ∈ domain, guard → False``. Its term keeps
+    the fact's binders and guard, and the goal's binders and guard, and
+    replaces the goal's body by ``False``, so an oracle that establishes it
+    has shown that the goal's body is never at stake. A guard that is empty
+    only for some outer assignments (``Fin[n]`` at ``n = 0``) does not make
+    the claim true, so it is never flagged. Like :func:`hypotheses_fact`, it
+    has an id and a kind of its own.
+
+    Raises:
+        ValueError: If the fact's goal is not a universal.
+    """
+    goal = _goal_quantifier(fact.term)
+    if goal is None:
+        raise ValueError(f"{fact.id} has no goal quantifier: its goal is not a universal")
+    term = fact.term
+    return Fact(
+        id=f"{fact.id}:goal-guard",
+        kind="goal-guard",
+        statement=(
+            f"the guard of the goal of {fact.owner or fact.id} is empty wherever "
+            "its hypotheses hold"
+        ),
+        term=Forall(term.binders, Forall(goal.binders, False, goal.guard), term.guard),
+        provenance={
+            key: fact.provenance[key] for key in ("path", "line") if key in fact.provenance
+        },
+        where=fact.where,
+        owner=fact.owner,
+    )
+
+
 def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
     """The first oracle stronger than a test that proves the hypotheses inconsistent.
 
@@ -522,7 +675,17 @@ def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None
     asked is its short ladder, which for a goal of ``False`` is the five cheap
     tactics.
     """
-    question = hypotheses_fact(fact)
+    return _stronger_than_a_test(hypotheses_fact(fact), verbose=verbose)
+
+
+def _stronger_than_a_test(question: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
+    """The first oracle stronger than a test that establishes ``question``.
+
+    Returns the oracle's name and the fact it established, or ``None``. This
+    is how a claim of vacuity is settled (:func:`hypotheses_fact`,
+    :func:`goal_guard_fact`): a test is what raised the question, and cannot
+    answer it.
+    """
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["test"]:
             continue

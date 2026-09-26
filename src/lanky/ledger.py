@@ -13,9 +13,11 @@ that are not on that ladder: ``ASSUMED`` (nobody tried, or nobody could) and
 proof, and the counterexample lives in the fact's provenance).
 
 One mark sits beside the status rather than in it. A fact whose hypotheses an
-oracle has shown inconsistent is *vacuous*: ``proved`` is still true of it, and
-it says nothing, so the table prints ``proved (vacuous)`` and the provenance
-says who showed it (see :func:`lanky.check.establish`). An *axiom*, a fact of
+oracle has shown inconsistent is *vacuous*, and so is one whose goal is a
+universal whose guard an oracle has shown empty wherever the hypotheses hold:
+``proved`` is still true of it, and it says nothing, so the table prints
+``proved (vacuous)`` and the provenance says who showed it (see
+:func:`lanky.check.establish`). An *axiom*, a fact of
 kind ``"axiom"``, is ``assumed`` on a citation rather than for want of an
 oracle, and the table prints ``assumed (axiom)``.
 
@@ -166,7 +168,11 @@ class Fact:
 
     @property
     def is_vacuous(self) -> bool:
-        """Whether an oracle has shown that nothing satisfies this fact's hypotheses."""
+        """Whether an oracle has shown that nothing is ever at stake in this fact.
+
+        That is hypotheses nothing satisfies, or a goal whose guard is empty
+        wherever they hold; ``provenance["vacuous"]`` says which.
+        """
         return bool(self.provenance.get("vacuous"))
 
     @property
@@ -275,7 +281,7 @@ class Ledger:
         return tuple(fact for fact in self if fact.status is status)
 
     def vacuous(self) -> tuple[Fact, ...]:
-        """Every fact whose hypotheses were shown inconsistent, in order."""
+        """Every fact shown vacuous (see :attr:`Fact.is_vacuous`), in order."""
         return tuple(fact for fact in self if fact.is_vacuous)
 
     def counts(self) -> dict[str, int]:

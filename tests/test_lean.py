@@ -1752,6 +1752,75 @@ def test_lean_refutes_hypotheses_under_a_goal_it_cannot_state(
     assert cli.main(["check", str(path)]) == 1
 
 
+_FLIPPED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Fn, Nat\n\n\n"
+    "@theorem\n"
+    "def flipped(\n"
+    "    n: Nat,\n"
+    "    cnt: Fn[Fin[n], Nat],\n"
+    "    off: Fn[Fin[n + 1], Nat],\n"
+    "    h: (off(0) == 0) & all(off(r + 1) == off(r) + cnt(r) for r in Fin[n]),\n"
+    ") -> all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q)):\n"
+    '    """The guard can never hold, so the goal holds at every draw."""\n'
+)
+
+
+def test_lean_shows_a_goal_guard_empty_and_the_claim_vacuous(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """#17 with a real Lean: the goal is proved from its guard, which is shown empty.
+
+    ``omega`` closes the goal from ``p < q`` and ``p > q``, which is a valid
+    proof of a goal that says nothing. The tester finds that no draw got
+    through the guard, and Lean proves the guard empty wherever the
+    hypotheses hold (the goal's body replaced by ``False``).
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "flipped.py"
+    path.write_text(_FLIPPED, encoding="utf-8")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert fact.decided_by == "lean"
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous_by"] == "lean"
+    assert fact.provenance["vacuous"].startswith("the goal's guard is empty")
+    source = fact.provenance["vacuous_evidence"]["lean_source"]
+    assert "p < q → p > q → False := by" in source
+    assert cli.main(["check", str(path)]) == 1
+    printed = capsys.readouterr().out
+    assert "proved (vacuous)  lean" in printed
+    assert "VACUOUS flipped at flipped.py:7" in printed
+
+
+def test_lean_leaves_a_goal_guard_the_sampler_misses_to_a_warning(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """``i == 7`` has a point once ``n`` is above 7, where no draw looks, and is not empty."""
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "rare.py"
+    path.write_text(
+        _FLIPPED.replace(
+            "all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q))",
+            "all(off(p) >= 0 for p in Fin[n + 1] if p == 7)",
+        ),
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["goal_unreached"] == (
+        "the goal's guard p == 7 never held in 200 valid draws"
+    )
+    assert cli.main(["check", str(path)]) == 0
+    assert "WARNING flipped at rare.py:7" in capsys.readouterr().out
+
+
 def test_the_statement_the_oracle_sends_is_the_one_it_records(
     lean_oracle: LeanOracle,
 ) -> None:
