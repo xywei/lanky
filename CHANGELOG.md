@@ -799,6 +799,60 @@ listed because it changes behaviour a reader could already have depended on.
   in it: `(1 - 2) ** n >= 0` printed as `(1 - 2) ^ n.toNat ≥ 0`, which Lean
   read over `Nat` and proved. The demonstration's coefficient facts are such
   comparisons.
+- **A Lean attempt that times out costs that attempt alone.** In core-Lean
+  mode lean-interact kills the REPL when a command runs past
+  `LANKY_LEAN_TIMEOUT` and does not start it again, and the session kept the
+  dead server: every later attempt, on that fact and on every fact after it
+  in the same `lanky check`, came back as "The Lean server is not running",
+  while the session recorded no error and `availability()` still said the
+  oracle was available (#32). A core session now starts the server again
+  before the next command, as a Mathlib session already did, importing
+  Mathlib again; a server that will not start again is the session's error
+  from then on. The test that a timeout is not a refutation gives its oracle a
+  session of its own, since the timeout that applies is the session's: handed
+  the module's session, the oracle never timed out.
+- **A name Lean would read as something else is printed so that it reads it
+  as written.** A theorem or a variable whose Python name is a Lean keyword
+  (`scoped`, `fun`, `at`, `show`, `end`, and with Mathlib `lemma`, `to` and
+  `over`) was printed as it stands, Lean could not parse the statement, and
+  the fact fell through to the tester with the parse error as its
+  `lean_reason` (#38). Such a name is now quoted, `«fun»`, wherever it is
+  printed: the theorem's name, the parameters and propositions, a bound
+  variable, an exponent's `.toNat`, a reduction's binder, and the ladder's
+  `intro`, `obtain` and `induction`; so is a name with a letter outside
+  ASCII. The new `lanky.lean.lean_identifier` does it, from the words the
+  parser table of Lean v4.29.1 reserves with `import Lean` and with the
+  pinned Mathlib, and the Lean tests compare that list with the table of the
+  Lean they run against. The hypotheses are named `h0`, `h1`, ... as before,
+  unless a variable of the statement has the name, and then with a suffix,
+  `h0_1`: `def named(h0: Nat, b: Nat) -> h0 + b == b + h0` shadowed its
+  variable with the hypothesis `0 ≤ h0`, and Lean read the goal's `h0` as the
+  proof. The ladder's `intro` names a goal binder's guards the same way,
+  clear of every binder of the goal, where a guard of `a` named `hd` was
+  shadowed by a later binder `hd`. And a variable named `true` or `false` made the Boolean literal name
+  the variable: `def truth(true: Bool) -> true == True` printed as
+  `true = true`, which Lean proved, though the claim is false at
+  `true = False`. Where such a variable is in scope the literal is now
+  `Bool.true`, and the tester refutes the claim. `LeanStatement` gains
+  `variables`, the lanky names of its binders; its `binders` hold the names
+  as Lean source.
+- **A child of `lanky check` lives inside the command's life.** Three edges of
+  the child processes that check each source root (#28). A child is started
+  with the interpreter's command-line options, as `multiprocessing` starts its
+  workers (`-O`, `-W`, `-X` and the rest), where only the environment
+  variables that mirror some of them reached it. It is sent `SIGTERM` when
+  the command's process ends (`PR_SET_PDEATHSIG` on Linux, a thread watching
+  the parent's pid elsewhere), so a `SIGTERM` or a `SIGKILL` sent to the
+  command alone, which ends it with nothing run on the way out, no longer
+  leaves the child checking for no one until its next write. And once a child
+  has exited, its output is copied until it ends or has been quiet for a
+  second, rather than until it ends: a process a checked file left running,
+  with the child's output as its own, held the command up until it closed
+  it. What such a process writes after that is read and dropped, and time
+  spent writing to a slow standard output does not count as quiet. (Where
+  every file shares one root there is no child, and such a process holds
+  whatever reads the command's own output, as it would for any program.) No
+  verdict and no ledger changes.
 
 ### Notes
 
