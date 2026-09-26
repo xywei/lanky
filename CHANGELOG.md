@@ -45,6 +45,70 @@ prints a ledger naming who decided what.
   declaration per attempt down a ladder of `omega`, `decide`, `simp`, `simp_all`,
   two intro-plus-closer scripts and an induction strategy read off the term. Core
   Lean only: no Mathlib is fetched or needed. Install it with the `lean` extra.
+- **Mathlib mode** (`lanky.mathlib`, `lanky.lean`, `lanky.oracles.lean`), the
+  Mathlib part of #3. Opt-in: `LANKY_LEAN_MATHLIB` names a Lake project with
+  Mathlib fetched, and with it unset the oracle, the printer and the ladder are
+  the core ones, unchanged. lanky ships the project in
+  `src/lanky/mathlib-project/`, pinned to Mathlib v4.29.1 on Lean v4.29.1 (the
+  toolchain the core-Lean CI job uses, and one lean-interact's REPL has a
+  build for), with every dependency at a commit in `lake-manifest.json`.
+  `python -m lanky.mathlib DIR` writes it and runs `lake exe cache get`,
+  never a build of Mathlib, and says what to export. The oracle reads the
+  variable when it wants a session, so the registered oracle follows it,
+  keeps a session per mode, and in Mathlib mode starts the REPL in the project
+  with lean-interact's `LocalProject` (told not to build it), imports Mathlib
+  once, and elaborates every attempt in the environment the import left. A
+  server the driver killed after a timeout is started again with Mathlib
+  imported before the next attempt. A project that is not ready makes the
+  oracle unavailable with the reason and the command that fixes it, rather
+  than fall back to core Lean, and a `LANKY_LEAN_VERSION` other than the
+  project's toolchain is refused. A proof records the Mathlib revision as
+  `lean_mathlib`, and its `lean_source` starts with `import Mathlib` so it
+  replays as a file. The theorem is declared as `Lanky.<name>`: Mathlib
+  declares lemmas such as `mul_comm` and `sq_nonneg` at the root, and a claim
+  named after one would be refused as already declared at every attempt.
+  - The printer's Mathlib dialect (`print_lean(..., mathlib=True)`, and the
+    same keyword on `statement_of`, `lean_type`, `domain_guards` and
+    `Theorem.lean`) prints the core fragment as core Lean does, and adds
+    `Real` and `Complex` as `ℝ` and `ℂ`; a float or a non-integral `Fraction`
+    as the exact rational, ascribed `ℝ` even when integral; a complex literal
+    around `Complex.I`; true division in `ℝ`, or `ℂ` when a side is complex;
+    `|x|`, and `‖z‖` for a complex `z`; `exp`, `log` and `sqrt` as
+    `Real.exp`, `Real.log` and `Real.sqrt`, and `Complex.exp`; and a sum over
+    `Fin` binders as `∑ i ∈ Finset.Ico (0 : ℤ) n`, with a guard or a
+    refinement as `with`. A floor division by a literal is ascribed,
+    `(n / 2 : ℤ)`, so that next to a real it is cast whole rather than turned
+    into real division of the cast `n`; the sum's lower bound is ascribed, and
+    so is a body that is an integer numeral, since Lean reads an untyped
+    numeral as a `Nat`, where `sum(i - 1 for i in Fin[3])` and
+    `sum(1 for i in Fin[n]) - 3` truncate. A body, and the operand of `|x|`,
+    that is arithmetic on numerals alone, which only a term built node by node
+    holds, is ascribed `ℤ` the same way, as a comparison with no variable in it
+    is: `|1 - 2| = 0` and a sum of `1 - 2` equal to `0` were proved over `Nat`.
+    It declines a sum over `Nat`, a
+    `Fin` with a real bound (which the tester truncates), a floor division or
+    remainder of a real, an order between complex numbers, and a complex
+    logarithm or square root (`cmath` picks a side of the branch cut by the
+    sign of a zero, and Lean's `ℂ` has no signed zero), each of which would
+    print a meaning Python does not give. An `Elementary` node built by hand
+    with a function other than those three is declined too.
+  - The ladder, in Mathlib mode, runs the core attempts first (their closers
+    extended with `linarith`, `nlinarith`, `positivity`, `ring_nf` and
+    `norm_num`), then `norm_num`, `positivity`, `ring`, `field_simp`,
+    `linarith`, `nlinarith`, `push_cast; ring` and two `simp` calls with the
+    `exp` and `sqrt` lemmas outside the simp set, and then
+    `reduction_scripts`: an induction on a natural parameter that a sum's bound
+    mentions, peeling the last term off the sum in each case. Gauss's sum in
+    `examples/gauss.py` is proved by it.
+- **`Complex`, and `exp`, `log` and `sqrt`** (`lanky.prelude`, `lanky.terms`).
+  `Complex` is a sort, `approx` by default as `Real` is; the tester draws
+  complex floats, with small dyadic parts for `Complex.exact`, which keep
+  ring arithmetic exact. `lanky.exp`, `lanky.log` and `lanky.sqrt` build an
+  `Elementary` node from a term and are `math`'s functions at a real number
+  and `cmath`'s at a complex one. Where Python gives no value (`log(0)`,
+  `sqrt(-1)`, an `exp` that overflows a float) evaluation raises
+  `UndefinedValue`, and the tester drops that draw as it drops a division by
+  zero, rather than count a counterexample.
 - **Commands.** `lanky check FILE... [--json OUT] [--verbose]`, exit code 1 when
   any fact is refuted; `lanky --version`; plugin verbs appear as subcommands, which
   is how `lanky run` reaches loopty's executor.
@@ -585,6 +649,23 @@ listed because it changes behaviour a reader could already have depended on.
   `div_zero` the `SEMANTICS` block with Lean and the `assumed` row without
   (#18). It found the `truncated` block one line short since every refuted
   fact started printing its reason.
+- **In Mathlib mode, a true division, a logarithm and a square root are noted
+  where the readings part.** Besides an integer division that may be by zero,
+  a fact's `semantics` provenance names a true division by anything but a
+  nonzero literal (`x / 0` is `0` in a Mathlib field) and a `log` or `sqrt`
+  of anything but a positive literal (Mathlib's are total). Only in Mathlib
+  mode: core Lean declines all three, so there is no second reading to part
+  from, and a core-mode fact records what it did before.
+- **The suite runs in core-Lean mode.** `tests/conftest.py` takes
+  `LANKY_LEAN_MATHLIB` out of the environment before any test runs and hands
+  it to `tests/test_mathlib.py` alone, so a developer who exports it still sees
+  the documented ledgers, which read `tested` for Gauss's sum.
+- **An optional CI job for Mathlib mode.** `test with Lean and Mathlib` sets
+  up the pinned project with `python -m lanky.mathlib`, caches Mathlib's
+  compiled files keyed by the manifest, runs `tests/test_mathlib.py` with
+  `LANKY_LEAN_MATHLIB_TEST_REQUIRED=1` (a missing project fails instead of
+  skipping), and checks that `lanky check examples/gauss.py` proves both
+  rows. It may fail without failing the run.
 - **The Lean CI job keeps a uv cache of its own.** It shared one with the
   job that does not sync the `lean` extra, and downloaded lean-interact
   again on every run; its setup-uv step now has `cache-suffix: lean` (#19).
@@ -729,7 +810,13 @@ listed because it changes behaviour a reader could already have depended on.
   invents and has no binding a static checker can see.
 - CI runs the suite twice: without Lean, on Python 3.12 and 3.13, where the Lean
   tests skip and the facts Lean would prove are tested instead, and with Lean
-  v4.29.1, where they run. The ledger says which happened.
+  v4.29.1, where they run. The ledger says which happened. A third, optional
+  job runs the Mathlib tests against the pinned Mathlib.
+- Over `Real` and `Complex` the tester's reading is floating point (fractions
+  for `Real.exact`) and Mathlib's is exact, so an identity that holds up to
+  rounding is refuted without Mathlib and proved with it. That is what the
+  exactness class says, and it is not noted as a gap; #33 asks which reading
+  should decide.
 - Python's `and` between two propositions in a generator's `if` clause is *not*
   refused: CPython compiles a conjunction in a comprehension filter into two
   successive tests, so both halves are captured and the guard is the one that

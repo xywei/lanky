@@ -31,10 +31,11 @@ import lanky.oracles  # noqa: F401 - importing lanky registers the built-in orac
 from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status, Support, fact_id
 from lanky.plugins import Executor, Oracle, Registry, Theory, Verb, registry
-from lanky.prelude import Bool, Fin, Fn, Int, Nat, Prop, Real, Sort
+from lanky.prelude import Bool, Complex, Fin, Fn, Int, Nat, Prop, Real, Sort
 from lanky.rewrites import Rewrite, RewriteTerm, rewrite
 from lanky.terms import (
     Abs,
+    Elementary,
     Exists,
     Forall,
     Scope,
@@ -44,8 +45,11 @@ from lanky.terms import (
     abs_,
     evaluate,
     exists,
+    exp,
     forall,
+    log,
     render,
+    sqrt,
 )
 from lanky.terms import sum_ as sum  # noqa: A004 - lanky.sum is a reduction term
 from lanky.theory import Axiom, Theorem, axiom, theorem
@@ -56,6 +60,8 @@ __all__ = [
     "Abs",
     "Axiom",
     "Bool",
+    "Complex",
+    "Elementary",
     "Executor",
     "Exists",
     "Fact",
@@ -87,11 +93,14 @@ __all__ = [
     "check_path",
     "evaluate",
     "exists",
+    "exp",
     "fact_id",
     "forall",
+    "log",
     "registry",
     "render",
     "rewrite",
+    "sqrt",
     "sum",
     "theorem",
 ]

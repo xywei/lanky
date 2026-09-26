@@ -9,7 +9,10 @@ Sampling follows the sort. Discrete sorts draw small integers, because the
 interesting failures of an index argument are near zero and the quantifiers are
 enumerated. ``Real`` draws :class:`~fractions.Fraction` when its exactness class
 is ``exact``, so that an exact claim is tested exactly and not defeated by
-rounding, and floats otherwise. ``Fn[Fin[n], B]`` draws a table over the domain,
+rounding, and floats otherwise. ``Complex`` draws complex floats; when it is
+``exact`` their parts are small dyadic rationals, which a float holds exactly
+and whose sums and products stay exact at the sizes a test reaches, since
+Python has no exact complex type. ``Fn[Fin[n], B]`` draws a table over the domain,
 which is how a theorem talks about data a kernel produced.
 
 Hypotheses are filters, but a random table almost never satisfies a recurrence,
@@ -32,8 +35,8 @@ the ones ``p`` rejects (:class:`~lanky.terms.LankyEvaluationMapper`), so a
 counterexample never names a point outside the domain and ``Fin[n] & p`` is
 still enumerated, which is what lets an existential over it be refuted.
 
-A draw that the statement cannot be answered at is dropped the same way. Six
-things do that, and all six raise or are read as
+A draw that the statement cannot be answered at is dropped the same way. Seven
+things do that, and all seven raise or are read as
 :class:`~lanky.terms.Undecided` rather than as a counterexample, because none of
 them is one:
 
@@ -62,6 +65,11 @@ Lean's integer division is total (``Int.fdiv x 0`` is ``0``, ``Int.fmod x 0``
 is ``x``), so the sampled reading has no answer at that draw while the Lean
 reading does. That is a gap between the two readings (:mod:`lanky.semantics`
 records it in the fact's provenance), not evidence against the statement.
+
+*An elementary function where Python gives it no value.* ``log(0)``,
+``sqrt(-1)`` and an ``exp`` that overflows a float raise
+:class:`~lanky.terms.UndefinedValue`, where Mathlib's functions are total. It is
+the same kind of gap as a division by zero, and is dropped the same way.
 
 *A family applied outside the domain it declares.* ``f(n)`` for an
 ``f : Fn[Fin[n], Nat]`` names a point the statement's own types say is not
@@ -110,6 +118,7 @@ from lanky.terms import (
     LankyEvaluationMapper,
     Polarity,
     Undecided,
+    UndefinedValue,
     binder_assignments,
     conjoin,
     evaluate,
@@ -140,6 +149,11 @@ SORT_SAMPLE_POINTS = 4
 
 #: How many draws per requested sample before giving up on the hypotheses.
 REJECTION_FACTOR = 20
+
+#: What evaluation raises where the sampled reading has no answer and Lean's
+#: total one does: a division by zero, and an elementary function outside its
+#: Python domain. A draw that raises one decides nothing.
+_GAPS = (ZeroDivisionError, UndefinedValue)
 
 
 class SkipSample(Exception):
@@ -288,6 +302,10 @@ def sample_value(
             if sort.exactness == "exact":
                 return Fraction(rng.randrange(-8, 9), rng.randrange(1, 5))
             return rng.uniform(-1.0, 1.0)
+        if sort.name == "Complex":
+            if sort.exactness == "exact":
+                return complex(rng.randrange(-8, 9) / 4, rng.randrange(-8, 9) / 4)
+            return complex(rng.uniform(-1.0, 1.0), rng.uniform(-1.0, 1.0))
     if sort is int:
         return rng.randrange(-MAX_NAT, MAX_NAT + 1)
     if sort is float:
@@ -359,7 +377,7 @@ def _refinement_holds(sort: Refined, context: dict[str, Any], rng: random.Random
     """
     try:
         return sort.holds(context, sort_sampler(rng, context))
-    except (Undecided, ZeroDivisionError) as exc:
+    except (Undecided, *_GAPS) as exc:
         raise Unevaluable(
             f"the refinement of {sort} cannot be evaluated at this draw: "
             f"{type(exc).__name__}: {exc}"
@@ -400,6 +418,10 @@ def in_sort(value: Any, sort: Any, context: dict[str, Any]) -> bool:
             return isinstance(value, bool)
         if sort.name == "Real":
             return isinstance(value, int | float | Fraction) and not isinstance(
+                value, bool
+            )
+        if sort.name == "Complex":
+            return isinstance(value, int | float | Fraction | complex) and not isinstance(
                 value, bool
             )
     if sort is int:
@@ -576,7 +598,7 @@ def satisfy_hypotheses(
                     _try(
                         lambda d=definition: _assign_definition(d[0], d[1], context, sorts)
                     )
-            except (Undecided, ZeroDivisionError, TypeError):
+            except (Undecided, *_GAPS, TypeError):
                 continue
 
 
@@ -590,7 +612,7 @@ def _try(action: Any) -> None:
     """
     try:
         action()
-    except (TypeError, ValueError, KeyError, IndexError, ZeroDivisionError, Undecided):
+    except (TypeError, ValueError, KeyError, IndexError, *_GAPS, Undecided):
         return
 
 
@@ -609,9 +631,10 @@ class TestReport:
     could not be answered at them: an existential over a sampled domain that no
     draw witnessed, a universal over a sampled domain whose guard or refinement
     no draw satisfied, a sampled universal that held where the statement does
-    not assert it, a sum over a sampled domain, a division by zero, a family
-    applied outside its domain (see the module docstring), or a refinement that
-    cannot be evaluated (:class:`Unevaluable`). Such a draw is neither evidence
+    not assert it, a sum over a sampled domain, a division by zero, an
+    elementary function outside its Python domain, a family applied outside
+    its domain (see the module docstring), or a refinement that cannot be
+    evaluated (:class:`Unevaluable`). Such a draw is neither evidence
     nor a counterexample, so it is not counted as valid.
 
     ``unsampleable`` counts the draws that could not be completed because a
@@ -668,12 +691,14 @@ def check(
     A draw is dropped rather than counted when it cannot be completed
     (:class:`SkipSample`, including a definitional hypothesis that would put a
     value outside its codomain) and when the statement cannot be answered at it
-    (:class:`~lanky.terms.Undecided` or a ``ZeroDivisionError``: an existential
-    over a sampled domain that found no witness, a universal over a sampled
-    domain whose guard or refinement admitted no draw, a sampled universal
-    that held where the statement does not assert it, a sum over a sampled
-    domain, a division by zero, a family applied outside its domain, and a
-    refinement that raises one of them, :class:`Unevaluable`). Neither is a
+    (:class:`~lanky.terms.Undecided`, a ``ZeroDivisionError`` or a
+    :class:`~lanky.terms.UndefinedValue`: an existential over a sampled domain
+    that found no witness, a universal over a sampled domain whose guard or
+    refinement admitted no draw, a sampled universal that held where the
+    statement does not assert it, a sum over a sampled domain, a division by
+    zero, an elementary function outside its Python domain, a family applied
+    outside its domain, and a refinement that raises one of them,
+    :class:`Unevaluable`). Neither is a
     counterexample, and neither is evidence.
 
     A counterexample names the drawn variables and, when the goal is a
@@ -736,7 +761,7 @@ def check(
             if not _hypotheses_hold(hypotheses, context, sampler):
                 continue
             satisfied, witness, failing = _falsify(goal, context, sampler, reach)
-        except (Undecided, ZeroDivisionError) as exc:
+        except (Undecided, *_GAPS) as exc:
             _count_reach(report, reach)
             report.undecided += 1
             undecided_reason = undecided_reason or _undecided_reason(exc)
@@ -795,7 +820,8 @@ def _hypotheses_hold(hypotheses: Any, context: dict[str, Any], sampler: Any) -> 
 
     Raises:
         Undecided: If no hypothesis is false and one has no answer here, or
-            ``ZeroDivisionError`` if that one divided by zero.
+            the ``ZeroDivisionError`` or :class:`~lanky.terms.UndefinedValue`
+            that one raised.
     """
     return conjoin(
         lambda h=h: truth_value(evaluate(h, context, sampler, Polarity.NEGATIVE), h)
@@ -867,7 +893,7 @@ def _falsify(
         for child in goal.children:
             try:
                 holds, witness, failing = _falsify(child, context, sampler)
-            except (Undecided, ZeroDivisionError) as exc:
+            except (Undecided, *_GAPS) as exc:
                 if pending is None:
                     pending = exc
                 continue
@@ -941,6 +967,8 @@ def _undecided_reason(exc: Exception) -> str:
             "and Lean's total integer division does not, so the two readings "
             "differ here rather than the statement being false"
         )
+    if isinstance(exc, UndefinedValue):
+        return f"{exc}, so the two readings differ here rather than the statement being false"
     return str(exc)
 
 

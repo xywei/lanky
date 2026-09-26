@@ -11,8 +11,8 @@ round toward negative infinity as Python's do. Subtraction over ``Nat`` and
 floor division over ``Int`` therefore mean the same thing to every oracle, and
 carry no note.
 
-One gap is left, and a fact exposed to it is worth a note in its provenance
-rather than a silent discrepancy:
+One gap is left in integer arithmetic, and a fact exposed to it is worth a note
+in its provenance rather than a silent discrepancy:
 
 *Division or remainder by something that may be zero.* Lean's division is
 total: ``Int.fdiv x 0`` is ``0`` and ``Int.fmod x 0`` is ``x``, and Lean proves
@@ -21,6 +21,30 @@ reading has no answer where the Lean reading has an easy one: ``n // 0 == 0``
 is a Lean theorem and a Python exception. A divisor that is a nonzero integer
 literal is the one case that can be ruled out by looking, so it is the one case
 that carries no note.
+
+The Mathlib dialect of the printer reads two more things Lean totalizes, and in
+Mathlib mode (``LANKY_LEAN_MATHLIB``, see :mod:`lanky.mathlib`) they get notes
+of the same kind. Out of it they get none. Core Lean declines a statement with
+either, so there is no second reading for the sampled one to part from, and a
+note would change what a core-mode ledger records for a statement it reads as it
+always did. The mode is a choice of reading, not a fact about the machine:
+that is why the integer note is made whether or not Lean is installed, and
+these two only when Mathlib mode is chosen, whether or not its project is
+ready.
+
+*True division by something that may be zero.* ``x / 0`` is ``0`` in a Mathlib
+field and a ``ZeroDivisionError`` in Python, whatever the sort.
+
+*A logarithm or a square root outside its Python domain.* ``Real.log 0`` is
+``0``, ``Real.log (-x)`` is ``Real.log x`` and ``Real.sqrt`` of a negative
+number is ``0``; ``math.log`` and ``math.sqrt`` raise. An argument that is a
+positive literal is the one that can be ruled out by looking.
+
+A real statement has a third difference that is no gap in this sense and is not
+noted: the tester computes ``Real`` and ``Complex`` in floating point (or with
+fractions, for ``exact``), and Lean over ``ℝ`` and ``ℂ``. A claim that holds
+only up to rounding is refuted by the one and can be proved by the other, which
+is what the exactness class of a sort is there to say.
 
 This module only *detects* the gap, and records what it found; it does not
 change how anything is evaluated. Making the tester total instead would give
@@ -34,14 +58,19 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.mathlib import project_directory
 from lanky.prelude import FinType, FnType, Refined, Sort
-from lanky.terms import Exists, Forall, Sum, init_args
+from lanky.terms import Elementary, Exists, Forall, Sum, init_args
 
 __all__ = [
     "DIVISION_BY_ZERO",
+    "OUTSIDE_THE_DOMAIN",
+    "TRUE_DIVISION_BY_ZERO",
     "divides_by_possible_zero",
+    "leaves_the_domain",
     "notes",
     "sorts_of",
+    "truly_divides_by_possible_zero",
 ]
 
 #: The note recorded for a division whose divisor cannot be seen to be nonzero.
@@ -50,6 +79,24 @@ DIVISION_BY_ZERO = (
     "integer division is total (Int.fdiv x 0 is 0 and Int.fmod x 0 is x) while "
     "Python raises ZeroDivisionError, so the sampled reading cannot answer where "
     "Lean can"
+)
+
+
+#: The note recorded for a true division whose divisor cannot be seen to be nonzero.
+TRUE_DIVISION_BY_ZERO = (
+    "true division by a divisor that is not a nonzero literal: division in a "
+    "Mathlib field is total (x / 0 is 0) while Python raises ZeroDivisionError, "
+    "so the sampled reading cannot answer where Lean can"
+)
+
+#: The note recorded for a logarithm or square root of an argument that may be
+#: outside the domain Python gives it.
+OUTSIDE_THE_DOMAIN = (
+    "a logarithm or square root of an argument that is not a positive literal: "
+    "Mathlib's Real.log and Real.sqrt are total (Real.log 0 is 0, Real.log (-x) "
+    "is Real.log x, and the square root of a negative number is 0) while "
+    "Python's math.log and math.sqrt raise, so the sampled reading cannot "
+    "answer where Lean can"
 )
 
 
@@ -144,20 +191,68 @@ def divides_by_possible_zero(term: Any) -> bool:
     )
 
 
-def notes(term: Any) -> tuple[str, ...]:
+def truly_divides_by_possible_zero(term: Any) -> bool:
+    """Whether ``term`` has a true division (``/``) by something not ruled out as zero.
+
+    The same syntactic test as :func:`divides_by_possible_zero`, in the same
+    safe direction, for ``/``: ``x / 2`` carries no note, ``x / y`` does.
+    """
+    return any(
+        isinstance(node, prim.Quotient)
+        and not isinstance(node, prim.FloorDiv | prim.Remainder)
+        and not _is_nonzero_literal(node.denominator)
+        for node in _walk(term)
+    )
+
+
+def _is_positive_literal(expr: Any) -> bool:
+    """Whether an argument is a number literal that is plainly above zero."""
+    if isinstance(expr, bool) or not isinstance(expr, int | float | Fraction):
+        return False
+    return expr > 0
+
+
+def leaves_the_domain(term: Any) -> bool:
+    """Whether ``term`` takes a logarithm or a square root of something not seen positive.
+
+    Syntactic, like the division checks: ``log(2)`` carries no note, and
+    ``log(x)``, ``log(x * x)`` and ``sqrt(x - 1)`` do, a hypothesis that keeps
+    the argument positive included. ``exp`` is total on both sides and is never
+    noted; a float it overflows is rare at the points the tester draws, and the
+    draw is dropped when it happens.
+    """
+    return any(
+        isinstance(node, Elementary)
+        and node.function in ("log", "sqrt")
+        and not _is_positive_literal(node.argument)
+        for node in _walk(term)
+    )
+
+
+def notes(term: Any, mathlib: bool | None = None) -> tuple[str, ...]:
     """The semantics gaps this term is exposed to, as lines for a provenance.
 
     An empty tuple is the common case and the one worth having: arithmetic over
     ``Nat`` and ``Int``, subtraction and floor division included, means the same
-    thing to every oracle, so only a division that may be by zero is noted.
+    thing to every oracle, so only a division that may be by zero is noted, and
+    in Mathlib mode, a true division that may be by zero and a logarithm or
+    square root that may leave its Python domain. ``mathlib`` says whether the
+    statement is read in Mathlib mode; ``None``, the default, reads the mode
+    from ``LANKY_LEAN_MATHLIB`` as the Lean oracle does.
     """
     if term is None:
         return ()
+    if mathlib is None:
+        mathlib = project_directory() is not None
     try:
         sorts = sorts_of(term)
         found: list[str] = []
         if ("Nat" in sorts or "Int" in sorts) and divides_by_possible_zero(term):
             found.append(DIVISION_BY_ZERO)
+        if mathlib and truly_divides_by_possible_zero(term):
+            found.append(TRUE_DIVISION_BY_ZERO)
+        if mathlib and leaves_the_domain(term):
+            found.append(OUTSIDE_THE_DOMAIN)
     except Exception:  # noqa: BLE001 - a note is never worth failing a check over
         return ()
     return tuple(found)

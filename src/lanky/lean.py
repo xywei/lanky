@@ -100,11 +100,66 @@ reading on its own and not only as oracle input. It carries a scope, the lanky
 type of every name bound around the subterm it prints, which is how it knows
 that ``f i`` is a natural to cast and ``n`` a natural whose exponent form is
 ``n.toNat``.
+
+*Mathlib mode.* Everything above is the default, and it is what every function
+here prints unless asked for Mathlib (``mathlib=True``), which the Lean oracle
+asks for when it runs in a Lake project with Mathlib (see
+:mod:`lanky.mathlib`). The Mathlib dialect prints the core fragment exactly as
+above, apart from one ascription described below, and declines less:
+
+- ``Real`` and ``Complex`` are ``ℝ`` and ``ℂ``. A ``float`` literal is the
+  exact rational number Python holds, ``(1 / 2 : ℝ)`` for ``0.5``, and a
+  non-integral ``Fraction`` the same; a ``complex`` literal is
+  ``(a + b * Complex.I : ℂ)``. A float is ascribed ``ℝ`` even when it is
+  integral: ``2.0 ** n`` is float arithmetic in Python, and an unascribed
+  ``2`` would make it natural arithmetic in Lean.
+- True division is division in a field: ``x / y`` prints as ``(x : ℝ) / y``,
+  or with ``ℂ`` when either side is complex, because Python's ``/`` on two
+  integers is not integer division either. Lean's field division is total, so
+  a divisor that may be zero is noted (:mod:`lanky.semantics`).
+- An absolute value is ``|x|``, and ``‖z‖`` for a complex ``z``, which is the
+  modulus Python's ``abs`` computes.
+- ``exp``, ``log`` and ``sqrt`` (:class:`lanky.terms.Elementary`) are
+  ``Real.exp``, ``Real.log`` and ``Real.sqrt``, and ``Complex.exp`` for a
+  complex argument. A complex logarithm or square root is declined: ``cmath``
+  reads the sign of a zero imaginary part to pick a side of the branch cut,
+  so ``log(x * complex(-1, -0.0))`` is ``-πi`` at ``x = 1``, and Lean's
+  complex numbers have no signed zero.
+- A reduction over ``Fin`` binders is ``∑ i ∈ Finset.Ico (0 : ℤ) n, body``,
+  with a guard or a refinement as ``with``. Its binder is an ``Int``, as a
+  bounded quantifier's is, so the body is the same integer arithmetic. A sum
+  over a domain with no bound, ``Nat``, is infinite and is declined.
+
+What makes this more than a longer table is *coercion*. Lean elaborates a tree
+of ``+``, ``-``, ``*`` and ``/`` by finding the largest type among its leaves
+and casting every leaf to it, so ``x + n / 2`` with a real ``x`` would divide
+the cast ``n`` in ``ℝ``. Every integer operation that is not a ring operation
+is therefore kept out of such a tree: a floor division by a positive literal is
+ascribed, ``(n / 2 : ℤ)``, which makes it a leaf the tree casts whole, and
+``Int.fdiv`` and ``Int.fmod`` are applications, which are leaves already. The
+ring operations commute with the cast, so an integer sum or product inside a
+real one means the same thing either way. What each subterm is, an integer, a
+real or a complex number, is read off the scope (:func:`_kind`), and a floor
+division, a remainder or an order comparison over something that is not an
+integer, or not real, is declined rather than printed with a meaning Python
+does not give it. So is a ``Fin`` whose bound is not an integer, which the
+tester walks as ``range(int(x))``.
+
+The other half of coercion is a numeral with nothing around it to type it,
+which Lean reads as a ``Nat``, as the core dialect's power base already shows.
+A reduction is where the Mathlib dialect meets it: ``Finset.Ico 0 3`` would be
+a set of naturals, and ``sum(i - 1 for i in Fin[3])`` a sum of truncated
+differences, ``1`` where Python computes ``0``; and ``sum(1 for i in Fin[n])``
+would be a natural, so that ``... - 3 >= 0`` holds in Lean at ``n = 0``. So the
+lower bound is ascribed, ``(0 : ℤ)``, and so is a body that is an integer
+numeral.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
@@ -114,6 +169,7 @@ import pymbolic.primitives as prim
 from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import (
     Abs,
+    Elementary,
     Exists,
     Forall,
     Sum,
@@ -128,12 +184,42 @@ __all__ = [
     "LeanStatement",
     "UnsupportedTerm",
     "check_applications",
+    "dialect",
     "domain_guards",
     "is_natural",
     "lean_type",
     "print_lean",
     "statement_of",
 ]
+
+
+#: Whether the printer is writing for a Lean session that has imported Mathlib.
+#: The public functions take ``mathlib=`` and set it for the call; the private
+#: ones read it, so that every helper a statement goes through prints in one
+#: dialect without the flag being threaded through each of them.
+_MATHLIB: ContextVar[bool] = ContextVar("lanky_lean_mathlib", default=False)
+
+
+@contextmanager
+def dialect(mathlib: bool | None) -> Iterator[None]:
+    """Print in the Mathlib dialect, or in core Lean's, for the duration.
+
+    ``None`` keeps whichever dialect is in effect, which is what a public
+    function called from inside another one wants.
+    """
+    if mathlib is None:
+        yield
+        return
+    token = _MATHLIB.set(bool(mathlib))
+    try:
+        yield
+    finally:
+        _MATHLIB.reset(token)
+
+
+def _in_mathlib() -> bool:
+    """Whether the dialect in effect is Mathlib's."""
+    return _MATHLIB.get()
 
 
 class UnsupportedTerm(NotImplementedError):
@@ -180,17 +266,29 @@ def _parens(text: str, inner: int, outer: int) -> str:
 #: :func:`domain_guards`), so that its arithmetic is integer arithmetic.
 _SORT_NAMES = {"Nat": "Int", "Int": "Int", "Bool": "Bool", "Prop": "Prop"}
 
+#: The sorts Mathlib adds, as the Mathlib dialect prints them.
+_MATHLIB_SORT_NAMES = {"Real": "ℝ", "Complex": "ℂ"}
+
+#: The kinds of number a subterm can be (:func:`_kind`), smallest first: an
+#: operation on two of them is carried out in the larger.
+_NUMBER_KINDS = ("Int", "Real", "Complex")
+
+#: The field each kind of number divides in, as the Mathlib dialect prints it.
+_FIELDS = {"Int": "ℝ", "Real": "ℝ", "Complex": "ℂ"}
+
 #: What the printer knows about the names bound around a subterm: the lanky
 #: type of each, read off the binder that bound it.
 _Types = Mapping[str, Any]
 
 
-def lean_type(obj: Any) -> str:
+def lean_type(obj: Any, mathlib: bool | None = None) -> str:
     """The Lean type of a variable of a lanky type.
 
     A natural is an ``Int`` here, and so is a point of ``Fin[n]``: their bounds
     are hypotheses (:func:`domain_guards`), and their arithmetic is integer
-    arithmetic (see the module docstring).
+    arithmetic (see the module docstring). ``Real`` and ``Complex`` are ``ℝ``
+    and ``ℂ`` in the Mathlib dialect (``mathlib=True``), and are declined in
+    core Lean's.
 
     A family is a function from ``Int``, and its values keep their own type:
     ``Fn[Fin[n], Nat]`` is ``Int → Nat``, and an application of it that is used
@@ -201,8 +299,16 @@ def lean_type(obj: Any) -> str:
     two-argument ``Int → Int → Nat``, which is a different type and the one a
     family of families already prints as.
     """
+    with dialect(mathlib):
+        return _lean_type(obj)
+
+
+def _lean_type(obj: Any) -> str:
+    """:func:`lean_type`, in the dialect in effect."""
     if isinstance(obj, Sort):
         name = _SORT_NAMES.get(obj.name)
+        if name is None and _in_mathlib():
+            name = _MATHLIB_SORT_NAMES.get(obj.name)
         if name is None:
             raise UnsupportedTerm(
                 f"the sort {obj.name} has no core-Lean counterpart "
@@ -212,12 +318,12 @@ def lean_type(obj: Any) -> str:
     if isinstance(obj, FinType):
         return "Int"
     if isinstance(obj, FnType):
-        domain = lean_type(obj.domain)
+        domain = _lean_type(obj.domain)
         if isinstance(_unrefined(obj.domain), FnType):
             domain = f"({domain})"
         return f"{domain} → {_value_type(obj.codomain)}"
     if isinstance(obj, Refined):
-        return lean_type(obj.base)
+        return _lean_type(obj.base)
     raise UnsupportedTerm(f"cannot print the type {obj!r} in Lean")
 
 
@@ -243,7 +349,7 @@ def _value_type(obj: Any) -> str:
     """
     if is_natural(obj):
         return "Nat"
-    return lean_type(obj)
+    return _lean_type(obj)
 
 
 def _unrefined(obj: Any) -> Any:
@@ -270,7 +376,9 @@ def _scalar_bounds(domain: Any) -> tuple[Any, Any]:
     return None, None
 
 
-def domain_guards(var: Var, domain: Any, types: _Types | None = None) -> list[str]:
+def domain_guards(
+    var: Var, domain: Any, types: _Types | None = None, mathlib: bool | None = None
+) -> list[str]:
     """The propositions a binder's domain imposes on its variable.
 
     ``Nat`` gives ``0 ≤ n`` and ``Fin[n]`` gives ``0 ≤ i`` and ``i < n``,
@@ -281,17 +389,24 @@ def domain_guards(var: Var, domain: Any, types: _Types | None = None) -> list[st
     ``types`` gives the lanky type of every name bound around the binder (see
     :func:`_render`). A ``Fin`` bound is read with those names, and a
     refinement's propositions with the variable itself added, since they are
-    about that variable.
+    about that variable. ``mathlib`` picks the dialect they are printed in.
     """
-    types = types or {}
+    with dialect(mathlib):
+        return _domain_guards(var, domain, types or {})
+
+
+def _domain_guards(var: Var, domain: Any, types: _Types) -> list[str]:
+    """:func:`domain_guards`, in the dialect in effect."""
     name = _render(var, _CMP + 1, types)
     if isinstance(domain, Sort) and domain.name == "Nat":
         return [f"0 ≤ {name}"]
     if isinstance(domain, FinType):
+        if _in_mathlib():
+            _require_integer_bound(domain, types)
         return [f"0 ≤ {name}", f"{name} < {_render(domain.bound, _CMP + 1, types)}"]
     if isinstance(domain, Refined):
         inner = {**types, var.name: domain}
-        return domain_guards(var, domain.base, types) + [
+        return _domain_guards(var, domain.base, types) + [
             _render_prop(p, _ARROW + 1, inner) for p in domain.props
         ]
     return []
@@ -337,6 +452,8 @@ def _render_number(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
+    if _in_mathlib() and isinstance(value, Fraction | float | complex):
+        return _field_literal(value)
     if isinstance(value, Fraction):
         if value.denominator == 1:
             return str(value.numerator)
@@ -349,6 +466,42 @@ def _render_number(value: Any) -> str:
             "(Real needs Mathlib)"
         )
     raise UnsupportedTerm(f"cannot print the literal {value!r} in Lean")
+
+
+def _rational_text(value: Fraction) -> str:
+    """``p / q``, or ``p`` when the rational is an integer, with no ascription."""
+    if value.denominator == 1:
+        return str(value.numerator)
+    return f"{value.numerator} / {value.denominator}"
+
+
+def _exact(value: float) -> Fraction:
+    """The rational number a finite ``float`` is, refusing an infinity or a NaN."""
+    if value != value or value in (float("inf"), float("-inf")):
+        raise UnsupportedTerm(f"the floating-point value {value} is not a real number")
+    return Fraction(value)
+
+
+def _field_literal(value: Fraction | float | complex) -> str:
+    """Print a rational, float or complex literal in the Mathlib dialect.
+
+    A float is the dyadic rational Python holds, not the decimal it was
+    written as: ``0.1`` is ``3602879701896397 / 36028797018963968``, which is
+    what the file computes with. It is ascribed ``ℝ`` whatever its value, since
+    a bare integral numeral would take the type of its neighbours, ``Nat`` among
+    them (see the module docstring). A complex literal is its two parts around
+    ``Complex.I``.
+    """
+    if isinstance(value, complex):
+        real, imaginary = _exact(value.real), _exact(value.imag)
+        sign = "-" if imaginary < 0 else "+"
+        return (
+            f"({_rational_text(real)} {sign} {_rational_text(abs(imaginary))} "
+            "* Complex.I : ℂ)"
+        )
+    if isinstance(value, float):
+        value = _exact(value)
+    return f"({_rational_text(value)} : ℝ)"
 
 
 def _negated(child: Any) -> tuple[bool, Any] | None:
@@ -404,14 +557,23 @@ def _render_division(expr: prim.FloorDiv | prim.Remainder, outer: int, types: _T
     reasons about it where it knows nothing of ``Int.fdiv``. A zero divisor
     prints as ``Int.fdiv x 0``, which Lean evaluates to ``0`` where Python
     raises; :mod:`lanky.semantics` records that gap.
+
+    In the Mathlib dialect both operands have to be integers, and the literal
+    form is ascribed, ``(n / 2 : ℤ)``: next to a real it would otherwise be
+    real division of the cast ``n`` (see the module docstring).
     """
     floor = isinstance(expr, prim.FloorDiv)
+    if _in_mathlib():
+        _require_integers(expr, types)
     if _is_positive_literal(expr.denominator):
         symbol = "/" if floor else "%"
         text = (
             f"{_render(expr.numerator, _MUL, types)} {symbol} "
             f"{_render(expr.denominator, _MUL + 1, types)}"
         )
+        if _in_mathlib():
+            # a leaf of type ℤ, which a real tree around it casts whole
+            return f"({text} : ℤ)"
         return _parens(text, _MUL, outer)
     function = "Int.fdiv" if floor else "Int.fmod"
     text = (
@@ -508,6 +670,240 @@ def _render_base(expr: Any, types: _Types) -> str:
     return _render(expr, _POW + 1, types)
 
 
+# {{{ the Mathlib dialect: kinds of number, and what only it prints
+
+
+def _sort_kind(obj: Any) -> str:
+    """What a variable of a lanky type is as a number: ``Int``, ``Real`` or ``Complex``.
+
+    A natural, an integer and a point of ``Fin`` are all integers (see the
+    module docstring). ``Prop`` for a truth value, and ``Int`` for anything
+    this cannot read, such as a family used without being applied, which is
+    not a number in any case and meets no operation that would care.
+    """
+    base = _unrefined(obj)
+    if isinstance(base, Sort):
+        if base.name in ("Real", "Complex"):
+            return base.name
+        if base.name in ("Bool", "Prop"):
+            return "Prop"
+    return "Int"
+
+
+def _widest(kinds: Any) -> str:
+    """The largest kind of number among ``kinds``, which an operation on them is in."""
+    found = [kind for kind in kinds if kind in _NUMBER_KINDS]
+    return max(found, key=_NUMBER_KINDS.index) if found else "Int"
+
+
+def _kind(expr: Any, types: _Types) -> str:
+    """What ``expr`` is as a number: ``Int``, ``Real`` or ``Complex``, or ``Prop``.
+
+    The printer needs to know where the coercions Lean would insert could
+    change a meaning (see the module docstring), and this is how it knows: a
+    variable is what its binder says, a literal what Python made it, an
+    arithmetic operation the widest of its operands, a true division at least
+    real, and an application what its family's codomain is. A name nothing in
+    scope binds, a free variable of an open term, counts as an integer, which
+    is how core Lean's printer has always read it.
+    """
+    if isinstance(expr, bool):
+        return "Prop"
+    if isinstance(expr, Var | prim.Variable):
+        return _sort_kind(types.get(expr.name))
+    expr = _integral(expr)
+    if isinstance(expr, int):
+        return "Int"
+    if isinstance(expr, Fraction | float):
+        return "Real"
+    if isinstance(expr, complex):
+        return "Complex"
+    if isinstance(expr, prim.Comparison | prim.LogicalAnd | prim.LogicalOr | prim.LogicalNot):
+        return "Prop"
+    if isinstance(expr, Forall | Exists):
+        return "Prop"
+    if isinstance(expr, prim.Sum | prim.Product):
+        return _widest(_kind(child, types) for child in expr.children)
+    if isinstance(expr, prim.Power):
+        return _widest([_kind(expr.base, types)])
+    if isinstance(expr, prim.FloorDiv | prim.Remainder):
+        return "Int"
+    if isinstance(expr, prim.Quotient):
+        return _widest(["Real", _kind(expr.numerator, types), _kind(expr.denominator, types)])
+    if isinstance(expr, Abs):
+        return "Int" if _kind(expr.operand, types) == "Int" else "Real"
+    if isinstance(expr, Elementary):
+        argument = _kind(expr.argument, types)
+        return "Complex" if argument == "Complex" and expr.function == "exp" else "Real"
+    if isinstance(expr, Sum):
+        inner = dict(types)
+        for var, domain in expr.binders:
+            inner[var.name] = domain
+        return _kind(expr.body, inner)
+    if isinstance(expr, prim.Call | prim.Subscript):
+        return _sort_kind(_application_type(expr, types))
+    return "Int"
+
+
+def _require_integers(expr: prim.FloorDiv | prim.Remainder, types: _Types) -> None:
+    """Refuse a floor division or a remainder whose operands are not both integers.
+
+    Python's ``//`` and ``%`` take floats as well, where ``x // 1`` is the floor
+    of ``x`` as a float; Lean's ``Int.fdiv`` and ``Int.fmod`` do not, and
+    printing them over a cast ``x`` would be a different operation.
+    """
+    for operand in (expr.numerator, expr.denominator):
+        kind = _kind(operand, types)
+        if kind != "Int":
+            raise UnsupportedTerm(
+                f"{render(expr)} is floor division or a remainder of a {kind} "
+                f"operand ({render(operand)}), which Python computes in floating "
+                "point and Lean's Int.fdiv and Int.fmod do not take"
+            )
+
+
+def _require_integer_bound(domain: FinType, types: _Types) -> None:
+    """Refuse a ``Fin`` whose bound is not an integer.
+
+    The tester walks ``Fin[x]`` as ``range(int(x))``, which truncates a real
+    ``x``, while the guard ``i < x`` over a cast ``i`` does not: ``Fin[2.5]``
+    has two points in Python and three in Lean. Core Lean cannot print a real
+    bound at all; the Mathlib dialect could, and must not.
+    """
+    kind = _kind(domain.bound, types)
+    if kind != "Int":
+        raise UnsupportedTerm(
+            f"{domain} has a {kind} bound, which Python truncates to an integer "
+            "and Lean would compare the index with as it stands"
+        )
+
+
+def _render_quotient(expr: prim.Quotient, outer: int, types: _Types) -> str:
+    """Print true division as division in ``ℝ``, or in ``ℂ`` when a side is complex.
+
+    Python's ``/`` never divides integers as integers: ``7 / 2`` is ``3.5``.
+    Ascribing the numerator to the field makes Lean divide there too, since
+    the division is then in the widest type among its leaves.
+    """
+    kind = _widest([_kind(expr.numerator, types), _kind(expr.denominator, types)])
+    text = (
+        f"({_render(expr.numerator, _QUANT, types)} : {_FIELDS[kind]}) / "
+        f"{_render(expr.denominator, _MUL + 1, types)}"
+    )
+    return _parens(text, _MUL, outer)
+
+
+def _render_abs(expr: Abs, types: _Types) -> str:
+    """Print ``|x|``, or ``‖z‖`` for a complex ``z``, the modulus Python's ``abs`` gives.
+
+    An operand of integer literals alone, which only a term built node by node
+    holds, is ascribed ``ℤ`` (see :func:`_closed_arithmetic`): ``abs`` takes
+    its type from its operand, so bare, ``|1 - 2| = 0`` is a truncated ``Nat``
+    subtraction Lean proves, while Python computes ``abs(-1) == 0``, false.
+    """
+    inner = _render(expr.operand, _QUANT, types)
+    if _closed_arithmetic(expr.operand):
+        return f"|({inner} : ℤ)|"
+    if _kind(expr.operand, types) == "Complex":
+        return f"‖{inner}‖"
+    if "|" in inner:
+        # bars nest ambiguously, so an inner absolute value gets brackets
+        inner = f"({inner})"
+    return f"|{inner}|"
+
+
+#: What each elementary function is called in Mathlib, for a real argument and
+#: for a complex one; ``None`` where lanky does not print it.
+_ELEMENTARY = {
+    "exp": ("Real.exp", "Complex.exp"),
+    "log": ("Real.log", None),
+    "sqrt": ("Real.sqrt", None),
+}
+
+
+def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
+    """Print ``exp``, ``log`` or ``sqrt`` as Mathlib's function of the argument's kind.
+
+    An integer argument is cast to ``ℝ`` by Lean where it is applied, which is
+    what Python's ``math.exp(n)`` does too. The complex logarithm and square
+    root are declined: ``cmath.log`` and ``cmath.sqrt`` read the sign of a
+    zero imaginary part to choose a side of their branch cut, so that
+    ``cmath.log(complex(-1, -0.0))`` is ``-πi`` and ``cmath.log(complex(-1,
+    0.0))`` is ``πi``, while Lean's complex numbers have no signed zero and
+    ``Complex.log (-1)`` is ``π * I`` from either side. The complex
+    exponential is entire, and has no cut to disagree about. An
+    :class:`~lanky.terms.Elementary` built by hand with any other function is
+    declined too.
+    """
+    if expr.function not in _ELEMENTARY:
+        raise UnsupportedTerm(
+            f"{render(expr)} applies {expr.function!r}, which lanky does not print"
+        )
+    real, complex_ = _ELEMENTARY[expr.function]
+    name = complex_ if _kind(expr.argument, types) == "Complex" else real
+    if name is None:
+        kind = "logarithm" if expr.function == "log" else "square root"
+        raise UnsupportedTerm(
+            f"{render(expr)} is a complex {kind}, whose branch cut Python and Lean "
+            "do not draw the same way: cmath picks a side of it by the sign of a "
+            "zero imaginary part, and Lean's complex numbers have no signed zero"
+        )
+    return _parens(f"{name} {_render(expr.argument, _ATOM, types)}", _APP, outer)
+
+
+def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
+    """Print a reduction as Mathlib's ``∑``, one ``Finset.Ico`` per binder.
+
+    ``Fin[n]`` is ``Finset.Ico (0 : ℤ) n``, so the binder is an integer as a
+    quantifier's is, and ``n`` below ``0`` gives the empty sum Python's
+    ``range`` gives. The ascription is what makes the binder an integer when
+    the bound is a literal, and a body of integer literals alone, a numeral or
+    arithmetic on numerals (see :func:`_closed_arithmetic`), is ascribed too,
+    which makes the sum an integer: without them Lean reads both as naturals,
+    whose subtraction truncates (see the module docstring). A
+    refinement of the domain, and the generator's guard on the last binder,
+    filter it with ``with``. The body extends as far right as it can, so a sum
+    that is an operand is bracketed.
+
+    Raises:
+        UnsupportedTerm: For a binder over anything but ``Fin`` or a
+            refinement of it: a sum over ``Nat`` has no finite extent.
+    """
+    layers = [dict(types)]
+    for var, domain in expr.binders:
+        if not isinstance(_unrefined(domain), FinType):
+            raise UnsupportedTerm(
+                f"{render(expr)} sums over {domain}, which is not a Fin: Mathlib's "
+                "∑ is over a finite set, and the sum has no finite extent"
+            )
+        layers.append({**layers[-1], var.name: domain})
+    inner = layers[-1]
+    if _closed_arithmetic(expr.body):
+        text = f"({_render(expr.body, _QUANT, inner)} : ℤ)"
+    else:
+        text = _render(expr.body, _ADD + 1, inner)
+    guards = list(conjuncts(expr.guard))
+    for position in reversed(range(len(expr.binders))):
+        var, domain = expr.binders[position]
+        _require_integer_bound(_unrefined(domain), layers[position])
+        bound = _render(_unrefined(domain).bound, _ATOM, layers[position])
+        conditions = []
+        refined = domain
+        while isinstance(refined, Refined):
+            conditions = [
+                _render_prop(p, _AND + 1, layers[position + 1]) for p in refined.props
+            ] + conditions
+            refined = refined.base
+        if position == len(expr.binders) - 1:
+            conditions += [_render_prop(guard, _AND + 1, inner) for guard in guards]
+        condition = f" with {' ∧ '.join(conditions)}" if conditions else ""
+        text = f"∑ {var.name} ∈ Finset.Ico (0 : ℤ) {bound}{condition}, {text}"
+    return _parens(text, _QUANT, outer)
+
+
+# }}}
+
+
 def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
     """Print ``∀`` or ``∃`` one binder at a time, each guard next to its binder.
 
@@ -541,7 +937,7 @@ def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
     text = _render_prop(expr.body, _QUANT if universal else _AND + 1, inner)
     for position in reversed(range(len(expr.binders))):
         var, domain = expr.binders[position]
-        conditions = domain_guards(var, domain, layers[position])
+        conditions = _domain_guards(var, domain, layers[position])
         if position == len(expr.binders) - 1:
             conditions += [_render_prop(guard, _ARROW + 1, inner) for guard in guards]
         if universal:
@@ -550,7 +946,7 @@ def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
         else:
             for condition in reversed(conditions):
                 text = f"{condition} ∧ {text}"
-        text = f"{word} {var.name} : {lean_type(domain)}, {text}"
+        text = f"{word} {var.name} : {_lean_type(domain)}, {text}"
     return _parens(text, _QUANT, outer)
 
 
@@ -582,25 +978,47 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
     if isinstance(expr, Var | prim.Variable):
         return expr.name
     expr = _integral(expr)
-    if isinstance(expr, int | float | Fraction | bool):
-        return _parens(_render_number(expr), _ADD if _is_negative(expr) else _ATOM, outer)
+    if isinstance(expr, int | float | Fraction | bool | complex):
+        text = _render_number(expr)
+        # an ascribed literal is bracketed already, whatever its sign
+        atomic = text.startswith("(") or not _is_negative(expr)
+        return _parens(text, _ATOM if atomic else _ADD, outer)
     if expr is None:
         raise UnsupportedTerm("cannot print an empty term in Lean")
     if isinstance(expr, Forall | Exists):
         return _render_quantifier(expr, outer, types)
     if isinstance(expr, Sum):
+        if _in_mathlib():
+            return _render_reduction(expr, outer, types)
         raise UnsupportedTerm(
             "a reduction needs Finset.sum, which is Mathlib; core Lean cannot "
             "state it"
         )
     if isinstance(expr, Abs):
+        if _in_mathlib():
+            return _render_abs(expr, types)
         raise UnsupportedTerm(
             "an absolute value needs the abs of an ordered ring, which is Mathlib"
+        )
+    if isinstance(expr, Elementary):
+        if _in_mathlib():
+            return _render_elementary(expr, outer, types)
+        raise UnsupportedTerm(
+            f"{expr.function} needs Real.{expr.function}, which is Mathlib"
         )
     if isinstance(expr, prim.Comparison):
         relation = _RELATIONS.get(expr.operator)
         if relation is None:
             raise UnsupportedTerm(f"unknown comparison operator {expr.operator!r}")
+        if (
+            _in_mathlib()
+            and expr.operator not in ("==", "!=")
+            and "Complex" in (_kind(expr.left, types), _kind(expr.right, types))
+        ):
+            raise UnsupportedTerm(
+                f"{render(expr)} orders complex numbers, which Python refuses "
+                "and Mathlib orders only under a scoped instance"
+            )
         left = _render(expr.left, _CMP + 1, types)
         if _closed_arithmetic(expr.left) and _closed_arithmetic(expr.right):
             left = f"({_render(expr.left, _QUANT, types)} : Int)"
@@ -622,6 +1040,8 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
     if isinstance(expr, prim.FloorDiv | prim.Remainder):
         return _render_division(expr, outer, types)
     if isinstance(expr, prim.Quotient):
+        if _in_mathlib():
+            return _render_quotient(expr, outer, types)
         raise UnsupportedTerm(
             "true division needs a field, which is Mathlib; use // for the "
             "floor division Nat and Int have"
@@ -670,15 +1090,20 @@ def _is_negative(value: Any) -> bool:
     return isinstance(value, int | float | Fraction) and not isinstance(value, bool) and value < 0
 
 
-def print_lean(expr: Any) -> str:
+def print_lean(expr: Any, mathlib: bool | None = None) -> str:
     """Render a lanky term as one Lean 4 proposition.
 
+    ``mathlib=True`` prints in the Mathlib dialect (see the module docstring),
+    for a session that has imported Mathlib.
+
     Raises:
-        UnsupportedTerm: If the term leaves the core-Lean fragment, or applies
-            a family outside the domain it declares (:func:`check_applications`).
+        UnsupportedTerm: If the term leaves the fragment of the dialect, or
+            applies a family outside the domain it declares
+            (:func:`check_applications`).
     """
-    check_applications(expr)
-    return _render_prop(expr, _QUANT, {})
+    with dialect(mathlib):
+        check_applications(expr)
+        return _render_prop(expr, _QUANT, {})
 
 
 # }}}
@@ -1118,7 +1543,7 @@ class LeanStatement:
     the last binder, which is where :func:`print_lean` puts them too.
 
     Attributes:
-        name: The theorem's Lean name.
+        name: The theorem's Lean name (see :attr:`declared_name`).
         binders: ``(name, Lean type)`` pairs, in order.
         hypotheses: ``(name, Lean proposition)`` pairs; the names are invented
             here, since a lanky guard is a conjunction and carries none.
@@ -1132,6 +1557,8 @@ class LeanStatement:
         types: The lanky type of each binder, which the printer needs to
             render a hypothesis again (it decides where a family's value is
             cast to ``Int``).
+        mathlib: Whether the statement was printed in the Mathlib dialect,
+            and so has to be elaborated where Mathlib is imported.
     """
 
     name: str
@@ -1142,6 +1569,7 @@ class LeanStatement:
     hypothesis_terms: tuple[Any, ...] = field(default_factory=tuple)
     anchors: tuple[int, ...] = field(default_factory=tuple)
     types: dict[str, Any] = field(default_factory=dict)
+    mathlib: bool = False
 
     def _parameters(self) -> list[tuple[bool, int]]:
         """The parameters in order, as ``(is_hypothesis, index)`` pairs."""
@@ -1178,17 +1606,32 @@ class LeanStatement:
             prop = self.hypotheses[index][1]
             term = self.hypothesis_terms[index] if self.hypothesis_terms else None
             if term is not None:
-                prop = _render_prop(term, _ARROW + 1, self.types)
+                with dialect(self.mathlib):
+                    prop = _render_prop(term, _ARROW + 1, self.types)
             text = f"{prop} → {text}"
         return text
+
+    @property
+    def declared_name(self) -> str:
+        """The name the theorem is declared under: :attr:`name`, or ``Lanky.name``.
+
+        A Mathlib statement is declared in the ``Lanky`` namespace. Mathlib
+        declares thousands of lemmas at the root, ``mul_comm``, ``sq_nonneg`` and
+        ``two_mul`` among them, and a claim named after one would be refused as
+        already declared at every attempt, whatever its tactic. Nothing in
+        Mathlib lives under ``Lanky``, and the prefix changes nothing else: the
+        statement's own names are its binders and fully qualified constants.
+        """
+        return f"Lanky.{self.name}" if self.mathlib else self.name
 
     def source(self, tactic: str) -> str:
         """The full Lean declaration proved by ``tactic``.
 
         The tactic block is indented as a block, so a multi-line script can be
-        passed in as written.
+        passed in as written. The theorem is declared under
+        :attr:`declared_name`.
         """
-        head = f"theorem {self.name}"
+        head = f"theorem {self.declared_name}"
         if self.parameters:
             head = f"{head} {self.parameters}"
         body = "\n".join("  " + line if line.strip() else line for line in tactic.splitlines())
@@ -1204,23 +1647,33 @@ def _lean_name(name: str) -> str:
     return cleaned
 
 
-def statement_of(term: Any, name: str = "lanky_claim") -> LeanStatement:
+def statement_of(
+    term: Any, name: str = "lanky_claim", mathlib: bool | None = None
+) -> LeanStatement:
     """Arrange a closed lanky term as a Lean theorem.
 
     The top-level quantifier becomes the theorem's parameters and its guard
     becomes the named hypotheses; everything below stays a proposition. A
     natural variable is an ``Int`` parameter followed by ``0 ≤ n``, as
-    :func:`lean_type` and :func:`domain_guards` have it.
+    :func:`lean_type` and :func:`domain_guards` have it. ``mathlib=True``
+    prints it in the Mathlib dialect (see the module docstring).
 
     Raises:
         UnsupportedTerm: If any part of the statement leaves the fragment, or
             applies a family outside the domain it declares
             (:func:`check_applications`).
     """
+    with dialect(mathlib):
+        return _statement_of(term, name)
+
+
+def _statement_of(term: Any, name: str) -> LeanStatement:
+    """:func:`statement_of`, in the dialect in effect."""
     lean_name = _lean_name(name)
+    mathlib = _in_mathlib()
     check_applications(term)
     if not isinstance(term, Forall):
-        return LeanStatement(lean_name, (), (), print_lean(term), term)
+        return LeanStatement(lean_name, (), (), print_lean(term), term, mathlib=mathlib)
 
     binders: list[tuple[str, str]] = []
     hypotheses: list[tuple[str, str]] = []
@@ -1228,9 +1681,9 @@ def statement_of(term: Any, name: str = "lanky_claim") -> LeanStatement:
     anchors: list[int] = []
     types: dict[str, Any] = {}
     for var, domain in term.binders:
-        guards = domain_guards(var, domain, types)
+        guards = _domain_guards(var, domain, types)
         types = {**types, var.name: domain}
-        binders.append((var.name, lean_type(domain)))
+        binders.append((var.name, _lean_type(domain)))
         for guard in guards:
             hypotheses.append((f"h{len(hypotheses)}", guard))
             hypothesis_terms.append(None)
@@ -1248,6 +1701,7 @@ def statement_of(term: Any, name: str = "lanky_claim") -> LeanStatement:
         hypothesis_terms=tuple(hypothesis_terms),
         anchors=tuple(anchors),
         types=types,
+        mathlib=mathlib,
     )
 
 

@@ -9,9 +9,17 @@ tries a fixed ladder of tactic scripts. A script that closes the goal becomes th
 fact's provenance, alongside the Lean source, so the claim can be replayed by
 hand or rechecked later by ``certify``.
 
-Core Lean 4 only, no Mathlib: the fragment is what :mod:`lanky.lean` can print,
-and the tactics are the ones core Lean ships (``omega``, ``decide``, ``simp``,
-``simp_all``, ``obtain``, ``induction``, ``by_cases``).
+Core Lean 4 by default, no Mathlib: the fragment is what :mod:`lanky.lean` can
+print, and the tactics are the ones core Lean ships (``omega``, ``decide``,
+``simp``, ``simp_all``, ``obtain``, ``induction``, ``by_cases``). Mathlib mode
+is opt-in (see :mod:`lanky.mathlib`): with ``LANKY_LEAN_MATHLIB`` naming a Lake
+project, the session imports Mathlib once and elaborates every attempt in that
+environment, the statement is printed in the Mathlib dialect, and the ladder
+goes on, after the core attempts, to Mathlib's tactics (``norm_num``,
+``positivity``, ``ring``, ``field_simp``, ``linarith``, ``nlinarith``) and to
+an induction for a reduction whose bound a natural parameter sets. A fact
+proved there records the Mathlib revision it was proved against. With the
+variable unset nothing of this is consulted, and the oracle is the core one.
 
 The ladder is not proof search. It is five cheap attempts and then one strategy
 that is derived from the shape of the statement: a statement of the form "for
@@ -52,21 +60,25 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky import mathlib as mathlib_mode
 from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
+    dialect,
     domain_guards,
     is_natural,
     statement_of,
 )
 from lanky.ledger import Fact, Status
-from lanky.terms import Forall, Var, conjuncts
+from lanky.prelude import FinType, Refined
+from lanky.terms import Exists, Forall, Sum, Var, conjuncts, free_variables, init_args
 
 __all__ = [
     "LeanOracle",
     "LeanSession",
     "default_cache_dir",
     "induction_scripts",
+    "reduction_scripts",
     "tactic_ladder",
     "use_tactic",
 ]
@@ -85,6 +97,51 @@ BASE_TACTICS: tuple[str, ...] = ("omega", "decide", "simp", "simp_all", "simp_al
 #: arm has to close the goal: a ``simp_all`` that only simplifies would end the
 #: ``first`` with the goal still open, and the arms after it would never run.
 _CLOSERS = "first | omega | (simp_all; done) | (simp_all <;> omega)"
+
+#: The facts about ``exp``, ``log`` and ``sqrt`` that are not in Mathlib's
+#: simp set and that a statement over them most often needs: the exponential
+#: of a sum or a difference, and the square root of a number that is not
+#: positive, which is where Mathlib's total ``Real.sqrt`` is ``0``.
+_ELEMENTARY_LEMMAS = (
+    "Real.exp_add",
+    "Complex.exp_add",
+    "Real.exp_sub",
+    "Complex.exp_sub",
+    "Real.sqrt_eq_zero'",
+)
+
+#: The whole-goal attempts Mathlib mode adds after :data:`BASE_TACTICS`. An
+#: attempt that leaves a goal open fails as a declaration, so a tactic such as
+#: ``norm_num`` that can succeed without closing needs no ``done`` here.
+MATHLIB_TACTICS: tuple[str, ...] = (
+    "norm_num",
+    "positivity",
+    "ring",
+    "field_simp",
+    "linarith",
+    "nlinarith",
+    "(push_cast; ring)",
+    f"simp [{', '.join(_ELEMENTARY_LEMMAS)}]",
+    f"simp_all [{', '.join(_ELEMENTARY_LEMMAS)}] <;> linarith",
+)
+
+#: :data:`_CLOSERS`, with Mathlib's closing tactics after the core ones.
+_MATHLIB_CLOSERS = (
+    f"{_CLOSERS} | linarith | nlinarith | positivity | (ring_nf; done) "
+    "| (push_cast; ring) | (norm_num; done)"
+)
+
+#: Peel the last term off a sum over ``Finset.Ico a (b + 1)``, which is how a
+#: reduction's bound reads after an induction's step has rewritten it. Tried,
+#: never required: a goal with no such sum is left as it was.
+_PEEL_SUM = (
+    "try rw [← Finset.insert_Ico_right_eq_Ico_add_one (by omega), "
+    "Finset.sum_insert (by simp)]"
+)
+
+#: How long importing Mathlib may take when a session starts, in seconds. The
+#: first import on a machine reads several gigabytes; later ones are quicker.
+MATHLIB_IMPORT_TIMEOUT = float(os.environ.get("LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT", "600"))
 
 
 # {{{ choosing a Lean version
@@ -229,14 +286,34 @@ class LeanSession:
     first time) and then starting a server (a second). Every command lanky sends
     is a whole declaration elaborated in a fresh environment, so attempts cannot
     contaminate each other and a failed tactic leaves nothing behind.
+
+    ``mathlib`` names a Lake project with Mathlib fetched (see
+    :mod:`lanky.mathlib`), and makes this a Mathlib session: the REPL runs in
+    that project, Mathlib is imported once when the session starts, and every
+    command is elaborated in the environment the import left, which is as
+    fresh for each attempt as core Lean's empty one. The Lean version is the
+    project's, not one chosen from the toolchains installed. A server the
+    REPL driver killed, which it does to a command that runs past its timeout,
+    is started again with Mathlib imported before the next command, since the
+    import is part of what the session is.
     """
 
-    def __init__(self, timeout: float = DEFAULT_TIMEOUT, cache_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        timeout: float = DEFAULT_TIMEOUT,
+        cache_dir: str | None = None,
+        mathlib: str | None = None,
+    ) -> None:
         self.timeout = timeout
         self.cache_dir = cache_dir or default_cache_dir()
+        self.mathlib = mathlib
         self.server: Any = None
         self.version: str | None = None
         self.error: str | None = None
+        #: The REPL environment Mathlib was imported into, in a Mathlib session.
+        self.environment: int | None = None
+        #: The Mathlib revision the project pins, in a Mathlib session.
+        self.mathlib_revision: str | None = None
 
     def start(self) -> bool:
         """Open the session, remembering the reason if it cannot be opened."""
@@ -253,6 +330,8 @@ class LeanSession:
         options: dict[str, Any] = {}
         if self.cache_dir:
             options["cache_dir"] = self.cache_dir
+        if self.mathlib is not None:
+            return self._start_with_mathlib(LeanREPLConfig, LeanServer, options)
         reasons = []
         for version in candidate_versions():
             try:
@@ -268,6 +347,84 @@ class LeanSession:
             return True
         self.error = "no Lean REPL could be built (" + "; ".join(reasons[-2:]) + ")"
         return False
+
+    def _start_with_mathlib(self, config_class: Any, server_class: Any, options: dict) -> bool:
+        """Open a Mathlib session: the REPL in the project, and Mathlib imported.
+
+        The project is checked cheaply first (:func:`lanky.mathlib.problem`),
+        and a pinned ``LANKY_LEAN_VERSION`` that is not the project's toolchain
+        is refused rather than ignored: the REPL runs the project's Lean, and a
+        pin that says otherwise is a mistake worth a reason. lean-interact is
+        told not to build the project, which for a Mathlib project would mean
+        fetching the cache and then building: lanky's setup does the first
+        (:func:`lanky.mathlib.main`) and nothing should ever do the second.
+        """
+        from lean_interact import LocalProject
+
+        assert self.mathlib is not None
+        reason = mathlib_mode.problem(self.mathlib)
+        if reason is not None:
+            self.error = reason
+            return False
+        directory = os.path.expanduser(self.mathlib)
+        try:
+            config = config_class(
+                project=LocalProject(directory=directory, auto_build=False), **options
+            )
+        except Exception as exc:  # noqa: BLE001 - every failure is a reason to report
+            self.error = f"no Lean REPL could be built for the Mathlib project ({exc})"
+            return False
+        version = getattr(config, "lean_version", None)
+        pinned = os.environ.get("LANKY_LEAN_VERSION")
+        if pinned and version and pinned.lstrip("v") != str(version).lstrip("v"):
+            self.error = (
+                f"LANKY_LEAN_VERSION is {pinned}, but the Mathlib project at "
+                f"{self.mathlib} runs Lean {version}"
+            )
+            return False
+        self.version = version
+        self.mathlib_revision = mathlib_mode.revision(directory)
+        try:
+            self.server = server_class(config)
+        except Exception as exc:  # noqa: BLE001 - every failure is a reason to report
+            self.error = f"the Lean REPL did not start in the Mathlib project ({exc})"
+            return False
+        if not self._import_mathlib():
+            self.close()
+            return False
+        atexit.register(self.close)
+        return True
+
+    def _import_mathlib(self) -> bool:
+        """``import Mathlib`` in the running server, keeping the environment it leaves."""
+        from lean_interact import Command
+
+        try:
+            response = self.server.run(
+                Command(cmd="import Mathlib"), timeout=MATHLIB_IMPORT_TIMEOUT
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed import is a reason, not a crash
+            self.error = f"importing Mathlib failed ({type(exc).__name__}: {exc})"
+            return False
+        message = getattr(response, "message", None)
+        problems = [str(message)] if message is not None else _errors(response)
+        if problems:
+            self.error = f"importing Mathlib failed: {problems[0]}"
+            return False
+        self.environment = getattr(response, "env", None)
+        return True
+
+    def _revive(self) -> bool:
+        """Start a Mathlib session's server again if the driver killed it."""
+        alive = getattr(self.server, "is_alive", None)
+        if alive is None or alive():
+            return True
+        try:
+            self.server.start()
+        except Exception as exc:  # noqa: BLE001 - a server that will not start is a reason
+            self.error = f"the Lean REPL could not be restarted ({exc})"
+            return False
+        return self._import_mathlib()
 
     def close(self) -> None:
         """Stop the Lean process, if one is running.
@@ -294,24 +451,35 @@ class LeanSession:
 
         if not self.start():
             return False, self.error or "no Lean session"
+        if self.mathlib is not None:
+            if not self._revive():
+                return False, self.error or "no Lean session"
+            command = Command(cmd=source, env=self.environment)
+        else:
+            command = Command(cmd=source)
         try:
-            response = self.server.run(Command(cmd=source), timeout=self.timeout)
+            response = self.server.run(command, timeout=self.timeout)
         except Exception as exc:  # noqa: BLE001 - a timeout must not stop the ladder
             return False, f"{type(exc).__name__}: {exc}"
         message = getattr(response, "message", None)
         if message is not None:
             return False, str(message)
-        problems = [
-            str(item.data)
-            for item in getattr(response, "messages", ())
-            if str(getattr(item, "severity", "")).endswith("error")
-        ]
+        problems = _errors(response)
         if getattr(response, "sorries", ()):
             problems.append("the proof was accepted with a sorry in it")
         if problems:
             lines = problems[0].strip().splitlines()
             return False, lines[0] if lines else "Lean reported an error with no message"
         return True, ""
+
+
+def _errors(response: Any) -> list[str]:
+    """The error diagnostics in a REPL response."""
+    return [
+        str(item.data)
+        for item in getattr(response, "messages", ())
+        if str(getattr(item, "severity", "")).endswith("error")
+    ]
 
 
 # }}}
@@ -430,10 +598,13 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     against lies between ``0`` and ``↑0``, and is substituted away. A variable
     that is not a natural has nothing to trade, and is not induced on.
     """
-    names, variables, guards, naturals = _goal_intro(statement)
+    with dialect(statement.mathlib):
+        names, variables, guards, naturals = _goal_intro(statement)
     target, companion = _induction_target(variables, guards)
     if target is None or target.name not in naturals:
         return []
+    closers = _closers(statement)
+    peel = [f"  {_PEEL_SUM}"] if _has_reduction(statement) else []
     used = set(names) | {name for name, _ in statement.binders}
     used |= {name for name, _ in statement.hypotheses}
     step = _fresh("k", used)
@@ -455,12 +626,12 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
         for count in range(later, -1, -1)
     )
     apply_ih = f"first | {apply_ih} | skip"
-    zero = _CLOSERS
+    zero = closers
     if companion is not None:
         pinned = _fresh("hzero", used)
         zero = (
             f"first | omega | (have {pinned} : {companion} = ((0 : Nat) : Int) := "
-            f"(by omega); subst {pinned}; {_CLOSERS}) | (simp_all; done) "
+            f"(by omega); subst {pinned}; {closers}) | (simp_all; done) "
             "| (simp_all <;> omega)"
         )
     head = [f"intro {' '.join(names)}"] if names else []
@@ -486,27 +657,137 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
                     f"  by_cases {less} : ({step} : Int) < {companion}",
                     f"  · have {equality} : {companion} = ({step} : Int) + 1 := (by omega)",
                     f"    subst {equality}",
-                    f"    {_CLOSERS}",
+                    f"    {closers}",
                     f"  · {apply_ih}",
-                    f"    {_CLOSERS}",
+                    f"    {closers}",
                 ]
             )
         )
-    scripts.append("\n".join([*head, *instantiations, f"  {apply_ih}", f"  {_CLOSERS}"]))
+    scripts.append(
+        "\n".join([*head, *instantiations, f"  {apply_ih}", *peel, f"  {closers}"])
+    )
+    return scripts
+
+
+def _closers(statement: LeanStatement) -> str:
+    """What an attempt falls back through, with Mathlib's tactics where it is imported."""
+    return _MATHLIB_CLOSERS if statement.mathlib else _CLOSERS
+
+
+def _reductions(term: Any) -> list[Sum]:
+    """Every reduction in the body or the guard of ``term``, at any depth."""
+    found: list[Sum] = []
+    stack = [term]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Sum):
+            found.append(node)
+        if isinstance(node, Forall | Exists | Sum):
+            stack.extend(child for child in (node.body, node.guard) if child is not None)
+        elif isinstance(node, prim.ExpressionNode):
+            for child in init_args(node):
+                stack.extend(child if isinstance(child, tuple) else (child,))
+    return found
+
+
+def _has_reduction(statement: LeanStatement) -> bool:
+    """Whether a Mathlib statement's goal has a reduction in it to peel."""
+    return statement.mathlib and bool(_reductions(statement.goal_term))
+
+
+def reduction_scripts(statement: LeanStatement) -> list[str]:
+    """Induction on a natural parameter that the bound of a reduction mentions.
+
+    Mathlib mode only, and the shape of Gauss's sum: ``2 * sum(i for i in
+    Fin[n + 1]) == n * (n + 1)`` has no quantified goal to induce inside, and
+    what it recurs on is ``n``, a parameter of the theorem. The parameter is
+    traded for the natural it is (as in :func:`induction_scripts`), the step
+    rewrites ``↑(k + 1)`` to ``↑k + 1``, so that the bound reads
+    ``Finset.Ico 0 (↑k + 1 + 1)``, and :data:`_PEEL_SUM` takes the last term
+    off the sum. What is left is the induction hypothesis plus a polynomial
+    identity or inequality, which the closers take. The base case peels the
+    one term of ``Finset.Ico 0 (↑0 + 1)`` the same way.
+
+    A goal that is itself quantified is left to :func:`induction_scripts`.
+    """
+    if not statement.mathlib or isinstance(statement.goal_term, Forall):
+        return []
+    bounds: set[str] = set()
+    for reduction in _reductions(statement.goal_term):
+        for _var, domain in reduction.binders:
+            while isinstance(domain, Refined):
+                domain = domain.base
+            if isinstance(domain, FinType):
+                bounds |= free_variables(domain.bound)
+    used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
+    closers = _closers(statement)
+    scripts = []
+    for position, (name, _sort) in enumerate(statement.binders):
+        if name not in bounds or not is_natural(statement.types.get(name)):
+            continue
+        anchors = statement.anchors or (len(statement.binders),) * len(statement.hypotheses)
+        own = [
+            hypothesis
+            for (hypothesis, _), at, term in zip(
+                statement.hypotheses,
+                anchors,
+                statement.hypothesis_terms or (None,) * len(statement.hypotheses),
+                strict=True,
+            )
+            if at == position + 1 and term is None
+        ]
+        if not own:
+            continue
+        later = sum(1 for at in anchors if at > position)
+        step = _fresh("k", used)
+        hypothesis = _fresh("ih", used)
+        cast = _fresh("hcast", used)
+        applied = _fresh("hih", used)
+        apply_ih = " | ".join(
+            f"(have {applied} := {hypothesis}{' (by omega)' * count})"
+            for count in range(later, -1, -1)
+        )
+        scripts.append(
+            "\n".join(
+                [
+                    f"obtain ⟨{name}, rfl⟩ := Int.eq_ofNat_of_zero_le {own[0]}",
+                    f"induction {name} with",
+                    "| zero =>",
+                    f"  {_PEEL_SUM}",
+                    f"  {closers}",
+                    f"| succ {step} {hypothesis} =>",
+                    f"  have {cast} : (({step} + 1 : Nat) : Int) = ({step} : Int) + 1 "
+                    ":= (by omega)",
+                    f"  try simp only [{cast}] at *",
+                    f"  first | {apply_ih} | skip",
+                    f"  {_PEEL_SUM}",
+                    f"  {closers}",
+                ]
+            )
+        )
     return scripts
 
 
 def tactic_ladder(statement: LeanStatement) -> list[str]:
-    """Every script the oracle tries, cheapest and most general first."""
-    names, _, _, _ = _goal_intro(statement)
+    """Every script the oracle tries, cheapest and most general first.
+
+    A statement printed in the Mathlib dialect gets the core ladder first, as
+    it stands but for the closers, and then Mathlib's attempts: the tactics in
+    :data:`MATHLIB_TACTICS` on the whole goal, and :func:`reduction_scripts`.
+    """
+    with dialect(statement.mathlib):
+        names, _, _, _ = _goal_intro(statement)
     ladder = list(BASE_TACTICS)
+    if statement.mathlib:
+        ladder += MATHLIB_TACTICS
     if names:
         introduction = f"intro {' '.join(names)}"
         ladder += [
-            f"{introduction}\n{_CLOSERS}",
+            f"{introduction}\n{_closers(statement)}",
             f"{introduction}\nsimp_all\nomega",
         ]
     ladder += induction_scripts(statement)
+    ladder += reduction_scripts(statement)
     return ladder
 
 
@@ -517,12 +798,19 @@ def tactic_ladder(statement: LeanStatement) -> list[str]:
 
 
 class LeanOracle:
-    """Establish facts by proving them in Lean, with core Lean only.
+    """Establish facts by proving them in Lean, with core Lean or with Mathlib.
 
     A per-fact tactic override is possible through :attr:`tactics`, keyed by
     fact id, for the statement whose proof the ladder cannot find: it is an
     escape hatch and not the intended path, and the ledger records which script
     closed the goal either way.
+
+    Which Lean is driven is read from ``LANKY_LEAN_MATHLIB`` when a session is
+    wanted, not when the oracle is built, because the registered oracle is
+    built when lanky is imported: unset, it is core Lean, exactly as it has
+    always been, and set, it is a session in the Mathlib project the variable
+    names (see :mod:`lanky.mathlib`). Each mode keeps its own session. An
+    oracle given a ``session`` uses that one, in whichever mode it was made.
     """
 
     name = "lean"
@@ -530,9 +818,31 @@ class LeanOracle:
     def __init__(
         self, timeout: float = DEFAULT_TIMEOUT, session: LeanSession | None = None
     ) -> None:
-        self.session = session if session is not None else LeanSession(timeout)
+        self.timeout = timeout
+        self._pinned = session
+        self._sessions: dict[str | None, LeanSession] = {}
         #: ``fact id -> tactic script``, consulted before the ladder.
         self.tactics: dict[str, str] = {}
+
+    @property
+    def session(self) -> LeanSession:
+        """The session for the mode in effect, made the first time it is asked for."""
+        if self._pinned is not None:
+            return self._pinned
+        project = mathlib_mode.project_directory()
+        session = self._sessions.get(project)
+        if session is None:
+            session = self._sessions[project] = LeanSession(self.timeout, mathlib=project)
+        return session
+
+    @session.setter
+    def session(self, session: LeanSession) -> None:
+        """Pin a session, as passing one to the constructor does.
+
+        ``session`` was a plain attribute before Mathlib mode, and code that
+        assigns one keeps working: the oracle uses it whatever the variable says.
+        """
+        self._pinned = session
 
     def trust_class(self) -> str:
         """Lean's kernel checks the proof, the strongest evidence lanky has."""
@@ -546,7 +856,8 @@ class LeanOracle:
         honest answer is "available, untested". Whether the REPL can actually be
         built is discovered on the first fact and remembered, and from then on
         this line names either the Lean version in use or the reason there is
-        none.
+        none. In Mathlib mode the project is looked at too, which is cheap, and
+        the line names the Mathlib revision once the session is open.
         """
         if os.environ.get("LANKY_LEAN_DISABLE"):
             return False, "disabled by LANKY_LEAN_DISABLE"
@@ -554,31 +865,58 @@ class LeanOracle:
             return False, "lean is not on PATH"
         if not _lean_interact_installed():
             return False, "lean_interact is not installed (pip install lanky[lean])"
-        if self.session.error is not None:
-            return False, self.session.error
-        if self.session.server is None:
+        session = self.session
+        if session.mathlib is not None:
+            return self._mathlib_availability(session)
+        if session.error is not None:
+            return False, session.error
+        if session.server is None:
             return True, "untested until the first fact: the REPL is built on demand"
-        return True, f"Lean {self.session.version}" if self.session.version else ""
+        return True, f"Lean {session.version}" if session.version else ""
+
+    @staticmethod
+    def _mathlib_availability(session: LeanSession) -> tuple[bool, str]:
+        """:meth:`availability` for a Mathlib session."""
+        assert session.mathlib is not None
+        if session.error is not None:
+            return False, session.error
+        problem = mathlib_mode.problem(session.mathlib)
+        if problem is not None:
+            return False, problem
+        if session.server is None:
+            return True, (
+                "untested until the first fact: the REPL is built on demand, "
+                f"with Mathlib from {session.mathlib}"
+            )
+        return True, f"Lean {session.version} with Mathlib {session.mathlib_revision}"
 
     def can_establish(self, fact: Fact, /) -> bool:
-        """Whether the fact's statement lands in the core-Lean fragment.
+        """Whether the fact's statement lands in the fragment the session can read.
 
         Honesty here is what makes the ladder of oracles work: a reduction or a
-        real-valued claim is declined at once and reaches the property tester
-        with nothing wasted.
+        real-valued claim is declined at once by core Lean and reaches the
+        property tester with nothing wasted. In Mathlib mode both are printed
+        (see :mod:`lanky.lean`), and what is still declined is declined the
+        same way.
         """
         if fact.term is None:
             return False
         try:
-            statement_of(fact.term, fact.owner or fact.id)
+            statement_of(fact.term, fact.owner or fact.id, mathlib=self._mathlib())
         except (UnsupportedTerm, AttributeError, TypeError, ValueError):
             return False
         return True
 
+    def _mathlib(self) -> bool:
+        """Whether the session in effect has Mathlib."""
+        return self.session.mathlib is not None
+
     def establish(self, fact: Fact, /) -> Fact | None:
         """Try the ladder; ``PROVED`` on success, the fact unchanged otherwise."""
+        session = self.session
+        mathlib = session.mathlib is not None
         try:
-            statement = statement_of(fact.term, fact.owner or fact.id)
+            statement = statement_of(fact.term, fact.owner or fact.id, mathlib=mathlib)
         except UnsupportedTerm as exc:
             return fact.with_status(fact.status, lean_declined=str(exc))
         available, reason = self.availability()
@@ -589,22 +927,29 @@ class LeanOracle:
         last = ""
         for tactic in ladder:
             source = statement.source(tactic)
-            closed, detail = self.session.run(source)
+            closed, detail = session.run(source)
             if closed:
+                extra = {}
+                if mathlib:
+                    # the file that replays it, which the REPL command, run in
+                    # the environment the import left, could not spell
+                    source = f"import Mathlib\n\n{source}"
+                    extra["lean_mathlib"] = session.mathlib_revision
                 return fact.with_status(
                     Status.PROVED,
                     self.name,
                     tactic=tactic,
                     lean_source=source,
-                    lean_version=self.session.version,
+                    lean_version=session.version,
+                    **extra,
                 )
             last = detail
-            if self.session.error is not None:
+            if session.error is not None:
                 break
         return fact.with_status(
             fact.status,
             lean_tried=len(ladder),
-            lean_reason=self.session.error or last,
+            lean_reason=session.error or last,
         )
 
 

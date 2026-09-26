@@ -28,7 +28,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The Lean session driver. Core Lean 4 only: no Mathlib is fetched or needed.
+# The Lean session driver. Core Lean 4 needs nothing else; Mathlib mode needs
+# a Lake project with Mathlib fetched, which `python -m lanky.mathlib DIR` sets
+# up outside the Python environment (see src/lanky/mathlib.py).
 lean = [
     "lean-interact>=0.11.5",
 ]
@@ -65,6 +67,7 @@ select = ["E", "F", "I", "UP", "B"]
 "tests/test_lean.py" = ["F821"]
 "tests/test_adversarial.py" = ["F821"]
 "tests/test_semantics.py" = ["F821"]
+"tests/test_mathlib.py" = ["F821"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
