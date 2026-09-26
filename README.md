@@ -185,14 +185,15 @@ sharp.
   reject. In Mathlib mode all but the last are printed, and what is still
   declined is a sum over `Nat`, a `Fin` with a real bound, a floor division or
   a remainder of a real, an order between complex numbers and a complex
-  square root: each would be printed with a meaning Python does not give it.
+  logarithm or square root: each would be printed with a meaning Python does
+  not give it.
 - Over `Real` and `Complex` the readings are not one. The tester computes in
   floating point (with fractions for `Real.exact`) and Lean over `ℝ` and `ℂ`,
   so an identity that holds only up to rounding, such as
   `exp(x + y) == exp(x) * exp(y)`, is refuted without Mathlib and proved with
   it. Where Lean is total and Python raises (a division by zero, the logarithm
-  of zero, the square root of a negative number), the fact carries a note, as
-  an integer division by zero does.
+  of zero, the square root of a negative number), the fact carries a note in
+  Mathlib mode, as an integer division by zero does in either mode.
 - A family prints as a total function, so every application of one has to be
   shown in bounds before the statement can go to Lean. The check is affine
   arithmetic over the enclosing binders, not a solver, so an argument it cannot
@@ -262,7 +263,8 @@ export LANKY_LEAN_MATHLIB=~/mathlib
 ```
 
 The command never builds Mathlib from source; it fetches the compiled files
-Mathlib publishes. The first session of a process imports Mathlib, which takes
+Mathlib publishes, keeping the packed downloads in `MATHLIB_CACHE_DIR`
+(default `~/.cache/mathlib`). The first session of a process imports Mathlib, which takes
 seconds and about 1.5 GB of memory.
 
 Without the extra, every Lean test skips with a one-line reason and the weaker
@@ -274,7 +276,8 @@ reinstall does not throw it away. Useful environment variables:
 `LANKY_LEAN_DISABLE=1` makes the oracle a declared no-op (the main CI job sets
 it), `LANKY_LEAN_VERSION` pins a toolchain and skips the probe,
 `LANKY_LEAN_CACHE_DIR` moves the cache, `LANKY_LEAN_TIMEOUT` caps each
-tactic attempt, and `LANKY_LEAN_MATHLIB` turns Mathlib mode on.
+tactic attempt, `LANKY_LEAN_MATHLIB` turns Mathlib mode on, and
+`LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT` caps the Mathlib import (600 s).
 
 For work on lanky itself:
 

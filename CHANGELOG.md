@@ -64,7 +64,9 @@ prints a ledger naming who decided what.
   than fall back to core Lean, and a `LANKY_LEAN_VERSION` other than the
   project's toolchain is refused. A proof records the Mathlib revision as
   `lean_mathlib`, and its `lean_source` starts with `import Mathlib` so it
-  replays as a file.
+  replays as a file. The theorem is declared as `Lanky.<name>`: Mathlib
+  declares lemmas such as `mul_comm` and `sq_nonneg` at the root, and a claim
+  named after one would be refused as already declared at every attempt.
   - The printer's Mathlib dialect (`print_lean(..., mathlib=True)`, and the
     same keyword on `statement_of`, `lean_type`, `domain_guards` and
     `Theorem.lean`) prints the core fragment as core Lean does, and adds
@@ -72,14 +74,20 @@ prints a ledger naming who decided what.
     as the exact rational, ascribed `ℝ` even when integral; a complex literal
     around `Complex.I`; true division in `ℝ`, or `ℂ` when a side is complex;
     `|x|`, and `‖z‖` for a complex `z`; `exp`, `log` and `sqrt` as
-    `Real.exp`, `Real.log`, `Real.sqrt`, `Complex.exp` and `Complex.log`; and a
-    sum over `Fin` binders as `∑ i ∈ Finset.Ico 0 n`, with a guard or a
+    `Real.exp`, `Real.log` and `Real.sqrt`, and `Complex.exp`; and a sum over
+    `Fin` binders as `∑ i ∈ Finset.Ico (0 : ℤ) n`, with a guard or a
     refinement as `with`. A floor division by a literal is ascribed,
     `(n / 2 : ℤ)`, so that next to a real it is cast whole rather than turned
-    into real division of the cast `n`. It declines a sum over `Nat`, a `Fin`
-    with a real bound (which the tester truncates), a floor division or
-    remainder of a real, an order between complex numbers and a complex square
-    root, each of which would print a meaning Python does not give.
+    into real division of the cast `n`; the sum's lower bound is ascribed, and
+    so is a body that is an integer numeral, since Lean reads an untyped
+    numeral as a `Nat`, where `sum(i - 1 for i in Fin[3])` and
+    `sum(1 for i in Fin[n]) - 3` truncate. It declines a sum over `Nat`, a
+    `Fin` with a real bound (which the tester truncates), a floor division or
+    remainder of a real, an order between complex numbers, and a complex
+    logarithm or square root (`cmath` picks a side of the branch cut by the
+    sign of a zero, and Lean's `ℂ` has no signed zero), each of which would
+    print a meaning Python does not give. An `Elementary` node built by hand
+    with a function other than those three is declined too.
   - The ladder, in Mathlib mode, runs the core attempts first (their closers
     extended with `linarith`, `nlinarith`, `positivity`, `ring_nf` and
     `norm_num`), then `norm_num`, `positivity`, `ring`, `field_simp`,
@@ -575,13 +583,13 @@ listed because it changes behaviour a reader could already have depended on.
   `div_zero` the `SEMANTICS` block with Lean and the `assumed` row without
   (#18). It found the `truncated` block one line short since every refuted
   fact started printing its reason.
-- **A true division, a logarithm and a square root are noted where the
-  readings part.** Besides an integer division that may be by zero, a fact's
-  `semantics` provenance now names a true division by anything but a nonzero
-  literal (`x / 0` is `0` in a Mathlib field) and a `log` or `sqrt` of
-  anything but a positive literal (Mathlib's are total). The notes depend on
-  the statement, not on whether Mathlib is installed, so a statement with
-  `x / y` gets one on every machine.
+- **In Mathlib mode, a true division, a logarithm and a square root are noted
+  where the readings part.** Besides an integer division that may be by zero,
+  a fact's `semantics` provenance names a true division by anything but a
+  nonzero literal (`x / 0` is `0` in a Mathlib field) and a `log` or `sqrt`
+  of anything but a positive literal (Mathlib's are total). Only in Mathlib
+  mode: core Lean declines all three, so there is no second reading to part
+  from, and a core-mode fact records what it did before.
 - **The suite runs in core-Lean mode.** `tests/conftest.py` takes
   `LANKY_LEAN_MATHLIB` out of the environment before any test runs and hands
   it to `tests/test_mathlib.py` alone, so a developer who exports it still sees
@@ -622,7 +630,8 @@ listed because it changes behaviour a reader could already have depended on.
 - Over `Real` and `Complex` the tester's reading is floating point (fractions
   for `Real.exact`) and Mathlib's is exact, so an identity that holds up to
   rounding is refuted without Mathlib and proved with it. That is what the
-  exactness class says, and it is not noted as a gap.
+  exactness class says, and it is not noted as a gap; #33 asks which reading
+  should decide.
 - Python's `and` between two propositions in a generator's `if` clause is *not*
   refused: CPython compiles a conjunction in a comprehension filter into two
   successive tests, so both halves are captured and the guard is the one that

@@ -19,12 +19,12 @@ Mathlib. The toolchain has to be one the REPL lean-interact drives has a build
 for, which rules out the newest Lean releases; :data:`MATHLIB_REVISION` is the
 one lanky's CI uses for core Lean as well.
 
-Setting it up is two steps, and :func:`main` does both::
+Setting it up is one command, :func:`main`, and then the variable::
 
     python -m lanky.mathlib ~/.cache/lanky/mathlib
     export LANKY_LEAN_MATHLIB=~/.cache/lanky/mathlib
 
-The first writes the three files and runs ``lake exe cache get``, which clones
+The command writes the three files and runs ``lake exe cache get``, which clones
 Mathlib and fetches its compiled files (about 7 GB on disk, a few minutes). It
 never builds Mathlib from source, which would take hours: a project whose cache
 fetch failed is reported as not ready (:func:`problem`) rather than built.

@@ -361,7 +361,10 @@ ready: export LANKY_LEAN_MATHLIB=/home/you/mathlib
 It writes three files and runs `lake exe cache get`, which clones Mathlib and
 its dependencies at the pinned commits and fetches the compiled files Mathlib
 publishes: about 7 GB on disk and a few minutes. It never builds Mathlib from
-source, which would take hours. Then:
+source, which would take hours. The project is wherever you put it; the cache
+tool keeps what it downloads (about 400 MB, packed) in `MATHLIB_CACHE_DIR`,
+by default `$XDG_CACHE_HOME/mathlib` or `~/.cache/mathlib`, and the REPL lanky
+builds goes where `LANKY_LEAN_CACHE_DIR` says, as in core mode. Then:
 
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/gauss.py
@@ -377,25 +380,29 @@ Both rows are proved now. The oracle started its REPL in the project, imported
 Mathlib once (seconds, and about 1.5 GB of memory), and elaborated each attempt
 in the environment the import left. `scan_monotone` is proved as before, by the
 same induction: a statement core Lean could print is printed the same way, and
-the core attempts run first, with Mathlib's closing tactics added to theirs. `gauss` is printed in the Mathlib dialect,
+the core attempts run first, with Mathlib's closing tactics added to theirs.
+`gauss` is printed in the Mathlib dialect,
 
 ```text
-theorem gauss (n : Int) (h0 : 0 ≤ n) :
-    2 * (∑ i ∈ Finset.Ico 0 (n + 1), i) = n * (n + 1)
+theorem Lanky.gauss (n : Int) (h0 : 0 ≤ n) :
+    2 * (∑ i ∈ Finset.Ico (0 : ℤ) (n + 1), i) = n * (n + 1)
 ```
 
-where `Fin[n + 1]` is `Finset.Ico 0 (n + 1)` over `Int`, so the binder is an
-integer as a quantifier's is. The core attempts fail, and so do Mathlib's
-whole-goal ones (`norm_num`, `positivity`, `ring`, `field_simp`, `linarith`,
-`nlinarith`, and three that combine them with `push_cast` and `simp`), and the
-last script is an induction on `n`,
-which the ladder chose because `n` is a natural parameter that the bound of a
-sum mentions: trade `n` for the natural it is, and in each case take the last
-term off the sum, which leaves the induction hypothesis and a polynomial
-identity for `linarith`. The provenance records the script, the Mathlib
-revision as `lean_mathlib`, and the source as a file that replays it, starting
-with `import Mathlib`. `--verbose` names the project while nothing has been
-tried, and then `Lean v4.29.1 with Mathlib v4.29.1 (...)`.
+where `Fin[n + 1]` is `Finset.Ico (0 : ℤ) (n + 1)`, so the binder is an
+integer as a quantifier's is: the ascription keeps it one even when the bound
+is a literal, which Lean would otherwise read as a `Nat`, where `i - 1`
+truncates. Every Mathlib statement is declared in the `Lanky` namespace,
+because Mathlib declares lemmas such as `mul_comm` at the root and a claim of
+that name would otherwise be refused as already declared. The core attempts
+fail, and so do Mathlib's whole-goal ones (`norm_num`, `positivity`, `ring`,
+`field_simp`, `linarith`, `nlinarith`, and three that combine them with
+`push_cast` and `simp`), and the last script is an induction on `n`, which the
+ladder chose because `n` is a natural parameter that the bound of a sum
+mentions: trade `n` for the natural it is, and in each case take the last term
+off the sum, which leaves the induction hypothesis and a polynomial identity
+for `linarith`. The provenance records the script, the Mathlib revision as
+`lean_mathlib`, and the source as a file that replays it, starting with
+`import Mathlib`. `--verbose` prints the project on the Lean oracle's line.
 
 The same variable makes `examples/nicomachus.py` read `proved` for `gauss` and
 `proved under nicomachus` for `cubes`, which the induction proves on its own.
@@ -405,9 +412,11 @@ What the Mathlib dialect adds, in brief (`src/lanky/lean.py` has the whole
 account):
 
 - `Real` and `Complex` are `ℝ` and `ℂ`, and `lanky.exp`, `lanky.log` and
-  `lanky.sqrt` are `Real.exp`, `Real.log` and `Real.sqrt`, or `Complex.exp`
-  and `Complex.log` of a complex argument. At a number they are Python's
-  `math` and `cmath` functions, so the file still runs.
+  `lanky.sqrt` are `Real.exp`, `Real.log` and `Real.sqrt`, and `Complex.exp`
+  of a complex argument. A complex `log` or `sqrt` is declined: `cmath` picks
+  a side of the branch cut by the sign of a zero imaginary part, and Lean's
+  `ℂ` has no signed zero. At a number they are Python's `math` and `cmath`
+  functions, so the file still runs.
 - A float literal is the rational number Python holds, `(1 / 2 : ℝ)` for
   `0.5`, and true division is division in a field, `(x : ℝ) / y`, because
   Python's `/` does not divide integers as integers either.
@@ -421,11 +430,11 @@ The readings of a real statement are not one reading. The property tester
 computes `Real` in floating point, with fractions for `Real.exact`, and Lean
 over `ℝ`: `exp(x + y) == exp(x) * exp(y)` is refuted by rounding without
 Mathlib and proved with it. Where Lean's functions are total and Python's
-raise, the fact carries a note, as `div_zero` does above: a true division by
-something that may be zero, and a logarithm or square root of something that
-may leave its Python domain. `def neg(x: Real & (x < 0)) -> sqrt(x) == 0` is
-proved with Mathlib, whose square root of a negative number is `0`, and no
-draw can evaluate it in Python.
+raise, the fact carries a note in Mathlib mode, as `div_zero` does above: a
+true division by something that may be zero, and a logarithm or square root of
+something that may leave its Python domain.
+`def neg(x: Real & (x < 0)) -> sqrt(x) == 0` is proved with Mathlib, whose
+square root of a negative number is `0`, and no draw can evaluate it in Python.
 
 ## What to try next
 
