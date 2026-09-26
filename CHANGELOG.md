@@ -57,10 +57,51 @@ prints a ledger naming who decided what.
   --verbose` prints it, and when a stronger oracle established such a fact the
   property tester is still run as a cross-check so that a counterexample under
   the Python reading is recorded rather than lost.
-- **Example.** `examples/gauss.py`, two worked theorems, runnable three ways.
+- **Facts rest on facts** (`lanky.ledger`). `Fact.rests_on` holds the ids of
+  the facts a fact was established from, as a tuple (a single string is
+  refused rather than read as one id per character). `Ledger.support(fact)`
+  reads the graph and returns a `Support`: `effective`, the weakest status over
+  the fact and everything it rests on, directly or through other facts, in the
+  order of the status ladder with `refuted` below `assumed`; and `under`, the
+  ids of the assumptions among them, in the order they are reached. An
+  assumption is a fact that is `assumed` (an axiom, or an obligation nobody
+  established) or `refuted`, an id the ledger does not hold (a claim in a file
+  the check did not collect), or a fact on a circle of facts that rest on each
+  other, since a circular argument establishes nothing and every fact on the
+  circle or above it is worth `assumed` at most. The table names the
+  assumptions after the status, as in `proved under jump, compact`, by owner
+  when the owner names one fact in the ledger and by id otherwise, and grows an
+  `EFFECTIVE` column when some fact is worth less than its own status; a
+  ledger in which nothing rests on anything renders as before. `Fact.to_dict`
+  carries `rests_on`, and `Ledger.to_dicts`, which `Ledger.to_json` and
+  `lanky check --json` now write, adds `effective` and `under` for every fact.
+  The exit code does not change: a fact resting on a refuted one fails the
+  check through the refuted one.
+- **`@axiom(cite=...)`** (`lanky.theory`). A statement written like a theorem
+  and taken on a citation, for a result lanky cannot establish, such as a jump
+  relation from a textbook. `Axiom` is a `Theorem` whose fact has kind
+  `axiom`, id `axiom:<module>.<qualname>@<line>`, status `assumed` and the
+  citation as `cite` in its provenance; the table prints `assumed (axiom)`.
+  The citation is required: `@axiom` bare, or with a citation that is missing,
+  empty or not a string, raises `TypeError` where it is written. `lanky check`
+  asks no oracle to establish an axiom, and has the oracles of the `test`
+  trust class look for a counterexample to it, which is kept: an axiom copied
+  down wrong is `refuted (axiom)` and fails the check. The pytest plugin
+  collects and samples an axiom as it does a theorem.
+- **`@theorem(uses=[...])`.** A theorem names the facts it rests on:
+  theorems, axioms, `Fact`s or fact ids (`lanky.theory.fact_ids`), which
+  become its fact's `rests_on`. A single entry need not be in a list; an entry
+  that names no one fact, such as a plugin's object that owns several, is
+  refused where the decorator is written. The oracles are not handed the
+  statements a theorem uses: what `uses=` records is what the theorem is
+  worth. `@theorem` written bare works as before, and so does `@theorem()`.
+- **Example.** `examples/gauss.py`, two worked theorems, runnable three ways,
+  and `examples/nicomachus.py`: Nicomachus's theorem as an axiom, and the
+  closed form of the sum of cubes, tested under it.
 - **Documentation.** A README that leads with what works, and
   `docs/quickstart.md`, which walks the worked file end to end with the output
-  the commands print.
+  the commands print, and then the axiom example, whose table the suite
+  compares with a real run.
 
 ### Changed
 
@@ -395,7 +436,6 @@ listed because it changes behaviour a reader could already have depended on.
   finds under a stronger oracle's proof is recorded under `SEMANTICS` whether
   or not the fact carries a note, since with one reading of arithmetic it
   means one of the oracles is wrong.
-
 - **A refutation's witness is printed, whichever plugin recorded it.**
   `refutation_lines` counted a plugin's `witness` against `no witness
   recorded` without printing it, since printing it looked like lanky knowing

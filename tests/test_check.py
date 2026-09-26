@@ -980,4 +980,26 @@ def test_a_plugin_fact_rests_on_another_facts_id(tmp_path) -> None:
     assert row.startswith("assumed under scan:postcondition  -")
 
 
+def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
+    """The quickstart's table for ``examples/nicomachus.py`` is the real one.
+
+    Every statement in the file has a sum in it, which core Lean cannot print,
+    so the table is the same with Lean and without it, and both CI jobs hold
+    the document to it.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    lines = (root / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
+    start = lines.index("$ uv run lanky check examples/nicomachus.py")
+    shown = []
+    for line in lines[start + 1 :]:
+        if line.startswith(("$ ", "```")):
+            break
+        shown.append(line)
+    assert cli.main(["check", str(root / "examples" / "nicomachus.py")]) == 0
+    printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+    assert shown == printed
+
+
 # }}}

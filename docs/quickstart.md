@@ -1,12 +1,13 @@
 # Quickstart
 
-One file, four commands, and the output each one prints. Everything below was
-run in this repository on 2026-09-25 with `uv run`; the numbers and the Lean
-source are copied from the terminal, not written from memory. The one thing that
-drifts is a timing, which is a property of the machine and not of the claim. The
-`lanky check` table is held to more than that: the test suite compares it with a
-real run, as it stands where Lean is installed (CI has a job for that) and with
-its `proved` row read as `tested` where it is not.
+One file, four commands, and the output each one prints, then a second file
+with an axiom in it. Everything below was run in this repository on 2026-09-25
+with `uv run`; the numbers and the Lean source are copied from the terminal, not
+written from memory. The one thing that drifts is a timing, which is a property
+of the machine and not of the claim. The `lanky check` tables are held to more
+than that: the test suite compares them with a real run, `gauss.py`'s as it
+stands where Lean is installed (CI has a job for that) and with its `proved` row
+read as `tested` where it is not.
 
 ```sh
 git clone https://github.com/xywei/lanky.git
@@ -260,11 +261,85 @@ either: it is a reading that could not be run, which is worth saying. Without
 Lean the row is `assumed`, and the exit code is 0 both ways, because nothing
 was refuted. `lanky.semantics.notes(term)` is the check.
 
+## Take a result on a citation
+
+Some results lanky cannot establish. A sum needs Mathlib in Lean, and a theorem
+from a textbook may need a great deal more. Such a result enters the ledger on
+the word of a reference, as an axiom, and what is derived from it says so.
+`examples/nicomachus.py` holds Gauss's sum again, Nicomachus's theorem as an
+axiom, and the closed form of the sum of cubes, which follows from the two:
+
+```python
+@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+    """The sum of the first cubes is the square of the sum of the first numbers."""
+
+
+@theorem(uses=[nicomachus, gauss])
+def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
+    """Four times the sum of the cubes of ``0 .. n`` is ``(n * (n + 1)) ** 2``."""
+```
+
+An axiom is written like a theorem, and `cite=` is required: `@axiom` without
+it raises `TypeError` where it is written, because an axiom with nothing behind
+it is what an `assumed` theorem already is. `uses=` takes theorems, axioms,
+facts or fact ids, and becomes the `rests_on` of the theorem's fact.
+
+```console
+$ uv run lanky check examples/nicomachus.py
+STATUS                   EFFECTIVE  BY             WHERE             OWNER       STATEMENT
+-----------------------  ---------  -------------  ----------------  ----------  ------------------------------------------------------------------------
+tested                   tested     property-test  nicomachus.py:33  gauss       n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1)...
+tested under nicomachus  assumed    property-test  nicomachus.py:43  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
+
+3 facts: 1 assumed, 2 tested
+```
+
+The same with Lean and without it, since every statement has a sum in it. Three
+things in that table are new.
+
+- `assumed (axiom)`. The axiom is taken on its citation, which `--json`
+  carries as `cite` in its provenance, and no oracle is asked to establish it.
+  It is still sampled for a counterexample, because a citation copied down
+  wrong states something the reference does not.
+- `tested under nicomachus`. `cubes` survived its draws, and the status names
+  the assumptions it rests on: whatever it rests on, directly or through other
+  facts, that nothing here established. That is an axiom, another `assumed`
+  fact, a `refuted` one, a fact on a circle of facts that rest on each other,
+  or an id this ledger does not hold, such as a theorem in a file the check did
+  not collect. `gauss` is not among them, because it is tested.
+- The `EFFECTIVE` column. What each fact is worth once what it rests on is
+  counted: the weakest status over the fact and everything below it, so a
+  proof from an assumption is worth the assumption. The column is there only
+  when some fact is worth less than its own status says, so a ledger in which
+  nothing rests on anything, like `gauss.py`'s, looks as it always did.
+
+The status column is still each fact's own. `tested` says how strongly `cubes`
+is established given what it uses; the oracles decide it as they decide any
+theorem, and are not handed the statements it uses. `--json` carries
+`rests_on`, `effective` and `under` for every fact, and the exit code depends
+on neither: it is 0 here, since nothing is refuted.
+
+Copy the axiom down wrong, with `i**2` for `i**3` on the left, and the property
+tester refutes it. The row reads `refuted (axiom)`, `cubes` is worth `refuted`
+in the `EFFECTIVE` column, the counterexample is printed under the table, and
+`lanky check` exits 1. `pytest examples/nicomachus.py` samples the axiom as a
+test item too.
+
+A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
+it builds, naming other facts by id.
+
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
   counterexample is in the provenance, `lanky check` repeats the fact under
-  the table with the counterexample and the reason, and it exits 1. That holds
+  the table with the counterexample and the reason, and it exits 1. The block
+  under a `REFUTED` line is built from three standard provenance keys, read
+  the same way whichever oracle or plugin refuted the fact: the
+  `counterexample`, a `witness` (a plugin's refuting object, such as the cell
+  loopty's isl oracle finds outside an array), and the `reason`, each when it
+  says something, or `no witness recorded` when none does. That holds
   for `def impossible() -> 1 == 2` as well, which has no variable to name in a
   counterexample: Python answers the annotation itself, the term is the `bool`
   `False`, and the row still reads `refuted`, with the reason (the statement
@@ -335,9 +410,9 @@ was refuted. `lanky.semantics.notes(term)` is the check.
 |---|---|
 | terms, the scope, annotation evaluation | `src/lanky/terms.py` |
 | sorts, `Fin`, `Fn`, refinement | `src/lanky/prelude.py` |
-| `Status`, `Fact`, `Ledger` | `src/lanky/ledger.py` |
+| `Status`, `Fact`, `Ledger`, and what a fact rests on | `src/lanky/ledger.py` |
 | the four plugin protocols and the registry | `src/lanky/plugins.py` |
-| `@theorem` and `Theorem` | `src/lanky/theory.py` |
+| `@theorem`, `@axiom`, `Theorem` and `Axiom` | `src/lanky/theory.py` |
 | samplers and the property tester | `src/lanky/testing.py` |
 | where the readings still differ: division by zero | `src/lanky/semantics.py` |
 | the Lean printer | `src/lanky/lean.py` |
