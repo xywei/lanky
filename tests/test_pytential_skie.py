@@ -17,6 +17,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pymbolic.primitives as prim
 import pytest
 
 from lanky import cli
@@ -560,6 +561,75 @@ def test_pytest_collects_the_axioms_and_skips_them(pytester) -> None:
 # }}}
 
 
+# {{{ the pytential adapter, on stand-ins for pytential's nodes
+
+
+class LaplaceKernel:
+    """Stands for sumpy's kernel, which the adapter reads by its class name and ``dim``."""
+
+    def __init__(self, dim: int) -> None:
+        self.dim = dim
+
+    def __eq__(self, other: object) -> bool:
+        return type(other) is type(self) and other.dim == self.dim
+
+    def __hash__(self) -> int:
+        return hash((type(self).__name__, self.dim))
+
+    def __str__(self) -> str:
+        return f"LaplaceKernel({self.dim})"
+
+
+class IntG:
+    """Stands for pytential's ``IntG``: the adapter reads its fields, and its class by name.
+
+    ``source`` and ``target`` stand for its DOF descriptors, whose geometry
+    the adapter reads, and a plain name is read as the geometry itself.
+    """
+
+    def __init__(self, density, limit, source=None, target=None) -> None:
+        self.target_kernel = LaplaceKernel(2)
+        self.source_kernels = (LaplaceKernel(2),)
+        self.densities = (density,)
+        self.qbx_forced_limit = limit
+        self.kernel_arguments = {}
+        self.source = source
+        self.target = target
+
+
+def test_the_adapter_reads_one_boundary_and_constant_factors(lp) -> None:
+    """What the adapter refuses, checked without pytential, so that CI runs it.
+
+    Two layer operators on two boundaries are two operators, and a limit on
+    one boundary of a potential whose density is on another is no jump
+    relation's business, so neither may be read as the one boundary's. A
+    factor inside an operator comes out of it only when it is a constant: a
+    parameter there could be a function on the boundary, and ``S(tau*sigma)``
+    is not ``tau*S(sigma)``.
+    """
+    sigma, eta = prim.Variable("sigma"), prim.Variable("eta")
+    assert str(lp.from_pytential(IntG(sigma, "avg"))) == "S"
+    assert str(lp.from_pytential(IntG(sigma, -1, "a", "a"))) == "trace(S, INTERIOR)"
+    assert str(lp.from_pytential(IntG(prim.Product((2, sigma)), "avg"))) == "2*S"
+    # a potential evaluated elsewhere, off the boundary, is a representation
+    assert str(lp.from_pytential(IntG(sigma, None, "a", "points"))) == "S"
+    with pytest.raises(lp.OutsideFragment, match="two geometries in one expression"):
+        lp.from_pytential(prim.Sum((IntG(sigma, "avg", "a", "a"), IntG(sigma, "avg", "b", "b"))))
+    with pytest.raises(lp.OutsideFragment, match="two geometries in one expression"):
+        lp.from_pytential(prim.Sum((IntG(sigma, "avg", "a", "a"), IntG(sigma, None, "a", "b"))))
+    with pytest.raises(lp.OutsideFragment, match="the density on 'a' and the targets on 'b'"):
+        lp.from_pytential(IntG(sigma, -1, "a", "b"))
+    with pytest.raises(lp.OutsideFragment, match="density on the default and the targets on 'b'"):
+        lp.from_pytential(IntG(sigma, "avg", None, "b"))
+    with pytest.raises(lp.OutsideFragment, match="only a constant comes out of an operator"):
+        lp.from_pytential(IntG(prim.Product((eta, sigma)), "avg"))
+    with pytest.raises(lp.OutsideFragment, match="qbx_forced_limit=True"):
+        lp.from_pytential(IntG(sigma, True))
+
+
+# }}}
+
+
 # {{{ the pytential adapter, where pytential imports
 
 
@@ -626,6 +696,19 @@ def test_the_adapter_refuses_what_it_does_not_read(lp) -> None:
         lp.from_pytential(sym.S(BiharmonicKernel(2), sigma, qbx_forced_limit="avg"))
     with pytest.raises(lp.OutsideFragment, match="mixes potentials"):
         lp.from_pytential(sym.S(laplace, sigma, qbx_forced_limit=None) + sigma)
+    with pytest.raises(lp.OutsideFragment, match="two geometries in one expression"):
+        lp.from_pytential(
+            sym.D(laplace, sigma, qbx_forced_limit="avg", source="a", target="a")
+            + sym.D(laplace, sigma, qbx_forced_limit="avg", source="b", target="b")
+        )
+    with pytest.raises(lp.OutsideFragment, match="the density on 'a' and the targets on 'b'"):
+        lp.from_pytential(sym.D(laplace, sigma, qbx_forced_limit=-1, source="a", target="b"))
+    with pytest.raises(lp.OutsideFragment, match="only a constant comes out of an operator"):
+        lp.from_pytential(sym.D(laplace, sym.var("tau") * sigma, qbx_forced_limit="avg"))
+    with pytest.raises(lp.OutsideFragment, match="a normal component, outside a normal derivative"):
+        lp.from_pytential(
+            sym.normal(2).as_vector()[0] * sym.S(laplace, sigma, qbx_forced_limit="avg")
+        )
 
 
 def test_the_five_rows_and_pytentials_own_operators_agree(demo) -> None:

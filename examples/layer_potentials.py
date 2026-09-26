@@ -67,11 +67,11 @@ not one these rules derive.
 
 The adapter. :func:`from_pytential` translates a pytential ``sym`` expression
 built from ``sym.S``, ``sym.D``, ``sym.Sp`` and ``sym.Dp`` of one Laplace or
-Helmholtz kernel, applied to one density, with scalar coefficients, into this
-algebra, reading ``qbx_forced_limit`` as the side: ``None`` off the boundary,
-``+1`` or ``-1`` a one-sided limit, ``"avg"`` the direct value. It imports
-nothing from pytential. It recognizes the nodes by their structure, and it
-refuses what it does not recognize.
+Helmholtz kernel on one boundary, applied to one density, with scalar
+coefficients, into this algebra, reading ``qbx_forced_limit`` as the side:
+``None`` off the boundary, ``+1`` or ``-1`` a one-sided limit, ``"avg"`` the
+direct value. It imports nothing from pytential. It recognizes the nodes by
+their structure, and it refuses what it does not recognize.
 """
 
 from __future__ import annotations
@@ -1321,6 +1321,9 @@ class _Layer:
     potential: str
     limit: Any
 
+    def __str__(self) -> str:
+        return f"{self.potential} (qbx_forced_limit={self.limit!r})"
+
 
 @dataclass(frozen=True)
 class _Gradient:
@@ -1348,10 +1351,20 @@ def from_pytential(expr: Any, density: str = "sigma") -> Operator:
     derivative along axis ``i`` has to be the ``i``-th of them, times the same
     scalar for every axis.
 
+    The rules speak of one boundary, so every ``IntG`` has to have its
+    density on one geometry and its targets on one, and a limit on the
+    boundary has to be taken on the density's own; pytential's default
+    descriptors are read as the one boundary. A factor on the density inside
+    an operator has to be a constant. A parameter there could be a function
+    on the boundary, which does not come out of the operator, and every
+    coefficient here is a number that does.
+
     Raises:
         OutsideFragment: For anything else: another kernel, two kernels, a
             density other than ``density``, a target derivative that is not
-            a normal derivative, or a potential mixed with boundary operators.
+            a normal derivative, a potential mixed with boundary operators,
+            two geometries, or a factor inside an operator that is not a
+            constant.
     """
     kernel: list[Any] = []
     terms = _walk(expr, density, kernel)
@@ -1363,7 +1376,10 @@ def from_pytential(expr: Any, density: str = "sigma") -> Operator:
             gradients.setdefault((atom.potential, atom.limit), {})[atom.axis] = coefficient
             continue
         if _normal_names(coefficient):
-            raise OutsideFragment(f"{coefficient} multiplies {atom} by a normal component")
+            raise OutsideFragment(
+                f"{atom} is multiplied by {coefficient}, a normal component, outside a "
+                "normal derivative"
+            )
         if isinstance(atom, _Layer):
             limits.add(atom.limit is None)
             key = _boundary_atom(atom.potential, atom.limit, normal=False)
@@ -1522,6 +1538,19 @@ def _density_factor(value: Any, density: str) -> Poly | None:
     return None
 
 
+def _geometry(descriptor: Any) -> Any:
+    """The geometry a pytential DOF descriptor names, and ``None`` for the default one."""
+    geometry = getattr(descriptor, "geometry", descriptor)
+    if isinstance(geometry, type) and geometry.__name__ in ("DEFAULT_SOURCE", "DEFAULT_TARGET"):
+        return None
+    return geometry
+
+
+def _places_text(places: tuple[Any, Any]) -> str:
+    source, target = ("the default" if place is None else repr(place) for place in places)
+    return f"the density on {source} and the targets on {target}"
+
+
 def _constant_term(factor: Poly, value: Any) -> dict[Any, Poly]:
     if factor:
         raise OutsideFragment(f"{value} is a term with no density in it")
@@ -1539,6 +1568,20 @@ def _intg(node: Any, density: str, kernel: list[Any]) -> tuple[_Layer | _Gradien
     factor = _density_factor(node.densities[0], density)
     if factor is None:
         raise OutsideFragment(f"an IntG applied to {node.densities[0]}, not to {density}")
+    if factor.value() is None:
+        raise OutsideFragment(
+            f"an IntG applied to {density} times {factor}: only a constant comes out of an "
+            "operator, and a parameter inside one could be a function on the boundary"
+        )
+    limit = node.qbx_forced_limit
+    if isinstance(limit, bool) or limit not in (None, INTERIOR, EXTERIOR, "avg"):
+        raise OutsideFragment(f"qbx_forced_limit={limit!r} is not a side these rules read")
+    places = (_geometry(getattr(node, "source", None)), _geometry(getattr(node, "target", None)))
+    if limit is not None and places[0] != places[1]:
+        raise OutsideFragment(
+            f"a limit taken with {_places_text(places)}: the jump relations are about the "
+            "boundary the density is on"
+        )
     target = node.target_kernel
     axis = None
     if type(target).__name__ == "AxisTargetDerivative":
@@ -1568,11 +1611,13 @@ def _intg(node: Any, density: str, kernel: list[Any]) -> tuple[_Layer | _Gradien
     name = f"{family.removesuffix('Kernel')}({target.dim}{', ' + arguments if arguments else ''})"
     if kernel and kernel[0][0] != name:
         raise OutsideFragment(f"two kernels in one expression, {kernel[0][0]} and {name}")
+    if kernel and kernel[0][2] != places:
+        raise OutsideFragment(
+            f"two geometries in one expression, {_places_text(kernel[0][2])} and "
+            f"{_places_text(places)}; these rules speak of one boundary"
+        )
     if not kernel:
-        kernel.append((name, int(target.dim)))
-    limit = node.qbx_forced_limit
-    if limit not in (None, INTERIOR, EXTERIOR, "avg"):
-        raise OutsideFragment(f"qbx_forced_limit={limit!r} is not a side these rules read")
+        kernel.append((name, int(target.dim), places))
     if axis is None:
         return _Layer(potential, limit), factor
     return _Gradient(potential, limit, axis), factor
