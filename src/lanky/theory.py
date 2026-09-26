@@ -311,11 +311,16 @@ class Theorem:
             rests_on=self.uses,
         )
 
-    def lean(self) -> str:
-        """The statement in Lean 4 syntax, when the printer supports it."""
+    def lean(self, mathlib: bool = False) -> str:
+        """The statement in Lean 4 syntax, when the printer supports it.
+
+        ``mathlib=True`` prints it for a Lean that has imported Mathlib, which
+        reads ``Real``, ``Complex``, sums and ``exp``, ``log`` and ``sqrt``
+        (see :mod:`lanky.lean`).
+        """
         from lanky.lean import print_lean
 
-        return print_lean(self.term)
+        return print_lean(self.term, mathlib=mathlib)
 
     def __repr__(self) -> str:
         """Print the name and the statement."""
