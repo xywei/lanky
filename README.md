@@ -79,7 +79,9 @@ says how much the claim is worth, and nothing else changes.
   (one line in the terminal, wrapped here)
 
   lanky never imports loopty. It finds it through entry points and asks it what
-  it can do.
+  it can do. `examples/pytential_skie.py` is a second consumer in miniature: a
+  rule engine decides, under eight cited axioms, which of five integral
+  representations give a boundary equation of the second kind.
 
 ## Status
 
@@ -92,7 +94,8 @@ sharp.
   or vacuous claim. Each refuted fact is repeated under the table with its
   counterexample, its witness and its reason, the three standard provenance
   keys, read the same way whichever oracle or plugin refuted it; or with
-  `no witness recorded` when it carries none of them.
+  `no witness recorded` when it carries none of them. Each axiom is named
+  under the table in a `CITED` line with its citation.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
@@ -108,6 +111,17 @@ sharp.
   its own. `--json` carries `rests_on`, `effective` and `under`. An id no
   fact in the ledger has counts as an assumption, and `lanky check` names it
   under the table. `examples/nicomachus.py` is the worked case.
+- `@rewrite`: a transformation as a claim. A function of no arguments returns
+  `(source, target)`, `obligation=` names what has to hold between them, and
+  the fact reads `source ~> target (obligation)`, with a `RewriteTerm` for an
+  oracle that knows the obligation to decide. A plugin builds the same shape
+  with `lanky.rewrites.rewrite_fact`, and a subclass of `Rewrite` can claim
+  more about its target. `examples/pytential_skie.py` is the worked case.
+- Trust classes, strongest first: `kernel`, `decision-procedure`, `heuristic`,
+  `test`. A decider complete for the fragment it accepts is a decision
+  procedure; one that can fail to answer inside it, such as a simplifier, is
+  a `heuristic`, and the table marks a fact it decided `decided (heuristic)`.
+  The oracle that settles a fact leaves its trust class in the provenance.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Bool`, `Prop`, `Fin[n]`, `Fn[A, B]`,
   refinement by `T & prop`, exactness classes.
@@ -128,7 +142,8 @@ sharp.
   which round the way Python's do. What Lean proves is what the property
   tester tests, so a claim is refuted, or not, whether or not Lean is
   installed: `n - 1 >= 0` over `Nat` is refuted everywhere, and `n - 1 <= n`
-  is still proved where Lean is.
+  is still proved where Lean is. A comparison with no variable in it, which
+  only a plugin builds, is ascribed `Int` as well.
 - Vacuous claims are caught. When no draw satisfies a fact's hypotheses, the
   stronger oracles are asked whether the hypotheses alone prove `False`. If one
   does, the row reads `proved (vacuous)` and `lanky check` exits 1: the claim
@@ -286,7 +301,8 @@ object. *Verbs* are CLI subcommands. Each is an entry-point group:
 **Oracles strongest first.** Each plugin is installed once per name, so a
 theory that arrives both in process and through an entry point does its work
 once. Trust classes are ordered `kernel` (Lean) >
-`decision-procedure` (isl) > `test` (property test). Each oracle answers
+`decision-procedure` (isl) > `heuristic` (a simplifier) > `test` (property
+test). Each oracle answers
 `can_establish(fact)`; `check_path` offers each fact to the strongest one that
 says yes and stops at the first answer. A fact nobody establishes is `ASSUMED`,
 which is not a failure. An oracle that cannot answer declines, so a timeout is
@@ -307,7 +323,9 @@ own. No environment variable changes what the code means.
 ## Documentation
 
 - [docs/quickstart.md](docs/quickstart.md): the worked file, end to end, with
-  the output the commands actually print, and a second one with an axiom.
+  the output the commands actually print, a second one with an axiom, and the
+  pytential demonstration, where a rule engine checks a derivation under the
+  axioms it rests on.
 - [CHANGELOG.md](CHANGELOG.md).
 - [loopty](https://github.com/xywei/loopty): the sister project and lanky's
   first plugin: a typed polyhedral layer over loopy, where the facts are about

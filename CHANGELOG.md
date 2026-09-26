@@ -113,9 +113,62 @@ prints a ledger naming who decided what.
   `cite=` without their keywords, and say so. The oracles are not handed the
   statements a theorem uses: what `uses=` records is what the theorem is
   worth. `@theorem` written bare works as before, and so does `@theorem()`.
+- **Rewrites** (`lanky.rewrites`). A transformation some tool made, stated
+  as a claim: a source, a target, and the obligation between them that an
+  oracle discharges (#2). `@rewrite` decorates a function of no arguments that
+  returns `(source, target)`, runs it once where it is decorated, and
+  registers a `Rewrite`; `obligation=` names what has to hold (`"equal"` by
+  default) and `uses=` works as it does for `@theorem`. The fact has kind
+  `rewrite`, id `rewrite:<module>.<qualname>@<line>`, a `RewriteTerm` (source,
+  target, obligation, compared by identity, since a side may be a lanky term)
+  as its term, and the statement `source ~> target (obligation)`. No built-in
+  oracle takes a `RewriteTerm`, so a rewrite stays `assumed` until an oracle
+  that knows its obligation decides it. `rewrite_fact` builds the same fact
+  for a plugin that makes its facts itself, as loopty's schedule steps do,
+  and a subclass of `Rewrite` claims more about its target by overriding
+  `facts`. A function that takes arguments or returns anything but a pair,
+  an obligation that is not a name, and `@rewrite("equal")` are refused where
+  they are written. The theory, named `rewrite`, is built in beside
+  `theorem`; `lanky.Rewrite`, `lanky.RewriteTerm` and `lanky.rewrite` are
+  exported.
+- **The `heuristic` trust class** (`lanky.plugins.TRUST_STRENGTH`). Between
+  `test` and `decision-procedure`, for a decider that is right when it answers
+  but may fail to answer inside its own fragment, or whose answers are not
+  guaranteed: a computer-algebra simplifier, a rule set with gaps (#2). A
+  rule engine complete for the fragment it accepts, answering every claim in
+  it and declining everything else, is a decision procedure for that fragment
+  and says so. A heuristic is asked after a decision procedure and before the
+  property tester (an oracle naming the class used to rank below the tester,
+  as an unknown class still does); a fact it settles reads
+  `decided (heuristic)` in the table (`Fact.is_heuristic`); and it is not
+  asked whether a fact's hypotheses are inconsistent, since a vacuous fact
+  fails the check and an answer that is not guaranteed must not do that.
 - **Example.** `examples/gauss.py`, two worked theorems, runnable three ways,
   and `examples/nicomachus.py`: Nicomachus's theorem as an axiom, and the
-  closed form of the sum of cubes, tested under it.
+  closed form of the sum of cubes, tested under it. `examples/pytential_skie.py`
+  (#2) asks of five integral representations, Laplace Dirichlet with the
+  double and the single layer, Laplace Neumann with the single layer, and
+  Helmholtz with the combined field for Dirichlet and for Neumann data,
+  whether each gives a boundary equation of the second kind on a closed
+  boundary of class C². Each is a rewrite from the representation's trace to
+  its boundary operator under the obligation `jump relations`, a verdict
+  about that operator, and for a second-kind claim the arithmetic that the
+  identity coefficient is not zero, which Lean proves as integer arithmetic
+  on the numerator. The verdicts are decided by a rule engine in
+  `examples/layer_potentials.py` whose rules are eight `@axiom`s, the four
+  jump relations and the three compactness statements from Kress's *Linear
+  Integral Equations* and Colton and Kress, and the hypersingularity of `D'`,
+  read off the axioms' statements; it claims `decision-procedure` for the
+  fragment it accepts and declines the rest with the reason. The single
+  layer is refused as first kind (no identity term), and the Neumann data
+  as not second kind because `D'` is no multiple of the identity plus a
+  compact operator. `python` prints the table and the reasons; `lanky check`
+  exits 0 with every verdict `decided` by `layer-rules` under the axioms it
+  applied. Where pytential imports, the demonstration also translates the
+  five built with `pytential.sym`, and two of pytential's own
+  `DirichletOperator` pairs, through `layer_potentials.from_pytential`;
+  pytential is never a lanky dependency and `import lanky` does not import
+  it.
 - **Documentation.** A README that leads with what works, and
   `docs/quickstart.md`, which walks the worked file end to end with the output
   the commands print, and then the axiom example, whose table the suite
@@ -537,6 +590,26 @@ listed because it changes behaviour a reader could already have depended on.
   not empty, and then the `reason`, which usually talks about them. A value
   that prints as several lines is indented line by line. A plugin's own keys,
   such as loopty's `witness_text`, stay in the JSON.
+- **`lanky check` names each axiom's citation.** An axiom's `cite` was in
+  the JSON alone, though it is the one thing that stands behind an
+  `assumed (axiom)` row (#2). Each axiom now gets a `CITED` line right under
+  the table, `CITED nicomachus at nicomachus.py:38: Nicomachus of Gerasa,
+  Introduction to Arithmetic`, one per axiom in the table's order, a refuted
+  one included; a citation of several lines is indented under its first. The
+  exit code does not change, and the quickstart's table for
+  `examples/nicomachus.py` has the line.
+- **The oracle that settles a fact leaves its trust class.** A status says
+  what kind of evidence a fact has; how far its decider is to be trusted was
+  nowhere in the ledger. `lanky.check.establish` now records the trust class
+  of the oracle that established or refuted a fact as `trust_class` in its
+  provenance, which is what the table's `decided (heuristic)` mark reads.
+- **A comparison with no variable in it is integer arithmetic in Lean.** The
+  printer wrote a closed comparison, which only a term built node by node can
+  hold, with bare numerals, and Lean read those as `Nat`: `1 - 2 >= 0` was a
+  truncated subtraction Lean proved and Python refuted, and `-1 != 0` did not
+  elaborate. Its left side is now ascribed, `(1 - 2 : Int) ≥ 0`, as a literal
+  base of a power already was. The demonstration's coefficient facts are such
+  comparisons.
 
 ### Notes
 
