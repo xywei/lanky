@@ -521,6 +521,13 @@ def _goal_quantifier(term: Any) -> Forall | None:
     goal's quantifier, and its guard is the one a goal can get wrong without
     the hypotheses knowing: ``if (p < q) & (p > q)`` holds nowhere, and the
     goal holds everywhere for that reason alone.
+
+    This reads the term as the oracles read it. A theorem with no parameters
+    and no hypotheses has its goal for its term
+    (:attr:`lanky.theory.Theorem.term`), and every oracle takes that goal's
+    quantifier for the statement's, so the quantifier examined here is the
+    one directly inside it, and the question put to the stronger oracles is
+    about the statement they established (#35).
     """
     if isinstance(term, Forall) and isinstance(term.body, Forall):
         return term.body

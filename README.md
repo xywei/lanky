@@ -167,6 +167,10 @@ sharp.
   draw, such as a family over `Nat`, gets no warning, because no draw reached
   its hypotheses. A goal's guard is read the same way, and only the goal's
   outermost quantifier is: a guard nested deeper in the goal is not examined.
+  A theorem with no parameters and no hypotheses is read one level down (#35):
+  its statement is its goal, and the oracles take that goal's quantifier for
+  the statement's, so its guard is examined as hypotheses are, and a
+  quantifier directly inside it as the goal's.
 - Python's `and` between two propositions in a generator's `if` clause happens
   to produce the conjunction that was written, because of how CPython compiles
   a comprehension filter, so it is not refused. It cannot be told apart from
