@@ -123,7 +123,8 @@ The two rows differ, and the difference is the product.
   fresh environment. There is no Mathlib anywhere in this.
 - `gauss` is `tested` by `property-test`. Its reduction needs `Finset`, which
   needs Mathlib, so the Lean printer declines the term and the next oracle down
-  takes it.
+  takes it. In Mathlib mode Lean proves it too; see
+  [Prove it with Mathlib](#prove-it-with-mathlib).
 
 Without the Lean extra installed, or with `LANKY_LEAN_DISABLE=1`, both rows read
 `tested property-test` and the exit code is 0 either way. Nothing about the code
@@ -299,8 +300,9 @@ tested under nicomachus  assumed    property-test  nicomachus.py:43  cubes      
 3 facts: 1 assumed, 2 tested
 ```
 
-The same with Lean and without it, since every statement has a sum in it. Three
-things in that table are new.
+The same with Lean and without it, since every statement has a sum in it
+(Mathlib mode, below, proves `gauss` and `cubes`). Three things in that table
+are new.
 
 - `assumed (axiom)`. The axiom is taken on its citation, which `--json`
   carries as `cite` in its provenance, and no oracle is asked to establish it.
@@ -337,6 +339,93 @@ that nothing satisfies them, once Lean shows them inconsistent: it reads
 
 A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
 it builds, naming other facts by id.
+
+## Prove it with Mathlib
+
+Core Lean cannot state `gauss`: a sum is Mathlib's `Finset.sum`. Mathlib mode is
+opt-in. It needs the `lean` extra and a toolchain, as core Lean does, plus a
+Lake project with Mathlib fetched, and an environment variable naming that
+project. lanky ships the project, pinned: Mathlib v4.29.1 on Lean v4.29.1, with
+every dependency at a commit in its `lake-manifest.json`. One command sets it
+up:
+
+```console
+$ uv run python -m lanky.mathlib ~/mathlib
+wrote the pinned Mathlib project (v4.29.1) to /home/you/mathlib
+...
+Completed successfully!
+ready: export LANKY_LEAN_MATHLIB=/home/you/mathlib
+```
+
+(abridged: the middle is Lake cloning Mathlib and the cache tool fetching it.)
+It writes three files and runs `lake exe cache get`, which clones Mathlib and
+its dependencies at the pinned commits and fetches the compiled files Mathlib
+publishes: about 7 GB on disk and a few minutes. It never builds Mathlib from
+source, which would take hours. Then:
+
+```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/gauss.py
+STATUS  BY    WHERE        OWNER          STATEMENT
+------  ----  -----------  -------------  ------------------------------------------------------------------------
+proved  lean  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+proved  lean  gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0) ==...
+
+2 facts: 2 proved
+```
+
+Both rows are proved now. The oracle started its REPL in the project, imported
+Mathlib once (seconds, and about 1.5 GB of memory), and elaborated each attempt
+in the environment the import left. `scan_monotone` is proved as before, by the
+same induction: a statement core Lean could print is printed the same way, and
+the core attempts run first, with Mathlib's closing tactics added to theirs. `gauss` is printed in the Mathlib dialect,
+
+```text
+theorem gauss (n : Int) (h0 : 0 ≤ n) :
+    2 * (∑ i ∈ Finset.Ico 0 (n + 1), i) = n * (n + 1)
+```
+
+where `Fin[n + 1]` is `Finset.Ico 0 (n + 1)` over `Int`, so the binder is an
+integer as a quantifier's is. The core attempts fail, and so do Mathlib's
+whole-goal ones (`norm_num`, `positivity`, `ring`, `field_simp`, `linarith`,
+`nlinarith`, and three that combine them with `push_cast` and `simp`), and the
+last script is an induction on `n`,
+which the ladder chose because `n` is a natural parameter that the bound of a
+sum mentions: trade `n` for the natural it is, and in each case take the last
+term off the sum, which leaves the induction hypothesis and a polynomial
+identity for `linarith`. The provenance records the script, the Mathlib
+revision as `lean_mathlib`, and the source as a file that replays it, starting
+with `import Mathlib`. `--verbose` names the project while nothing has been
+tried, and then `Lean v4.29.1 with Mathlib v4.29.1 (...)`.
+
+The same variable makes `examples/nicomachus.py` read `proved` for `gauss` and
+`proved under nicomachus` for `cubes`, which the induction proves on its own.
+It is still worth `assumed`, because `uses=` says what it rests on.
+
+What the Mathlib dialect adds, in brief (`src/lanky/lean.py` has the whole
+account):
+
+- `Real` and `Complex` are `ℝ` and `ℂ`, and `lanky.exp`, `lanky.log` and
+  `lanky.sqrt` are `Real.exp`, `Real.log` and `Real.sqrt`, or `Complex.exp`
+  and `Complex.log` of a complex argument. At a number they are Python's
+  `math` and `cmath` functions, so the file still runs.
+- A float literal is the rational number Python holds, `(1 / 2 : ℝ)` for
+  `0.5`, and true division is division in a field, `(x : ℝ) / y`, because
+  Python's `/` does not divide integers as integers either.
+- `abs(x)` is `|x|`, and `‖z‖` for a complex `z`, which is the modulus Python
+  computes.
+- An integer floor division next to a real is ascribed, `x + (n / 2 : ℤ)`:
+  Lean casts every leaf of an arithmetic tree to the widest type in it, and
+  without the ascription `n / 2` would divide the cast `n` in `ℝ`.
+
+The readings of a real statement are not one reading. The property tester
+computes `Real` in floating point, with fractions for `Real.exact`, and Lean
+over `ℝ`: `exp(x + y) == exp(x) * exp(y)` is refuted by rounding without
+Mathlib and proved with it. Where Lean's functions are total and Python's
+raise, the fact carries a note, as `div_zero` does above: a true division by
+something that may be zero, and a logarithm or square root of something that
+may leave its Python domain. `def neg(x: Real & (x < 0)) -> sqrt(x) == 0` is
+proved with Mathlib, whose square root of a negative number is `0`, and no
+draw can evaluate it in Python.
 
 ## What to try next
 
@@ -431,7 +520,8 @@ it builds, naming other facts by id.
 | the four plugin protocols and the registry | `src/lanky/plugins.py` |
 | `@theorem`, `@axiom`, `Theorem` and `Axiom` | `src/lanky/theory.py` |
 | samplers and the property tester | `src/lanky/testing.py` |
-| where the readings still differ: division by zero | `src/lanky/semantics.py` |
-| the Lean printer | `src/lanky/lean.py` |
+| where the readings still differ: division by zero, `log`, `sqrt` | `src/lanky/semantics.py` |
+| the Lean printer, core Lean's dialect and Mathlib's | `src/lanky/lean.py` |
+| Mathlib mode: the pinned project and its setup | `src/lanky/mathlib.py`, `src/lanky/mathlib-project/` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |

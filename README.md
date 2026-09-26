@@ -109,8 +109,10 @@ sharp.
   fact in the ledger has counts as an assumption, and `lanky check` names it
   under the table. `examples/nicomachus.py` is the worked case.
 - The ledger: six statuses, provenance, JSON, a rendered table.
-- The prelude: `Nat`, `Int`, `Real`, `Bool`, `Prop`, `Fin[n]`, `Fn[A, B]`,
-  refinement by `T & prop`, exactness classes.
+- The prelude: `Nat`, `Int`, `Real`, `Complex`, `Bool`, `Prop`, `Fin[n]`,
+  `Fn[A, B]`, refinement by `T & prop`, exactness classes; and `lanky.exp`,
+  `lanky.log` and `lanky.sqrt`, which build a term from a term and are
+  `math`'s (or `cmath`'s) functions at a number.
 - Property testing, including satisfying a definitional hypothesis by
   construction rather than rejection sampling, so a theorem about a scan is
   genuinely tested and not vacuously passed. A synthesized value has to land
@@ -140,6 +142,18 @@ sharp.
 - The Lean oracle over core Lean 4, with a tactic ladder and an induction
   strategy read off the term. No Mathlib is fetched or needed. CI runs the
   suite against Lean v4.29.1 as well as without Lean.
+- Mathlib mode, opt-in: `LANKY_LEAN_MATHLIB` names a Lake project with
+  Mathlib fetched, and `python -m lanky.mathlib DIR` sets one up from the
+  project lanky ships, pinned to Mathlib v4.29.1 and every dependency at a
+  commit. The oracle imports Mathlib once and prints statements over `Real`
+  and `Complex` (`ℝ` and `ℂ`), sums (`∑` over `Finset.Ico`), absolute values,
+  true division, floats as the rationals Python holds, and `exp`, `log` and
+  `sqrt` (`Real.exp` and the rest). The ladder goes on to `norm_num`,
+  `positivity`, `ring`, `field_simp`, `linarith` and `nlinarith`, and to an
+  induction for a sum whose bound a natural parameter sets, so Gauss's sum in
+  `examples/gauss.py` reads `proved lean`. With the variable unset, the oracle
+  is the core one, exactly. [docs/quickstart.md](docs/quickstart.md#prove-it-with-mathlib)
+  walks through it.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
 
@@ -168,7 +182,17 @@ sharp.
   `lanky.oracles.lean.use_tactic` pins a script by hand.
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real`, true division and
   an exponent that could be negative raise rather than emit source Lean would
-  reject.
+  reject. In Mathlib mode all but the last are printed, and what is still
+  declined is a sum over `Nat`, a floor division or a remainder of a real, an
+  order between complex numbers and a complex square root: each would be
+  printed with a meaning Python does not give it.
+- Over `Real` and `Complex` the readings are not one. The tester computes in
+  floating point (with fractions for `Real.exact`) and Lean over `ℝ` and `ℂ`,
+  so an identity that holds only up to rounding, such as
+  `exp(x + y) == exp(x) * exp(y)`, is refuted without Mathlib and proved with
+  it. Where Lean is total and Python raises (a division by zero, the logarithm
+  of zero, the square root of a negative number), the fact carries a note, as
+  an integer division by zero does.
 - A family prints as a total function, so every application of one has to be
   shown in bounds before the statement can go to Lean. The check is affine
   arithmetic over the enclosing binders, not a solver, so an argument it cannot
@@ -193,7 +217,9 @@ sharp.
 
 - `CERTIFIED`. The Lean source and the tactic script are in provenance; nothing
   replays them under a checker yet.
-- Mathlib, and with it reductions and real analysis in Lean.
+- Real analysis beyond what the ladder finds: Mathlib mode states it, and the
+  ladder is a fixed set of tactics, not proof search, so a statement that needs
+  a lemma by name falls through to the tester (`use_tactic` pins a script).
 - A proof scripting surface: today a proof is a tactic ladder lanky drives, not a
   Python program over a live goal.
 - Anything on PyPI above the 0.0.1 placeholder.
@@ -227,6 +253,18 @@ elan toolchain install leanprover/lean4:v4.29.1
 elan default leanprover/lean4:v4.29.1
 ```
 
+Mathlib mode needs the same extra and toolchain, and a Lake project with
+Mathlib fetched, about 7 GB on disk:
+
+```sh
+uv run python -m lanky.mathlib ~/mathlib    # writes the pinned project, runs `lake exe cache get`
+export LANKY_LEAN_MATHLIB=~/mathlib
+```
+
+The command never builds Mathlib from source; it fetches the compiled files
+Mathlib publishes. The first session of a process imports Mathlib, which takes
+seconds and about 1.5 GB of memory.
+
 Without the extra, every Lean test skips with a one-line reason and the weaker
 oracles do the work. `lanky check --verbose` prints each oracle and whether it
 is available. The first use builds a Lean REPL, which takes about a minute and
@@ -235,8 +273,8 @@ the network, and caches it in `$XDG_CACHE_HOME/lanky/lean-repl`
 reinstall does not throw it away. Useful environment variables:
 `LANKY_LEAN_DISABLE=1` makes the oracle a declared no-op (the main CI job sets
 it), `LANKY_LEAN_VERSION` pins a toolchain and skips the probe,
-`LANKY_LEAN_CACHE_DIR` moves the cache, and `LANKY_LEAN_TIMEOUT` caps each
-tactic attempt.
+`LANKY_LEAN_CACHE_DIR` moves the cache, `LANKY_LEAN_TIMEOUT` caps each
+tactic attempt, and `LANKY_LEAN_MATHLIB` turns Mathlib mode on.
 
 For work on lanky itself:
 
@@ -257,6 +295,15 @@ of this page is a row the check printed. The suite compares the rest of that
 table, and the quickstart's, with the real output in both jobs, reading the
 row as `tested property-test` in the main one.
 
+A third job, `test with Lean and Mathlib`, is optional: it may fail without
+failing the run, since it depends on fetching Mathlib from outside GitHub. It
+sets up the pinned project with `python -m lanky.mathlib`, caching Mathlib's
+compiled files between runs, runs `tests/test_mathlib.py` with the project
+required, and checks that `lanky check examples/gauss.py` proves both rows.
+The suite otherwise runs in core-Lean mode wherever it runs: it takes
+`LANKY_LEAN_MATHLIB` out of its environment and hands it to the Mathlib tests
+alone.
+
 A file that carries statements needs `from __future__ import annotations` and a
 ruff `F821` per-file ignore, because a size such as `n` is a symbolic variable
 lanky invents while evaluating the annotation and has no binding a static checker
@@ -268,8 +315,8 @@ Four ideas, and everything else is one of them.
 
 **Terms.** pymbolic is the expression language, the same one loopy uses, so a
 statement and a generated kernel cannot drift apart in translation. lanky adds
-`Forall`, `Exists`, `Sum` and `Abs` as pymbolic subclasses, and comparison
-operators on them build propositions.
+`Forall`, `Exists`, `Sum`, `Abs` and `Elementary` (`exp`, `log`, `sqrt`) as
+pymbolic subclasses, and comparison operators on them build propositions.
 
 **Facts and the ledger.** A `Fact` is a statement, a term, a status, a decider,
 a provenance, a source location, and the ids of the facts it rests on. `Status`
