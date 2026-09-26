@@ -116,13 +116,15 @@ above, apart from one ascription described below, and declines less:
 - An absolute value is ``|x|``, and ``‖z‖`` for a complex ``z``, which is the
   modulus Python's ``abs`` computes.
 - ``exp``, ``log`` and ``sqrt`` (:class:`lanky.terms.Elementary`) are
-  ``Real.exp``, ``Real.log`` and ``Real.sqrt``, and ``Complex.exp`` and
-  ``Complex.log`` for a complex argument; a complex square root, whose branch
-  cut Python and Lean draw on different signed zeros, is declined.
-- A reduction over ``Fin`` binders is ``∑ i ∈ Finset.Ico 0 n, body``, with a
-  guard or a refinement as ``with``. Its binder is an ``Int``, as a bounded
-  quantifier's is, so the body is the same integer arithmetic. A sum over a
-  domain with no bound, ``Nat``, is infinite and is declined.
+  ``Real.exp``, ``Real.log`` and ``Real.sqrt``, and ``Complex.exp`` for a
+  complex argument. A complex logarithm or square root is declined: ``cmath``
+  reads the sign of a zero imaginary part to pick a side of the branch cut,
+  so ``log(x * complex(-1, -0.0))`` is ``-πi`` at ``x = 1``, and Lean's
+  complex numbers have no signed zero.
+- A reduction over ``Fin`` binders is ``∑ i ∈ Finset.Ico (0 : ℤ) n, body``,
+  with a guard or a refinement as ``with``. Its binder is an ``Int``, as a
+  bounded quantifier's is, so the body is the same integer arithmetic. A sum
+  over a domain with no bound, ``Nat``, is infinite and is declined.
 
 What makes this more than a longer table is *coercion*. Lean elaborates a tree
 of ``+``, ``-``, ``*`` and ``/`` by finding the largest type among its leaves
@@ -138,6 +140,15 @@ division, a remainder or an order comparison over something that is not an
 integer, or not real, is declined rather than printed with a meaning Python
 does not give it. So is a ``Fin`` whose bound is not an integer, which the
 tester walks as ``range(int(x))``.
+
+The other half of coercion is a numeral with nothing around it to type it,
+which Lean reads as a ``Nat``, as the core dialect's power base already shows.
+A reduction is where the Mathlib dialect meets it: ``Finset.Ico 0 3`` would be
+a set of naturals, and ``sum(i - 1 for i in Fin[3])`` a sum of truncated
+differences, ``1`` where Python computes ``0``; and ``sum(1 for i in Fin[n])``
+would be a natural, so that ``... - 3 >= 0`` holds in Lean at ``n = 0``. So the
+lower bound is ascribed, ``(0 : ℤ)``, and so is a body that is an integer
+numeral.
 """
 
 from __future__ import annotations
@@ -713,7 +724,7 @@ def _kind(expr: Any, types: _Types) -> str:
         return "Int" if _kind(expr.operand, types) == "Int" else "Real"
     if isinstance(expr, Elementary):
         argument = _kind(expr.argument, types)
-        return "Complex" if argument == "Complex" and expr.function != "sqrt" else "Real"
+        return "Complex" if argument == "Complex" and expr.function == "exp" else "Real"
     if isinstance(expr, Sum):
         inner = dict(types)
         for var, domain in expr.binders:
@@ -787,7 +798,7 @@ def _render_abs(expr: Abs, types: _Types) -> str:
 #: for a complex one; ``None`` where lanky does not print it.
 _ELEMENTARY = {
     "exp": ("Real.exp", "Complex.exp"),
-    "log": ("Real.log", "Complex.log"),
+    "log": ("Real.log", None),
     "sqrt": ("Real.sqrt", None),
 }
 
@@ -796,16 +807,22 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
     """Print ``exp``, ``log`` or ``sqrt`` as Mathlib's function of the argument's kind.
 
     An integer argument is cast to ``ℝ`` by Lean where it is applied, which is
-    what Python's ``math.exp(n)`` does too. The complex square root is
-    declined: ``cmath.sqrt`` reads the sign of a zero imaginary part to choose
-    a side of its branch cut, and Lean's complex numbers have no signed zero.
+    what Python's ``math.exp(n)`` does too. The complex logarithm and square
+    root are declined: ``cmath.log`` and ``cmath.sqrt`` read the sign of a
+    zero imaginary part to choose a side of their branch cut, so that
+    ``cmath.log(complex(-1, -0.0))`` is ``-πi`` and ``cmath.log(complex(-1,
+    0.0))`` is ``πi``, while Lean's complex numbers have no signed zero and
+    ``Complex.log (-1)`` is ``π * I`` from either side. The complex
+    exponential is entire, and has no cut to disagree about.
     """
     real, complex_ = _ELEMENTARY[expr.function]
     name = complex_ if _kind(expr.argument, types) == "Complex" else real
     if name is None:
+        kind = "logarithm" if expr.function == "log" else "square root"
         raise UnsupportedTerm(
-            f"{render(expr)} is a complex square root, whose branch cut Python "
-            "and Lean do not draw the same way"
+            f"{render(expr)} is a complex {kind}, whose branch cut Python and Lean "
+            "do not draw the same way: cmath picks a side of it by the sign of a "
+            "zero imaginary part, and Lean's complex numbers have no signed zero"
         )
     return _parens(f"{name} {_render(expr.argument, _ATOM, types)}", _APP, outer)
 
@@ -813,11 +830,15 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
 def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
     """Print a reduction as Mathlib's ``∑``, one ``Finset.Ico`` per binder.
 
-    ``Fin[n]`` is ``Finset.Ico 0 n`` over ``Int``, so the binder is an integer
-    as a quantifier's is, and ``n`` below ``0`` gives the empty sum Python's
-    ``range`` gives. A refinement of the domain, and the generator's guard on
-    the last binder, filter it with ``with``. The body extends as far right as
-    it can, so a sum that is an operand is bracketed.
+    ``Fin[n]`` is ``Finset.Ico (0 : ℤ) n``, so the binder is an integer as a
+    quantifier's is, and ``n`` below ``0`` gives the empty sum Python's
+    ``range`` gives. The ascription is what makes the binder an integer when
+    the bound is a literal, and a body that is an integer numeral is ascribed
+    too, which makes the sum an integer: without them Lean reads both as
+    naturals, whose subtraction truncates (see the module docstring). A
+    refinement of the domain, and the generator's guard on the last binder,
+    filter it with ``with``. The body extends as far right as it can, so a sum
+    that is an operand is bracketed.
 
     Raises:
         UnsupportedTerm: For a binder over anything but ``Fin`` or a
@@ -832,7 +853,11 @@ def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
             )
         layers.append({**layers[-1], var.name: domain})
     inner = layers[-1]
-    text = _render(expr.body, _ADD + 1, inner)
+    body = _integral(expr.body)
+    if isinstance(body, int) and not isinstance(body, bool):
+        text = f"({body} : ℤ)"
+    else:
+        text = _render(expr.body, _ADD + 1, inner)
     guards = list(conjuncts(expr.guard))
     for position in reversed(range(len(expr.binders))):
         var, domain = expr.binders[position]
@@ -848,7 +873,7 @@ def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
         if position == len(expr.binders) - 1:
             conditions += [_render_prop(guard, _AND + 1, inner) for guard in guards]
         condition = f" with {' ∧ '.join(conditions)}" if conditions else ""
-        text = f"∑ {var.name} ∈ Finset.Ico 0 {bound}{condition}, {text}"
+        text = f"∑ {var.name} ∈ Finset.Ico (0 : ℤ) {bound}{condition}, {text}"
     return _parens(text, _QUANT, outer)
 
 

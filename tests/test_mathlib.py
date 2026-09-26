@@ -295,13 +295,31 @@ def test_the_elementary_functions_are_mathlibs() -> None:
     assert mathlib(log(x + 1) <= x, x=Real) == "Real.log (x + 1) ≤ x"
     assert mathlib(sqrt(x**2) == Abs(x), x=Real) == "Real.sqrt (x ^ 2) = |x|"
     assert mathlib(exp(z) != 0, z=Complex) == "Complex.exp z ≠ 0"
-    assert mathlib(log(z) == log(z), z=Complex) == "Complex.log z = Complex.log z"
     # an integer argument is cast where the function is applied, as math.exp(n) casts
     assert mathlib(exp(n) >= 1, n=Nat) == "Real.exp n ≥ 1"
     with pytest.raises(UnsupportedTerm, match="complex square root"):
         print_lean(Forall(((z, Complex),), sqrt(z) == z), mathlib=True)
+    with pytest.raises(UnsupportedTerm, match="complex logarithm"):
+        print_lean(Forall(((z, Complex),), log(z) == log(z)), mathlib=True)
     with pytest.raises(UnsupportedTerm, match="needs Real.exp"):
         print_lean(exp_positive.term)
+
+
+def test_a_complex_logarithm_is_declined_for_its_branch_cut() -> None:
+    """``cmath.log`` picks a side of its cut by the sign of a zero, and Lean cannot.
+
+    At ``x = 1`` the two sides are ``-πi`` and ``πi`` in Python, while both
+    print as ``Complex.log (x * (-1 + 0 * Complex.I : ℂ))``, which Lean's
+    ``simp`` proves equal: printed, the statement was a proof of something
+    Python refutes at every positive ``x``.
+    """
+    across = Forall(((x, Real),), log(x * complex(-1.0, -0.0)) == log(x * complex(-1.0, 0.0)))
+    assert evaluate(log(x * complex(-1.0, -0.0)), {"x": 1.0}) == pytest.approx(-math.pi * 1j)
+    assert evaluate(log(x * complex(-1.0, 0.0)), {"x": 1.0}) == pytest.approx(math.pi * 1j)
+    with pytest.raises(UnsupportedTerm, match="complex logarithm"):
+        print_lean(across, mathlib=True)
+    # the real logarithm of a real argument is Mathlib's, as is the complex exponential
+    assert mathlib(log(Abs(z)) <= Abs(z), z=Complex) == "Real.log ‖z‖ ≤ ‖z‖"
 
 
 def test_complex_numbers_are_not_ordered() -> None:
@@ -313,27 +331,60 @@ def test_complex_numbers_are_not_ordered() -> None:
 
 
 def test_a_reduction_is_a_finset_sum() -> None:
-    """``Fin[n]`` is ``Finset.Ico 0 n`` over ``Int``, so the binder is an integer.
+    """``Fin[n]`` is ``Finset.Ico (0 : ℤ) n``, so the binder is an integer.
 
     A sum that is an operand is bracketed, because the body of ``∑`` extends as
     far to the right as it can, and a guard or a refinement filters it with
     ``with``.
     """
     assert print_lean(gauss.term, mathlib=True) == (
-        "∀ n : Int, 0 ≤ n → 2 * (∑ i ∈ Finset.Ico 0 (n + 1), i) = n * (n + 1)"
+        "∀ n : Int, 0 ≤ n → 2 * (∑ i ∈ Finset.Ico (0 : ℤ) (n + 1), i) = n * (n + 1)"
     )
     guarded = Sum(((i, FinType(n)),), i**2, i % 2 == 0)
     assert mathlib(guarded >= 0, n=Nat) == (
-        "(∑ i ∈ Finset.Ico 0 n with (i % 2 : ℤ) = 0, i ^ 2) ≥ 0"
+        "(∑ i ∈ Finset.Ico (0 : ℤ) n with (i % 2 : ℤ) = 0, i ^ 2) ≥ 0"
     )
     nested = Sum(((i, FinType(n)), (j, FinType(i))), i * j + 1)
     assert mathlib(nested == 0, n=Nat) == (
-        "(∑ i ∈ Finset.Ico 0 n, ∑ j ∈ Finset.Ico 0 i, (i * j + 1)) = 0"
+        "(∑ i ∈ Finset.Ico (0 : ℤ) n, ∑ j ∈ Finset.Ico (0 : ℤ) i, (i * j + 1)) = 0"
     )
     refined = Sum(((i, Refined(FinType(n), (i > 2,))),), x * i)
-    assert mathlib(refined >= 0, n=Nat, x=Real) == "(∑ i ∈ Finset.Ico 0 n with i > 2, x * i) ≥ 0"
+    assert mathlib(refined >= 0, n=Nat, x=Real) == (
+        "(∑ i ∈ Finset.Ico (0 : ℤ) n with i > 2, x * i) ≥ 0"
+    )
     with pytest.raises(UnsupportedTerm, match="no finite extent"):
         print_lean(Forall(((n, Nat),), Sum(((i, Nat),), i) >= 0), mathlib=True)
+
+
+#: Two sums that are false in Python and true read over ``Nat``: ``i - 1``
+#: truncates at ``i = 0``, so the first sum is ``1`` there and ``0`` in Python,
+#: and a count ``- 3`` truncates to ``0`` at ``n = 0``, where Python has ``-3``.
+_LITERAL_BOUND = Sum(((i, FinType(3)),), i - 1) == 1
+_NUMERAL_BODY = Forall(((n, Nat),), Sum(((i, FinType(n)),), 1) - 3 >= 0)
+
+
+def test_a_sum_is_over_integers_whatever_types_its_bound_and_body() -> None:
+    """A numeral nothing types is a ``Nat`` to Lean, and ``Nat`` subtraction truncates.
+
+    ``Finset.Ico 0 3`` is a set of naturals, and ``∑ i ∈ s, 1`` is a natural,
+    so without the ascriptions both claims below were proved (by ``decide``
+    and by ``omega``), while Python evaluates them to ``False``.
+    """
+    assert evaluate(_LITERAL_BOUND, {}) is False
+    assert print_lean(_LITERAL_BOUND, mathlib=True) == (
+        "(∑ i ∈ Finset.Ico (0 : ℤ) 3, (i - 1)) = 1"
+    )
+    assert print_lean(_NUMERAL_BODY, mathlib=True) == (
+        "∀ n : Int, 0 ≤ n → (∑ i ∈ Finset.Ico (0 : ℤ) n, (1 : ℤ)) - 3 ≥ 0"
+    )
+    negative = Forall(((n, Nat),), Sum(((i, FinType(n)),), -2) <= 0)
+    assert print_lean(negative, mathlib=True) == (
+        "∀ n : Int, 0 ≤ n → (∑ i ∈ Finset.Ico (0 : ℤ) n, (-2 : ℤ)) ≤ 0"
+    )
+    # a float body is ascribed already, and a body with a variable in it is typed by it
+    assert mathlib(Sum(((i, FinType(n)),), 0.5) >= 0, n=Nat) == (
+        "(∑ i ∈ Finset.Ico (0 : ℤ) n, (1 / 2 : ℝ)) ≥ 0"
+    )
 
 
 def test_an_index_type_with_a_real_bound_is_declined() -> None:
@@ -352,7 +403,7 @@ def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
     assert statement.mathlib
     assert statement.binders == (("n", "Int"),)
     assert statement.hypotheses == (("h0", "0 ≤ n"),)
-    assert statement.goal == "2 * (∑ i ∈ Finset.Ico 0 (n + 1), i) = n * (n + 1)"
+    assert statement.goal == "2 * (∑ i ∈ Finset.Ico (0 : ℤ) (n + 1), i) = n * (n + 1)"
     assert gauss.lean(mathlib=True) == print_lean(gauss.term, mathlib=True)
     divided = statement_of(_divided_back.term, "_divided_back", mathlib=True)
     assert divided.binders == (("x", "ℝ"), ("y", "ℝ"))
@@ -707,6 +758,11 @@ def test_every_printed_statement_elaborates(mathlib_oracle: LeanOracle) -> None:
         Forall(((n, Nat), (x, Real)), Sum(((i, Refined(FinType(n), (i > 2,))),), x * i) >= 0),
         Forall(((x, Real),), Abs(Abs(x) - 1) + 0.1 >= 0),
         Forall(((n, Nat),), log(n + 1) >= 0),
+        Forall(((z, Complex),), log(Abs(z) + 1) >= 0),
+        Forall(((z, Complex),), log(Abs(z)) <= Abs(z)),
+        _LITERAL_BOUND,
+        _NUMERAL_BODY,
+        Forall(((n, Nat),), Sum(((i, FinType(n)),), -2) <= 0),
     ]
     for term in terms:
         source = f"example : Prop := {print_lean(term, mathlib=True)}\n"
@@ -731,6 +787,22 @@ def test_floor_division_next_to_a_real_is_integer_division(mathlib_oracle: LeanO
         mathlib_oracle.tactics.clear()
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
     assert "x + ((2 * n + 1) / 2 : ℤ) = x + n" in proved.provenance["lean_source"]
+
+
+def test_a_sum_python_refutes_is_not_proved(mathlib_oracle: LeanOracle) -> None:
+    """Read over ``Nat``, both were theorems: ``decide`` and ``omega`` proved them."""
+    for label, term in (("literal_bound", _LITERAL_BOUND), ("numeral_body", _NUMERAL_BODY)):
+        fact = Fact(id=label, kind="theorem", statement=label, term=term)
+        result = mathlib_oracle.establish(fact)
+        assert result.status is Status.ASSUMED, (label, result.provenance.get("tactic"))
+    # and what Python computes is what Lean proves, read over the integers
+    for label, term in (
+        ("literal_bound_true", Sum(((i, FinType(3)),), i - 1) == 0),
+        ("numeral_body_true", Forall(((n, Nat),), Sum(((i, FinType(n)),), 1) == n)),
+    ):
+        fact = Fact(id=label, kind="theorem", statement=label, term=term)
+        proved = mathlib_oracle.establish(fact)
+        assert proved.status is Status.PROVED, (label, proved.provenance.get("lean_reason"))
 
 
 def test_a_killed_server_is_started_again_with_mathlib(mathlib_oracle: LeanOracle) -> None:
