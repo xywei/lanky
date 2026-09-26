@@ -13,6 +13,7 @@ from lanky.terms import (
     Exists,
     Forall,
     LankyEvaluationMapper,
+    Polarity,
     Scope,
     Sum,
     SymbolicBoolError,
@@ -438,6 +439,281 @@ def test_free_variables_see_inside_a_refined_binder_domain() -> None:
     k, n, m = Var("k"), Var("n"), Var("m")
     assert free_variables(Forall(((k, Fin[n] & (k < m)),), k >= 0)) == {"n", "m"}
     assert free_variables(Exists(((k, Nat & (k > 0)),), k == 1)) == frozenset()
+
+
+def test_a_fraction_literal_is_a_constant() -> None:
+    """A term built node by node may carry a ``Fraction``, and it evaluates as one.
+
+    pymbolic's operators refuse a ``Fraction`` operand, so only a plugin puts
+    one into a term, and pymbolic's evaluator refused it as an invalid foreign
+    object: the tester could not run such a statement at all, where it should
+    refute ``1 - Fraction(2, 1) ** n >= 0`` at ``n = 1``.
+    """
+    from fractions import Fraction
+
+    import pymbolic.primitives as prim
+
+    from lanky.testing import check
+
+    n = Var("n")
+    below = prim.Comparison(
+        prim.Sum((1, prim.Product((-1, prim.Power(Fraction(2, 1), n))))), ">=", 0
+    )
+    assert evaluate(below, {"n": 0}) is True
+    assert evaluate(below, {"n": 1}) is False
+    assert evaluate(prim.Sum((n, Fraction(1, 2))), {"n": 1}) == Fraction(3, 2)
+    report = check([("n", Nat)], [], below)
+    assert not report.ok
+    assert report.counterexample["n"] >= 1
+
+
+def test_free_variables_read_a_later_domain_with_the_earlier_binders_bound() -> None:
+    """``Fin[i]`` after ``i in Fin[n]`` is the binder ``i``, and not a free name.
+
+    The generator ``all(j < n for i in Fin[n] for j in Fin[i])`` evaluates
+    ``Fin[i]`` once the outer ``i`` is bound. The domains used to be collected
+    without subtracting the binders before them, so ``i`` came back free. A
+    binder's own domain is read before it exists, and keeps its free name.
+    """
+    i, j, k, n, m = Var("i"), Var("j"), Var("k"), Var("n"), Var("m")
+    assert free_variables(Forall(((i, Fin[n]), (j, Fin[i])), j < n)) == {"n"}
+    assert free_variables(Sum(((i, Fin[n]), (j, Fin[i + m])), j)) == {"n", "m"}
+    # a refinement of a later binder may name an earlier one
+    assert free_variables(Exists(((i, Fin[n]), (j, Nat & (j < i))), j == 0)) == {"n"}
+    # a binder's own domain is evaluated before the binder is bound
+    assert free_variables(Forall(((i, Fin[i]),), i > 0)) == {"i"}
+    assert free_variables(Forall(((i, Fin[n]), (j, Fin[j])), j < n)) == {"n", "j"}
+    # a binder that shadows an earlier one reads its domain with the earlier one
+    # bound, ``all(i < n for i in Fin[n] for i in Fin[i])``, whether the two sit
+    # in one quantifier or in nested ones
+    assert free_variables(Forall(((i, Fin[n]), (i, Fin[i])), i < n)) == {"n"}
+    assert free_variables(Exists(((i, Fin[n]),), Forall(((i, Fin[i]),), i < n))) == {"n"}
+    assert free_variables(Forall(((i, Fin[i]), (i, Fin[i])), i < n)) == {"i", "n"}
+    # a later domain inside a nested quantifier sees the outer binders as well
+    inner = Exists(((j, Fin[i]), (k, Fin[j + m])), k < n)
+    assert free_variables(Forall(((i, Fin[n]),), inner)) == {"n", "m"}
+
+
+# }}}
+
+
+# {{{ where a sampled quantifier stands
+
+
+def _sampler(seed: int = 0):
+    """A sampler of the tester's own, drawing naturals up to five."""
+    return sort_sampler(random.Random(seed), {})
+
+
+def test_a_sampled_forall_is_confirmed_only_where_it_is_asserted() -> None:
+    """``all(k < 100 for k in Nat)`` holds at every draw, and is false.
+
+    Standing where the statement asserts it, that is evidence, the ``TESTED``
+    kind; standing anywhere else the ``True`` would be used as a certainty,
+    and evaluation declines. A draw that breaks it is a counterexample
+    wherever it stands, so ``k < 3`` is ``False`` in every position.
+    """
+    k = Var("k")
+    held = Forall(((k, Nat),), k < 100)
+    broken = Forall(((k, Nat),), k < 3)
+    assert evaluate(held, {}, _sampler()) is True
+    assert evaluate(held, {}, _sampler(), Polarity.POSITIVE) is True
+    for polarity in (Polarity.NEGATIVE, Polarity.MIXED):
+        with pytest.raises(Undecided, match="evidence that it holds and not proof"):
+            evaluate(held, {}, _sampler(), polarity)
+        assert evaluate(broken, {}, _sampler(), polarity) is False
+    # under a negation, and on either side of a comparison between propositions
+    with pytest.raises(Undecided, match="assumes or denies it"):
+        evaluate(~held, {}, _sampler())
+    with pytest.raises(Undecided, match="used as a value"):
+        evaluate(held == True, {}, _sampler())  # noqa: E712 - a proposition, not a bool
+    assert evaluate(~broken, {}, _sampler()) is True
+    # two negations put it back where it is asserted
+    assert evaluate(~~held, {}, _sampler()) is True
+    assert evaluate(~~broken, {}, _sampler()) is False
+
+
+def test_a_universal_reads_its_guard_and_refinements_as_its_antecedent() -> None:
+    """A universal's guard and refinements stand opposite to it; an existential's with it.
+
+    ``all(i < 0 for i in Fin[3] if all(k < 100 for k in Nat))`` is true,
+    because the guard is false, and it used to be refuted at ``i = 0`` on the
+    strength of four draws of ``k``. As a refinement of the binder domain the
+    same guard reads the same way. An existential's guard is a conjunct of
+    what it claims, so where the existential is asserted a pass is evidence
+    for it.
+    """
+    i, k = Var("i"), Var("k")
+    held = Forall(((k, Nat),), k < 100)
+    guarded = Forall(((i, Fin[3]),), i < 0, held)
+    refined = Forall(((i, Fin[3] & held),), i < 0)
+    for claim in (guarded, refined):
+        with pytest.raises(Undecided, match="assumes or denies it"):
+            evaluate(claim, {}, _sampler())
+    assert evaluate(Exists(((i, Fin[3]),), i == 0, held), {}, _sampler()) is True
+    assert evaluate(Exists(((i, Fin[3] & held),), i == 0), {}, _sampler()) is True
+    # a guard a draw refutes is false for certain, and the universal is vacuous
+    broken = Forall(((k, Nat),), k < 3)
+    assert evaluate(Forall(((i, Fin[3]),), i < 0, broken), {}, _sampler()) is True
+
+
+def test_a_sum_over_a_sampled_domain_is_undecided() -> None:
+    """Four draws of ``Nat`` are not ``Nat``, and their sum is not the sum.
+
+    A sampled universal inside a sum is used as a value, so it declines too,
+    and a sum over an enumerated domain is still added up.
+    """
+    i, k = Var("i"), Var("k")
+    with pytest.raises(Undecided, match="sum over draws is not the sum"):
+        evaluate(Sum(((k, Nat),), 1), {}, _sampler())
+    with pytest.raises(Undecided, match="sum over draws is not the sum"):
+        evaluate(Sum(((i, Fin[3]), (k, Nat)), k), {}, _sampler())
+    with pytest.raises(Undecided, match="used as a value"):
+        evaluate(Sum(((i, Fin[3]),), 1, Forall(((k, Nat),), k < 100)), {}, _sampler())
+    assert evaluate(Sum(((i, Fin[3]),), 1, Forall(((k, Nat),), k < 3)), {}, _sampler()) == 0
+    assert evaluate(Sum(((i, Fin[4]),), i), {}, _sampler()) == 6
+
+
+def test_a_guard_that_rejects_every_draw_leaves_a_universal_undecided() -> None:
+    """``all(k < 0 for k in Nat if k > 100)`` held at no draw, because none passed the guard.
+
+    It used to answer ``True``, a vacuous pass over draws that says nothing
+    about the guarded domain; the refinement spelling of the same statement
+    was already declined. Over an enumerated domain the guarded domain really
+    is empty, and the vacuous ``True`` stands.
+    """
+    k, n = Var("k"), Var("n")
+    with pytest.raises(Undecided, match="no draw of Nat passed the guard k > 100"):
+        evaluate(Forall(((k, Nat),), k < 0, k > 100), {}, _sampler())
+    with pytest.raises(Undecided, match="satisfied its refinement"):
+        evaluate(Forall(((k, Nat & (k > 100)),), k < 0), {}, _sampler())
+    assert evaluate(Forall(((k, Fin[n]),), k < 0, k > 100), {"n": 5}, _sampler()) is True
+
+
+def test_a_walk_that_never_draws_is_exhaustive() -> None:
+    """Over ``i in Fin[n], k in Nat`` at ``n = 0`` nothing is drawn, and the answer is exact.
+
+    The first binder has no point, so the domain is empty whatever ``Nat``
+    would have given: the universal is vacuously true, the existential false,
+    and the sum zero. A walk that drew from ``Nat`` is still the sampled kind.
+    """
+    i, k, n = Var("i"), Var("k"), Var("n")
+    binders_ = ((i, Fin[n]), (k, Nat & (k > 100)))
+    assert evaluate(Forall(binders_, k < 0), {"n": 0}, _sampler()) is True
+    assert evaluate(~Forall(((i, Fin[n]), (k, Nat)), k < 100), {"n": 0}, _sampler()) is False
+    assert evaluate(Exists(((i, Fin[n]), (k, Nat)), k >= 0), {"n": 0}, _sampler()) is False
+    assert evaluate(Sum(((i, Fin[n]), (k, Nat)), k), {"n": 0}, _sampler()) == 0
+    with pytest.raises(Undecided, match="satisfied its refinement"):
+        evaluate(Forall(binders_, k < 0), {"n": 2}, _sampler())
+    with pytest.raises(Undecided, match="no witness"):
+        evaluate(Exists(((i, Fin[n]), (k, Nat)), k > 100), {"n": 2}, _sampler())
+
+
+def _atoms(inner: bool) -> list:
+    """Propositions whose truth is known, paired with it, as functions of the point.
+
+    The sampled ones are the point: their draws say something else, or
+    nothing. ``all(k < 100 for k in Nat)`` is false and holds at every draw,
+    ``all(k >= 0 for k in Nat)`` is true and holds at every draw, ``all(k < 3
+    for k in Nat)`` is false and usually broken, ``any(k > 1000 for k in
+    Nat)`` is true and never witnessed, and a guard above every draw leaves a
+    false universal with no point. ``inner`` adds the ones that mention the
+    binder ``i`` of an enclosing quantifier.
+    """
+    i, k, n = Var("i"), Var("k"), Var("n")
+    atoms = [
+        (Forall(((k, Nat),), k < 100), lambda p: False),
+        (Forall(((k, Nat),), k >= 0), lambda p: True),
+        (Forall(((k, Nat),), k < 3), lambda p: False),
+        (Forall(((k, Nat),), k < 0, k > 100), lambda p: False),
+        (Exists(((k, Nat),), k > 1000), lambda p: True),
+        (Exists(((k, Nat),), k == 0), lambda p: True),
+        (n < 2, lambda p: p["n"] < 2),
+        (n < 0, lambda p: False),
+    ]
+    if inner:
+        atoms += [
+            (i == n, lambda p: p["i"] == p["n"]),
+            (Forall(((k, Nat),), k < 100 + i), lambda p: False),
+            (Forall(((k, Nat),), k + i >= i), lambda p: True),
+        ]
+    return atoms
+
+
+def _statement(rng: random.Random, depth: int, inner: bool = False) -> tuple:
+    """A random statement over :func:`_atoms`, with its truth as a function of the point."""
+    i, n = Var("i"), Var("n")
+    shape = rng.randrange(9) if depth else 0
+    if shape == 0 or (inner and shape >= 5):
+        return rng.choice(_atoms(inner))
+    left, true_left = _statement(rng, depth - 1, inner)
+    right, true_right = _statement(rng, depth - 1, inner)
+    if shape == 1:
+        return ~left, lambda p: not true_left(p)
+    if shape == 2:
+        return left & right, lambda p: true_left(p) and true_right(p)
+    if shape == 3:
+        return left | right, lambda p: true_left(p) or true_right(p)
+    if shape == 4:
+        return left == right, lambda p: true_left(p) == true_right(p)
+    # a quantifier over Fin[n + 1], with a guard or a refinement read from a
+    # statement about its binder, or a sum counting the points of one
+    body, true_body = _statement(rng, depth - 1, inner=True)
+    guard, true_guard = _statement(rng, depth - 1, inner=True)
+
+    def points(p):
+        return [{**p, "i": value} for value in range(p["n"] + 1)]
+
+    if shape == 5:
+        return Forall(((i, Fin[n + 1]),), body, guard), lambda p: all(
+            true_body(q) for q in points(p) if true_guard(q)
+        )
+    if shape == 6:
+        return Forall(((i, Fin[n + 1] & guard),), body), lambda p: all(
+            true_body(q) for q in points(p) if true_guard(q)
+        )
+    if shape == 7:
+        return Exists(((i, Fin[n + 1]),), body, guard), lambda p: any(
+            true_body(q) for q in points(p) if true_guard(q)
+        )
+    count = rng.randrange(3)
+    return Sum(((i, Fin[n + 1]),), 1, body) == count, lambda p: count == sum(
+        1 for q in points(p) if true_body(q)
+    )
+
+
+def test_every_answer_is_one_its_position_allows() -> None:
+    """Random statements over propositions whose truth is known, at every polarity.
+
+    Standing ``POSITIVE`` a ``False`` has to be false, which is what makes a
+    refutation real; standing ``NEGATIVE`` a ``True`` has to be true, which is
+    what lets a hypothesis admit a draw; standing ``MIXED`` every answer has
+    to be right. ``Undecided`` is always allowed. The statements combine the
+    atoms with the connectives, comparisons between propositions, guarded and
+    refined quantifiers over ``Fin[n + 1]`` and sums, and the rule the pieces
+    are tested for one by one above has to hold for every combination.
+    """
+    rng = random.Random(0)
+    decided = 0
+    for trial in range(200):
+        term, truth = _statement(rng, 4)
+        for n in range(4):
+            for polarity in Polarity:
+                try:
+                    answer = evaluate(term, {"n": n}, _sampler(trial), polarity)
+                except Undecided:
+                    continue
+                decided += 1
+                expected = truth({"n": n})
+                if polarity is Polarity.POSITIVE:
+                    allowed = answer or not expected
+                elif polarity is Polarity.NEGATIVE:
+                    allowed = expected or not answer
+                else:
+                    allowed = answer is expected
+                assert allowed, (render(term), n, polarity, answer)
+    # the check is only worth something if a fair share of answers were given
+    assert decided > 500
 
 
 # }}}

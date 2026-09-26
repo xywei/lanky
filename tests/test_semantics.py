@@ -208,6 +208,30 @@ def test_a_nonzero_literal_divisor_carries_no_note() -> None:
     assert semantics.notes(_divides.term) == ()
 
 
+def test_an_integral_fraction_divisor_is_the_literal_it_equals() -> None:
+    """``Fraction(2, 1)`` is the ``2`` the Lean printer reads it as, and carries no note.
+
+    Only a term built node by node carries one, since pymbolic's operators
+    refuse a ``Fraction`` operand. The printer read it as a positive literal
+    and printed ``n / 2``, while the note said the divisor might be zero; they
+    agree now. ``Fraction(0, 1)`` is still a zero divisor.
+    """
+    from fractions import Fraction
+
+    import pymbolic.primitives as prim
+
+    from lanky.terms import Forall, Var
+
+    n = Var("n")
+
+    def halved(divisor):
+        return Forall(((n, Nat),), prim.Comparison(prim.FloorDiv(n, divisor), "<=", n))
+
+    assert semantics.notes(halved(Fraction(2, 1))) == ()
+    assert print_lean(halved(Fraction(2, 1))) == "∀ n : Int, 0 ≤ n → n / 2 ≤ n"
+    assert semantics.notes(halved(Fraction(0, 1))) == (semantics.DIVISION_BY_ZERO,)
+
+
 def test_an_int_divisor_that_may_be_zero_carries_one_note() -> None:
     """Rounding is no longer a gap, so totality is the only thing to note."""
 

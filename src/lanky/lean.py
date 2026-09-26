@@ -309,6 +309,24 @@ _RELATIONS = {
 }
 
 
+def _integral(value: Any) -> Any:
+    """An integral ``Fraction`` as the ``int`` it equals; anything else as it is.
+
+    ``Fraction(2, 1)`` prints as the numeral ``2``, so every rule that treats
+    an integer literal specially has to see it as one: the ``Int`` ascription
+    of a power's base, a literal exponent, a positive literal divisor, and a
+    negative summand read back as a subtraction. The base is the one that
+    matters: without its ascription ``1 - Fraction(2, 1) ** n >= 0`` printed
+    over ``Nat``, where Lean proves it with truncated subtraction and Python
+    refutes it at ``n = 1``. pymbolic's operators refuse a ``Fraction``
+    operand, so such a literal comes only from a term built node by node, by
+    hand or by a plugin.
+    """
+    if isinstance(value, Fraction) and value.denominator == 1:
+        return int(value)
+    return value
+
+
 def _render_number(value: Any) -> str:
     """Print a numeric literal, refusing the ones that need a field."""
     if isinstance(value, bool):
@@ -331,8 +349,9 @@ def _render_number(value: Any) -> str:
 
 def _negated(child: Any) -> tuple[bool, Any] | None:
     """Recognize ``(-1) * x`` so that a sum of it prints as a subtraction."""
+    child = _integral(child)
     if isinstance(child, prim.Product) and child.children:
-        first = child.children[0]
+        first = _integral(child.children[0])
         if isinstance(first, int) and first == -1:
             rest = child.children[1:]
             if len(rest) == 1:
@@ -366,6 +385,7 @@ def _render_sum(expr: prim.Sum, types: _Types) -> str:
 
 def _is_positive_literal(expr: Any) -> bool:
     """Whether a divisor is an integer literal that is plainly above zero."""
+    expr = _integral(expr)
     return isinstance(expr, int) and not isinstance(expr, bool) and expr > 0
 
 
@@ -442,6 +462,7 @@ def _render_exponent(expr: Any, types: _Types) -> str:
     Raises:
         UnsupportedTerm: For an exponent that is not one of the three.
     """
+    expr = _integral(expr)
     if isinstance(expr, int) and not isinstance(expr, bool) and expr >= 0:
         return str(expr)
     if isinstance(expr, Var | prim.Variable) and is_natural(types.get(expr.name)):
@@ -468,8 +489,10 @@ def _render_base(expr: Any, types: _Types) -> str:
     at ``m = 1``. Ascribing the literal base, ``(2 : Int) ^ m.toNat``, gives
     every numeral around it the type ``Int``. Any other base is typed already:
     it has a variable, a cast or a call in it that is an ``Int``, or it is a
-    power whose own base this rule has typed.
+    power whose own base this rule has typed. An integral ``Fraction`` is the
+    ``int`` it equals (:func:`_integral`), and is ascribed the same way.
     """
+    expr = _integral(expr)
     if isinstance(expr, int) and not isinstance(expr, bool):
         return f"({expr} : Int)"
     return _render(expr, _POW + 1, types)
@@ -548,6 +571,7 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
     """
     if isinstance(expr, Var | prim.Variable):
         return expr.name
+    expr = _integral(expr)
     if isinstance(expr, int | float | Fraction | bool):
         return _parens(_render_number(expr), _ADD if _is_negative(expr) else _ATOM, outer)
     if expr is None:
@@ -639,10 +663,13 @@ def _affine(expr: Any) -> dict[str, int] | None:
     Affine is as far as this goes, and far enough: an index expression is
     ``r + 1`` or ``2 * i`` or ``n - 1``, and anything else (a division, a
     family application, a product of two variables) is not something the check
-    can reason about, so it answers ``None`` and the caller declines.
+    can reason about, so it answers ``None`` and the caller declines. An
+    integral ``Fraction`` is the integer it equals (:func:`_integral`), as it
+    is where it is printed.
     """
     if isinstance(expr, bool):
         return None
+    expr = _integral(expr)
     if isinstance(expr, int):
         return {_CONSTANT: expr}
     if isinstance(expr, Var | prim.Variable):

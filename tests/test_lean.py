@@ -10,10 +10,13 @@ green suite.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 from typing import NoReturn
 
+import pymbolic.primitives as prim
 import pytest
 
 from lanky import theorem
@@ -25,7 +28,7 @@ from lanky.lean import (
     print_lean,
     statement_of,
 )
-from lanky.ledger import Status
+from lanky.ledger import Fact, Status
 from lanky.oracles.lean import (
     LeanOracle,
     LeanSession,
@@ -788,6 +791,44 @@ def test_a_literal_base_is_an_integer() -> None:
     )
 
 
+#: ``1 - Fraction(2, 1) ** n >= 0`` over ``Nat``, built node by node: pymbolic's
+#: operators refuse a ``Fraction`` operand, so a plugin is where it comes from.
+_FRACTION_BASE = Forall(
+    ((n, Nat),),
+    prim.Comparison(prim.Sum((1, prim.Product((-1, prim.Power(Fraction(2, 1), n))))), ">=", 0),
+)
+
+
+def test_an_integral_fraction_is_the_integer_it_equals() -> None:
+    """``Fraction(2, 1)`` prints as ``2``, so every rule for an integer literal applies to it.
+
+    The base of a power is the one that mattered: an ``int`` base is ascribed
+    ``Int`` and an integral ``Fraction`` was not, so ``_FRACTION_BASE`` printed
+    as ``1 - 2 ^ n.toNat ≥ 0``, a statement about ``Nat`` that Lean proves by
+    truncating and Python refutes at ``n = 1``. A literal exponent, a positive
+    literal divisor, a negative summand and a coefficient of -1 read the same
+    way, a family applied at one is applied at an integer the bounds check can
+    see, and a fraction that is not an integer still needs a field.
+    """
+    assert print_lean(_FRACTION_BASE) == "∀ n : Int, 0 ≤ n → 1 - (2 : Int) ^ n.toNat ≥ 0"
+    squared = prim.Comparison(prim.Power(n, Fraction(2, 1)), ">=", 0)
+    assert print_lean(Forall(((n, Nat),), squared)) == "∀ n : Int, 0 ≤ n → n ^ 2 ≥ 0"
+    halved = prim.Comparison(prim.FloorDiv(n, Fraction(2, 1)), "<=", n)
+    assert print_lean(Forall(((n, Nat),), halved)) == "∀ n : Int, 0 ≤ n → n / 2 ≤ n"
+    lowered = prim.Comparison(prim.Sum((n, Fraction(-3, 1))), "<", n)
+    assert print_lean(Forall(((n, Nat),), lowered)) == "∀ n : Int, 0 ≤ n → n - 3 < n"
+    # a coefficient of -1 is a subtraction too, whichever kind of literal it is
+    negated = prim.Comparison(prim.Sum((n, prim.Product((Fraction(-1, 1), i)))), "<=", n)
+    assert print_lean(Forall(((n, Nat), (i, Nat)), negated)) == (
+        "∀ n : Int, 0 ≤ n → ∀ i : Int, 0 ≤ i → n - i ≤ n"
+    )
+    # and a family applied at one is applied at the integer, in bounds
+    applied = Forall(((f, Fn[Fin[1], Nat]),), prim.Comparison(f(Fraction(0, 1)), ">=", 0))
+    assert print_lean(applied) == "∀ f : Int → Nat, (f 0 : Int) ≥ 0"
+    with pytest.raises(UnsupportedTerm, match="needs a field"):
+        print_lean(Forall(((n, Nat),), prim.Comparison(n, ">=", Fraction(1, 2))))
+
+
 # }}}
 
 
@@ -1059,6 +1100,84 @@ def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) ->
     _assert_abridged([_read_as_tested(line) for line in readme], printed)
 
 
+#: The command the quickstart shows the ledger of ``gap.py`` for.
+CHECK_GAP = "uv run lanky check gap.py"
+
+
+def _python_after(document: str, marker: str) -> str:
+    """The first ``python`` block in ``document`` after the line that contains ``marker``."""
+    lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
+    at = next((index for index, line in enumerate(lines) if marker in line), None)
+    assert at is not None, f"{document} no longer says {marker!r}"
+    start = lines.index("```python", at) + 1
+    return "\n".join(lines[start : lines.index("```", start)]) + "\n"
+
+
+def _block_from(document: str, first: str) -> list[str]:
+    """The lines of the fenced block in ``document`` whose first line starts with ``first``."""
+    lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
+    at = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
+    assert at is not None, f"{document} no longer shows a block starting {first!r}"
+    return [line.rstrip() for line in lines[at : lines.index("```", at)]]
+
+
+def _div_zero_snippet() -> str:
+    """``div_zero`` as the quickstart spells it inline, decorated and given a body."""
+    text = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+    found = re.search(r"`(def div_zero\([^`]*)`", text)
+    assert found is not None, "docs/quickstart.md no longer shows div_zero"
+    return f'@theorem\n{found.group(1)}:\n    """Total in Lean, an exception in Python."""\n'
+
+
+def _write_gap(directory: Path, snippet: str) -> Path:
+    """``gap.py`` as the quickstart has a reader write it: gauss.py's imports, then ``snippet``.
+
+    The imports are read off ``examples/gauss.py``, from its ``__future__``
+    import up to its first theorem, which is what puts the snippet's
+    decorator on line 7, where the quickstart's ``WHERE`` column has it. Each
+    file gets a directory of its own, so no import of one is taken for the
+    other.
+    """
+    lines = (ROOT / "examples" / "gauss.py").read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines) if line.startswith("from __future__"))
+    end = next(index for index, line in enumerate(lines) if line.startswith("@theorem"))
+    directory.mkdir()
+    path = directory / "gap.py"
+    path.write_text("".join(lines[start:end]) + snippet, encoding="utf-8")
+    return path
+
+
+def _check_gap(path: Path, capsys, code: int) -> list[str]:
+    """``lanky check`` on one ``gap.py``, as the lines it prints; it has to exit with ``code``."""
+    from lanky import cli
+
+    assert cli.main(["check", str(path)]) == code
+    return [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+
+
+def _gap_rows(tmp_path: Path, capsys) -> tuple[list[str], list[str]]:
+    """What ``lanky check`` prints for ``truncated`` and for ``div_zero``."""
+    snippet = _python_after("docs/quickstart.md", "Put this in `gap.py`")
+    truncated = _check_gap(_write_gap(tmp_path / "truncated", snippet), capsys, 1)
+    div_zero = _check_gap(_write_gap(tmp_path / "div_zero", _div_zero_snippet()), capsys, 0)
+    return truncated, div_zero
+
+
+def test_without_lean_the_quickstart_gap_transcripts_hold(monkeypatch, tmp_path, capsys) -> None:
+    """The quickstart's ``gap.py`` blocks are a real run too, without Lean.
+
+    ``truncated`` prints the same block with Lean and without, the refutation
+    included, and exits 1; ``div_zero`` reads ``assumed`` with no
+    ``SEMANTICS`` block, because the only oracle left could not run it, and
+    exits 0. The file is written from the quickstart's own snippet.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    truncated, div_zero = _gap_rows(tmp_path, capsys)
+    assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
+    assert div_zero[2].split()[:4] == ["assumed", "-", "gap.py:7", "div_zero"]
+    assert not any(line.startswith("SEMANTICS") for line in div_zero)
+
+
 # }}}
 
 
@@ -1246,6 +1365,48 @@ def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, 
     readme = _printed_after("README.md", "lanky check examples/gauss.py")
     _assert_abridged(readme, printed)
     assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
+
+
+def test_the_quickstart_gap_transcripts_are_what_check_prints(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """The quickstart's ``gap.py`` blocks are what ``lanky check`` prints with Lean.
+
+    They were kept by hand: the rendering of a refuted fact, the tester's
+    counterexample and the semantics note could all drift from them. With
+    Lean, ``truncated`` is still refuted by the tester, and ``div_zero`` reads
+    ``proved lean`` with the ``SEMANTICS`` block the quickstart shows.
+    """
+    truncated, div_zero = _gap_rows(tmp_path, capsys)
+    assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
+    assert div_zero[2].split()[:4] == ["proved", "lean", "gap.py:7", "div_zero"]
+    semantics = _block_from("docs/quickstart.md", "SEMANTICS div_zero")
+    assert semantics[0] in div_zero
+    at = div_zero.index(semantics[0])
+    assert div_zero[at : at + len(semantics)] == semantics
+
+
+def test_lean_does_not_prove_an_integral_fraction_base_by_truncation(
+    lean_oracle: LeanOracle,
+) -> None:
+    """``1 - Fraction(2, 1) ** n >= 0`` is false at ``n = 1``, and Lean must not prove it.
+
+    Printed without the ``Int`` ascription it was a statement about ``Nat``,
+    which Lean proved, and the check read ``proved`` for a claim that is false
+    as Python computes it. Lean now fails to prove it, and the tester, which
+    could not evaluate a ``Fraction`` literal either, refutes it.
+    """
+    from lanky.check import establish
+
+    fact = Fact(
+        id="fraction_base", kind="theorem", statement="1 - 2**n >= 0", term=_FRACTION_BASE
+    )
+    closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_FRACTION_BASE)}\n")
+    assert closed, detail
+    assert lean_oracle.establish(fact).status is not Status.PROVED
+    checked = establish(fact)
+    assert checked.status is Status.REFUTED
+    assert checked.decided_by == "property-test"
 
 
 def test_the_printed_proposition_elaborates(lean_oracle: LeanOracle) -> None:

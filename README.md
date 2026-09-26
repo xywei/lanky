@@ -175,15 +175,19 @@ sharp.
   settle is declined rather than assumed: the statement falls through to the
   tester, which is a proof fewer and never a proof too many.
 - Sampling quantifiers over `Nat` draws a handful of points. That is evidence of
-  the weakest kind and the ledger says so. It is evidence in one direction only:
-  a `forall` that a draw breaks is really refuted, but an `any` that no draw
-  witnesses is undecided, not false, so the tester declines the draw and the
-  fact stays `ASSUMED`. Over `Fin` the domain is enumerated and both answers
-  hold. A quantifier over a refined domain `T & p`, which a plugin building
-  terms by hand can write, ranges over the points of `T` where `p` holds, as
-  the Lean printer reads it: enumerated when `T` is, filtered draws when it is
-  sampled, and a `forall` whose refinement rejects every draw is undecided
-  rather than passed.
+  the weakest kind and the ledger says so. A sampled quantifier can be refuted
+  but never confirmed: a `forall` that a draw breaks is really false, and an
+  `any` that a draw witnesses really true, but an `any` that no draw witnesses
+  is undecided, not false, and a `forall` that holds at every draw counts as
+  evidence only where the statement asserts it. Under `~`, in a hypothesis or
+  the guard of an `all`, and inside a sum or a comparison it is undecided, and
+  so is a `forall` whose guard or refinement no draw passes, and a sum over
+  draws of `Nat`. The tester declines such a draw and, when no draw decides the
+  statement, the fact stays `ASSUMED` with the reason. Over `Fin` the domain is
+  enumerated and both answers hold. A quantifier over a refined domain `T & p`,
+  which a plugin building terms by hand can write, ranges over the points of
+  `T` where `p` holds, as the Lean printer reads it: enumerated when `T` is,
+  filtered draws when it is sampled.
 
 **Not yet.**
 
