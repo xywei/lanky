@@ -105,7 +105,8 @@ def rewrite_fact(
     fact through :meth:`~lanky.ledger.Fact.with_status`.
 
     Raises:
-        TypeError: If ``term`` is not a :class:`RewriteTerm`.
+        TypeError: If ``term`` is not a :class:`RewriteTerm`, or ``rests_on``
+            is one id written as a string, where a tuple of one is meant.
     """
     if not isinstance(term, RewriteTerm):
         raise TypeError(f"a rewrite fact's term is a RewriteTerm, not {term!r}")
@@ -124,7 +125,9 @@ def rewrite_fact(
         provenance=provenance,
         where=where,
         owner=owner,
-        rests_on=tuple(rests_on),
+        # as given, so that the Fact refuses one id written as a string,
+        # which tuple() would have split into an id per character
+        rests_on=rests_on,
     )
 
 

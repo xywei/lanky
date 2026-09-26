@@ -91,6 +91,11 @@ def test_a_plugin_builds_the_same_shape_without_a_decorator() -> None:
     assert decided.status is Status.DECIDED and decided.term is term
     with pytest.raises(TypeError, match="RewriteTerm"):
         rewrite_fact(("S0[i]", "S0[j]"), owner="scan")
+    # one id is a tuple of one, and a bare string is refused, not read letter by letter
+    with pytest.raises(TypeError, match=r"a single id is written \('in-bounds:kernels.scan@12',\)"):
+        rewrite_fact(term, owner="scan", rests_on="in-bounds:kernels.scan@12")
+    generated = rewrite_fact(term, owner="scan", rests_on=(id_ for id_ in ["a", "b"]))
+    assert generated.rests_on == ("a", "b")
 
 
 def test_a_rewrite_term_compares_by_identity() -> None:
