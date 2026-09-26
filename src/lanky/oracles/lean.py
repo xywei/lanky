@@ -54,7 +54,9 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
+import weakref
 from importlib.util import find_spec
 from typing import Any
 
@@ -79,6 +81,7 @@ __all__ = [
     "LeanSession",
     "default_cache_dir",
     "induction_scripts",
+    "kill_servers",
     "reduction_scripts",
     "tactic_ladder",
     "use_tactic",
@@ -350,7 +353,7 @@ class LeanSession:
             global _RESOLVED
             _RESOLVED = version
             self.version = version or getattr(config, "lean_version", None)
-            atexit.register(self.close)
+            self._opened()
             return True
         self.error = "no Lean REPL could be built (" + "; ".join(reasons[-2:]) + ")"
         return False
@@ -399,8 +402,13 @@ class LeanSession:
         if not self._import_mathlib():
             self.close()
             return False
-        atexit.register(self.close)
+        self._opened()
         return True
+
+    def _opened(self) -> None:
+        """Have the server stopped on the way out of the process, and by :func:`kill_servers`."""
+        atexit.register(self.close)
+        _OPENED.add(self)
 
     def _import_mathlib(self) -> bool:
         """``import Mathlib`` in the running server, keeping the environment it leaves."""
@@ -485,6 +493,47 @@ class LeanSession:
             lines = problems[0].strip().splitlines()
             return False, lines[0] if lines else "Lean reported an error with no message"
         return True, ""
+
+
+#: Every session that opened, for :func:`kill_servers`.
+_OPENED: weakref.WeakSet[LeanSession] = weakref.WeakSet()
+
+
+def kill_servers() -> None:
+    """Kill the Lean process of every session in this process, and everything it started.
+
+    A session stops its own when the interpreter exits, but a process ended by
+    a signal runs nothing on the way out, and lean-interact starts the REPL in
+    a session of its own, which no signal sent to this process or its process
+    group reaches. The REPL then goes on with the attempt it was given, however
+    long that runs, since the timeout is kept by the process that is gone, and
+    ends only when it next reads its input and finds it closed. A process
+    about to end of a signal calls this first: a child of ``lanky check``
+    does, on ``SIGTERM`` (see :func:`lanky.cli._terminated`).
+
+    So this is written for a signal handler: it sends ``SIGKILL`` to the
+    REPL's process group and returns, waiting for nothing and taking no lock,
+    where :meth:`LeanSession.close` waits for the REPL and closes the pipes a
+    thread may be reading. A server already reaped is left alone, since its
+    process id may be another process's by now. A session whose server was
+    killed and that goes on starts it again before its next command, as it
+    does after a timeout.
+    """
+    for session in list(_OPENED):
+        # lean-interact keeps the process it started, ``lake env repl``, there
+        process = getattr(session.server, "_proc", None)
+        if process is None or getattr(process, "returncode", 0) is not None:
+            continue
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (AttributeError, ProcessLookupError):
+            # no process groups here, or the REPL is not the leader of one
+            try:
+                process.kill()
+            except OSError:  # pragma: no cover - ended since it was looked at
+                pass
+        except OSError:  # pragma: no cover - a group that is not this user's
+            pass
 
 
 def _errors(response: Any) -> list[str]:

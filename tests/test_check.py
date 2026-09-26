@@ -1143,6 +1143,169 @@ def test_a_copy_that_fails_kills_the_child(monkeypatch) -> None:
     assert child.returncode is not None and child.returncode != 0
 
 
+STOPPABLE = """\
+import signal
+import sys
+import time
+
+
+def stop(*_):
+    print("stopped", flush=True)
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, {handler})
+print("ready", flush=True)
+time.sleep(30)
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+@pytest.mark.parametrize(("handler", "returncode"), [("stop", 0), ("signal.SIG_IGN", -9)])
+def test_an_interrupt_stops_the_child_with_sigterm_first(monkeypatch, handler, returncode) -> None:
+    """An interrupt that reaches this process alone ends the child with ``SIGTERM`` first.
+
+    The child was sent ``SIGKILL`` at once, which runs nothing in it, and a
+    Lean REPL it had started went on with its attempt, since lean-interact
+    starts the REPL in a session of its own; a child now kills its REPLs on
+    ``SIGTERM``. One that has not ended a moment later, because a checked
+    file ignores the signal, say, is still killed.
+    """
+    import io
+    import sys
+
+    monkeypatch.setattr(cli, "_STOP_GRACE", 1.0)
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    child = _sleeper(STOPPABLE.format(handler=handler))
+    assert child.stdout.readline() == b"ready\n"
+    wait = child.wait
+    interrupted = []
+
+    def interrupt_once(timeout=None):
+        if not interrupted:
+            interrupted.append(True)
+            raise KeyboardInterrupt
+        return wait(timeout)
+
+    monkeypatch.setattr(child, "wait", interrupt_once)
+    with pytest.raises(KeyboardInterrupt):
+        cli._follow(child)
+    assert child.returncode == returncode
+    if returncode == 0:
+        assert out.getvalue() == "stopped\n"
+
+
+#: A child of ``lanky check`` as far as its ``SIGTERM`` goes: the handler
+#: :func:`lanky.cli._end_with_parent` installs, and a session whose server is
+#: a process group of its own, as lean-interact starts the REPL. ``{extra}``
+#: runs once all of that is in place.
+TERMINATED = """\
+import os, signal, subprocess, sys, time
+from types import SimpleNamespace
+
+from lanky import cli
+from lanky.oracles import lean
+
+repl = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+)
+session = lean.LeanSession()
+session.server = SimpleNamespace(_proc=repl)
+lean._OPENED.add(session)
+cli._end_with_parent(os.getppid())
+print(repl.pid, flush=True)
+{extra}
+time.sleep(60)
+"""
+
+#: Linux sends the parent-death signal again each time the next thread the
+#: child is attached to ends, and one can come while the REPLs are killed.
+AGAIN = """\
+kill = lean.kill_servers
+
+
+def again():
+    os.kill(os.getpid(), signal.SIGTERM)
+    time.sleep(0.5)
+    kill()
+
+
+lean.kill_servers = again
+"""
+
+#: A process forked from the child, as ``multiprocessing`` forks one, ended by
+#: ``SIGTERM`` as ``Pool.terminate`` ends its workers.
+FORKED = """\
+worker = os.fork()
+if worker == 0:
+    os.kill(os.getpid(), signal.SIGTERM)
+    time.sleep(10)
+    os._exit(0)
+_, status = os.waitpid(worker, 0)
+print(os.WTERMSIG(status) if os.WIFSIGNALED(status) else None, repl.poll(), flush=True)
+repl.kill()
+raise SystemExit(0)
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+def test_a_second_sigterm_does_not_end_the_child_before_its_repls(tmp_path) -> None:
+    """#28: ``SIGTERM`` ends a child once its REPLs are killed, however many come.
+
+    A command ended alone ends one thread after another, and Linux sends the
+    child the parent-death signal once for each: the child was attached to
+    the next thread each time. The handler went back to the default action
+    before it killed the REPLs, and the second ``SIGTERM`` ended the child
+    halfway, leaving the REPL running; that happened about one time in four
+    with a real Lean REPL.
+    """
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", TERMINATED.format(extra=AGAIN)], stdout=subprocess.PIPE
+    )
+    repl = int(child.stdout.readline())
+    try:
+        child.send_signal(signal.SIGTERM)
+        assert child.wait(timeout=10) == -signal.SIGTERM
+        deadline = time.monotonic() + 10
+        while not _gone(repl) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert _gone(repl), "the REPL outlived the child"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        if not _gone(repl):
+            import os
+
+            os.kill(repl, signal.SIGKILL)
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+def test_a_process_forked_from_the_child_leaves_its_repls_alone(tmp_path) -> None:
+    """A process forked from a child inherits its ``SIGTERM`` handler, and copies of its sessions.
+
+    Ending such a process, as ``multiprocessing`` ends its workers, must not
+    kill the REPLs, which are the child's: the handler kills them only in the
+    process it was installed in, and otherwise ends the process it runs in.
+    """
+    import subprocess
+    import sys
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", TERMINATED.format(extra=FORKED)], stdout=subprocess.PIPE
+    )
+    out, _ = child.communicate(timeout=30)
+    _, verdict = out.decode().splitlines()
+    assert verdict == "15 None"
+    assert child.returncode == 0
+
+
 def _lanky_check(tmp_path, *files, options=(), **popen):
     """``lanky check FILE...`` as a process of its own, its interpreter given ``options``.
 
@@ -1299,7 +1462,7 @@ def test_a_process_a_checked_file_leaves_running_does_not_hold_the_check_up(
     The command read the child's output to its end, and a process the checked
     file started, and left running with the child's standard output and error
     as its own, kept them open for the minute it sleeps. Once the child has
-    exited, its output is copied until it goes quiet.
+    exited, its output is copied up to the last byte it wrote.
     """
     import os
     import signal
@@ -1327,11 +1490,70 @@ def test_a_process_a_checked_file_leaves_running_does_not_hold_the_check_up(
                 os.kill(left, signal.SIGKILL)
 
 
-def test_a_slow_output_loses_nothing_a_child_wrote(monkeypatch) -> None:
-    """Time spent writing to a slow ``sys.stdout`` (a pager, say) is not quiet.
+KEEPS_WRITING = '''\
+import subprocess
+import sys
 
-    Each write here takes longer than the grace a stream gets once the child
-    has exited, and every line the child wrote is still copied.
+left = subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        "import time\\nfor i in range(200):\\n    print('still here', flush=True)\\n"
+        "    time.sleep(0.2)\\n",
+    ]
+)
+with open({pidfile!r}, "w", encoding="utf-8") as handle:
+    handle.write(str(left.pid))
+print("left one writing")
+'''
+
+
+def test_a_process_that_keeps_writing_does_not_hold_the_check_up(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#28: a process a checked file left writing to the child's output holds nothing up either.
+
+    A stream was copied, once the child had exited, until it had been quiet
+    for a second, and a process that writes more often than that, five
+    times a second here for forty seconds, held the command up for as long
+    as it wrote. What the child wrote is copied, and nothing written after
+    it exited is, so none of it lands among the next root's ledger.
+    """
+    import os
+    import signal
+    import sys
+    import time
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    pidfile = tmp_path / "left.pid"
+    writes = tmp_path / "a" / "writes.py"
+    writes.parent.mkdir()
+    writes.write_text(KEEPS_WRITING.format(pidfile=str(pidfile)), encoding="utf-8")
+    good = _rooted(tmp_path / "b", 2)
+    started = time.monotonic()
+    try:
+        assert cli.main(["check", str(writes), str(good)]) == 0
+        assert time.monotonic() - started < 20
+        printed = capsys.readouterr().out
+        before, after = printed.split(f"==> {good} <==\n")
+        assert "left one writing\n" in before
+        assert "still here" not in after
+        assert after.count("1 facts: 1 tested") == 1
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+        if pidfile.exists():
+            left = int(pidfile.read_text(encoding="utf-8"))
+            if not _gone(left):
+                os.kill(left, signal.SIGKILL)
+
+
+def test_a_slow_output_loses_nothing_a_child_wrote(monkeypatch) -> None:
+    """A slow ``sys.stdout`` (a pager, say) costs nothing the child wrote.
+
+    Each write here takes a second, far longer than the child takes to write
+    the rest and exit, and every line it wrote is still copied: what is
+    copied once it has exited is what the stream held then, however long
+    that takes.
     """
     import sys
     import time
@@ -1343,7 +1565,7 @@ def test_a_slow_output_loses_nothing_a_child_wrote(monkeypatch) -> None:
             self.parts: list[str] = []
 
         def write(self, text: str) -> None:
-            time.sleep(1.5 * cli._GRACE)
+            time.sleep(1.0)
             self.parts.append(text)
 
     out = Slow()

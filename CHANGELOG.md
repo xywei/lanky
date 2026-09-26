@@ -844,15 +844,22 @@ listed because it changes behaviour a reader could already have depended on.
   the command's process ends (`PR_SET_PDEATHSIG` on Linux, a thread watching
   the parent's pid elsewhere), so a `SIGTERM` or a `SIGKILL` sent to the
   command alone, which ends it with nothing run on the way out, no longer
-  leaves the child checking for no one until its next write. And once a child
-  has exited, its output is copied until it ends or has been quiet for a
-  second, rather than until it ends: a process a checked file left running,
-  with the child's output as its own, held the command up until it closed
-  it. What such a process writes after that is read and dropped, and time
-  spent writing to a slow standard output does not count as quiet. (Where
-  every file shares one root there is no child, and such a process holds
-  whatever reads the command's own output, as it would for any program.) No
-  verdict and no ledger changes.
+  leaves the child checking for no one until its next write. On `SIGTERM` a
+  child kills the Lean REPLs it started before it ends, with the new
+  `lanky.oracles.lean.kill_servers`: lean-interact starts the REPL in a
+  session of its own, which no signal sent to the child reaches, and it went
+  on with the attempt it was given, however long that ran. An interrupt that
+  reaches the command alone sends the child `SIGTERM` for the same reason,
+  where it sent `SIGKILL`, and `SIGKILL` only if the child is still there
+  five seconds later. And once a child has exited, only what it wrote is
+  copied: the bytes its pipes held when it exited, rather than everything up
+  to their end. A process a checked file left running, with the child's
+  output as its own, held the command up until it closed it; what it writes
+  is now read and dropped, however often it writes, and a slow standard
+  output (a pager) loses nothing the child wrote. (Where every file shares
+  one root there is no child, and such a process holds whatever reads the
+  command's own output, as it would for any program.) No verdict and no
+  ledger changes.
 
 ### Notes
 

@@ -35,6 +35,7 @@ from lanky.oracles.lean import (
     LeanOracle,
     LeanSession,
     induction_scripts,
+    kill_servers,
     tactic_ladder,
     use_tactic,
 )
@@ -1264,6 +1265,77 @@ def test_a_core_session_starts_a_killed_server_again(monkeypatch) -> None:
     assert "could not be restarted" in detail
 
 
+#: A stand-in for ``lake env repl``: a process that starts one of its own,
+#: prints that one's pid, and sleeps, as ``lake`` waits on the REPL.
+_LAKE = """\
+import subprocess, sys, time
+repl = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+print(repl.pid, flush=True)
+time.sleep(60)
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX process groups")
+@pytest.mark.parametrize("own_session", [True, False])
+def test_kill_servers_kills_each_repl_and_what_it_started(own_session) -> None:
+    """#28: a process about to end of a signal kills each session's REPL first.
+
+    lean-interact starts ``lake env repl`` in a session of its own, which no
+    signal sent to lanky's process reaches, so the REPL outlived a process
+    ended by one, going on with its attempt. A child of ``lanky check`` calls
+    this on ``SIGTERM``. The whole process group goes, the REPL ``lake``
+    started with it; a server that is not in a group of its own is killed
+    alone. A server already reaped is left alone, and so is a session that
+    never started one.
+    """
+    import subprocess
+    import sys
+    import time
+    from types import SimpleNamespace
+
+    from lanky.oracles.lean import _OPENED
+
+    lake = subprocess.Popen(
+        [sys.executable, "-c", _LAKE], stdout=subprocess.PIPE, start_new_session=own_session
+    )
+    repl = int(lake.stdout.readline())
+    reaped = subprocess.Popen([sys.executable, "-c", "pass"])
+    reaped.wait()
+    sessions = [LeanSession(), LeanSession(), LeanSession()]
+    sessions[0].server = SimpleNamespace(_proc=lake)
+    sessions[1].server = SimpleNamespace(_proc=reaped)
+    try:
+        for session in sessions:
+            _OPENED.add(session)
+        kill_servers()
+        assert lake.wait(timeout=10) == -9
+        if own_session:
+            deadline = time.monotonic() + 10
+            while not _gone(repl) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert _gone(repl), "the REPL lake started outlived it"
+    finally:
+        for session in sessions:
+            _OPENED.discard(session)
+        lake.kill()
+        lake.wait()
+        if not _gone(repl):
+            os.kill(repl, 9)
+
+
+def _gone(pid: int) -> bool:
+    """Whether process ``pid`` has ended; one ended and not yet reaped counts."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):  # no /proc: alive, as far as can be told
+        return False
+
+
 def test_an_unavailable_oracle_is_named_in_the_check_report(monkeypatch) -> None:
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
@@ -1744,6 +1816,91 @@ def test_a_session_survives_an_attempt_that_timed_out(lean_oracle: LeanOracle) -
         assert proved.status is Status.PROVED
     finally:
         session.close()
+
+
+#: A true claim whose one attempt keeps Lean busy for a minute before it
+#: proves it: ``sleep`` is a tactic of core Lean.
+_SLEEPS_IN_LEAN = '''\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.oracles.lean import use_tactic
+from lanky.prelude import Nat
+
+
+@theorem
+def sleeps(a: Nat, b: Nat) -> a + b == b + a:
+    """True, with a script that sleeps in Lean before it proves it."""
+
+
+use_tactic(sleeps, "sleep 60000\\n  omega")
+'''
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+@pytest.mark.parametrize("name", ["SIGTERM", "SIGKILL", "SIGINT"])
+def test_a_child_ended_with_the_command_stops_its_lean_repl(
+    lean_oracle: LeanOracle, tmp_path, name
+) -> None:
+    """#28: the Lean REPL of a child of ``lanky check`` ends with the child.
+
+    lean-interact starts the REPL in a session of its own, so no signal that
+    ends the child reaches it, and the timeout that would stop its attempt is
+    kept by the child. A child ended of ``SIGTERM`` (which it gets when the
+    command is ended alone, by ``SIGTERM`` or ``SIGKILL``), or of the
+    ``SIGKILL`` the command sent it on an interrupt, left the REPL going on
+    with the attempt it was given, a minute here. The child now kills its
+    REPLs on ``SIGTERM``, and the command sends it ``SIGTERM`` first. Ended
+    alone, the command's threads end one after another, and each sends the
+    child ``SIGTERM`` again; the child used to end of the second one while it
+    was still stopping the REPL.
+    """
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    psutil = pytest.importorskip("psutil")
+    if name == "SIGINT" and signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
+        pytest.skip("SIGINT is ignored here, and so it is in the command")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "sleeps.py").write_text(_SLEEPS_IN_LEAN, encoding="utf-8")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "other.py").write_text("OTHER = 1\n", encoding="utf-8")
+    command = subprocess.Popen(
+        [sys.executable, "-m", "lanky.cli", "check", "a/sleeps.py", "b/other.py"],
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    repl: list = []
+    try:
+        deadline = time.monotonic() + 120
+        while not repl:
+            assert command.poll() is None, "the command ended before its child started Lean"
+            assert time.monotonic() < deadline, "no Lean REPL was started"
+            time.sleep(0.1)
+            try:
+                descendants = psutil.Process(command.pid).children(recursive=True)
+                servers = [process for process in descendants if process.name() == "repl"]
+                repl = [*servers, *(process.parent() for process in servers)]
+            except psutil.NoSuchProcess:  # one that came and went while it was looked at
+                repl = []
+        time.sleep(3)  # the attempt is under way
+        assert all(process.is_running() for process in repl), "the REPL ended of itself"
+        command.send_signal(getattr(signal, name))
+        command.wait(timeout=30)
+        _, alive = psutil.wait_procs(repl, timeout=15)
+        assert alive == [], "the Lean REPL outlived the child that started it"
+    finally:
+        if command.poll() is None:
+            command.kill()
+            command.wait()
+        for process in repl:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
 
 
 #: #38's reproduction, with the two cases its review added: a goal whose
