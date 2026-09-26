@@ -1,13 +1,15 @@
 # Quickstart
 
 One file, four commands, and the output each one prints, then a second file
-with an axiom in it. Everything below was run in this repository on 2026-09-25
-with `uv run`; the numbers and the Lean source are copied from the terminal, not
-written from memory. The one thing that drifts is a timing, which is a property
-of the machine and not of the claim. The `lanky check` tables are held to more
-than that: the test suite compares them with a real run, `gauss.py`'s as it
-stands where Lean is installed (CI has a job for that) and with its `proved` row
-read as `tested` where it is not. That holds for the `gap.py` blocks in
+with an axiom in it, and a third in which a rule engine checks a derivation.
+Everything below was run in this repository with `uv run`, the last section on
+2026-09-26 and the rest on 2026-09-25; the numbers and the Lean source are
+copied from the terminal, not written from memory. The one thing that drifts
+is a timing, which is a property of the machine and not of the claim. The
+`lanky check` tables are held to more than that: the test suite compares them
+with a real run, `gauss.py`'s as it stands where Lean is installed (CI has a
+job for that) and with its `proved` row read as `tested` where it is not, and
+the demonstration's the other way round. That holds for the `gap.py` blocks in
 [One reading of arithmetic](#one-reading-of-arithmetic) too: the suite writes
 `gap.py` from the snippet shown there and checks it both ways.
 
@@ -344,6 +346,134 @@ that nothing satisfies them, once Lean shows them inconsistent: it reads
 A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
 it builds, naming other facts by id.
 
+## Check a derivation against what it rests on
+
+Much of what a consumer of lanky wants checked is a transformation rather than
+a formula: an integral representation taken to the boundary, a loop nest
+rescheduled. That is a *rewrite*. Some tool turns a source into a target, and
+an obligation between the two says when that was sound. `@rewrite` states one:
+it decorates a function of no arguments that returns `(source, target)`, with
+`obligation="..."` naming what has to hold (`"equal"` by default). Its fact
+has kind `rewrite`, a `lanky.RewriteTerm` as its term and the statement
+`source ~> target (obligation)`, and an oracle that knows the obligation
+decides it; nothing else takes it, so an undecided rewrite stays `assumed`. A
+plugin that builds its facts itself calls `lanky.rewrites.rewrite_fact`.
+
+`examples/pytential_skie.py` is the worked case. It asks, for five integral
+representations of the kind a pytential user writes, whether each gives a
+boundary integral equation of the second kind on a closed boundary of class
+C²: `c*I` plus a compact operator, with `c` not zero. Its rule engine, an
+algebra of the operators `I`, `S`, `D`, `S'` and `D'` with polynomial
+coefficients, is in `examples/layer_potentials.py`, where a plugin's would be;
+lanky itself knows nothing about layer potentials.
+
+```console
+$ uv run python examples/pytential_skie.py
+On a closed boundary of class C2, each representation gives, from the side shown:
+
+problem                                         representation            boundary equation                        verdict
+----------------------------------------------  ------------------------  ---------------------------------------  --------------------------------
+Laplace, interior Dirichlet                     u = D sigma               (-1/2*I + D) sigma = f                   second kind
+Laplace, interior Dirichlet                     u = S sigma               S sigma = f                              refused: no identity term
+Laplace, interior Neumann                       u = S sigma               (1/2*I + S') sigma = g                   second kind
+Helmholtz, exterior Dirichlet (combined field)  u = (D - 1j*eta*S) sigma  (1/2*I + D - 1j*eta*S) sigma = f         second kind
+Helmholtz, exterior Neumann (Burton-Miller)     u = (D - 1j*eta*S) sigma  (1j/2*eta*I + D' - 1j*eta*S') sigma = g  refused: D' is not c*I + compact
+
+laplace_dirichlet_dlp: the identity coefficient is -1/2, not 0, and the rest is compact (D by compact_D). Under jump_D, compact_D.
+laplace_dirichlet_slp: the identity coefficient is 0 and the rest is compact (S by compact_S): the operator is compact. Under jump_S, compact_S.
+laplace_neumann_slp: the identity coefficient is 1/2, not 0, and the rest is compact (S' by compact_Sp). Under jump_Sp, compact_Sp.
+helmholtz_combined_field: the identity coefficient is 1/2, not 0, and the rest is compact (D by compact_D, S by compact_S). Under jump_D, jump_S, compact_D, compact_S.
+helmholtz_burton_miller: D' is not c*I + compact (hypersingular_Dp) and its coefficient is 1, not 0, while the rest is compact (S' by compact_Sp): the operator is not c*I + compact either. Under jump_Dp, jump_Sp, compact_Sp, hypersingular_Dp.
+
+pytential is not importable here, so the rows were built with this file's operators alone.
+
+The axioms are taken on a citation: `lanky check examples/pytential_skie.py` lists them, and what each verdict is decided under.
+```
+
+Each claim is a rewrite from the trace of a representation to the operator it
+is said to give, under the obligation `jump relations`, together with a
+verdict about that operator. The rules are eight axioms, each with its
+citation: the four jump relations, `compact(S)`, `compact(D)`, `compact(S')`,
+and `~scalar_plus_compact(D')`, which says that `D'`, being hypersingular, is
+no multiple of the identity plus a compact operator. The engine reads its
+rules off their statements and applies nothing else.
+
+```console
+$ uv run lanky check examples/pytential_skie.py
+STATUS                                                        EFFECTIVE  BY             WHERE                  OWNER                     STATEMENT
+------------------------------------------------------------  ---------  -------------  ---------------------  ------------------------  ------------------------------------------------------------------------
+assumed (axiom)                                               assumed    -              pytential_skie.py:94   jump_S                    gamma : C2Boundary, s : Side |- trace(S, s) == S
+assumed (axiom)                                               assumed    -              pytential_skie.py:99   jump_D                    gamma : C2Boundary, s : Side |- trace(D, s) == 1/2*s*I + D
+assumed (axiom)                                               assumed    -              pytential_skie.py:104  jump_Sp                   gamma : C2Boundary, s : Side |- normal_derivative(S, s) == -1/2*s*I + S'
+assumed (axiom)                                               assumed    -              pytential_skie.py:109  jump_Dp                   gamma : C2Boundary, s : Side |- normal_derivative(D, s) == D'
+assumed (axiom)                                               assumed    -              pytential_skie.py:114  compact_S                 gamma : C2Boundary |- compact(S)
+assumed (axiom)                                               assumed    -              pytential_skie.py:119  compact_D                 gamma : C2Boundary |- compact(D)
+assumed (axiom)                                               assumed    -              pytential_skie.py:124  compact_Sp                gamma : C2Boundary |- compact(S')
+assumed (axiom)                                               assumed    -              pytential_skie.py:129  hypersingular_Dp          gamma : C2Boundary |- ~scalar_plus_compact(D')
+decided under jump_D                                          assumed    layer-rules    pytential_skie.py:151  laplace_dirichlet_dlp     trace(D, INTERIOR) ~> -1/2*I + D (jump relations)
+tested                                                        tested     property-test  pytential_skie.py:151  laplace_dirichlet_dlp     coefficient of I: -1/2 != 0
+decided under jump_D, compact_D                               assumed    layer-rules    pytential_skie.py:151  laplace_dirichlet_dlp     -1/2*I + D is second kind
+decided under jump_S                                          assumed    layer-rules    pytential_skie.py:157  laplace_dirichlet_slp     trace(S, INTERIOR) ~> S (jump relations)
+decided under jump_S, compact_S                               assumed    layer-rules    pytential_skie.py:157  laplace_dirichlet_slp     S is first kind: no identity term
+decided under jump_Sp                                         assumed    layer-rules    pytential_skie.py:163  laplace_neumann_slp       normal_derivative(S, INTERIOR) ~> 1/2*I + S' (jump relations)
+tested                                                        tested     property-test  pytential_skie.py:163  laplace_neumann_slp       coefficient of I: 1/2 != 0
+decided under jump_Sp, compact_Sp                             assumed    layer-rules    pytential_skie.py:163  laplace_neumann_slp       1/2*I + S' is second kind
+decided under jump_D, jump_S                                  assumed    layer-rules    pytential_skie.py:169  helmholtz_combined_field  trace(D - 1j*eta*S, EXTERIOR) ~> 1/2*I + D - 1j*eta*S (jump relations)
+tested                                                        tested     property-test  pytential_skie.py:169  helmholtz_combined_field  coefficient of I: 1/2 != 0
+decided under jump_D, jump_S, compact_D, compact_S            assumed    layer-rules    pytential_skie.py:169  helmholtz_combined_field  1/2*I + D - 1j*eta*S is second kind
+decided under jump_Dp, jump_Sp                                assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   normal_derivative(D - 1j*eta*S, EXTERIOR) ~> 1j/2*eta*I + D' - 1j*eta...
+decided under jump_Dp, jump_Sp, compact_Sp, hypersingular_Dp  assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   1j/2*eta*I + D' - 1j*eta*S' is not second kind: D' is not c*I + compact
+
+21 facts: 8 assumed, 10 decided, 3 tested
+
+CITED jump_S at pytential_skie.py:94: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
+CITED jump_D at pytential_skie.py:99: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
+CITED jump_Sp at pytential_skie.py:104: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
+CITED jump_Dp at pytential_skie.py:109: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
+CITED compact_S at pytential_skie.py:114: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
+CITED compact_D at pytential_skie.py:119: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
+CITED compact_Sp at pytential_skie.py:124: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
+CITED hypersingular_Dp at pytential_skie.py:129: D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3
+```
+
+That is the output without Lean. With the `lean` extra the three coefficient
+rows read `proved  lean`: `coefficient of I: -1/2 != 0` goes to Lean as
+`(-1 : Int) ≠ 0`, the numerator's being nonzero, since core Lean has no
+rationals, and that arithmetic is the one part of the argument Lean touches.
+Nothing about compactness is claimed proved. Those are the `assumed (axiom)`
+rows, each verdict is `decided under` the ones it used, and in the `EFFECTIVE`
+column it is worth what they are.
+
+- **The decider says how far to trust it.** `layer-rules` has the trust class
+  `decision-procedure`, as isl does. It accepts one-sided traces of
+  combinations of `S` and `D` of one kernel, boundary operators made of `I`,
+  `S`, `D`, `S'`, `D'` and such traces, and polynomial coefficients; within
+  that fragment it answers every claim by exact polynomial arithmetic, and it
+  declines everything outside it with the reason (a verdict that depends on a
+  parameter's value, two operators that are not a multiple of the identity
+  plus a compact one, two kernels, a trace no axiom gives). A decider that can
+  fail to answer inside its own fragment, such as a computer-algebra
+  simplifier, declares the class `heuristic`, which ranks between `test` and
+  `decision-procedure`; the table marks a fact one decided as
+  `decided (heuristic)`, and only a decision procedure or a kernel can make a
+  fact vacuous.
+- **A refusal is a verdict, and names its term.** The single layer is claimed
+  of the first kind (no identity term), and the Neumann trace of the combined
+  field is claimed not of the second kind because of `D'`; both are decided.
+  Claim the second kind for either and the verdict is refuted, with the term
+  that prevents it in the reason.
+- **A wrong derivation fails the check.** Write `1/2*I + D` for the interior
+  trace of `D` and the rewrite is refuted, with the difference, `-I`, in the
+  reason. Copy a jump relation down with its sign flipped and every rewrite
+  that applies it is refuted, and the verdicts resting on those are worth
+  `refuted` in the `EFFECTIVE` column.
+- **pytential is optional.** Where it imports, the demonstration builds the
+  five again with `pytential.sym` and translates them with
+  `layer_potentials.from_pytential`, which reads `qbx_forced_limit` as the
+  side, and checks two of pytential's own `DirichletOperator` pairs against
+  the same rules. pytential is imported inside the demonstration only; it is
+  not a dependency of lanky, and `import lanky` does not import it.
+
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
@@ -436,8 +566,10 @@ it builds, naming other facts by id.
 | `Status`, `Fact`, `Ledger`, and what a fact rests on | `src/lanky/ledger.py` |
 | the four plugin protocols and the registry | `src/lanky/plugins.py` |
 | `@theorem`, `@axiom`, `Theorem` and `Axiom` | `src/lanky/theory.py` |
+| `@rewrite`, `Rewrite`, `RewriteTerm` and `rewrite_fact` | `src/lanky/rewrites.py` |
 | samplers and the property tester | `src/lanky/testing.py` |
 | where the readings still differ: division by zero | `src/lanky/semantics.py` |
 | the Lean printer | `src/lanky/lean.py` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |
+| the pytential demonstration, and its rule engine | `examples/pytential_skie.py`, `examples/layer_potentials.py` |
