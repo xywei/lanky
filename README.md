@@ -169,7 +169,11 @@ sharp.
   exits 1 on it.
 - The Lean oracle over core Lean 4, with a tactic ladder and an induction
   strategy read off the term. No Mathlib is fetched or needed. CI runs the
-  suite against Lean v4.29.1 as well as without Lean.
+  suite against Lean v4.29.1 as well as without Lean. A name Python accepts
+  and Lean reserves, a variable `fun` or a theorem `scoped`, is printed
+  quoted (`«fun»`), and an attempt that runs past `LANKY_LEAN_TIMEOUT` costs
+  that attempt alone: the REPL the driver killed is started again for the
+  next.
 - Mathlib mode, opt-in: `LANKY_LEAN_MATHLIB` names a Lake project with
   Mathlib fetched, and `python -m lanky.mathlib DIR` sets one up from the
   project lanky ships, pinned to Mathlib v4.29.1 and every dependency at a
@@ -388,9 +392,14 @@ from the modules it imports; `lanky check a.py b.py` checks both, each for its
 own. A process imports a module of one name once, so files whose source roots
 differ (the directories a check puts on `sys.path`: the file's own, and the one
 its package is found from) are checked in child processes, one per root, while
-files that share their roots share a process as they always did. `check_path`,
-the function underneath, imports into the process that calls it. No
-environment variable changes what the code means.
+files that share their roots share a process as they always did. A child runs
+with the command's interpreter options (`-O`, `-W`, `-X`). On Linux and macOS
+it is also sent `SIGTERM` when the command ends, however it ends, and kills
+the Lean REPLs it started before it goes; and once it has exited, what it
+wrote is copied and nothing a checked file left running holds the command up.
+`check_path`, the function
+underneath, imports into the process that calls it. No environment variable
+changes what the code means.
 
 ## Name
 

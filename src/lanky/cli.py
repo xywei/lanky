@@ -46,20 +46,28 @@ once. So ``check`` gives each distinct source root of the files it is handed
 with the same roots share one: two directories that each hold a ``helpers.py``
 are checked against their own. Files that all share their roots are checked in
 this process, as :func:`lanky.check.check_path` checks a file, and print what
-they always printed (see :meth:`CheckVerb.run`).
+they always printed (see :meth:`CheckVerb.run`). A child is started with this
+interpreter's command-line options; on Linux and macOS it also ends when this
+process ends, however it ends, and cannot hold the command up once it has
+exited, whatever it started (see :meth:`CheckVerb._check_in_children`).
 """
 
 from __future__ import annotations
 
 import argparse
-import io
+import codecs
+import functools
 import json
 import os
+import selectors
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
@@ -219,6 +227,25 @@ class CheckVerb:
         process before calling the verb is not in a child, so such a program
         checks files of several roots with :func:`lanky.check.check_path`, a
         process per root.
+
+        Three things keep a child's life inside this one's. It is started
+        with this interpreter's command-line options (``-O``, ``-W``, ``-X``
+        and the rest, see :func:`_interpreter_flags`), which reached it only
+        through the environment variables that mirror them. It gets
+        ``SIGTERM`` when this process ends (see :func:`_end_with_parent`), so
+        a ``SIGTERM`` or a ``SIGKILL`` sent to this process alone, which ends
+        it with nothing run on the way out, no longer leaves the child
+        checking for no one until its next write to the closed pipe; and on
+        ``SIGTERM`` a child kills the Lean REPLs it started before it ends,
+        which this process relies on when it has to stop a child itself (see
+        :func:`_stop`). And once it has exited, its output is copied up to
+        the last byte it wrote rather than until it ends (see
+        :func:`_follow`), so a process a checked file left running with the
+        child's output as its own does not hold the command up. The last two
+        are for Linux and macOS: on Windows the child is not told that this
+        process ended, is stopped with ``TerminateProcess``, which runs nothing
+        in it, and has its streams copied to their end (see :func:`_watch_parent`,
+        :func:`_stop` and :func:`_copy_lines`).
         """
         code = 0
         checked = 0
@@ -236,6 +263,7 @@ class CheckVerb:
                     "results": str(results),
                     "path": [os.fsdecode(entry) for entry in sys.path if _is_path(entry)],
                     "argv": list(sys.argv),
+                    "parent": os.getpid(),
                 }
                 spec_path.write_text(json.dumps(spec), encoding="utf-8")
                 named = ", ".join(files)
@@ -445,7 +473,11 @@ def _check_in_child(spec: dict[str, Any]) -> int:
     when the parent asked for them, their facts are written to the file the
     parent reads. The facts are serialized as ``--json`` serializes them, so
     the parent writes what it would have written for a check of its own.
+
+    Before anything is checked, the child arranges to end with its parent
+    (see :func:`_end_with_parent`).
     """
+    _end_with_parent(spec["parent"])
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
     code, checked, facts = CheckVerb._check_files(
@@ -456,17 +488,146 @@ def _check_in_child(spec: dict[str, Any]) -> int:
     return code
 
 
+#: ``PR_SET_PDEATHSIG``, the ``prctl`` option that has Linux signal a process
+#: when the thread that started it ends.
+_PR_SET_PDEATHSIG = 1
+
+#: How often a child without ``PR_SET_PDEATHSIG`` asks who its parent is, in seconds.
+_PARENT_POLL = 0.5
+
+
+def _end_with_parent(parent: int) -> None:
+    """Have this child sent ``SIGTERM`` when the ``lanky check`` that started it ends.
+
+    A ``SIGTERM`` or a ``SIGKILL`` sent to the command's process alone, and not
+    to its process group, ends it at once with nothing run on the way out, so
+    it cannot pass the signal on. On Linux the kernel is asked to send the
+    child ``SIGTERM`` when its parent ends (``PR_SET_PDEATHSIG``); elsewhere,
+    or where that is refused, a daemon thread asks for the parent's pid twice
+    a second and sends it when the parent is no longer the one that started
+    the child. ``SIGTERM`` ends a child, whose checked files have not been
+    imported yet, once it has killed the Lean REPLs it started (see
+    :func:`_terminated`), and leaves a checked file that handles it to handle
+    it.
+
+    ``parent`` is the pid of the command's process, which the spec hands
+    down: a parent that ended before either of the two was in place is
+    already gone, and the child ends at once. On Windows neither works yet,
+    since there a process keeps the parent's pid it was created with (see
+    :func:`_watch_parent`).
+    """
+    signal.signal(signal.SIGTERM, functools.partial(_terminated, os.getpid()))
+    if not (sys.platform.startswith("linux") and _signal_at_parent_death()):
+        threading.Thread(target=_watch_parent, args=(parent,), daemon=True).start()
+    if os.getppid() != parent:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _terminated(child: int, signum: int, frame: Any) -> None:
+    """End this child on ``SIGTERM``, once the Lean REPLs it started are killed.
+
+    No signal that ends this process reaches a REPL, which would go on with
+    the attempt it was given for as long as that runs (see
+    :func:`lanky.oracles.lean.kill_servers`). Nothing else is run on the way
+    out: the child then ends of the signal, as it would with no handler.
+
+    Further ``SIGTERM`` is ignored meanwhile, because more can come: Linux
+    sends the parent-death signal each time the thread the child is attached
+    to ends, and the child is attached to the next thread of the command's
+    process until the last one has ended. A process forked from the child
+    (``multiprocessing``, say) inherits this handler with copies of the
+    sessions, whose REPLs are the child's, and ``child``, the child's pid,
+    keeps it from killing them.
+    """
+    signal.signal(signum, signal.SIG_IGN)
+    try:
+        lean = sys.modules.get("lanky.oracles.lean")
+        if lean is not None and os.getpid() == child:
+            lean.kill_servers()
+    finally:
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+
+def _signal_at_parent_death() -> bool:
+    """Ask Linux to send this process ``SIGTERM`` when its parent ends; whether it agreed."""
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGTERM), 0, 0, 0) == 0
+    except (ImportError, OSError, AttributeError):  # pragma: no cover - a libc without prctl
+        return False
+
+
+def _watch_parent(parent: int) -> None:  # pragma: no cover - the fallback off Linux
+    """Send this process ``SIGTERM`` once its parent is no longer ``parent``.
+
+    An orphan is handed to another parent on macOS and the other POSIX
+    systems, so its parent's pid changes. Not on Windows, where
+    ``os.getppid`` keeps returning the pid of the process that created this
+    one after it has ended, and so this never sends it; waiting on a handle
+    to the parent would.
+    """
+    while os.getppid() == parent:
+        time.sleep(_PARENT_POLL)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+def _interpreter_flags() -> list[str]:
+    """This interpreter's command-line options, for a child to be started with.
+
+    ``subprocess._args_from_interpreter_flags`` is what ``multiprocessing``
+    starts its workers with: the options that ``sys.flags`` and
+    ``sys.warnoptions`` record (``-O``, ``-B``, ``-E``, ``-s``, ``-W`` and the
+    rest) and the ``-X`` options it knows. It is private, so a Python without
+    it gets none of those, and so does a program that took out of
+    ``sys.warnoptions`` an entry ``sys.flags`` implies, which the function
+    refuses. Every other ``-X`` option in ``sys._xoptions``
+    (``int_max_str_digits``, say, which changes what ``int`` does) is added
+    after them, as it was given.
+    """
+    from_flags = getattr(subprocess, "_args_from_interpreter_flags", None)
+    try:
+        options: list[str] = list(from_flags()) if from_flags is not None else []
+    except ValueError:  # pragma: no cover - sys.warnoptions edited by the program
+        options = []
+    for name, value in getattr(sys, "_xoptions", {}).items():
+        option = name if value is True else f"{name}={value}"
+        if option not in options:
+            options += ["-X", option]
+    return options
+
+
 def _start_child(spec_path: Path) -> subprocess.Popen:
     """Start :data:`_CHILD` on a spec, with both its output streams piped here.
+
+    The child's interpreter is this one, with its command-line options (see
+    :func:`_interpreter_flags`), and ``-P``, whose reason is at :data:`_CHILD`.
 
     Raises:
         OSError: If the child cannot be started.
     """
+    options = _interpreter_flags()
+    if "-P" not in options and "-I" not in options:
+        options.append("-P")
     return subprocess.Popen(
-        [sys.executable, "-P", "-c", _CHILD, str(spec_path)],
+        [sys.executable, *options, "-c", _CHILD, str(spec_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+#: How often a thread copying a stream looks at whether the child has exited,
+#: in seconds, while the stream is quiet.
+_POLL = 0.1
+
+#: The most a thread copying a stream reads at once, in bytes.
+_CHUNK = 65536
+
+#: How long a child sent ``SIGTERM`` has to end before it is sent ``SIGKILL``,
+#: in seconds (see :func:`_stop`).
+_STOP_GRACE = 5.0
 
 
 def _follow(child: subprocess.Popen) -> int:
@@ -476,36 +637,114 @@ def _follow(child: subprocess.Popen) -> int:
     ``sys.stderr``, each line as the child prints it, so the ledgers appear
     as they are checked and wherever this process's output goes, which need
     not be the terminal the child would write to directly (a test capturing
-    ``sys.stdout``, say). Standard error is read by a thread of its own, so
-    that a child writing a lot to it never blocks on a full pipe, and that
-    thread keeps reading even when ``sys.stderr`` fails, for the same reason.
+    ``sys.stdout``, say). Each stream is read by a thread of its own, and
+    this one waits for the child. The thread copying standard error keeps
+    reading even when ``sys.stderr`` fails, so that a child writing a lot to
+    it never blocks on a full pipe.
 
-    When copying fails here, because this process is interrupted (a
-    ``KeyboardInterrupt`` that reached this process and not the child) or its
-    own output is closed, the child is killed before the exception goes on.
-    It would otherwise keep checking for no one, and hold this process up
-    until it ended, since the pipe the thread is reading cannot be closed
-    under it.
+    Once the child has exited, everything it wrote is in the pipes, and a
+    stream is copied up to the last byte it held then, which is the end of
+    the stream unless a process the child started still has it. Such a
+    process, a server a checked file left running with the child's output as
+    its own, say, keeps the stream from ending, and used to hold this process
+    up until it closed it. What it writes after the child has exited is read
+    and dropped, never copied, so that it neither blocks on a full pipe nor
+    lands among the ledgers of the roots after this one. However often it
+    writes, nothing written after the child exited is waited for, and
+    however slowly this process's own output takes what is copied (a pager's,
+    say), nothing the child wrote is lost.
+
+    When copying fails here, because this process's own output is closed, the
+    child is stopped (see :func:`_stop`), and the exception is raised here
+    once the child has been reaped and the rest of what it wrote copied; so
+    is an interrupt (a ``KeyboardInterrupt`` that reached this process and
+    not the child) while the child is waited for. The child would otherwise
+    keep checking for no one.
     """
-    with child:
-        assert child.stdout is not None and child.stderr is not None
-        pump = threading.Thread(
-            target=_copy_lines,
-            args=(child.stderr, sys.stderr),
-            kwargs={"keep_reading": True},
+    assert child.stdout is not None and child.stderr is not None
+    exited = threading.Event()
+    failures: list[BaseException] = []
+    copies: list[threading.Event] = []
+    for source, sink, keep_reading in (
+        (child.stdout, sys.stdout, False),
+        (child.stderr, sys.stderr, True),
+    ):
+        copied = threading.Event()
+        threading.Thread(
+            target=_copy_from_child,
+            args=(child, source, sink, keep_reading, exited, copied, failures),
             daemon=True,
-        )
-        pump.start()
+        ).start()
+        copies.append(copied)
+    try:
+        returncode = child.wait()
+    except BaseException:
+        _stop(child)
+        raise
+    finally:
+        exited.set()
+        for copied in copies:
+            copied.wait()
+    if failures:
+        raise failures[0]
+    return returncode
+
+
+def _copy_from_child(
+    child: subprocess.Popen,
+    source: BinaryIO,
+    sink: TextIO | None,
+    keep_reading: bool,
+    exited: threading.Event,
+    copied: threading.Event,
+    failures: list[BaseException],
+) -> None:
+    """Copy one of a child's streams, in a thread of its own (see :func:`_follow`).
+
+    A failure to copy is kept in ``failures`` for :func:`_follow` to raise,
+    and stops the child, which :func:`_follow` is waiting for. ``copied`` is
+    set once nothing more will be copied, and the stream is closed once
+    nothing more will be read from it.
+    """
+    try:
+        _copy_lines(source, sink, keep_reading=keep_reading, exited=exited, copied=copied)
+    except BaseException as exc:  # noqa: BLE001 - raised again by _follow
+        failures.append(exc)
+        _stop(child)
+    finally:
+        copied.set()
         try:
-            _copy_lines(child.stdout, sys.stdout)
-        except BaseException:
-            child.kill()
-            raise
-        pump.join()
-    return child.returncode
+            source.close()
+        except OSError:  # pragma: no cover - a pipe that cannot be closed is closed at exit
+            pass
 
 
-def _copy_lines(source: BinaryIO, sink: TextIO | None, *, keep_reading: bool = False) -> None:
+def _stop(child: subprocess.Popen) -> None:
+    """End a child, and reap it: ``SIGTERM`` first, then ``SIGKILL`` if it is still there.
+
+    ``SIGTERM`` has the child kill the Lean REPLs it started before it ends
+    (see :func:`_terminated`), which ``SIGKILL`` would leave running; a child
+    that is not gone :data:`_STOP_GRACE` seconds later, because a checked file
+    handles the signal, say, is killed. On Windows ``terminate`` is
+    ``TerminateProcess`` already, which runs nothing in the child, so its
+    REPLs are left running there.
+    """
+    child.terminate()
+    try:
+        child.wait(timeout=_STOP_GRACE)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
+
+
+def _copy_lines(
+    source: BinaryIO,
+    sink: TextIO | None,
+    *,
+    keep_reading: bool = False,
+    exited: threading.Event | None = None,
+    copied: threading.Event | None = None,
+) -> None:
     """Copy lines from a child's stream to one of this process's, as they arrive.
 
     The child writes UTF-8 (see :func:`_check_in_child`). A byte that is not
@@ -522,18 +761,110 @@ def _copy_lines(source: BinaryIO, sink: TextIO | None, *, keep_reading: bool = F
     pipe, say) is dropped and the stream is still read to its end: the
     thread copying a child's standard error must not stop while the child
     may still write to it, or the child blocks on a full pipe while this
-    process waits for its standard output to end.
+    process waits for it.
+
+    ``exited`` is set once the child has exited. The stream is then copied
+    up to the last byte it held at that point; ``copied`` is set, and the
+    rest is read to the end of the stream without being copied (see
+    :func:`_follow`). A stream with no descriptor to wait on, and every
+    stream on Windows, where a selector waits on sockets alone, is copied to
+    its end, so that there a process the child left running with the stream
+    as its own holds this process up until it closes it.
     """
-    text = io.TextIOWrapper(source, encoding="utf-8", errors="backslashreplace", newline="")
-    for line in text:
-        if sink is None:
-            continue
-        try:
-            _write_escaped(sink, line)
-        except Exception:
-            if not keep_reading:
-                raise
-            sink = None
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="backslashreplace")
+    pending = ""
+    for chunk in _chunks(source, exited):
+        text = pending + decoder.decode(chunk)
+        cut = max(text.rfind("\n"), text.rfind("\r")) + 1
+        text, pending = text[:cut], text[cut:]
+        if text and sink is not None:
+            sink = _write_or_drop(sink, text, keep_reading)
+    pending += decoder.decode(b"", final=True)
+    if pending and sink is not None:
+        _write_or_drop(sink, pending, keep_reading)
+    if copied is not None:
+        copied.set()
+    _drain(source)
+
+
+def _write_or_drop(sink: TextIO, text: str, keep_reading: bool) -> TextIO | None:
+    """Write to a sink, and return it; with ``keep_reading``, ``None`` for one that failed."""
+    try:
+        _write_escaped(sink, text)
+    except Exception:
+        if not keep_reading:
+            raise
+        return None
+    return sink
+
+
+def _descriptor(source: BinaryIO) -> int | None:
+    """The descriptor a selector can wait on for a stream, or ``None``."""
+    if os.name == "nt":  # pragma: no cover - a selector takes sockets alone there
+        return None
+    try:
+        return source.fileno()
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _chunks(source: BinaryIO, exited: threading.Event | None) -> Iterator[bytes]:
+    """What a child writes to a stream, as it arrives, until the last of it is read.
+
+    Without ``exited``, or without a descriptor to wait on, until the stream
+    ends. Otherwise also until the bytes the stream held when ``exited`` was
+    first seen set have been read: the child had exited by then, so they are
+    the last it wrote, and what comes after them was written by a process it
+    left running. Where the stream cannot say how many bytes it holds, until
+    it ends.
+    """
+    descriptor = None if exited is None else _descriptor(source)
+    if exited is None or descriptor is None:
+        read = getattr(source, "read1", source.read)
+        while chunk := read(_CHUNK):
+            yield chunk
+        return
+    left: int | None = None  # the bytes left of the child's, once it has exited
+    seen = False
+    with selectors.DefaultSelector() as selector:
+        selector.register(descriptor, selectors.EVENT_READ)
+        while left is None or left > 0:
+            if not seen and exited.is_set():
+                seen = True
+                left = _unread(descriptor)
+                continue
+            if not selector.select(_POLL):
+                continue
+            chunk = os.read(descriptor, _CHUNK if left is None else min(left, _CHUNK))
+            if not chunk:
+                return
+            if left is not None:
+                left -= len(chunk)
+            yield chunk
+
+
+def _unread(descriptor: int) -> int | None:
+    """How many bytes the pipe ``descriptor`` reads holds, or ``None`` where it cannot say."""
+    try:
+        import fcntl
+        import termios
+
+        held = fcntl.ioctl(descriptor, termios.FIONREAD, b"\0\0\0\0")
+    except (ImportError, AttributeError, OSError):  # pragma: no cover - no FIONREAD
+        return None
+    return int.from_bytes(held, sys.byteorder, signed=True)
+
+
+def _drain(source: BinaryIO) -> None:
+    """Read a stream to its end, dropping what it holds."""
+    descriptor = _descriptor(source)
+    if descriptor is None:
+        return
+    try:
+        while os.read(descriptor, _CHUNK):
+            pass
+    except OSError:  # pragma: no cover - a stream closed under the reader
+        pass
 
 
 def _write_escaped(sink: TextIO, line: str) -> None:

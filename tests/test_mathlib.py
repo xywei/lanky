@@ -28,6 +28,7 @@ from lanky import mathlib as mathlib_mode
 from lanky.lean import (
     UnsupportedTerm,
     domain_guards,
+    lean_identifier,
     lean_type,
     print_lean,
     statement_of,
@@ -820,6 +821,50 @@ def test_a_claim_named_after_a_mathlib_lemma_is_proved(
     proved = mathlib_oracle.establish(fact)
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
     assert f"\ntheorem Lanky.{owner} " in proved.provenance["lean_source"]
+
+
+def test_a_claim_over_words_mathlib_reserves_is_proved(mathlib_oracle: LeanOracle) -> None:
+    """#38 in Mathlib mode: Mathlib reserves words core Lean does not.
+
+    A claim named ``lemma`` over variables named ``to`` and ``over``, three
+    words Mathlib's parser takes as keywords, did not parse in the Mathlib
+    dialect, and every attempt failed on it.
+    """
+    to, over = Var("to"), Var("over")
+    term = Forall(((to, Real), (over, Real)), to * over == over * to)
+    fact = Fact(id="lemma", kind="theorem", statement="lemma", term=term, owner="lemma")
+    proved = mathlib_oracle.establish(fact)
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    assert "\ntheorem Lanky.«lemma» («to» : ℝ) («over» : ℝ) : " in proved.provenance["lean_source"]
+
+
+#: Lean source that prints every token of the parser's table, one to a line.
+_PRINT_TOKENS = """\
+open Lean Parser in
+#eval show CoreM Unit from do
+  for token in (getTokenTable (← getEnv)).findPrefix "" do
+    IO.println token
+"""
+
+
+def test_every_word_mathlib_reserves_is_quoted(mathlib_oracle: LeanOracle) -> None:
+    """The keyword list has Mathlib's words too, read from the Mathlib this suite runs against."""
+    import re
+
+    from lean_interact import Command
+
+    session = mathlib_oracle.session
+    response = session.server.run(
+        Command(cmd=_PRINT_TOKENS, env=session.environment), timeout=session.timeout
+    )
+    printed = "\n".join(
+        str(item.data)
+        for item in response.messages
+        if str(getattr(item, "severity", "")).endswith("info")
+    )
+    reserved = {word for word in printed.split() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", word)}
+    assert {"fun", "lemma", "to", "over"} <= reserved
+    assert sorted(word for word in reserved if not lean_identifier(word).startswith("«")) == []
 
 
 def test_a_false_real_claim_is_not_proved_and_not_refuted(mathlib_oracle: LeanOracle) -> None:

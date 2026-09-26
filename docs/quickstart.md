@@ -124,7 +124,9 @@ found from), are checked in processes of their own, one per root, because a
 process imports a module of one name once: `lanky check a/claims.py
 b/claims.py` checks each file against the `helpers.py` beside it. Files that
 share their roots share a process, and `check_path` imports into the process
-that calls it.
+that calls it. A child runs with the interpreter options the command was
+started with, as in `python -O -m lanky.cli check ...`, and ends with the
+command.
 
 The two rows differ, and the difference is the product.
 

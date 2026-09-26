@@ -25,6 +25,7 @@ from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
     check_applications,
+    lean_identifier,
     lean_type,
     print_lean,
     statement_of,
@@ -34,6 +35,7 @@ from lanky.oracles.lean import (
     LeanOracle,
     LeanSession,
     induction_scripts,
+    kill_servers,
     tactic_ladder,
     use_tactic,
 )
@@ -594,6 +596,173 @@ def test_a_binderless_statement_keeps_its_hypotheses() -> None:
 # }}}
 
 
+# {{{ names Lean would read as something else
+
+
+def _scoped():
+    @theorem
+    def scoped(a: Nat, b: Nat) -> a + b == b + a:
+        """A true claim under a name that is a Lean keyword."""
+
+    return scoped
+
+
+def _keyword_binders():
+    @theorem
+    def binders(fun: Nat, at: Nat) -> fun + at == at + fun:
+        """The same claim over variables whose names are Lean keywords."""
+
+    return binders
+
+
+def _named_like_a_hypothesis():
+    @theorem
+    def named(h0: Nat, b: Nat) -> h0 + b == b + h0:
+        """The same claim over a variable named like the first hypothesis."""
+
+    return named
+
+
+def _truth():
+    @theorem
+    def truth(true: Bool) -> true == True:  # noqa: E712 - the point of it
+        """False at ``true = False``, over a variable named like the Boolean literal."""
+
+    return truth
+
+
+def _scan_with_keyword_binders():
+    @theorem
+    def scan_keywords(
+        size: Nat,
+        cnt: Fn[Fin[size], Nat],
+        off: Fn[Fin[size + 1], Nat],
+        h0: off(0) == 0,
+        hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[size]),
+    ) -> all(
+        off(show) <= off(at) for show in Fin[size + 1] for at in Fin[size + 1] if show <= at
+    ):
+        """The scan's monotonicity, with its goal's variables named like Lean keywords."""
+
+    return scan_keywords
+
+
+def test_a_name_lean_reserves_is_quoted() -> None:
+    """#38: a keyword, or a letter outside ASCII, is written ``«name»``, the same name to Lean.
+
+    The list of keywords is Lean's parser table, core and Mathlib's both; a
+    name Lean reads as it is stays as it is.
+    """
+    assert lean_identifier("size") == "size"
+    assert lean_identifier("h0_1") == "h0_1"
+    assert lean_identifier("Fun") == "Fun"
+    for word in ("fun", "at", "show", "end", "scoped", "open", "Type", "exists", "_"):
+        assert lean_identifier(word) == f"«{word}»"
+    for word in ("lemma", "to", "over"):  # reserved once Mathlib is imported
+        assert lean_identifier(word) == f"«{word}»"
+    for name in ("λ", "é", "x₁"):
+        assert lean_identifier(name) == f"«{name}»"
+    for name in ("", "a»b", "«a", "a\nb"):
+        with pytest.raises(UnsupportedTerm, match="cannot be written as a Lean identifier"):
+            lean_identifier(name)
+
+
+def test_a_theorem_named_like_a_keyword_is_declared_under_its_quoted_name() -> None:
+    """``theorem scoped`` does not parse, and every tactic of the ladder failed on it."""
+    scoped = _scoped()
+    statement = statement_of(scoped.term, "scoped")
+    assert statement.name == "«scoped»"
+    assert statement.source("omega").startswith("theorem «scoped» (a : Int) (h0 : 0 ≤ a) ")
+    mathlib = statement_of(scoped.term, "scoped", mathlib=True)
+    assert mathlib.declared_name == "Lanky.«scoped»"
+    # a qualified name is cleaned first, and quoted only if what is left needs it
+    assert statement_of(scoped.term, "test_x.<locals>.scoped").name == "test_x__locals__scoped"
+    assert statement_of(scoped.term, "lemma").name == "«lemma»"
+
+
+def test_variables_named_like_keywords_are_quoted_wherever_they_are_printed() -> None:
+    """A parameter, a bound variable, an exponent and a reduction's binder alike."""
+    binders = _keyword_binders()
+    statement = statement_of(binders.term, "binders")
+    assert statement.binders == (("«fun»", "Int"), ("«at»", "Int"))
+    assert statement.variables == ("fun", "at")
+    assert statement.hypotheses == (("h0", "0 ≤ «fun»"), ("h1", "0 ≤ «at»"))
+    assert statement.goal == "«fun» + «at» = «at» + «fun»"
+    assert print_lean(binders.term) == (
+        "∀ «fun» : Int, 0 ≤ «fun» → ∀ «at» : Int, 0 ≤ «at» → «fun» + «at» = «at» + «fun»"
+    )
+
+    show, end = Var("show"), Var("end")
+    bound = Forall(((n, Nat),), Forall(((show, FinType(n)),), show < 2**show))
+    assert print_lean(bound) == (
+        "∀ n : Int, 0 ≤ n → ∀ «show» : Int, 0 ≤ «show» → «show» < n → "
+        "«show» < (2 : Int) ^ «show».toNat"
+    )
+    reduction = Forall(((n, Nat),), Sum(((end, FinType(n)),), end) >= 0)
+    assert "(∑ «end» ∈ Finset.Ico (0 : ℤ) n, «end») ≥ 0" in print_lean(reduction, mathlib=True)
+
+
+def test_a_variable_named_like_a_hypothesis_does_not_meet_one() -> None:
+    """The hypothesis ``0 ≤ h0`` named ``h0`` shadowed the variable, and the goal's ``h0``
+    was the proof: ``named`` read ``tested`` with Lean's "Application type mismatch".
+
+    A hypothesis takes the next name no variable of the statement has, bound
+    ones in the goal included, since the ladder introduces those after the
+    hypotheses.
+    """
+    statement = statement_of(_named_like_a_hypothesis().term, "named")
+    assert statement.hypotheses == (("h0_1", "0 ≤ h0"), ("h1", "0 ≤ b"))
+    assert statement.source("omega").startswith(
+        "theorem named (h0 : Int) (h0_1 : 0 ≤ h0) (b : Int) (h1 : 0 ≤ b) : h0 + b = b + h0"
+    )
+
+    first, second = Var("h0"), Var("h1")
+    goal = Forall(((second, FinType(b)),), second < b)
+    statement = statement_of(Forall(((first, Nat), (b, Nat)), goal), "t")
+    assert [name for name, _ in statement.hypotheses] == ["h0_1", "h1_1"]
+    assert "intro h1 hd hd_1" in tactic_ladder(statement)[5]
+
+
+def test_a_variable_named_true_is_not_the_boolean_literal() -> None:
+    """``true == True`` over a ``Bool`` named ``true`` printed as ``true = true``.
+
+    Lean proves that by ``simp``, and the claim is false at ``true = False``.
+    Where a variable of that name is in scope, free or bound, the literal is
+    written ``Bool.true``; elsewhere it is printed as it always was.
+    """
+    truth = _truth()
+    assert statement_of(truth.term, "truth").goal == "true = Bool.true"
+    assert print_lean(truth.term) == "∀ true : Bool, true = Bool.true"
+    assert print_lean(Var("false") == False) == "false = Bool.false"  # noqa: E712
+    assert print_lean(f(a) == True) == "f a = true"  # noqa: E712
+
+
+def test_the_ladder_names_a_keyword_variable_as_the_printer_does() -> None:
+    """The strategy's ``intro``, ``obtain`` and ``induction`` quote what the statement quotes."""
+    ladder = tactic_ladder(statement_of(_scan_with_keyword_binders().term, "scan_keywords"))
+    script = ladder[-2]
+    assert "intro «show» hd hd_1 «at» hd_2 hd_3 hg" in script
+    assert "obtain ⟨«at», rfl⟩ := Int.eq_ofNat_of_zero_le hd_2" in script
+    assert "induction «at» with" in script
+    assert "by_cases hlt : (k : Int) < «show»" in script
+
+
+def test_the_ladder_names_no_guard_like_a_later_binder() -> None:
+    """A guard of ``a`` named ``hd`` was shadowed by a later goal binder named ``hd``.
+
+    The script then traded ``a`` for a natural through ``hd``, which by then
+    was the variable and not the guard ``0 ≤ a``.
+    """
+    guard = Var("hd")
+    term = Forall(((n, Nat),), Forall(((a, Nat), (guard, Nat)), guard + a >= a + n - n))
+    (script,) = induction_scripts(statement_of(term, "t"))
+    assert script.startswith("intro a hd_1 hd hd_2\n")
+    assert "obtain ⟨hd, rfl⟩ := Int.eq_ofNat_of_zero_le hd_2" in script
+
+
+# }}}
+
+
 # {{{ one reading of arithmetic, the integer one
 
 
@@ -1020,6 +1189,151 @@ def test_the_repl_cache_is_outside_the_virtual_environment(monkeypatch) -> None:
     monkeypatch.setenv("LANKY_LEAN_CACHE_DIR", "/tmp/chosen")
     assert default_cache_dir() == "/tmp/chosen"
     assert "site-packages" not in default_cache_dir()
+
+
+class _KilledOnTimeout:
+    """A stand-in for lean-interact's server, which kills itself on a timeout.
+
+    lean-interact's ``LeanServer`` kills its REPL process when a command runs
+    past its timeout, and answers every later command with a
+    ``ChildProcessError`` until ``start`` is called again; this does the same
+    without a Lean.
+    """
+
+    def __init__(self) -> None:
+        self.alive = True
+        self.starts = 0
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def start(self) -> None:
+        self.starts += 1
+        self.alive = True
+
+    def kill(self) -> None:
+        self.alive = False
+
+    def run(self, command, timeout=None):
+        from types import SimpleNamespace
+
+        if not self.alive:
+            raise ChildProcessError("The Lean server is not running.")
+        if timeout is not None and timeout < 1e-3:
+            self.kill()
+            raise TimeoutError("The Lean server did not respond in time and is now killed.")
+        return SimpleNamespace(messages=(), sorries=())
+
+
+def test_a_core_session_starts_a_killed_server_again(monkeypatch) -> None:
+    """#32: one attempt that timed out cost every Lean proof after it in the process.
+
+    The driver kills the server on a timeout and never starts it again, and a
+    core session went on sending commands to the dead one, each answered with
+    "The Lean server is not running", while the session had no error and the
+    oracle said it was available. The session now starts it again before the
+    next command, as a Mathlib session already did.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "lean_interact", SimpleNamespace(Command=lambda **fields: fields)
+    )
+    session = LeanSession(timeout=60)
+    session.server = server = _KilledOnTimeout()
+    assert session.run("theorem t : True := trivial\n") == (True, "")
+    session.timeout = 1e-6
+    closed, detail = session.run("theorem t : True := trivial\n")
+    assert not closed
+    assert detail.startswith("TimeoutError")
+    assert not server.alive
+    session.timeout = 60
+    assert session.run("theorem t : True := trivial\n") == (True, "")
+    assert server.starts == 1
+    assert session.error is None
+
+    # a server that will not start again is a reason, reported from then on
+    def refuse() -> None:
+        raise ChildProcessError("The Lean server could not be started")
+
+    server.kill()
+    server.start = refuse
+    closed, detail = session.run("theorem t : True := trivial\n")
+    assert not closed
+    assert detail == session.error
+    assert "could not be restarted" in detail
+
+
+#: A stand-in for ``lake env repl``: a process that starts one of its own,
+#: prints that one's pid, and sleeps, as ``lake`` waits on the REPL.
+_LAKE = """\
+import subprocess, sys, time
+repl = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+print(repl.pid, flush=True)
+time.sleep(60)
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX process groups")
+@pytest.mark.parametrize("own_session", [True, False])
+def test_kill_servers_kills_each_repl_and_what_it_started(own_session) -> None:
+    """#28: a process about to end of a signal kills each session's REPL first.
+
+    lean-interact starts ``lake env repl`` in a session of its own, which no
+    signal sent to lanky's process reaches, so the REPL outlived a process
+    ended by one, going on with its attempt. A child of ``lanky check`` calls
+    this on ``SIGTERM``. The whole process group goes, the REPL ``lake``
+    started with it; a server that is not in a group of its own is killed
+    alone. A server already reaped is left alone, and so is a session that
+    never started one.
+    """
+    import subprocess
+    import sys
+    import time
+    from types import SimpleNamespace
+
+    from lanky.oracles.lean import _OPENED
+
+    lake = subprocess.Popen(
+        [sys.executable, "-c", _LAKE], stdout=subprocess.PIPE, start_new_session=own_session
+    )
+    repl = int(lake.stdout.readline())
+    reaped = subprocess.Popen([sys.executable, "-c", "pass"])
+    reaped.wait()
+    sessions = [LeanSession(), LeanSession(), LeanSession()]
+    sessions[0].server = SimpleNamespace(_proc=lake)
+    sessions[1].server = SimpleNamespace(_proc=reaped)
+    try:
+        for session in sessions:
+            _OPENED.add(session)
+        kill_servers()
+        assert lake.wait(timeout=10) == -9
+        if own_session:
+            deadline = time.monotonic() + 10
+            while not _gone(repl) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert _gone(repl), "the REPL lake started outlived it"
+    finally:
+        for session in sessions:
+            _OPENED.discard(session)
+        lake.kill()
+        lake.wait()
+        if not _gone(repl):
+            os.kill(repl, 9)
+
+
+def _gone(pid: int) -> bool:
+    """Whether process ``pid`` has ended; one ended and not yet reaped counts."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):  # no /proc: alive, as far as can be told
+        return False
 
 
 def test_an_unavailable_oracle_is_named_in_the_check_report(monkeypatch) -> None:
@@ -1467,10 +1781,259 @@ def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle) -> None:
         assert result.decided_by is None
         assert result.provenance["lean_reason"]
 
-    # a timeout is a failed attempt, not a refutation either
-    impatient = LeanOracle(timeout=1e-6, session=lean_oracle.session)
-    result = impatient.establish(plainly_false.fact())
-    assert result.status is not Status.REFUTED
+    # A timeout is a failed attempt, not a refutation either. The timeout that
+    # applies is the session's, so the impatient oracle gets a session of its
+    # own: an oracle handed the module's session never timed out at all.
+    impatient = LeanOracle(session=LeanSession(timeout=1e-6))
+    try:
+        result = impatient.establish(plainly_false.fact())
+    finally:
+        impatient.session.close()
+    assert result.status is Status.ASSUMED
+    assert result.provenance["lean_reason"].startswith("TimeoutError")
+    assert result.provenance["lean_tried"] == len(tactic_ladder(statement_of(plainly_false.term)))
+
+
+def test_a_session_survives_an_attempt_that_timed_out(lean_oracle: LeanOracle) -> None:
+    """#32 with a real Lean: the attempts after a timeout are elaborated, not refused.
+
+    The driver kills the REPL on a timeout. The next command used to come back
+    as "The Lean server is not running", on this fact and on every fact after
+    it in the process; the session now starts the REPL again first.
+    """
+    source = "theorem t (x : Nat) : x + 0 = x := by omega\n"
+    session = LeanSession(timeout=lean_oracle.session.timeout)
+    try:
+        assert session.run(source) == (True, "")
+        session.timeout = 1e-6
+        closed, detail = session.run(source)
+        assert not closed
+        assert detail.startswith("TimeoutError")
+        session.timeout = lean_oracle.session.timeout
+        assert session.run(source) == (True, "")
+        assert session.error is None
+        proved = LeanOracle(session=session).establish(commutes.fact())
+        assert proved.status is Status.PROVED
+    finally:
+        session.close()
+
+
+#: A true claim whose one attempt keeps Lean busy for a minute before it
+#: proves it: ``sleep`` is a tactic of core Lean.
+_SLEEPS_IN_LEAN = '''\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.oracles.lean import use_tactic
+from lanky.prelude import Nat
+
+
+@theorem
+def sleeps(a: Nat, b: Nat) -> a + b == b + a:
+    """True, with a script that sleeps in Lean before it proves it."""
+
+
+use_tactic(sleeps, "sleep 60000\\n  omega")
+'''
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+@pytest.mark.parametrize("name", ["SIGTERM", "SIGKILL", "SIGINT"])
+def test_a_child_ended_with_the_command_stops_its_lean_repl(
+    lean_oracle: LeanOracle, tmp_path, name
+) -> None:
+    """#28: the Lean REPL of a child of ``lanky check`` ends with the child.
+
+    lean-interact starts the REPL in a session of its own, so no signal that
+    ends the child reaches it, and the timeout that would stop its attempt is
+    kept by the child. A child ended of ``SIGTERM`` (which it gets when the
+    command is ended alone, by ``SIGTERM`` or ``SIGKILL``), or of the
+    ``SIGKILL`` the command sent it on an interrupt, left the REPL going on
+    with the attempt it was given, a minute here. The child now kills its
+    REPLs on ``SIGTERM``, and the command sends it ``SIGTERM`` first. Ended
+    alone, the command's threads end one after another, and each sends the
+    child ``SIGTERM`` again; the child used to end of the second one while it
+    was still stopping the REPL.
+    """
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    psutil = pytest.importorskip("psutil")
+    if name == "SIGINT" and signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
+        pytest.skip("SIGINT is ignored here, and so it is in the command")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "sleeps.py").write_text(_SLEEPS_IN_LEAN, encoding="utf-8")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / "other.py").write_text("OTHER = 1\n", encoding="utf-8")
+    command = subprocess.Popen(
+        [sys.executable, "-m", "lanky.cli", "check", "a/sleeps.py", "b/other.py"],
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    repl: list = []
+    try:
+        deadline = time.monotonic() + 120
+        while not repl:
+            assert command.poll() is None, "the command ended before its child started Lean"
+            assert time.monotonic() < deadline, "no Lean REPL was started"
+            time.sleep(0.1)
+            try:
+                descendants = psutil.Process(command.pid).children(recursive=True)
+                servers = [process for process in descendants if process.name() == "repl"]
+                repl = [*servers, *(process.parent() for process in servers)]
+            except psutil.NoSuchProcess:  # one that came and went while it was looked at
+                repl = []
+        time.sleep(3)  # the attempt is under way
+        assert all(process.is_running() for process in repl), "the REPL ended of itself"
+        command.send_signal(getattr(signal, name))
+        command.wait(timeout=30)
+        _, alive = psutil.wait_procs(repl, timeout=15)
+        assert alive == [], "the Lean REPL outlived the child that started it"
+    finally:
+        if command.poll() is None:
+            command.kill()
+            command.wait()
+        for process in repl:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+
+
+#: #38's reproduction, with the two cases its review added: a goal whose
+#: variables the induction strategy has to name, and a variable named like the
+#: Boolean literal.
+_KEYWORD_CLAIMS = '''\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Bool, Fin, Fn, Nat
+
+
+@theorem
+def commutes(a: Nat, b: Nat) -> a + b == b + a:
+    """A name Lean accepts."""
+
+
+@theorem
+def scoped(a: Nat, b: Nat) -> a + b == b + a:
+    """The same claim under a name that is a Lean keyword."""
+
+
+@theorem
+def binders(fun: Nat, at: Nat) -> fun + at == at + fun:
+    """The same claim over variables whose names are Lean keywords."""
+
+
+@theorem
+def named(h0: Nat, b: Nat) -> h0 + b == b + h0:
+    """The same claim over a variable named like the first hypothesis."""
+
+
+@theorem
+def scan(
+    size: Nat,
+    cnt: Fn[Fin[size], Nat],
+    off: Fn[Fin[size + 1], Nat],
+    h0: off(0) == 0,
+    hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[size]),
+) -> all(off(show) <= off(at) for show in Fin[size + 1] for at in Fin[size + 1] if show <= at):
+    """The scan's monotonicity, with its goal's variables named like Lean keywords."""
+
+
+@theorem
+def truth(true: Bool) -> true == True:
+    """False at true = False."""
+
+
+@theorem
+def empty(fun: Nat, at: Nat, h0: fun + at < 0) -> fun == at:
+    """Vacuous: no two naturals sum below zero."""
+
+
+@theorem
+def unreached(n: Nat) -> all(show == n for show in Fin[n] if show > n + 5):
+    """Vacuous: the goal's guard holds nowhere."""
+'''
+
+
+def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_path) -> None:
+    """#38: every row below ``commutes`` read ``tested``, with a parse error as its reason.
+
+    ``scoped`` is a keyword theorem name, ``fun`` and ``at`` are keyword
+    variables, the first hypothesis shadowed the variable ``h0``, and the
+    scan's goal names its variables ``show`` and ``at``, which the induction
+    strategy has to write as the statement does. ``truth`` is false, and Lean
+    proved it, reading ``true = true``; the tester refutes it. The questions
+    whether a claim is vacuous are printed the same way, and they failed the
+    same way: ``empty``'s hypotheses and ``unreached``'s goal guard only got a
+    warning that no draw satisfied them, and the check passed.
+    """
+    from lanky.check import check_path
+
+    path = tmp_path / "p8_keywords.py"
+    path.write_text(_KEYWORD_CLAIMS, encoding="utf-8")
+    by_owner = {fact.owner: fact for fact in check_path(path)}
+    for owner in ("commutes", "scoped", "binders", "named", "scan"):
+        fact = by_owner[owner]
+        assert (fact.status, fact.decided_by) == (Status.PROVED, "lean"), (
+            owner,
+            fact.provenance.get("lean_reason"),
+        )
+    assert "theorem «scoped» (a : Int)" in by_owner["scoped"].provenance["lean_source"]
+    truth = by_owner["truth"]
+    assert (truth.status, truth.decided_by) == (Status.REFUTED, "property-test")
+    for owner in ("empty", "unreached"):
+        assert by_owner[owner].is_vacuous, (owner, by_owner[owner].provenance)
+
+
+#: Lean source that prints every token of the parser's table, one to a line.
+_PRINT_TOKENS = """\
+open Lean Parser in
+#eval show CoreM Unit from do
+  for token in (getTokenTable (← getEnv)).findPrefix "" do
+    IO.println token
+"""
+
+
+def _reserved_words(session: LeanSession, source: str) -> set[str]:
+    """The words spelled like ASCII identifiers that Lean reads as tokens, as it prints them."""
+    from lean_interact import Command
+
+    assert session.start(), session.error
+    response = session.server.run(Command(cmd=source), timeout=session.timeout)
+    printed = "\n".join(
+        str(item.data)
+        for item in response.messages
+        if str(getattr(item, "severity", "")).endswith("info")
+    )
+    return {word for word in printed.split() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", word)}
+
+
+def test_every_word_lean_reserves_is_quoted(lean_oracle: LeanOracle) -> None:
+    """The keyword list is Lean's own, read from the Lean this suite runs against.
+
+    A toolchain that reserves a word the list does not have fails here rather
+    than in a proof. And a statement over a variable named after each word of
+    the list elaborates, so every quoted name is one Lean reads.
+    """
+    # a session of its own, so that the module's does not keep Lean imported
+    session = LeanSession(timeout=lean_oracle.session.timeout)
+    try:
+        reserved = _reserved_words(session, f"import Lean\n\n{_PRINT_TOKENS}")
+    finally:
+        session.close()
+    assert {"fun", "at", "scoped", "show", "Type"} <= reserved
+    assert sorted(word for word in reserved if not lean_identifier(word).startswith("«")) == []
+
+    from lanky.lean import _KEYWORDS
+
+    everything = Forall(tuple((Var(word), Int) for word in sorted(_KEYWORDS)), True)
+    closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(everything)}\n")
+    assert closed, detail
 
 
 def test_a_session_runs_lean_source_directly(lean_oracle: LeanOracle) -> None:
