@@ -203,12 +203,12 @@ def test_a_theorem_names_what_it_uses() -> None:
     assert cubes.fact().kind == "theorem"
     assert cubes in registry.objects
 
-    # one entry need not be wrapped, and none can be said with None
+    # one entry need not be wrapped, and none is said with an empty list
     @theorem(uses=nicomachus)
     def single(n: Nat) -> n + 0 == n:
         """Uses one fact."""
 
-    @theorem(uses=None)
+    @theorem(uses=[])
     def none(n: Nat) -> n + 0 == n:
         """Uses nothing."""
 
@@ -232,6 +232,48 @@ def test_uses_refuses_what_does_not_name_one_fact() -> None:
 
     with pytest.raises(TypeError, match="or a list of them"):
         theorem(uses=3)
+
+
+def test_uses_none_is_refused_rather_than_read_as_nothing() -> None:
+    """``uses=lemma`` with ``lemma`` bound to ``None`` by mistake names no fact.
+
+    Read as "uses nothing", the theorem would be worth its own status with
+    nothing to say that what it was meant to rest on went missing.
+    """
+    with pytest.raises(TypeError, match="uses=None names no fact"):
+
+        @theorem(uses=None)
+        def claim(n: Nat) -> n + 0 == n:
+            """Meant to rest on something."""
+
+    with pytest.raises(TypeError, match="uses=None names no fact"):
+        axiom(cite="a textbook", uses=None)
+    with pytest.raises(TypeError, match="is none of them"):
+        theorem(uses=[None])
+
+
+def test_a_decorator_refuses_what_is_not_the_function_it_decorates() -> None:
+    """``@theorem(gauss)`` is ``uses=`` without its keyword, ``@axiom("...")`` is ``cite=``.
+
+    Read as the function to decorate, the first failed on a theorem having no
+    code object and the second on a missing citation, neither saying why.
+    """
+    with pytest.raises(TypeError, match=r"@theorem decorates a typed function.*uses=\[\.\.\.\]"):
+
+        @theorem(gauss)
+        def claim(n: Nat) -> n + 0 == n:
+            """Meant to use gauss."""
+
+    with pytest.raises(TypeError, match="@theorem decorates a typed function"):
+        theorem([gauss])
+    with pytest.raises(TypeError, match=r'@axiom decorates a typed function.*cite="\.\.\."'):
+
+        @axiom("Kress, Linear Integral Equations")
+        def kress(n: Nat) -> n + 0 == n:
+            """Meant to be cited."""
+
+    with pytest.raises(TypeError, match="@axiom decorates a typed function"):
+        axiom(cited(), cite="a textbook")
 
 
 def test_an_axiom_can_rest_on_facts_too() -> None:

@@ -81,16 +81,21 @@ def fact_ids(uses: Any) -> tuple[str, ...]:
 
     Each entry is a fact id, a :class:`~lanky.ledger.Fact`, or an object that
     names one fact through a string ``fact_id``, as a :class:`Theorem` and an
-    :class:`Axiom` do. A single entry need not be wrapped in a list, and
-    ``None`` names nothing. An id is a string, so a plugin's fact is named the
-    same way: loopty's scan postcondition is ``"scan:postcondition"``.
+    :class:`Axiom` do. A single entry need not be wrapped in a list, and an
+    empty list names nothing. An id is a string, so a plugin's fact is named
+    the same way: loopty's scan postcondition is ``"scan:postcondition"``.
 
     Raises:
         TypeError: For anything else, such as a plugin's decorated object that
-            owns several facts, which would leave open which one is meant.
+            owns several facts, which would leave open which one is meant, or
+            ``None``, which is what a name bound to nothing by mistake holds:
+            a theorem that uses nothing leaves ``uses=`` out.
     """
     if uses is None:
-        return ()
+        raise TypeError(
+            "uses=None names no fact, which is what a name bound to nothing by "
+            "mistake holds; a statement that uses nothing leaves uses= out"
+        )
     if isinstance(uses, str | Fact) or isinstance(getattr(uses, "fact_id", None), str):
         uses = (uses,)
     try:
@@ -400,8 +405,11 @@ def theorem(fn: Any = None, /, *, uses: Any = ()) -> Any:
     Written bare, ``@theorem``, or with the facts the theorem rests on,
     ``@theorem(uses=[jump, compact])``: theorems, axioms, facts or fact ids
     (see :func:`fact_ids`), which become its fact's ``rests_on``. A bad entry
-    is refused where the decorator is written, not when the file is checked.
+    is refused where the decorator is written, not when the file is checked,
+    and so is a positional argument that is not the function to decorate:
+    ``@theorem(gauss)`` is ``@theorem(uses=[gauss])`` written wrong.
     """
+    _refuse_a_misplaced_argument("theorem", fn)
     rests_on = fact_ids(uses)
 
     def decorate(fn: Any) -> Theorem:
@@ -420,8 +428,11 @@ def axiom(fn: Any = None, /, *, cite: Any = None, uses: Any = ()) -> Any:
 
     Raises:
         TypeError: When the citation is missing, which is what ``@axiom``
-            written bare amounts to, or empty.
+            written bare amounts to, or empty; and when the positional
+            argument is not the function to decorate, as in
+            ``@axiom("Kress")``, where the citation belongs in ``cite=``.
     """
+    _refuse_a_misplaced_argument("axiom", fn)
     if fn is not None:
         return registry.register_object(Axiom(fn, cite=cite, uses=uses))
     _citation("@axiom", cite)
@@ -431,3 +442,21 @@ def axiom(fn: Any = None, /, *, cite: Any = None, uses: Any = ()) -> Any:
         return registry.register_object(Axiom(fn, cite=cite, uses=rests_on))
 
     return decorate
+
+
+def _refuse_a_misplaced_argument(noun: str, fn: Any) -> None:
+    """Raise ``TypeError`` if a decorator was handed something other than a function.
+
+    ``@theorem(gauss)`` and ``@axiom("Kress")`` are ``uses=`` and ``cite=``
+    written without their keywords. Read as the function to decorate, the
+    first fails on a theorem having no code object and the second on a
+    missing citation, and neither says what went wrong. ``None`` is the
+    decorator called with parentheses, and passes.
+    """
+    if fn is None or (callable(fn) and not isinstance(fn, Theorem)):
+        return
+    if noun == "axiom":
+        where = 'what an axiom rests on goes in uses=[...], and its citation in cite="..."'
+    else:
+        where = f"what a {noun} rests on goes in uses=[...]"
+    raise TypeError(f"@{noun} decorates a typed function, and {fn!r} is not one; {where}")
