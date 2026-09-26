@@ -332,8 +332,8 @@ things in that output are new.
 The status column is still each fact's own. `tested` says how strongly `cubes`
 is established given what it uses; the oracles decide it as they decide any
 theorem, and are not handed the statements it uses. `--json` carries
-`rests_on`, `effective` and `under` for every fact, and the exit code depends
-on none of them: it is 0 here, since nothing is refuted.
+`rests_on`, `effective`, `effective_heuristic` and `under` for every fact, and
+the exit code depends on none of them: it is 0 here, since nothing is refuted.
 
 Copy the axiom down wrong, with `i**2` for `i**3` on the left, and the property
 tester refutes it. The row reads `refuted (axiom)`, `cubes` is worth `refuted`

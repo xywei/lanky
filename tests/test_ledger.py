@@ -134,6 +134,52 @@ def test_a_fact_a_heuristic_decided_is_marked_beside_its_status() -> None:
     assert rows[-1] == "2 facts: 2 decided"
 
 
+def test_what_rests_on_a_heuristics_answer_is_worth_a_heuristics_answer() -> None:
+    """Of two facts with one status, the one a heuristic settled is the weaker.
+
+    A proof or a decision procedure's ``decided`` that rests on a lemma a
+    heuristic decided is worth ``decided (heuristic)``, which the
+    ``EFFECTIVE`` column and the JSON say, though the decision procedure's
+    status is the same as the lemma's. Anything weaker than ``decided`` is
+    worth what it is, and a heuristic's answer that rests on nothing is worth
+    its own status, marked as it is.
+    """
+    heuristic = {"trust_class": "heuristic"}
+    ledger = Ledger(
+        [
+            make_fact("lemma", Status.DECIDED, decided_by="simplifier", provenance=heuristic),
+            make_fact("proof", Status.PROVED, decided_by="lean", rests_on=("lemma",)),
+            make_fact("decision", Status.DECIDED, decided_by="isl", rests_on=("lemma",)),
+            make_fact("sample", Status.TESTED, decided_by="property-test", rests_on=("lemma",)),
+            make_fact("alone", Status.DECIDED, decided_by="isl"),
+        ]
+    )
+    assert ledger.support("lemma") == Support(Status.DECIDED, (), heuristic=True)
+    assert ledger.support("proof") == Support(Status.DECIDED, (), heuristic=True)
+    assert ledger.support("decision") == Support(Status.DECIDED, (), heuristic=True)
+    assert ledger.support("sample") == Support(Status.TESTED, ())
+    assert ledger.support("alone") == Support(Status.DECIDED, ())
+    rows = ledger.render().splitlines()
+    assert rows[0].split()[:3] == ["STATUS", "EFFECTIVE", "BY"]
+    # both columns are as wide as "decided (heuristic)", and two spaces apart
+    cells = [(row[:19].rstrip(), row[21:40].rstrip()) for row in rows[2:7]]
+    assert cells == [
+        ("decided (heuristic)", "decided (heuristic)"),
+        ("proved", "decided (heuristic)"),
+        ("decided", "decided (heuristic)"),
+        ("tested", "tested"),
+        ("decided", "decided"),
+    ]
+    data = json.loads(ledger.to_json())
+    assert [(row["id"], row["effective"], row["effective_heuristic"]) for row in data] == [
+        ("lemma", "decided", True),
+        ("proof", "decided", True),
+        ("decision", "decided", True),
+        ("sample", "tested", False),
+        ("alone", "decided", False),
+    ]
+
+
 def test_to_json_round_trips() -> None:
     ledger = Ledger([make_fact("a", Status.TESTED, decided_by="property-test")])
     data = json.loads(ledger.to_json())
@@ -150,6 +196,7 @@ def test_to_json_round_trips() -> None:
             "owner": "a",
             "rests_on": [],
             "effective": "tested",
+            "effective_heuristic": False,
             "under": [],
         }
     ]

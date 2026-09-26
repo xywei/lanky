@@ -108,9 +108,10 @@ sharp.
   it builds. The ledger reads the graph: a row says what it is established
   under (`tested under nicomachus`), and an `EFFECTIVE` column gives the
   weakest status over everything a fact rests on whenever that is weaker than
-  its own. `--json` carries `rests_on`, `effective` and `under`. An id no
-  fact in the ledger has counts as an assumption, and `lanky check` names it
-  under the table. `examples/nicomachus.py` is the worked case.
+  its own. `--json` carries `rests_on`, `effective`, `effective_heuristic`
+  and `under`. An id no fact in the ledger has counts as an assumption, and
+  `lanky check` names it under the table. `examples/nicomachus.py` is the
+  worked case.
 - `@rewrite`: a transformation as a claim. A function of no arguments returns
   `(source, target)`, `obligation=` names what has to hold between them, and
   the fact reads `source ~> target (obligation)`, with a `RewriteTerm` for an
@@ -122,8 +123,9 @@ sharp.
   procedure; one that can fail to answer inside it, or whose answers are not
   guaranteed, such as a simplifier, is a `heuristic`. The table marks a fact
   one decided `decided (heuristic)`, and a counterexample the property tester
-  finds overrules it. The oracle that settles a fact leaves its trust class in
-  the provenance.
+  finds overrules it. What rests on such a fact is worth `decided (heuristic)`
+  at most, in the `EFFECTIVE` column and as `effective_heuristic` in the JSON.
+  The oracle that settles a fact leaves its trust class in the provenance.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Bool`, `Prop`, `Fin[n]`, `Fn[A, B]`,
   refinement by `T & prop`, exactness classes.

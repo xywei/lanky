@@ -142,12 +142,16 @@ prints a ledger naming who decided what.
   as an unknown class still does), and a fact it settles reads
   `decided (heuristic)` in the table (`Fact.is_heuristic`). Its answer is not
   guaranteed and a counterexample is, so a fact a heuristic established is
-  sampled all the same, with or without hypotheses, and a counterexample
-  overrules it: the fact is `refuted` by the tester, with `overruled` in its
-  provenance naming the heuristic. For the same reason a heuristic is not
-  asked whether a fact's hypotheses are inconsistent: a vacuous fact fails
-  the check, and where no draw satisfies the hypotheses there is no sample
-  to overrule a wrong answer.
+  sampled all the same, once, with or without hypotheses, and a
+  counterexample overrules it: the fact is `refuted` by the tester, with
+  `overruled` in its provenance naming the heuristic. What rests on a fact a
+  heuristic settled is worth a heuristic's answer: of two facts with one
+  status the heuristic's is the weaker, `Support.heuristic` says so, the
+  `EFFECTIVE` column prints `decided (heuristic)`, and `--json` carries
+  `effective_heuristic` for every fact. For the same reason a heuristic is
+  not asked whether a fact's hypotheses are inconsistent: a vacuous fact
+  fails the check, and where no draw satisfies the hypotheses there is no
+  sample to overrule a wrong answer.
 - **Example.** `examples/gauss.py`, two worked theorems, runnable three ways,
   and `examples/nicomachus.py`: Nicomachus's theorem as an axiom, and the
   closed form of the sum of cubes, tested under it. `examples/pytential_skie.py`

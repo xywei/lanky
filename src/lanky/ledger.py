@@ -28,10 +28,10 @@ cites, the callee postcondition a plugin restates. A status says how strongly
 a fact is established *given* those, so a proof from an assumption is worth
 no more than the assumption. The ledger reads that off the graph
 (:meth:`Ledger.support`): a fact's effective strength is the weakest status
-over everything it rests on, directly or through other facts, and the
-assumptions among those are what it is established *under*. The table prints
-``proved under jump, compact``, and an ``EFFECTIVE`` column when some fact is
-weaker than its own status says.
+over everything it rests on, directly or through other facts, a heuristic's
+being the weaker of two alike, and the assumptions among those are what it is
+established *under*. The table prints ``proved under jump, compact``, and an
+``EFFECTIVE`` column when some fact is weaker than its own status says.
 """
 
 from __future__ import annotations
@@ -241,10 +241,21 @@ class Support:
             order they are reached: those ``assumed`` or ``refuted``, those the
             ledger does not hold, and those that rest on themselves. Empty when
             the fact is established from established facts alone.
+        heuristic: Whether the weakest of them was settled by a heuristic (see
+            :attr:`Fact.is_heuristic`). Of two facts with one status, the one a
+            heuristic settled is the weaker, so a proof that rests on a
+            lemma a heuristic decided is worth ``decided (heuristic)``, and not
+            the ``decided`` of a decision procedure.
     """
 
     effective: Status
     under: tuple[str, ...]
+    heuristic: bool = False
+
+    @property
+    def text(self) -> str:
+        """What the fact is worth as the table prints it: ``decided (heuristic)``, say."""
+        return self.effective.value + (" (heuristic)" if self.heuristic else "")
 
 
 class Ledger:
@@ -395,7 +406,8 @@ class Ledger:
         own assumptions.
 
         ``fact`` is a fact or an id; a fact not in the ledger is read against
-        the ledger all the same.
+        the ledger all the same. Of two facts with one status, one settled by
+        a heuristic is the weaker (see :attr:`Support.heuristic`).
         """
         if isinstance(fact, str):
             fact = self._facts[fact]
@@ -403,17 +415,21 @@ class Ledger:
         circles = self._on_circles()
         circular = {current for current in reached if current in circles}
         under: list[str] = []
-        weakest = fact.status
+        weakest, heuristic = fact.status, fact.is_heuristic
         for current in reached:
             held = self._facts.get(current)
             status = Status.ASSUMED if held is None else held.status
             if held is None or status in (Status.ASSUMED, Status.REFUTED) or current in circular:
                 under.append(current)
-            if STATUS_STRENGTH[status] < STATUS_STRENGTH[weakest]:
-                weakest = status
+            settled_by_heuristic = held is not None and held.is_heuristic
+            if (STATUS_STRENGTH[status], not settled_by_heuristic) < (
+                STATUS_STRENGTH[weakest],
+                not heuristic,
+            ):
+                weakest, heuristic = status, settled_by_heuristic
         if circular and STATUS_STRENGTH[weakest] > STATUS_STRENGTH[Status.ASSUMED]:
-            weakest = Status.ASSUMED
-        return Support(effective=weakest, under=tuple(under))
+            weakest, heuristic = Status.ASSUMED, False
+        return Support(effective=weakest, under=tuple(under), heuristic=heuristic)
 
     def _label(self, fact_id: str, owners: Counter) -> str:
         """How the table names a fact another one rests on.
@@ -434,10 +450,11 @@ class Ledger:
         """Every fact as a JSON-ready dictionary, with what it is worth here.
 
         :meth:`Fact.to_dict`, plus ``effective``, the status the fact is worth
-        once what it rests on is counted, and ``under``, the ids of the
-        assumptions it is established under (see :meth:`support`). Both are
-        there for every fact, a fact that rests on nothing carrying its own
-        status and an empty list.
+        once what it rests on is counted, ``effective_heuristic``, whether a
+        heuristic settled the fact that status is read off, and ``under``, the
+        ids of the assumptions it is established under (see :meth:`support`).
+        All three are there for every fact, a fact that rests on nothing
+        carrying its own status, its own mark and an empty list.
         """
         out = []
         for fact in self:
@@ -446,6 +463,7 @@ class Ledger:
                 {
                     **fact.to_dict(),
                     "effective": support.effective.value,
+                    "effective_heuristic": support.heuristic,
                     "under": list(support.under),
                 }
             )
@@ -488,8 +506,9 @@ class Ledger:
         after its status, as in ``proved under jump, compact``. When any fact
         is worth less than its own status, because it rests on something
         weaker, the table grows an ``EFFECTIVE`` column after the status with
-        what each fact is worth. A ledger in which nothing rests on anything
-        renders as it always did.
+        what each fact is worth; ``decided (heuristic)`` there is a fact
+        resting on one a heuristic decided. A ledger in which nothing rests on
+        anything renders as it always did.
         """
         facts = list(self)
         if not facts:
@@ -498,13 +517,13 @@ class Ledger:
         owners = Counter(fact.owner for fact in facts)
         supports = [self.support(fact) for fact in facts]
         weaker = any(
-            support.effective is not fact.status
+            support.effective is not fact.status or support.heuristic is not fact.is_heuristic
             for fact, support in zip(facts, supports, strict=True)
         )
         rows = [
             (
                 self._status_cell(fact, support, owners),
-                *((support.effective.value,) if weaker else ()),
+                *((support.text,) if weaker else ()),
                 fact.decided_by or "-",
                 locations[index] or "-",
                 fact.owner or "-",
