@@ -147,3 +147,104 @@ jobs:
             echo "no row lanky check printed starts with the README's: ${row}" >&2
             exit 1
           fi
+
+  mathlib:
+    name: test with Lean and Mathlib
+    runs-on: ubuntu-latest
+    # Optional. Mathlib is a fetch of several gigabytes from outside GitHub,
+    # and a cache host that is down or a runner that is out of disk must not
+    # fail a run the two jobs above pass. The job reports its own result.
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      # The toolchain the pinned Mathlib project names, which is the one the
+      # `lean` job uses; the oracle refuses a pin that is not the project's.
+      LANKY_LEAN_VERSION: v4.29.1
+      ELAN_VERSION: v4.2.4
+      LANKY_LEAN_TEST_REQUIRED: "1"
+      # A Mathlib test without a Mathlib project fails here rather than
+      # skipping, so the job cannot go green by testing nothing.
+      LANKY_LEAN_MATHLIB_TEST_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same dependencies as the `lean` job, so the same uv cache entry.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: lean
+
+      # The same key as the `lean` job's, so the two share one toolchain.
+      - name: Cache the Lean toolchain
+        id: elan-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.elan
+          key: elan-${{ runner.os }}-${{ env.ELAN_VERSION }}-lean-${{ env.LANKY_LEAN_VERSION }}
+
+      - name: Install elan and the Lean toolchain
+        if: steps.elan-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/leanprover/elan/releases/download/${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/elan-init" -y --no-modify-path --default-toolchain none
+          "${HOME}/.elan/bin/elan" toolchain install "leanprover/lean4:${LANKY_LEAN_VERSION}"
+          "${HOME}/.elan/bin/elan" default "leanprover/lean4:${LANKY_LEAN_VERSION}"
+
+      - name: Put Lean on PATH, and name the REPL cache and the Mathlib project
+        run: |
+          set -euo pipefail
+          echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
+          echo "LANKY_LEAN_CACHE_DIR=${HOME}/.cache/lanky/lean-repl" >> "${GITHUB_ENV}"
+          echo "LANKY_LEAN_MATHLIB=${RUNNER_TEMP}/mathlib" >> "${GITHUB_ENV}"
+
+      - name: Sync dependencies, with the lean extra
+        run: uv sync --group dev --extra lean --python 3.13
+
+      - name: Read the driver's version
+        id: driver
+        run: |
+          set -euo pipefail
+          version=$(uv run python -c 'from importlib.metadata import version; print(version("lean-interact"))')
+          echo "lean-interact ${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache the Lean REPL build
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/lanky/lean-repl
+          key: lean-repl-${{ runner.os }}-lean-${{ env.LANKY_LEAN_VERSION }}-lean-interact-${{ steps.driver.outputs.version }}
+
+      # What `lake exe cache get` downloads: Mathlib's compiled files, packed,
+      # about 400 MB. They are determined by the commits the manifest pins, so
+      # the manifest is the key. Lake still clones Mathlib's sources each run.
+      - name: Cache Mathlib's compiled files
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/mathlib
+          key: mathlib-${{ runner.os }}-${{ hashFiles('src/lanky/mathlib-project/lake-manifest.json') }}
+
+      - name: Set up the pinned Mathlib project
+        run: |
+          set -euo pipefail
+          df -h "${RUNNER_TEMP}" | tail -1
+          uv run python -m lanky.mathlib "${LANKY_LEAN_MATHLIB}"
+          du -sh "${LANKY_LEAN_MATHLIB}/.lake"
+          df -h "${RUNNER_TEMP}" | tail -1
+
+      - name: Test Mathlib mode
+        run: uv run pytest -q tests/test_mathlib.py
+
+      # The row the README shows as `tested property-test` reads `proved lean`
+      # here, next to the scan: both rows of the table are proved.
+      - name: Check the worked example with Mathlib
+        run: |
+          set -euo pipefail
+          uv run lanky check examples/gauss.py | tee ledger.txt
+          proved=$(grep -c '^proved  lean ' ledger.txt)
+          if (( proved != 2 )); then
+            echo "expected both rows proved by lean, found ${proved}" >&2
+            exit 1
+          fi
