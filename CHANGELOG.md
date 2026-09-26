@@ -309,7 +309,8 @@ listed because it changes behaviour a reader could already have depended on.
   there is now the counterexample when it names something, then the fact's
   `reason` whenever it has one, each of its lines indented, and
   `no witness recorded` when there is neither (a plugin's own `witness`, as
-  loopty's isl oracle records, counts as one and stays in the JSON). An empty
+  loopty's isl oracle records, counted as one; it is now printed too, see
+  below). An empty
   counterexample is no longer printed: `-> 1 == 2` shows its reason without
   the `counterexample: {}` line above it. The JSON ledger keeps every field,
   the empty counterexample included. The new `lanky.cli.refutation_lines`
@@ -394,6 +395,18 @@ listed because it changes behaviour a reader could already have depended on.
   finds under a stronger oracle's proof is recorded under `SEMANTICS` whether
   or not the fact carries a note, since with one reading of arithmetic it
   means one of the oracles is wrong.
+
+- **A refutation's witness is printed, whichever plugin recorded it.**
+  `refutation_lines` counted a plugin's `witness` against `no witness
+  recorded` without printing it, since printing it looked like lanky knowing
+  a plugin's provenance keys, so a fact loopty's isl oracle refuted, with the
+  cell that escapes an array as its witness, came out with an empty block and
+  the witness in the JSON alone (#20). The block under a `REFUTED` line is now
+  built from three standard provenance keys, read the same way for every
+  oracle and plugin: the `counterexample` and the `witness`, each when it is
+  not empty, and then the `reason`, which usually talks about them. A value
+  that prints as several lines is indented line by line. A plugin's own keys,
+  such as loopty's `witness_text`, stay in the JSON.
 
 ### Notes
 

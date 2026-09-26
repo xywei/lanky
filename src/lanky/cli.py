@@ -13,8 +13,9 @@ way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
 refuted does not depend on whether Lean is installed. What Lean adds is proofs,
 and the proof that a claim is vacuous, which fails a check that without it only
 warns (see below). Each refuted fact is repeated under the table with what
-explains it: its counterexample, its reason, or a line saying that nothing was
-recorded (see :func:`refutation_lines`).
+explains it: its ``counterexample``, its ``witness`` and its ``reason``, three
+standard provenance keys read the same way whichever oracle or plugin refuted
+it, or a line saying that none was recorded (see :func:`refutation_lines`).
 
 Two more things are printed under the table and do not change the exit code. A
 statement whose sampled reading could not be run where a stronger oracle's
@@ -204,32 +205,42 @@ def _recorded(value: Any) -> bool:
 def refutation_lines(fact: Fact) -> list[str]:
     """The lines ``lanky check`` prints under a fact's ``REFUTED`` line.
 
-    The counterexample, when there is one that names something; then the
-    fact's ``reason``, whenever it has one, since a refutation with no
-    assignment to show (loopty's fact about a body it cannot trace) is
-    explained by nothing else, and one with an assignment is explained better
-    with it; and, when there is neither, a line saying so, so that a bare
-    ``REFUTED`` is never read as having been explained somewhere. A plugin's
-    own ``witness`` (loopty's isl oracle records one) counts as a witness for
-    that last line; it is not printed, and stays in the JSON with the rest of
-    the provenance. A reason of several lines comes back as several, so that
-    each is indented under the ``REFUTED`` line and not only the first.
+    Three provenance keys are standard, whichever oracle or plugin refuted the
+    fact, and each is printed when it says something. ``counterexample`` is
+    the assignment of the statement's variables that makes it false, as the
+    property tester records it. ``witness`` is the object that refutes it
+    when that is not an assignment: loopty's isl oracle records the cell that
+    escapes an array, or the pair of statement instances a schedule runs out
+    of order. ``reason`` is the explanation in words, and comes last, because
+    a reason usually talks about the counterexample or the witness above it; a
+    refutation with neither (loopty's fact about a body it cannot trace) is
+    explained by the reason alone. When none of the three is there, a line
+    says so, so that a bare ``REFUTED`` is never read as having been explained
+    somewhere.
 
-    An empty counterexample is not printed. A closed statement such as ``-> 1
-    == 2`` carries one on purpose, because no assignment is what makes it
-    false, and it used to be printed as ``counterexample: {}`` above the
-    reason, a line that says nothing; the reason is what explains it. The
-    JSON ledger keeps the empty counterexample, as it keeps every field.
+    The keys are read the same way for every plugin, and lanky knows no
+    other: a plugin's own keys, such as loopty's ``witness_text``, stay in the
+    JSON with the rest of the provenance. A value that prints as several lines
+    comes back as several, so that each is indented under the ``REFUTED``
+    line and not only the first.
+
+    An empty counterexample or witness is not printed. A closed statement such
+    as ``-> 1 == 2`` carries an empty counterexample on purpose, because no
+    assignment is what makes it false, and it used to be printed as
+    ``counterexample: {}`` above the reason, a line that says nothing; the
+    reason is what explains it. The JSON ledger keeps the empty
+    counterexample, as it keeps every field.
     """
     provenance = fact.provenance
-    lines = []
-    counterexample = provenance.get("counterexample")
-    if _recorded(counterexample):
-        lines.append(f"counterexample: {counterexample}")
+    lines: list[str] = []
+    for key in ("counterexample", "witness"):
+        value = provenance.get(key)
+        if _recorded(value):
+            lines.extend(f"{key}: {value}".splitlines())
     reason = provenance.get("reason")
     if _recorded(reason):
         lines.extend(str(reason).splitlines())
-    if not lines and not _recorded(provenance.get("witness")):
+    if not lines:
         lines.append("no witness recorded")
     return lines
 

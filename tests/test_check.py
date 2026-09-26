@@ -790,16 +790,47 @@ def test_a_refutation_that_records_nothing_says_so(capsys) -> None:
     ]
 
 
-def test_a_plugin_witness_counts_as_a_witness(capsys) -> None:
-    """loopty's isl oracle records ``witness``; that is not "no witness".
+def test_a_witness_is_printed_whichever_plugin_recorded_it(capsys) -> None:
+    """``witness`` is a standard key, and printed like the counterexample (#20).
 
-    It is not printed (the JSON has it, with its rendering), and neither is
-    anything else, so its block is empty, as it was.
+    loopty's isl oracle records one, and it counted against "no witness
+    recorded" without being printed, so a refuted in-bounds fact came out with
+    an empty block and the cell that escapes was in the JSON alone. A plugin's
+    own keys, such as ``witness_text``, are still not lanky's to print.
     """
     fact = _refuted(witness=((0, 8), (1, 7)), witness_text="[t=0, i=8] -> [t=1, i=7]")
-    assert _block(capsys, fact) == []
-    # a term in the provenance is not asked for its truth value
-    assert cli.refutation_lines(_refuted(witness=Var("n"))) == []
+    assert _block(capsys, fact) == ["  witness: ((0, 8), (1, 7))"]
+    # a term in the provenance is printed, and not asked for its truth value
+    assert cli.refutation_lines(_refuted(witness=Var("n"))) == ["witness: n"]
+
+
+def test_the_standard_keys_are_printed_in_one_order(capsys) -> None:
+    """The counterexample and the witness, then the reason that talks about them."""
+    fact = _refuted(
+        reason="S0[t=0, i=8] runs before S0[t=1, i=7], which reads what it writes",
+        witness="S0[t=0, i=8] -> S0[t=1, i=7]",
+        counterexample={"n": 16},
+    )
+    assert _block(capsys, fact) == [
+        "  counterexample: {'n': 16}",
+        "  witness: S0[t=0, i=8] -> S0[t=1, i=7]",
+        "  S0[t=0, i=8] runs before S0[t=1, i=7], which reads what it writes",
+    ]
+
+
+def test_a_witness_of_several_lines_is_indented_line_by_line(capsys) -> None:
+    fact = _refuted(witness="S0[t=0, i=8]\nS0[t=1, i=7]")
+    assert _block(capsys, fact) == ["  witness: S0[t=0, i=8]", "  S0[t=1, i=7]"]
+
+
+def test_an_empty_witness_is_not_printed(capsys) -> None:
+    """An empty witness names nothing, as an empty counterexample does not."""
+    assert _block(capsys, _refuted(witness=(), reason="the pair was not kept")) == [
+        "  the pair was not kept"
+    ]
+    assert _block(capsys, _refuted(witness="", counterexample={})) == [
+        "  no witness recorded"
+    ]
 
 
 # }}}
