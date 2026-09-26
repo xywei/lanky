@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 from typing import NoReturn
 
+import pymbolic.primitives as prim
 import pytest
 
 from lanky import theorem
@@ -25,7 +27,7 @@ from lanky.lean import (
     print_lean,
     statement_of,
 )
-from lanky.ledger import Status
+from lanky.ledger import Fact, Status
 from lanky.oracles.lean import (
     LeanOracle,
     LeanSession,
@@ -788,6 +790,35 @@ def test_a_literal_base_is_an_integer() -> None:
     )
 
 
+#: ``1 - Fraction(2, 1) ** n >= 0`` over ``Nat``, built node by node: pymbolic's
+#: operators refuse a ``Fraction`` operand, so a plugin is where it comes from.
+_FRACTION_BASE = Forall(
+    ((n, Nat),),
+    prim.Comparison(prim.Sum((1, prim.Product((-1, prim.Power(Fraction(2, 1), n))))), ">=", 0),
+)
+
+
+def test_an_integral_fraction_is_the_integer_it_equals() -> None:
+    """``Fraction(2, 1)`` prints as ``2``, so every rule for an integer literal applies to it.
+
+    The base of a power is the one that mattered: an ``int`` base is ascribed
+    ``Int`` and an integral ``Fraction`` was not, so ``_FRACTION_BASE`` printed
+    as ``1 - 2 ^ n.toNat ≥ 0``, a statement about ``Nat`` that Lean proves by
+    truncating and Python refutes at ``n = 1``. A literal exponent, a positive
+    literal divisor and a negative summand read the same way, and a fraction
+    that is not an integer still needs a field.
+    """
+    assert print_lean(_FRACTION_BASE) == "∀ n : Int, 0 ≤ n → 1 - (2 : Int) ^ n.toNat ≥ 0"
+    squared = prim.Comparison(prim.Power(n, Fraction(2, 1)), ">=", 0)
+    assert print_lean(Forall(((n, Nat),), squared)) == "∀ n : Int, 0 ≤ n → n ^ 2 ≥ 0"
+    halved = prim.Comparison(prim.FloorDiv(n, Fraction(2, 1)), "<=", n)
+    assert print_lean(Forall(((n, Nat),), halved)) == "∀ n : Int, 0 ≤ n → n / 2 ≤ n"
+    lowered = prim.Comparison(prim.Sum((n, Fraction(-3, 1))), "<", n)
+    assert print_lean(Forall(((n, Nat),), lowered)) == "∀ n : Int, 0 ≤ n → n - 3 < n"
+    with pytest.raises(UnsupportedTerm, match="needs a field"):
+        print_lean(Forall(((n, Nat),), prim.Comparison(n, ">=", Fraction(1, 2))))
+
+
 # }}}
 
 
@@ -1246,6 +1277,29 @@ def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, 
     readme = _printed_after("README.md", "lanky check examples/gauss.py")
     _assert_abridged(readme, printed)
     assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
+
+
+def test_lean_does_not_prove_an_integral_fraction_base_by_truncation(
+    lean_oracle: LeanOracle,
+) -> None:
+    """``1 - Fraction(2, 1) ** n >= 0`` is false at ``n = 1``, and Lean must not prove it.
+
+    Printed without the ``Int`` ascription it was a statement about ``Nat``,
+    which Lean proved, and the check read ``proved`` for a claim that is false
+    as Python computes it. Lean now fails to prove it, and the tester, which
+    could not evaluate a ``Fraction`` literal either, refutes it.
+    """
+    from lanky.check import establish
+
+    fact = Fact(
+        id="fraction_base", kind="theorem", statement="1 - 2**n >= 0", term=_FRACTION_BASE
+    )
+    closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_FRACTION_BASE)}\n")
+    assert closed, detail
+    assert lean_oracle.establish(fact).status is not Status.PROVED
+    checked = establish(fact)
+    assert checked.status is Status.REFUTED
+    assert checked.decided_by == "property-test"
 
 
 def test_the_printed_proposition_elaborates(lean_oracle: LeanOracle) -> None:

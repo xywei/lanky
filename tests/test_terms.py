@@ -441,6 +441,32 @@ def test_free_variables_see_inside_a_refined_binder_domain() -> None:
     assert free_variables(Exists(((k, Nat & (k > 0)),), k == 1)) == frozenset()
 
 
+def test_a_fraction_literal_is_a_constant() -> None:
+    """A term built node by node may carry a ``Fraction``, and it evaluates as one.
+
+    pymbolic's operators refuse a ``Fraction`` operand, so only a plugin puts
+    one into a term, and pymbolic's evaluator refused it as an invalid foreign
+    object: the tester could not run such a statement at all, where it should
+    refute ``1 - Fraction(2, 1) ** n >= 0`` at ``n = 1``.
+    """
+    from fractions import Fraction
+
+    import pymbolic.primitives as prim
+
+    from lanky.testing import check
+
+    n = Var("n")
+    below = prim.Comparison(
+        prim.Sum((1, prim.Product((-1, prim.Power(Fraction(2, 1), n))))), ">=", 0
+    )
+    assert evaluate(below, {"n": 0}) is True
+    assert evaluate(below, {"n": 1}) is False
+    assert evaluate(prim.Sum((n, Fraction(1, 2))), {"n": 1}) == Fraction(3, 2)
+    report = check([("n", Nat)], [], below)
+    assert not report.ok
+    assert report.counterexample["n"] >= 1
+
+
 def test_free_variables_read_a_later_domain_with_the_earlier_binders_bound() -> None:
     """``Fin[i]`` after ``i in Fin[n]`` is the binder ``i``, and not a free name.
 

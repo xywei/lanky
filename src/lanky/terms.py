@@ -1201,6 +1201,19 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         """Absolute value of the operand."""
         return builtins.abs(self.rec(expr.operand))
 
+    def map_foreign(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
+        """A constant pymbolic has no class for, a ``Fraction``, is its own value.
+
+        pymbolic's operators refuse a ``Fraction`` operand, so a term with one
+        in it is built node by node, by a plugin, and it is a literal like any
+        other: the Lean printer reads an integral one as the integer it equals,
+        and the evaluator refused it as an invalid foreign object, which left
+        the property tester unable to run the statement at all.
+        """
+        if isinstance(expr, Fraction):
+            return expr
+        return super().map_foreign(expr, *args, **kwargs)
+
 
 class _Unset:
     """Sentinel for "this name had no value before the binder bound it"."""
