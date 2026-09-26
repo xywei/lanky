@@ -393,10 +393,10 @@ own. A process imports a module of one name once, so files whose source roots
 differ (the directories a check puts on `sys.path`: the file's own, and the one
 its package is found from) are checked in child processes, one per root, while
 files that share their roots share a process as they always did. A child runs
-with the command's interpreter options (`-O`, `-W`, `-X`), is sent `SIGTERM`
-when the command ends, however it ends, and kills the Lean REPLs it started
-before it goes; once it has exited, what it wrote is copied and nothing a
-checked file left running holds the command up (except on Windows, for now).
+with the command's interpreter options (`-O`, `-W`, `-X`). On Linux and macOS
+it is also sent `SIGTERM` when the command ends, however it ends, and kills
+the Lean REPLs it started before it goes; and once it has exited, what it
+wrote is copied and nothing a checked file left running holds the command up.
 `check_path`, the function
 underneath, imports into the process that calls it. No environment variable
 changes what the code means.

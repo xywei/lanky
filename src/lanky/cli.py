@@ -47,9 +47,9 @@ with the same roots share one: two directories that each hold a ``helpers.py``
 are checked against their own. Files that all share their roots are checked in
 this process, as :func:`lanky.check.check_path` checks a file, and print what
 they always printed (see :meth:`CheckVerb.run`). A child is started with this
-interpreter's command-line options, ends when this process ends, however it
-ends, and cannot hold the command up once it has exited, whatever it started,
-except on Windows (see :meth:`CheckVerb._check_in_children`).
+interpreter's command-line options; on Linux and macOS it also ends when this
+process ends, however it ends, and cannot hold the command up once it has
+exited, whatever it started (see :meth:`CheckVerb._check_in_children`).
 """
 
 from __future__ import annotations
@@ -241,9 +241,11 @@ class CheckVerb:
         :func:`_stop`). And once it has exited, its output is copied up to
         the last byte it wrote rather than until it ends (see
         :func:`_follow`), so a process a checked file left running with the
-        child's output as its own does not hold the command up; except on
-        Windows, where a stream is still copied to its end (see
-        :func:`_copy_lines`).
+        child's output as its own does not hold the command up. The last two
+        are for Linux and macOS: on Windows the child is not told that this
+        process ended, is stopped with ``TerminateProcess``, which runs nothing
+        in it, and has its streams copied to their end (see :func:`_watch_parent`,
+        :func:`_stop` and :func:`_copy_lines`).
         """
         code = 0
         checked = 0
@@ -510,7 +512,9 @@ def _end_with_parent(parent: int) -> None:
 
     ``parent`` is the pid of the command's process, which the spec hands
     down: a parent that ended before either of the two was in place is
-    already gone, and the child ends at once.
+    already gone, and the child ends at once. On Windows neither works yet,
+    since there a process keeps the parent's pid it was created with (see
+    :func:`_watch_parent`).
     """
     signal.signal(signal.SIGTERM, functools.partial(_terminated, os.getpid()))
     if not (sys.platform.startswith("linux") and _signal_at_parent_death()):
@@ -557,7 +561,14 @@ def _signal_at_parent_death() -> bool:
 
 
 def _watch_parent(parent: int) -> None:  # pragma: no cover - the fallback off Linux
-    """Send this process ``SIGTERM`` once its parent is no longer ``parent``."""
+    """Send this process ``SIGTERM`` once its parent is no longer ``parent``.
+
+    An orphan is handed to another parent on macOS and the other POSIX
+    systems, so its parent's pid changes. Not on Windows, where
+    ``os.getppid`` keeps returning the pid of the process that created this
+    one after it has ended, and so this never sends it; waiting on a handle
+    to the parent would.
+    """
     while os.getppid() == parent:
         time.sleep(_PARENT_POLL)
     os.kill(os.getpid(), signal.SIGTERM)
@@ -714,7 +725,9 @@ def _stop(child: subprocess.Popen) -> None:
     ``SIGTERM`` has the child kill the Lean REPLs it started before it ends
     (see :func:`_terminated`), which ``SIGKILL`` would leave running; a child
     that is not gone :data:`_STOP_GRACE` seconds later, because a checked file
-    handles the signal, say, is killed.
+    handles the signal, say, is killed. On Windows ``terminate`` is
+    ``TerminateProcess`` already, which runs nothing in the child, so its
+    REPLs are left running there.
     """
     child.terminate()
     try:
