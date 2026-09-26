@@ -990,6 +990,158 @@ def test_a_childs_output_is_copied_as_text_whatever_its_bytes() -> None:
     assert sink.getvalue() == "café\n\\xff\r\nlast"
     cli._copy_lines(io.BytesIO(b"nowhere\n"), None)  # drained, not written
 
+    # A character the sink cannot encode is escaped too, rather than failing the write.
+    ascii_sink = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="")
+    cli._copy_lines(io.BytesIO(b"caf\xc3\xa9\nplain\n"), ascii_sink)
+    ascii_sink.flush()
+    assert ascii_sink.buffer.getvalue() == b"caf\\xe9\nplain\n"
+
+
+def test_exit_codes_and_json_merge_across_roots(tmp_path, monkeypatch, capsys) -> None:
+    """Each root's verdict and facts come back to the one command, in the order printed.
+
+    A refutation in one child fails the check as it would in one process, and
+    so does a file another child could not import; a root that passes changes
+    neither. ``--json`` holds the facts of the files that imported, and each
+    is what a check of that file alone writes.
+    """
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    good = _rooted(tmp_path / "good", 1)
+    bad = _rooted(tmp_path / "bad", 1)
+    (bad.parent / f"{ROOTS_HELPER}.py").write_text("VALUE = 3\n", encoding="utf-8")
+    broken = tmp_path / "broken" / "claims.py"
+    broken.parent.mkdir()
+    broken.write_text("def broken(:\n", encoding="utf-8")
+    out_json = tmp_path / "ledger.json"
+    alone = tmp_path / "alone.json"
+    try:
+        assert cli.main(["check", str(good), str(bad), str(broken), "--json", str(out_json)]) == 1
+        printed = capsys.readouterr().out
+        assert printed.count("1 facts: 1 tested") == 1
+        assert printed.count("1 facts: 1 refuted") == 1
+        assert "REFUTED own_helper at claims.py:" in printed
+        assert f"lanky check: {broken} could not be imported" in printed
+        assert "SyntaxError" in printed
+        data = json.loads(out_json.read_text(encoding="utf-8"))
+        assert [(entry["owner"], entry["status"]) for entry in data] == [
+            ("own_helper", "tested"),
+            ("own_helper", "refuted"),
+        ]
+        for file, entry in zip((good, bad), data, strict=True):
+            sys.modules.pop(ROOTS_HELPER, None)
+            cli.main(["check", str(file), "--json", str(alone)])
+            assert json.loads(alone.read_text(encoding="utf-8")) == [entry]
+
+        assert cli.main(["check", str(broken), str(good)]) == 1
+        other = _rooted(tmp_path / "other", 2)
+        assert cli.main(["check", str(good), str(other)]) == 0
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def test_a_child_may_print_what_this_process_cannot_encode(tmp_path, monkeypatch) -> None:
+    """A checked file that prints a character this process's output refuses stops nothing.
+
+    The child writes UTF-8 whatever the locale, and this process's output may
+    be ASCII (``PYTHONIOENCODING=ascii``, say). Writing the line as it came
+    raised ``UnicodeEncodeError`` here, which ended the whole command and left
+    the next root unchecked; the character is escaped instead.
+    """
+    import io
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    accented = tmp_path / "a" / "accented.py"
+    accented.parent.mkdir()
+    accented.write_text("print('caf\\u00e9')\n", encoding="utf-8")
+    good = _rooted(tmp_path / "b", 2)
+    out = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="")
+    monkeypatch.setattr(sys, "stdout", out)
+    try:
+        assert cli.main(["check", str(accented), str(good)]) == 0
+        out.flush()
+        printed = out.buffer.getvalue().decode("ascii")
+        assert "caf\\xe9\n" in printed
+        assert printed.count("1 facts: 1 tested") == 1
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def _sleeper(script: str):
+    """A Python child running ``script``, with both output streams piped here."""
+    import subprocess
+    import sys
+
+    return subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+
+
+def test_a_failing_stderr_does_not_stall_a_child(monkeypatch) -> None:
+    """The thread copying standard error keeps reading when ``sys.stderr`` fails.
+
+    It died at the first failed write, and a child writing more than a pipe
+    holds to its standard error then blocked for good, while this process
+    waited for its standard output to end.
+    """
+    import errno
+    import io
+    import sys
+    import threading
+
+    class Closed:
+        encoding = "utf-8"
+
+        def write(self, text):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", Closed())
+    child = _sleeper(
+        "import sys\n"
+        "for i in range(20000):\n"
+        "    print('e' * 60, file=sys.stderr)\n"
+        "print('done')\n"
+    )
+    returned = []
+    follow = threading.Thread(target=lambda: returned.append(cli._follow(child)), daemon=True)
+    follow.start()
+    follow.join(timeout=30)
+    if follow.is_alive():
+        child.kill()
+        follow.join(timeout=10)
+        pytest.fail("the child blocked on its standard error")
+    assert returned == [0]
+    assert out.getvalue() == "done\n"
+
+
+def test_a_copy_that_fails_kills_the_child(monkeypatch) -> None:
+    """When this process cannot copy a child's output, the child is killed and reaped.
+
+    It used to be left checking for no one, with this process waiting on it at
+    the end of ``with``, whose closing of the standard error pipe blocks until
+    the thread reading it sees the child's last line.
+    """
+    import sys
+    import time
+
+    class Closed:
+        encoding = "utf-8"
+
+        def write(self, text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(sys, "stdout", Closed())
+    child = _sleeper("import time\nprint('ready', flush=True)\ntime.sleep(30)\n")
+    started = time.monotonic()
+    with pytest.raises(BrokenPipeError):
+        cli._follow(child)
+    assert time.monotonic() - started < 20
+    assert child.returncode is not None and child.returncode != 0
+
 
 def test_check_path_imports_into_the_calling_process(tmp_path, monkeypatch) -> None:
     """The API keeps one process, as documented: the command is what keeps roots apart.

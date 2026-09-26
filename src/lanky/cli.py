@@ -126,7 +126,8 @@ class CheckVerb:
         the files and within a root in the order the files are listed, and
         ``--json`` lists the facts in that order too. What each root's files
         print is what ``lanky check`` of those files alone prints, headings
-        included, and the check fails when any root's does.
+        included (the oracles ``--verbose`` lists are listed once, above
+        them all), and the check fails when any root's does.
         """
         files = getattr(args, "files", None) or [args.file]
         missing = [file for file in files if not Path(file).is_file()]
@@ -436,33 +437,72 @@ def _follow(child: subprocess.Popen) -> int:
     as they are checked and wherever this process's output goes, which need
     not be the terminal the child would write to directly (a test capturing
     ``sys.stdout``, say). Standard error is read by a thread of its own, so
-    that a child writing a lot to it never blocks on a full pipe.
+    that a child writing a lot to it never blocks on a full pipe, and that
+    thread keeps reading even when ``sys.stderr`` fails, for the same reason.
+
+    When copying fails here, because this process is interrupted (a
+    ``KeyboardInterrupt`` that reached this process and not the child) or its
+    own output is closed, the child is killed before the exception goes on.
+    It would otherwise keep checking for no one, and hold this process up
+    until it ended, since the pipe the thread is reading cannot be closed
+    under it.
     """
     with child:
         assert child.stdout is not None and child.stderr is not None
-        pump = threading.Thread(target=_copy_lines, args=(child.stderr, sys.stderr), daemon=True)
+        pump = threading.Thread(
+            target=_copy_lines,
+            args=(child.stderr, sys.stderr),
+            kwargs={"keep_reading": True},
+            daemon=True,
+        )
         pump.start()
-        _copy_lines(child.stdout, sys.stdout)
+        try:
+            _copy_lines(child.stdout, sys.stdout)
+        except BaseException:
+            child.kill()
+            raise
         pump.join()
     return child.returncode
 
 
-def _copy_lines(source: BinaryIO, sink: TextIO | None) -> None:
+def _copy_lines(source: BinaryIO, sink: TextIO | None, *, keep_reading: bool = False) -> None:
     """Copy lines from a child's stream to one of this process's, as they arrive.
 
     The child writes UTF-8 (see :func:`_check_in_child`). A byte that is not
     UTF-8, which a checked file can still write to the stream underneath, is
-    copied as its escape (``\\xff``) rather than as a character this
-    process's stream may refuse, which would end the check here. Line
-    endings are passed on as they are, so a ``\\r`` a checked file prints
-    stays one. A sink of ``None``, which is what ``sys.stderr`` is where a
-    program runs with no console, drains the stream without writing it
-    anywhere.
+    copied as its escape (``\\xff``), and so is a character this process's
+    stream cannot encode (an accented letter where it writes ASCII), rather
+    than failing the write, which would end the check here and leave the
+    roots after this one unchecked. Line endings are passed on as they are, so a
+    ``\\r`` a checked file prints stays one. A sink of ``None``, which is
+    what ``sys.stderr`` is where a program runs with no console, drains the
+    stream without writing it anywhere.
+
+    With ``keep_reading``, a sink that fails for any other reason (a closed
+    pipe, say) is dropped and the stream is still read to its end: the
+    thread copying a child's standard error must not stop while the child
+    may still write to it, or the child blocks on a full pipe while this
+    process waits for its standard output to end.
     """
     text = io.TextIOWrapper(source, encoding="utf-8", errors="backslashreplace", newline="")
     for line in text:
-        if sink is not None:
-            sink.write(line)
+        if sink is None:
+            continue
+        try:
+            _write_escaped(sink, line)
+        except Exception:
+            if not keep_reading:
+                raise
+            sink = None
+
+
+def _write_escaped(sink: TextIO, line: str) -> None:
+    """Write a line, escaping what the sink's encoding cannot carry (see :func:`_copy_lines`)."""
+    try:
+        sink.write(line)
+    except UnicodeEncodeError:
+        encoding = getattr(sink, "encoding", None) or "ascii"
+        sink.write(line.encode(encoding, "backslashreplace").decode(encoding))
 
 
 def _read_report(path: Path) -> dict[str, Any] | None:
