@@ -1524,6 +1524,35 @@ def test_lean_shows_a_vacuous_claim_vacuous(lean_oracle: LeanOracle, tmp_path, c
     assert "proved (vacuous)  lean" in capsys.readouterr().out
 
 
+def test_lean_shows_a_vacuous_axiom_vacuous_without_being_shown_the_axiom(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """An axiom with inconsistent hypotheses is vacuous, and still ``assumed``.
+
+    Lean is asked whether the hypotheses prove ``False``, which ``omega``
+    shows, and is never asked the axiom itself, so the row reads ``assumed
+    (axiom) (vacuous)`` and the check fails.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "vacuous.py"
+    path.write_text(
+        _VACUOUS.replace("import theorem", "import axiom").replace(
+            "@theorem", '@axiom(cite="a textbook, copied down wrong")'
+        ),
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.kind == "axiom"
+    assert fact.status is Status.ASSUMED
+    assert fact.decided_by is None
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous_by"] == "lean"
+    assert cli.main(["check", str(path)]) == 1
+    assert "assumed (axiom) (vacuous)  -" in capsys.readouterr().out
+
+
 def test_lean_leaves_hypotheses_the_sampler_misses_to_a_warning(
     lean_oracle: LeanOracle, tmp_path, capsys
 ) -> None:

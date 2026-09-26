@@ -56,7 +56,9 @@ says how much the claim is worth, and nothing else changes.
   decision and a Lean proof are all facts in one table, each with a status, a
   decider, a provenance and a source location. Property-testing tools give you
   the first, SMT wrappers the second, proof assistants the third, and none of
-  them will tell you, for one file, which is which.
+  them will tell you, for one file, which is which. A fact can rest on others,
+  and is worth no more than they are: a proof from a cited axiom reads
+  `proved under` that axiom, and is worth what the axiom is.
 - **Statements are the signature.** A theorem is a typed Python function. It
   imports, it is callable, it is collected by pytest, and it is readable by
   someone who has never seen a proof assistant.
@@ -88,10 +90,24 @@ sharp.
 
 - `lanky check FILE [--json OUT] [--verbose]`, exit code 1 on any refutation
   or vacuous claim. Each refuted fact is repeated under the table with its
-  counterexample and its reason, or with `no witness recorded` when it carries
-  neither.
+  counterexample, its witness and its reason, the three standard provenance
+  keys, read the same way whichever oracle or plugin refuted it; or with
+  `no witness recorded` when it carries none of them.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
+- `@axiom(cite=...)`: a statement written like a theorem and taken on a
+  citation. Its fact is `assumed (axiom)`, with the citation in its
+  provenance; no oracle is asked to establish it, and the property tester
+  still looks for a counterexample, so an axiom copied down wrong is refuted
+  (and one whose hypotheses nothing satisfies is caught as vacuous).
+- Facts rest on facts. `@theorem(uses=[...])` names the theorems, axioms or
+  fact ids a theorem rests on, and a plugin sets `Fact.rests_on` on the facts
+  it builds. The ledger reads the graph: a row says what it is established
+  under (`tested under nicomachus`), and an `EFFECTIVE` column gives the
+  weakest status over everything a fact rests on whenever that is weaker than
+  its own. `--json` carries `rests_on`, `effective` and `under`. An id no
+  fact in the ledger has counts as an assumption, and `lanky check` names it
+  under the table. `examples/nicomachus.py` is the worked case.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Bool`, `Prop`, `Fin[n]`, `Fn[A, B]`,
   refinement by `T & prop`, exactness classes.
@@ -252,9 +268,11 @@ statement and a generated kernel cannot drift apart in translation. lanky adds
 operators on them build propositions.
 
 **Facts and the ledger.** A `Fact` is a statement, a term, a status, a decider,
-a provenance and a source location. `Status` is `tested, decided, proved,
-certified, assumed, refuted`. The ledger is the output of a check and the thing
-a reviewer reads.
+a provenance, a source location, and the ids of the facts it rests on. `Status`
+is `tested, decided, proved, certified, assumed, refuted`. The ledger is the
+output of a check and the thing a reviewer reads; it reads the facts' graph as
+well, so a fact's status is shown with the assumptions it rests on and what it
+is worth given them.
 
 **Four plugin interfaces.** *Theories* turn decorated objects into facts.
 *Oracles* establish facts and report a trust class. *Executors* run a decorated
@@ -285,7 +303,7 @@ own. No environment variable changes what the code means.
 ## Documentation
 
 - [docs/quickstart.md](docs/quickstart.md): the worked file, end to end, with
-  the output the commands actually print.
+  the output the commands actually print, and a second one with an axiom.
 - [CHANGELOG.md](CHANGELOG.md).
 - [loopty](https://github.com/xywei/loopty): the sister project and lanky's
   first plugin: a typed polyhedral layer over loopy, where the facts are about

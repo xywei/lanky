@@ -244,6 +244,33 @@ def test_a_division_by_zero_is_a_gap_the_ledger_records(tmp_path) -> None:
         assert "zero" in fact.provenance["semantics_undecided"]
 
 
+def test_an_axiom_records_its_division_by_zero_gap_too(tmp_path, capsys) -> None:
+    """An axiom is sampled for a counterexample, and the gap is where sampling is blind.
+
+    It used to skip the note: an axiom went to its own examination before the
+    gaps were read, so ``n // m`` with ``m`` possibly zero left nothing in the
+    provenance, and a reader could not tell that some draws were never
+    answered. The note is in the provenance and the verbose output, and the
+    axiom stays ``assumed``.
+    """
+    from lanky.semantics import DIVISION_BY_ZERO
+
+    path = tmp_path / "divaxiom.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import axiom\n"
+        "from lanky.prelude import Nat\n\n\n"
+        '@axiom(cite="the division algorithm")\n'
+        "def divides(n: Nat, m: Nat) -> (n // m) * m + n % m == n:\n"
+        '    """Floor division and remainder put a number back together."""\n',
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path, verbose=True))
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["semantics"] == [DIVISION_BY_ZERO]
+    assert f"  semantics: {DIVISION_BY_ZERO}" in capsys.readouterr().out.splitlines()
+
+
 def test_an_application_outside_its_domain_is_never_proved(tmp_path, capsys) -> None:
     """A family applied past its own domain must not come back ``proved``.
 
@@ -790,16 +817,259 @@ def test_a_refutation_that_records_nothing_says_so(capsys) -> None:
     ]
 
 
-def test_a_plugin_witness_counts_as_a_witness(capsys) -> None:
-    """loopty's isl oracle records ``witness``; that is not "no witness".
+def test_a_witness_is_printed_whichever_plugin_recorded_it(capsys) -> None:
+    """``witness`` is a standard key, and printed like the counterexample (#20).
 
-    It is not printed (the JSON has it, with its rendering), and neither is
-    anything else, so its block is empty, as it was.
+    loopty's isl oracle records one, and it counted against "no witness
+    recorded" without being printed, so a refuted in-bounds fact came out with
+    an empty block and the cell that escapes was in the JSON alone. A plugin's
+    own keys, such as ``witness_text``, are still not lanky's to print.
     """
     fact = _refuted(witness=((0, 8), (1, 7)), witness_text="[t=0, i=8] -> [t=1, i=7]")
-    assert _block(capsys, fact) == []
-    # a term in the provenance is not asked for its truth value
-    assert cli.refutation_lines(_refuted(witness=Var("n"))) == []
+    assert _block(capsys, fact) == ["  witness: ((0, 8), (1, 7))"]
+    # a term in the provenance is printed, and not asked for its truth value
+    assert cli.refutation_lines(_refuted(witness=Var("n"))) == ["witness: n"]
+
+
+def test_the_standard_keys_are_printed_in_one_order(capsys) -> None:
+    """The counterexample and the witness, then the reason that talks about them."""
+    fact = _refuted(
+        reason="S0[t=0, i=8] runs before S0[t=1, i=7], which reads what it writes",
+        witness="S0[t=0, i=8] -> S0[t=1, i=7]",
+        counterexample={"n": 16},
+    )
+    assert _block(capsys, fact) == [
+        "  counterexample: {'n': 16}",
+        "  witness: S0[t=0, i=8] -> S0[t=1, i=7]",
+        "  S0[t=0, i=8] runs before S0[t=1, i=7], which reads what it writes",
+    ]
+
+
+def test_a_witness_of_several_lines_is_indented_line_by_line(capsys) -> None:
+    fact = _refuted(witness="S0[t=0, i=8]\nS0[t=1, i=7]")
+    assert _block(capsys, fact) == ["  witness: S0[t=0, i=8]", "  S0[t=1, i=7]"]
+
+
+def test_an_empty_witness_is_not_printed(capsys) -> None:
+    """An empty witness names nothing, as an empty counterexample does not."""
+    assert _block(capsys, _refuted(witness=(), reason="the pair was not kept")) == [
+        "  the pair was not kept"
+    ]
+    assert _block(capsys, _refuted(witness="", counterexample={})) == [
+        "  no witness recorded"
+    ]
+
+
+# }}}
+
+
+# {{{ facts rest on facts
+
+CITED = '''
+"""An axiom, and a theorem that rests on it."""
+
+from __future__ import annotations
+
+from lanky import axiom, theorem
+from lanky.prelude import Fin, Nat
+
+
+@theorem
+def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
+    """Gauss."""
+
+
+@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+    """The sum of the first cubes is the square of the sum of the first numbers."""
+
+
+@theorem(uses=[nicomachus, gauss])
+def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
+    """The sum of the cubes, in closed form."""
+'''
+
+
+def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> None:
+    """The axiom is ``assumed`` on its citation; the theorem is tested under it.
+
+    Every statement here has a sum in it, which core Lean cannot print, so the
+    ledger is the same with Lean and without it.
+    """
+    path = write_file(tmp_path, CITED)
+    ledger = check_path(path)
+    gauss, nicomachus, cubes = ledger
+    assert nicomachus.kind == "axiom"
+    assert nicomachus.status is Status.ASSUMED
+    assert nicomachus.decided_by is None
+    assert nicomachus.provenance["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
+    # sampled for a counterexample, and nothing of a pass is kept
+    assert "valid" not in nicomachus.provenance
+    assert cubes.status is Status.TESTED
+    assert cubes.rests_on == (nicomachus.id, gauss.id)
+    assert ledger.support(cubes).effective is Status.ASSUMED
+    assert ledger.support(cubes).under == (nicomachus.id,)
+    assert ledger.support(gauss).effective is Status.TESTED
+
+    out = tmp_path / "out.json"
+    assert cli.main(["check", path, "--json", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split()[:3] == ["STATUS", "EFFECTIVE", "BY"]
+    assert lines[2].startswith("tested                   tested     property-test")
+    assert lines[3].startswith("assumed (axiom)          assumed    -")
+    assert lines[4].startswith("tested under nicomachus  assumed    property-test")
+    assert lines[-1] == "3 facts: 1 assumed, 2 tested"
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert [(row["owner"], row["status"], row["effective"], row["under"]) for row in data] == [
+        ("gauss", "tested", "tested", []),
+        ("nicomachus", "assumed", "assumed", []),
+        ("cubes", "tested", "assumed", [nicomachus.id]),
+    ]
+    assert data[2]["rests_on"] == [nicomachus.id, gauss.id]
+    assert data[1]["provenance"]["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
+
+
+def test_an_axiom_false_as_written_is_refuted(tmp_path, capsys) -> None:
+    """A citation copied down wrong is caught, and fails the check.
+
+    The cube became a square on one side. The reference says nothing of the
+    sort, and the property tester's counterexample is definite whatever the
+    citation says; what rests on the axiom is worth a refutation.
+    """
+    cube = "sum(i**3 for i in Fin[n + 1]) =="
+    path = write_file(tmp_path, CITED.replace(cube, cube.replace("**3", "**2"), 1))
+    ledger = check_path(path)
+    _gauss, nicomachus, cubes = ledger
+    assert nicomachus.status is Status.REFUTED
+    assert nicomachus.decided_by == "property-test"
+    assert nicomachus.provenance["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
+    assert nicomachus.provenance["counterexample"]
+    assert ledger.support(cubes).effective is Status.REFUTED
+
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "\nrefuted (axiom)  " in printed
+    assert "tested under nicomachus  refuted    property-test" in printed
+    assert "REFUTED nicomachus at claims.py:" in printed
+    assert "  counterexample: {'n': " in printed
+
+
+def test_an_axiom_is_never_offered_to_a_stronger_oracle(tmp_path, monkeypatch) -> None:
+    """Whatever a prover would say of an axiom, it is not asked.
+
+    An oracle stronger than a test that establishes everything it is shown
+    would make the axiom ``proved``; it proves the theorem, and never sees the
+    axiom.
+    """
+    from lanky.plugins import registry
+
+    shown: list[str] = []
+
+    class ProvesEverything:
+        name = "proves-everything"
+
+        def trust_class(self) -> str:
+            return "kernel"
+
+        def can_establish(self, fact, /) -> bool:
+            return True
+
+        def establish(self, fact, /):
+            shown.append(fact.kind)
+            return fact.with_status(Status.PROVED, self.name)
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, ProvesEverything()])
+    _gauss, nicomachus, cubes = check_path(write_file(tmp_path, CITED))
+    assert nicomachus.status is Status.ASSUMED
+    assert cubes.status is Status.PROVED
+    assert "axiom" not in shown
+    assert shown.count("theorem") >= 2
+
+
+def test_a_plugin_fact_rests_on_another_facts_id(tmp_path) -> None:
+    """``rests_on`` is set by whoever builds the fact, and read off the ledger."""
+    post = Fact(id="scan:postcondition", kind="postcondition", statement="...", owner="scan")
+    restated = Fact(
+        id="program:solve:scan:postcondition",
+        kind="postcondition-in-scope",
+        statement="after scan(...) in solve: ...",
+        owner="solve",
+        rests_on=(post.id,),
+    )
+    bounds = Fact(
+        id="scan:bounds", kind="in-bounds", statement="...", status=Status.DECIDED, owner="scan"
+    )
+    ledger = Ledger([post, restated, bounds])
+    assert ledger.support(restated).under == ("scan:postcondition",)
+    row = ledger.render().splitlines()[3]
+    # the kernel owns many facts, so the one meant is named by its id
+    assert row.startswith("assumed under scan:postcondition  -")
+
+
+SPELLED = (
+    CITED
+    + '''
+
+@theorem(uses=[cubes, "theorem:helpers.lemma@12", "theorem:helpers.lemma@12"])
+def spelled(n: Nat) -> n + 0 == n:
+    """Rests on a fact of this file, and on an id no fact here has."""
+'''
+)
+
+
+def test_an_id_no_fact_in_the_ledger_has_is_named_under_the_table(tmp_path, capsys) -> None:
+    """A ``uses=`` string that names nothing is an assumption, and is said to be one.
+
+    It is sound to count it as ``assumed``, and the row does, but in the row
+    it reads like any other assumption, and a misspelt id would pass for one.
+    So the check names it under the table, once, under the fact that rests on
+    it, and the exit code stays 0, because an id of another file's fact is
+    this case too and is not a mistake.
+    """
+    path = write_file(tmp_path, SPELLED)
+    out = tmp_path / "out.json"
+    assert cli.main(["check", path, "--json", str(out)]) == 0
+    printed = capsys.readouterr().out.splitlines()
+    (index,) = [i for i, line in enumerate(printed) if line.startswith("UNRESOLVED")]
+    assert printed[index].startswith("UNRESOLVED spelled at claims.py:")
+    assert printed[index].endswith(
+        ": rests on theorem:helpers.lemma@12, which this ledger does not hold"
+    )
+    assert printed[index + 1] == (
+        "  counted as an assumption; a fact of another file is in that file's ledger, "
+        "not this one"
+    )
+    rows = json.loads(out.read_text(encoding="utf-8"))
+    nicomachus = rows[1]["id"]
+    assert rows[-1]["rests_on"] == [rows[2]["id"], "theorem:helpers.lemma@12"]
+    assert rows[-1]["under"] == [nicomachus, "theorem:helpers.lemma@12"]
+    assert rows[-1]["effective"] == "assumed"
+    # a file whose facts rest on facts it holds prints no such line
+    assert cli.main(["check", write_file(tmp_path, CITED)]) == 0
+    assert "UNRESOLVED" not in capsys.readouterr().out
+
+
+def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
+    """The quickstart's table for ``examples/nicomachus.py`` is the real one.
+
+    Every statement in the file has a sum in it, which core Lean cannot print,
+    so the table is the same with Lean and without it, and both CI jobs hold
+    the document to it.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    lines = (root / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
+    start = lines.index("$ uv run lanky check examples/nicomachus.py")
+    shown = []
+    for line in lines[start + 1 :]:
+        if line.startswith(("$ ", "```")):
+            break
+        shown.append(line)
+    assert cli.main(["check", str(root / "examples" / "nicomachus.py")]) == 0
+    printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+    assert shown == printed
 
 
 # }}}

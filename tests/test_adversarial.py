@@ -235,6 +235,68 @@ def test_hypotheses_no_oracle_can_refute_leave_a_warning(tmp_path, oracles, caps
     assert "(vacuous)" not in printed
 
 
+VACUOUS_AXIOM = (
+    "from __future__ import annotations\n\n"
+    "from lanky import axiom\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    '@axiom(cite="a textbook, with a hypothesis copied down wrong")\n'
+    "def miscopied(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
+    '    """No natural satisfies the hypotheses, so the axiom says nothing."""\n'
+)
+
+
+def test_an_axiom_with_inconsistent_hypotheses_is_vacuous(tmp_path, oracles, capsys) -> None:
+    """An axiom's hypotheses are examined as a theorem's are, and it stays ``assumed``.
+
+    Hypotheses copied down wrong are as likely as a goal copied down wrong,
+    and they used to go unremarked: the tester's pass over an axiom was thrown
+    away, what it said about the hypotheses with it. The stand-in proves
+    whatever it is shown, and is shown the question whether the hypotheses are
+    inconsistent, never the axiom.
+    """
+    shown: list[str] = []
+
+    class Recording(ProvesEverything):
+        def establish(self, fact: Fact, /) -> Fact:
+            shown.append(fact.kind)
+            return super().establish(fact)
+
+    oracles(Recording(), TestOracle())
+    path = _write(tmp_path, VACUOUS_AXIOM)
+    (fact,) = list(check_path(path))
+    assert shown == ["hypotheses"]
+    assert fact.status is Status.ASSUMED
+    assert fact.decided_by is None
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous_by"] == "stub-kernel"
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
+    assert fact.provenance["cite"] == "a textbook, with a hypothesis copied down wrong"
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "assumed (axiom) (vacuous)  -" in printed
+    assert "VACUOUS miscopied at vacuous.py:7:" in printed
+
+
+def test_an_axiom_whose_hypotheses_no_draw_satisfied_is_warned_about(
+    tmp_path, oracles, capsys
+) -> None:
+    """With nothing to show them inconsistent, the axiom gets the theorem's warning."""
+    oracles(TestOracle())
+    path = _write(tmp_path, VACUOUS_AXIOM)
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert not fact.is_vacuous
+    assert "valid" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING miscopied at vacuous.py:7: hypotheses never satisfied in 4000 draws" in printed
+    # a satisfiable axiom leaves nothing of its sampling behind
+    satisfiable = VACUOUS_AXIOM.replace("(n > 2) & (n < 1)) -> n == n + 1", "n > 2) -> n > 1")
+    path = _write(tmp_path, satisfiable)
+    (fact,) = list(check_path(path))
+    assert set(fact.provenance) == {"path", "line", "cite"}
+
+
 def test_a_goal_no_oracle_can_state_does_not_hide_vacuous_hypotheses(
     tmp_path, oracles, capsys
 ) -> None:
