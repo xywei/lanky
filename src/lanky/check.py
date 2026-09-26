@@ -189,6 +189,13 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     (:func:`_examine_vacuity`): a claim that nothing is ever at stake in says
     nothing, however strongly it is established, and the ledger says so.
 
+    The oracle that settles a fact, establishing or refuting it, leaves its
+    trust class in the provenance as ``trust_class``. A status says what kind
+    of evidence a fact has, and the trust class says how far its decider is to
+    be trusted: ``decided`` by a decision procedure and ``decided`` by a
+    heuristic are worth different things, and the table marks the second
+    (see :meth:`lanky.ledger.Ledger.render`).
+
     An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted, or
     shown vacuous (see :func:`_examine_axiom`). It is ``assumed`` on its
     citation, which is its author's word and not an oracle's, and a stronger
@@ -219,6 +226,7 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
         if result is None:
             continue
         if result.status is not Status.ASSUMED:
+            result = result.with_status(result.status, trust_class=oracle.trust_class())
             fact = _cross_check(result, gaps, verbose=verbose)
             break
         fact = result
@@ -267,7 +275,7 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
         if result.status is Status.REFUTED:
             if verbose:
                 print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
-            return result
+            return result.with_status(result.status, trust_class=oracle.trust_class())
         if not marks:
             unsatisfied = _never_satisfied(result.provenance)
             untestable = _never_drawn(result.provenance)
@@ -382,7 +390,7 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
     if not gaps and not has_hypotheses(fact.term):
         return fact
     for oracle in registry.sorted_oracles():
-        if TRUST_STRENGTH.get(oracle.trust_class(), 0) != 1:
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
         available, _reason = oracle_availability(oracle)
         if not available:
@@ -513,18 +521,19 @@ def hypotheses_fact(fact: Fact) -> Fact:
 
 
 def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
-    """The first oracle stronger than a test that proves the hypotheses inconsistent.
+    """The first decision procedure or kernel that proves the hypotheses inconsistent.
 
     Returns the oracle's name and the fact it established (see
     :func:`hypotheses_fact`), or ``None`` when no such oracle establishes it.
     A test cannot: no draw satisfying the hypotheses is exactly what is in
-    question. For consistent hypotheses every attempt fails, so what Lean is
-    asked is its short ladder, which for a goal of ``False`` is the five cheap
-    tactics.
+    question. Neither can a heuristic: a vacuous fact fails the check, and an
+    answer that is not guaranteed is not a reason to fail one. For consistent
+    hypotheses every attempt fails, so what Lean is asked is its short ladder,
+    which for a goal of ``False`` is the five cheap tactics.
     """
     question = hypotheses_fact(fact)
     for oracle in registry.sorted_oracles():
-        if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["test"]:
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["heuristic"]:
             continue
         available, _reason = oracle_availability(oracle)
         if not available:

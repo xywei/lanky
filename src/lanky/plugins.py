@@ -56,9 +56,21 @@ VERB_GROUP = "lanky.verbs"
 ENTRY_POINT_GROUPS = (THEORY_GROUP, ORACLE_GROUP, EXECUTOR_GROUP, VERB_GROUP)
 
 #: How much a trust class is worth. Oracles are tried strongest first.
+#:
+#: ``kernel`` is a proof a proof checker accepted. ``decision-procedure`` is a
+#: decider complete for the fragment it accepts: it answers every claim in the
+#: fragment, declines everything outside it, and every answer it gives is right
+#: (isl for Presburger arithmetic, or a rule engine whose rules settle every
+#: claim they accept). ``heuristic`` is a decider that is right when it answers
+#: but may fail to answer inside its own fragment, or whose answers are not
+#: guaranteed: a computer-algebra simplifier, or a rule set with gaps. Its
+#: answer is worth more than a test's and less than a decision procedure's,
+#: and the ledger marks a fact it decided (see :meth:`lanky.ledger.Ledger.render`).
+#: ``test`` is evidence from execution.
 TRUST_STRENGTH: dict[str, int] = {
-    "kernel": 3,
-    "decision-procedure": 2,
+    "kernel": 4,
+    "decision-procedure": 3,
+    "heuristic": 2,
     "test": 1,
 }
 
@@ -93,9 +105,16 @@ class Oracle(Protocol):
 
     Oracles are the only way a fact's status improves. They are tried from the
     strongest trust class that can handle the fact to the weakest: a Lean kernel
-    proof, then a decision procedure such as isl, then a property test. Hence
-    both methods: :meth:`can_establish` is the cheap question asked of every
-    oracle in turn, :meth:`establish` does the work.
+    proof, then a decision procedure such as isl, then a heuristic such as a
+    simplifier, then a property test (see :data:`TRUST_STRENGTH`). Hence both
+    methods: :meth:`can_establish` is the cheap question asked of every oracle
+    in turn, :meth:`establish` does the work.
+
+    A rule engine chooses its class by what its rules cover. One whose rules
+    settle every claim of the fragment it accepts, and which declines every
+    claim outside it, is a decision procedure for that fragment and says
+    ``decision-procedure``; one that can fail to answer a claim it accepts
+    says ``heuristic``.
 
     An oracle may also expose ``availability() -> (bool, str)`` to explain, in
     one line, why it is not going to do anything (no Lean on the PATH, for
@@ -105,7 +124,7 @@ class Oracle(Protocol):
     name: str
 
     def trust_class(self) -> str:
-        """Name the kind of evidence produced: ``kernel``, ``decision-procedure``, ``test``."""
+        """Name the kind of evidence produced, one of the keys of :data:`TRUST_STRENGTH`."""
         ...
 
     def can_establish(self, fact: Any, /) -> bool:

@@ -104,6 +104,36 @@ def test_a_vacuous_fact_is_marked_beside_its_status() -> None:
     assert ledger.counts() == {"proved": 2}
 
 
+def test_a_fact_a_heuristic_decided_is_marked_beside_its_status() -> None:
+    """``decided (heuristic)`` is not read as a decision procedure's ``decided``."""
+    ledger = Ledger(
+        [
+            Fact(
+                id="a",
+                kind="theorem",
+                statement="x == x",
+                status=Status.DECIDED,
+                decided_by="simplifier",
+                provenance={"trust_class": "heuristic"},
+            ),
+            Fact(
+                id="b",
+                kind="theorem",
+                statement="y == y",
+                status=Status.DECIDED,
+                decided_by="isl",
+                provenance={"trust_class": "decision-procedure"},
+            ),
+        ]
+    )
+    assert ledger["a"].is_heuristic
+    assert not ledger["b"].is_heuristic
+    rows = ledger.render().splitlines()
+    assert rows[2].startswith("decided (heuristic)  simplifier")
+    assert rows[3].startswith("decided              isl")
+    assert rows[-1] == "2 facts: 2 decided"
+
+
 def test_to_json_round_trips() -> None:
     ledger = Ledger([make_fact("a", Status.TESTED, decided_by="property-test")])
     data = json.loads(ledger.to_json())

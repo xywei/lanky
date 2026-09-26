@@ -17,7 +17,11 @@ oracle has shown inconsistent is *vacuous*: ``proved`` is still true of it, and
 it says nothing, so the table prints ``proved (vacuous)`` and the provenance
 says who showed it (see :func:`lanky.check.establish`). An *axiom*, a fact of
 kind ``"axiom"``, is ``assumed`` on a citation rather than for want of an
-oracle, and the table prints ``assumed (axiom)``.
+oracle, and the table prints ``assumed (axiom)``. A fact settled by an oracle
+of the ``heuristic`` trust class, one that is right when it answers but not
+guaranteed to (see :data:`lanky.plugins.TRUST_STRENGTH`), prints
+``decided (heuristic)``, so that it is not read as the answer of a decision
+procedure.
 
 Facts rest on facts. A fact's ``rests_on`` names the ids of the facts it was
 established from: the lemmas a theorem ``uses``, the axioms a derivation
@@ -168,6 +172,15 @@ class Fact:
     def is_vacuous(self) -> bool:
         """Whether an oracle has shown that nothing satisfies this fact's hypotheses."""
         return bool(self.provenance.get("vacuous"))
+
+    @property
+    def is_heuristic(self) -> bool:
+        """Whether the oracle that settled this fact is of the ``heuristic`` trust class.
+
+        :func:`lanky.check.establish` records the settling oracle's trust
+        class in the provenance as ``trust_class``.
+        """
+        return self.provenance.get("trust_class") == "heuristic"
 
     @property
     def is_axiom(self) -> bool:
@@ -448,6 +461,8 @@ class Ledger:
         cell = fact.status.value
         if fact.is_axiom:
             cell += " (axiom)"
+        if fact.is_heuristic:
+            cell += " (heuristic)"
         if fact.is_vacuous:
             cell += " (vacuous)"
         if support.under:
@@ -467,7 +482,8 @@ class Ledger:
 
         A vacuous fact's status carries the mark, as in ``proved (vacuous)``,
         and the summary line counts the vacuous facts after the statuses. An
-        axiom's reads ``assumed (axiom)``.
+        axiom's reads ``assumed (axiom)``, and a fact a heuristic settled reads
+        ``decided (heuristic)``.
 
         A fact established under assumptions (see :meth:`support`) says so
         after its status, as in ``proved under jump, compact``. When any fact

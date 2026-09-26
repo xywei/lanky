@@ -1073,3 +1073,104 @@ def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
 
 
 # }}}
+
+
+# {{{ what stands behind a decision: a citation, a trust class
+
+
+def test_the_oracle_that_settles_a_fact_leaves_its_trust_class(tmp_path) -> None:
+    """The status says what kind of evidence; ``trust_class`` says how far to trust its decider."""
+    true_claim, false_claim = check_path(write_file(tmp_path))
+    assert true_claim.provenance["trust_class"] == "test"
+    assert false_claim.provenance["trust_class"] == "test"
+
+
+class Simplifier:
+    """A heuristic that decides every theorem it is shown, as a careless simplifier might."""
+
+    name = "simplifier"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        return fact.with_status(Status.DECIDED, self.name)
+
+
+def test_a_fact_a_heuristic_decides_is_marked_in_the_table_and_the_json(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A heuristic is asked before the property tester, and its ``decided`` says what it is.
+
+    Before the ``heuristic`` class existed, an oracle naming it ranked below
+    the tester, which refuted ``false_claim`` before the simplifier was asked.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, Simplifier()])
+    path = write_file(tmp_path)
+    true_claim, false_claim = check_path(path)
+    for fact in (true_claim, false_claim):
+        assert (fact.status, fact.decided_by) == (Status.DECIDED, "simplifier")
+        assert fact.provenance["trust_class"] == "heuristic"
+        assert fact.is_heuristic
+    out = tmp_path / "out.json"
+    assert cli.main(["check", path, "--json", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[2].startswith("decided (heuristic)  simplifier")
+    assert lines[3].startswith("decided (heuristic)  simplifier")
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert [row["provenance"]["trust_class"] for row in data] == ["heuristic", "heuristic"]
+
+
+class RashSimplifier:
+    """A heuristic that says every set of hypotheses is inconsistent."""
+
+    name = "rash-simplifier"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "hypotheses"
+
+    def establish(self, fact, /):
+        return fact.with_status(Status.PROVED, self.name)
+
+
+RARE = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def rare(n: Nat, h: n == 1000) -> n + 0 == n:
+    """Its hypothesis holds only where the sampler does not look."""
+'''
+
+
+def test_a_heuristic_is_not_enough_to_make_a_fact_vacuous(tmp_path, monkeypatch, capsys) -> None:
+    """A vacuous fact fails the check, and an answer that is not guaranteed cannot do that.
+
+    So only a decision procedure or a kernel is asked whether the hypotheses
+    are inconsistent, and here the fact keeps its warning.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, RashSimplifier()])
+    path = write_file(tmp_path, RARE)
+    (fact,) = check_path(path)
+    assert not fact.is_vacuous
+    assert fact.provenance["unsatisfied"]
+    assert cli.main(["check", path]) == 0
+    assert "WARNING rare at claims.py:" in capsys.readouterr().out
+
+
+# }}}
