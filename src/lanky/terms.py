@@ -16,9 +16,10 @@ that overrides the comparison operators to build
 logical connectives. Mapper dispatch is inherited (a lanky :class:`Add` still
 answers ``map_sum``), so every pymbolic mapper keeps working.
 
-Four node types have no pymbolic counterpart and are added here:
+Five node types have no pymbolic counterpart and are added here:
 :class:`Forall`, :class:`Exists`, :class:`Sum` (a reduction over a generator,
-not addition) and :class:`Abs`.
+not addition), :class:`Abs` and :class:`Elementary`, an elementary function
+(``exp``, ``log`` or ``sqrt``) applied to one argument.
 
 Binders come from generators. ``all(p(r) for r in Fin[n])`` is an ordinary
 generator expression; the builtin ``all`` is replaced by :func:`forall` while an
@@ -34,12 +35,15 @@ tracing.
 from __future__ import annotations
 
 import builtins
+import cmath
 import dataclasses
 import dis
 import enum
 import functools
 import inspect
 import itertools
+import math
+import numbers
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import closing
@@ -56,6 +60,8 @@ __all__ = [
     "BUILTIN_OVERRIDES",
     "Call",
     "Comparison",
+    "ELEMENTARY_FUNCTIONS",
+    "Elementary",
     "Exists",
     "Forall",
     "LogicalAnd",
@@ -67,17 +73,22 @@ __all__ = [
     "Sum",
     "SymbolicBoolError",
     "Undecided",
+    "UndefinedValue",
     "Var",
     "binder_assignments",
     "binders",
     "conjuncts",
+    "elementary_value",
     "evaluate",
     "evaluate_annotations",
     "exists",
+    "exp",
     "forall",
     "init_args",
     "free_variables",
+    "log",
     "render",
+    "sqrt",
     "structurally_equal",
     "sum_",
     "truth_value",
@@ -113,6 +124,20 @@ class Undecided(Exception):
     :class:`Polarity`), and it declines as well when no draw reached the
     universal's guarded domain at all. A sum over a sampled domain declines
     wherever it stands, because the draws are not the domain.
+    """
+
+
+class UndefinedValue(ArithmeticError):
+    """Raised when an elementary function is evaluated where Python gives it no value.
+
+    ``math.log(0)`` and ``math.sqrt(-1)`` raise ``ValueError``, and
+    ``math.exp(1000)`` overflows a float. Mathlib's ``Real.log``,
+    ``Real.sqrt`` and ``Real.exp`` are total (``Real.log 0`` is ``0`` and the
+    square root of a negative number is ``0``), so this is the same kind of gap
+    as a division by zero: the sampled reading has no answer at the draw where
+    the Lean reading has one. The property tester drops such a draw rather
+    than count it as a counterexample, and :mod:`lanky.semantics` notes the
+    gap on the fact.
     """
 
 
@@ -511,6 +536,28 @@ class Abs(SymbolicMixin, prim.ExpressionNode):
     operand: Any
 
 
+#: The elementary functions a statement can apply, by the name it spells them.
+ELEMENTARY_FUNCTIONS = ("exp", "log", "sqrt")
+
+
+@expr_dataclass(eq=False)
+class Elementary(SymbolicMixin, prim.ExpressionNode):
+    """An elementary function applied to one argument: ``exp(x)``, ``log(x)``, ``sqrt(x)``.
+
+    A node of its own rather than a :class:`Call` of a variable named ``exp``,
+    because a call is how a family is applied, and a family is a parameter the
+    statement binds: a statement that binds a family called ``exp`` means that
+    family, and one that writes ``lanky.exp`` means the function every reader
+    knows. At concrete values it is ``math``'s function for a real argument and
+    ``cmath``'s for a complex one (:func:`elementary_value`); the Lean printer
+    writes it as ``Real.exp`` or ``Complex.exp``, which is Mathlib. Its mapper
+    method is ``map_elementary``.
+    """
+
+    function: str
+    argument: Any
+
+
 
 #: Plain pymbolic node types and the lanky subclass that replaces them.
 _COUNTERPART: dict[type, type] = {
@@ -731,6 +778,59 @@ def abs_(value: Any) -> Any:
     if isinstance(value, prim.ExpressionNode):
         return Abs(value)
     return builtins.abs(value)
+
+
+def elementary_value(function: str, value: Any) -> Any:
+    """The value of an elementary function at a number, as Python computes it.
+
+    A real argument (an ``int``, a ``float``, a ``Fraction`` or a numpy scalar)
+    goes to :mod:`math` and a complex one to :mod:`cmath`, so ``exp(x)`` for a
+    real ``x`` is a ``float``, as it is in the file run as a program. A point
+    where Python has no value is refused with :exc:`UndefinedValue`, which is a
+    gap between the readings and not a counterexample.
+
+    Raises:
+        UndefinedValue: If Python's function raises at ``value``: the logarithm
+            of a number that is not positive, the square root of a negative
+            one, or an exponential that overflows a float.
+        TypeError: If ``value`` is not a number, a ``bool`` included.
+    """
+    if function not in ELEMENTARY_FUNCTIONS:
+        raise ValueError(f"unknown elementary function {function!r}")
+    if isinstance(value, bool) or not isinstance(value, numbers.Complex):
+        raise TypeError(f"{function} takes a number, not {value!r}")
+    module = math if isinstance(value, numbers.Real) else cmath
+    try:
+        return getattr(module, function)(value)
+    except (ValueError, OverflowError) as exc:
+        raise UndefinedValue(
+            f"{function}({value!r}) has no value in Python ({exc}), while "
+            "Mathlib's function is total"
+        ) from exc
+
+
+def _elementary(function: str) -> Callable[[Any], Any]:
+    """The function a statement calls to apply one elementary function."""
+
+    def apply(value: Any) -> Any:
+        if isinstance(value, prim.ExpressionNode):
+            return Elementary(function, value)
+        return elementary_value(function, value)
+
+    apply.__name__ = apply.__qualname__ = function
+    apply.__doc__ = (
+        f"``{function}`` of a term, as an :class:`Elementary` node, or of a number, "
+        "as Python computes it (see :func:`elementary_value`)."
+    )
+    return apply
+
+
+#: The exponential, ``Real.exp`` or ``Complex.exp`` in Lean.
+exp = _elementary("exp")
+#: The natural logarithm, ``Real.log`` or ``Complex.log`` in Lean.
+log = _elementary("log")
+#: The square root of a real number, ``Real.sqrt`` in Lean.
+sqrt = _elementary("sqrt")
 
 
 #: The builtins that mean something else inside an annotation.
@@ -1201,6 +1301,10 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         """Absolute value of the operand."""
         return builtins.abs(self.rec(expr.operand))
 
+    def map_elementary(self, expr: Elementary) -> Any:
+        """The function at the value of its argument, as :func:`elementary_value` has it."""
+        return elementary_value(expr.function, self.rec(expr.argument))
+
     def map_foreign(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
         """A constant pymbolic has no class for, a ``Fraction``, is its own value.
 
@@ -1496,6 +1600,8 @@ def _render(expr: Any, outer: int) -> str:
         return f"sum({_render(expr.body, _OR)} for {_binders_text(expr)}{guard})"
     if isinstance(expr, Abs):
         return f"abs({_render(expr.operand, _OR)})"
+    if isinstance(expr, Elementary):
+        return f"{expr.function}({_render(expr.argument, _OR)})"
     if isinstance(expr, prim.Comparison):
         text = (
             f"{_render(expr.left, _ADD)} {expr.operator} {_render(expr.right, _ADD)}"

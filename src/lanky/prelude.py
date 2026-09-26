@@ -9,8 +9,8 @@ inspected by a static checker; a hint is data that lanky reads at run time.
 Two ideas earn their keep.
 
 *Exactness.* Every scalar sort carries an exactness class, ``exact`` for the
-discrete sorts and by default ``approx`` for ``Real``, with ``reassoc``
-selectable. A claim that two runs agree means nothing without it, and a
+discrete sorts and by default ``approx`` for ``Real`` and ``Complex``, with
+``reassoc`` selectable. A claim that two runs agree means nothing without it, and a
 reduction that a schedule reassociates has to say so.
 
 *Index types.* ``Fin[n]`` is the domain ``{0, ..., n-1}``. When ``n`` is a
@@ -29,6 +29,7 @@ from lanky.terms import current_trace, evaluate, render, structurally_equal, tru
 
 __all__ = [
     "Bool",
+    "Complex",
     "Fin",
     "FinType",
     "Fn",
@@ -45,6 +46,10 @@ __all__ = [
 
 #: The exactness classes, from strongest to weakest.
 EXACTNESS_CLASSES = ("exact", "reassoc", "approx")
+
+#: The sorts whose default exactness class is ``approx``: floating point is how
+#: they are computed.
+_APPROXIMATE = ("Real", "Complex")
 
 
 class LankyType:
@@ -69,7 +74,7 @@ class Sort(LankyType):
 
     def __str__(self) -> str:
         """Print the sort, naming the exactness class when it is not the default."""
-        default = "approx" if self.name == "Real" else "exact"
+        default = "approx" if self.name in _APPROXIMATE else "exact"
         return self.name if self.exactness == default else f"{self.name}[{self.exactness}]"
 
     def __iter__(self) -> Any:
@@ -111,6 +116,8 @@ Int = Sort("Int", "exact")
 Bool = Sort("Bool", "exact")
 #: The reals. Approximate by default: floating point is the implementation.
 Real = Sort("Real", "approx")
+#: The complex numbers, approximate by default for the same reason.
+Complex = Sort("Complex", "approx")
 #: The sort of propositions, the marker for "this annotation is a statement".
 Prop = Sort("Prop", "exact")
 
