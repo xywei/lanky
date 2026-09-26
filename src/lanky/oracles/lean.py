@@ -54,7 +54,9 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
+import weakref
 from importlib.util import find_spec
 from typing import Any
 
@@ -67,6 +69,7 @@ from lanky.lean import (
     dialect,
     domain_guards,
     is_natural,
+    lean_identifier,
     statement_of,
 )
 from lanky.ledger import Fact, Status
@@ -78,6 +81,7 @@ __all__ = [
     "LeanSession",
     "default_cache_dir",
     "induction_scripts",
+    "kill_servers",
     "reduction_scripts",
     "tactic_ladder",
     "use_tactic",
@@ -287,15 +291,21 @@ class LeanSession:
     is a whole declaration elaborated in a fresh environment, so attempts cannot
     contaminate each other and a failed tactic leaves nothing behind.
 
+    The REPL driver kills the server when a command runs past its timeout, and
+    does not start it again. A session starts it again before the next
+    command, so that one slow attempt costs that attempt and not every proof
+    after it in the process: the dead server used to answer every later
+    command with ``The Lean server is not running``, while the session still
+    reported no error and the oracle still reported itself available.
+
     ``mathlib`` names a Lake project with Mathlib fetched (see
     :mod:`lanky.mathlib`), and makes this a Mathlib session: the REPL runs in
     that project, Mathlib is imported once when the session starts, and every
     command is elaborated in the environment the import left, which is as
     fresh for each attempt as core Lean's empty one. The Lean version is the
-    project's, not one chosen from the toolchains installed. A server the
-    REPL driver killed, which it does to a command that runs past its timeout,
-    is started again with Mathlib imported before the next command, since the
-    import is part of what the session is.
+    project's, not one chosen from the toolchains installed. A server started
+    again after a timeout imports Mathlib again, since the import is part of
+    what the session is.
     """
 
     def __init__(
@@ -343,7 +353,7 @@ class LeanSession:
             global _RESOLVED
             _RESOLVED = version
             self.version = version or getattr(config, "lean_version", None)
-            atexit.register(self.close)
+            self._opened()
             return True
         self.error = "no Lean REPL could be built (" + "; ".join(reasons[-2:]) + ")"
         return False
@@ -392,8 +402,13 @@ class LeanSession:
         if not self._import_mathlib():
             self.close()
             return False
-        atexit.register(self.close)
+        self._opened()
         return True
+
+    def _opened(self) -> None:
+        """Have the server stopped on the way out of the process, and by :func:`kill_servers`."""
+        atexit.register(self.close)
+        _OPENED.add(self)
 
     def _import_mathlib(self) -> bool:
         """``import Mathlib`` in the running server, keeping the environment it leaves."""
@@ -415,7 +430,12 @@ class LeanSession:
         return True
 
     def _revive(self) -> bool:
-        """Start a Mathlib session's server again if the driver killed it."""
+        """Start again a server the driver killed; a Mathlib session imports Mathlib again.
+
+        A server that will not start again leaves its reason in :attr:`error`,
+        which the oracle reports from then on, as it does a session that
+        could not be opened.
+        """
         alive = getattr(self.server, "is_alive", None)
         if alive is None or alive():
             return True
@@ -424,6 +444,8 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - a server that will not start is a reason
             self.error = f"the Lean REPL could not be restarted ({exc})"
             return False
+        if self.mathlib is None:
+            return True
         return self._import_mathlib()
 
     def close(self) -> None:
@@ -451,9 +473,9 @@ class LeanSession:
 
         if not self.start():
             return False, self.error or "no Lean session"
+        if not self._revive():
+            return False, self.error or "no Lean session"
         if self.mathlib is not None:
-            if not self._revive():
-                return False, self.error or "no Lean session"
             command = Command(cmd=source, env=self.environment)
         else:
             command = Command(cmd=source)
@@ -471,6 +493,47 @@ class LeanSession:
             lines = problems[0].strip().splitlines()
             return False, lines[0] if lines else "Lean reported an error with no message"
         return True, ""
+
+
+#: Every session that opened, for :func:`kill_servers`.
+_OPENED: weakref.WeakSet[LeanSession] = weakref.WeakSet()
+
+
+def kill_servers() -> None:
+    """Kill the Lean process of every session in this process, and everything it started.
+
+    A session stops its own when the interpreter exits, but a process ended by
+    a signal runs nothing on the way out, and lean-interact starts the REPL in
+    a session of its own, which no signal sent to this process or its process
+    group reaches. The REPL then goes on with the attempt it was given, however
+    long that runs, since the timeout is kept by the process that is gone, and
+    ends only when it next reads its input and finds it closed. A process
+    about to end of a signal calls this first: a child of ``lanky check``
+    does, on ``SIGTERM`` (see :func:`lanky.cli._terminated`).
+
+    So this is written for a signal handler: it sends ``SIGKILL`` to the
+    REPL's process group and returns, waiting for nothing and taking no lock,
+    where :meth:`LeanSession.close` waits for the REPL and closes the pipes a
+    thread may be reading. A server already reaped is left alone, since its
+    process id may be another process's by now. A session whose server was
+    killed and that goes on starts it again before its next command, as it
+    does after a timeout.
+    """
+    for session in list(_OPENED):
+        # lean-interact keeps the process it started, ``lake env repl``, there
+        process = getattr(session.server, "_proc", None)
+        if process is None or getattr(process, "returncode", 0) is not None:
+            continue
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (AttributeError, ProcessLookupError):
+            # no process groups here, or the REPL is not the leader of one
+            try:
+                process.kill()
+            except OSError:  # pragma: no cover - ended since it was looked at
+                pass
+        except OSError:  # pragma: no cover - a group that is not this user's
+            pass
 
 
 def _errors(response: Any) -> list[str]:
@@ -510,7 +573,10 @@ def _goal_intro(
     last. Returning the binder variables and the guards as terms as well is
     what lets a strategy decide which variable to induce on, and the fourth
     value names, for each natural variable, the hypothesis ``0 ≤ a`` that makes
-    it one, which is what an induction on it has to start from.
+    it one, which is what an induction on it has to start from. The names are
+    Lean source, so a variable named like a keyword is quoted, as the printer
+    quotes it (:func:`lanky.lean.lean_identifier`); the fourth value is keyed
+    by the lanky name.
 
     The guards are rendered to be counted, and rendering a bound such as
     ``Fin[2 ** n]`` needs to know that ``n`` is a natural, so each binder's
@@ -521,14 +587,16 @@ def _goal_intro(
     if not isinstance(goal, Forall):
         return [], [], [], {}
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
+    # every binder's name is taken before a guard is named, so that a guard of
+    # an earlier binder is never named like a later one, which would shadow it
+    used |= {lean_identifier(var.name) for var, _ in goal.binders}
     names: list[str] = []
     variables: list[Var] = []
     naturals: dict[str, str] = {}
     guards = list(conjuncts(goal.guard))
     scope = dict(statement.types)
     for position, (var, domain) in enumerate(goal.binders):
-        names.append(var.name)
-        used.add(var.name)
+        names.append(lean_identifier(var.name))
         variables.append(var)
         conditions = domain_guards(var, domain, scope)
         scope = {**scope, var.name: domain}
@@ -603,6 +671,9 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     target, companion = _induction_target(variables, guards)
     if target is None or target.name not in naturals:
         return []
+    induced = lean_identifier(target.name)
+    if companion is not None:
+        companion = lean_identifier(companion)
     closers = _closers(statement)
     peel = [f"  {_PEEL_SUM}"] if _has_reduction(statement) else []
     used = set(names) | {name for name, _ in statement.binders}
@@ -619,7 +690,7 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     # The induction reverts every hypothesis that mentions the variable, and
     # the hypothesis it gets back takes them as premises again; at most every
     # name introduced after the variable, and the attempts count down from there.
-    later = len(names) - names.index(target.name) - 1
+    later = len(names) - names.index(induced) - 1
     applied = _fresh("hih", used)
     apply_ih = " | ".join(
         f"(have {applied} := {hypothesis}{' (by omega)' * count})"
@@ -636,8 +707,8 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
         )
     head = [f"intro {' '.join(names)}"] if names else []
     head += [
-        f"obtain ⟨{target.name}, rfl⟩ := Int.eq_ofNat_of_zero_le {naturals[target.name]}",
-        f"induction {target.name} with",
+        f"obtain ⟨{induced}, rfl⟩ := Int.eq_ofNat_of_zero_le {naturals[target.name]}",
+        f"induction {induced} with",
         "| zero =>",
         f"  {zero}",
         f"| succ {step} {hypothesis} =>",
@@ -722,7 +793,12 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     closers = _closers(statement)
     scripts = []
-    for position, (name, _sort) in enumerate(statement.binders):
+    # a statement built by hand may leave out the lanky names, which are then
+    # the printed ones
+    variables = statement.variables or tuple(name for name, _ in statement.binders)
+    for position, ((printed, _sort), name) in enumerate(
+        zip(statement.binders, variables, strict=True)
+    ):
         if name not in bounds or not is_natural(statement.types.get(name)):
             continue
         anchors = statement.anchors or (len(statement.binders),) * len(statement.hypotheses)
@@ -750,8 +826,8 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
         scripts.append(
             "\n".join(
                 [
-                    f"obtain ⟨{name}, rfl⟩ := Int.eq_ofNat_of_zero_le {own[0]}",
-                    f"induction {name} with",
+                    f"obtain ⟨{printed}, rfl⟩ := Int.eq_ofNat_of_zero_le {own[0]}",
+                    f"induction {printed} with",
                     "| zero =>",
                     f"  {_PEEL_SUM}",
                     f"  {closers}",
