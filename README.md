@@ -98,14 +98,16 @@ sharp.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
   citation. Its fact is `assumed (axiom)`, with the citation in its
   provenance; no oracle is asked to establish it, and the property tester
-  still looks for a counterexample, so an axiom copied down wrong is refuted.
+  still looks for a counterexample, so an axiom copied down wrong is refuted
+  (and one whose hypotheses nothing satisfies is caught as vacuous).
 - Facts rest on facts. `@theorem(uses=[...])` names the theorems, axioms or
   fact ids a theorem rests on, and a plugin sets `Fact.rests_on` on the facts
   it builds. The ledger reads the graph: a row says what it is established
   under (`tested under nicomachus`), and an `EFFECTIVE` column gives the
   weakest status over everything a fact rests on whenever that is weaker than
-  its own. `--json` carries `rests_on`, `effective` and `under`.
-  `examples/nicomachus.py` is the worked case.
+  its own. `--json` carries `rests_on`, `effective` and `under`. An id no
+  fact in the ledger has counts as an assumption, and `lanky check` names it
+  under the table. `examples/nicomachus.py` is the worked case.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Bool`, `Prop`, `Fin[n]`, `Fn[A, B]`,
   refinement by `T & prop`, exactness classes.

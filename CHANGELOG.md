@@ -65,10 +65,13 @@ prints a ledger naming who decided what.
   order of the status ladder with `refuted` below `assumed`; and `under`, the
   ids of the assumptions among them, in the order they are reached. An
   assumption is a fact that is `assumed` (an axiom, or an obligation nobody
-  established) or `refuted`, an id the ledger does not hold (a claim in a file
-  the check did not collect), or a fact on a circle of facts that rest on each
-  other, since a circular argument establishes nothing and every fact on the
-  circle or above it is worth `assumed` at most. The table names the
+  established) or `refuted`, an id the ledger does not hold (a claim of
+  another file, since each file checked has a ledger of its own, or an id
+  written wrong), or a fact on a circle of facts that rest on each other,
+  since a circular argument establishes nothing and every fact on the circle
+  or above it is worth `assumed` at most. Which facts are on a circle is found
+  once per ledger, so a long chain of facts is read in seconds. The table
+  names the
   assumptions after the status, as in `proved under jump, compact`, by owner
   when the owner names one fact in the ledger and by id otherwise, and grows an
   `EFFECTIVE` column when some fact is worth less than its own status; a
@@ -76,7 +79,11 @@ prints a ledger naming who decided what.
   carries `rests_on`, and `Ledger.to_dicts`, which `Ledger.to_json` and
   `lanky check --json` now write, adds `effective` and `under` for every fact.
   The exit code does not change: a fact resting on a refuted one fails the
-  check through the refuted one.
+  check through the refuted one. `lanky check` names each id a fact rests on
+  that its ledger does not hold in an `UNRESOLVED` line under the table, since
+  in the row it reads like any other assumption and a misspelt one would pass
+  for one; that does not fail the check either, because an id of another
+  file's fact is the same case.
 - **`@axiom(cite=...)`** (`lanky.theory`). A statement written like a theorem
   and taken on a citation, for a result lanky cannot establish, such as a jump
   relation from a textbook. `Axiom` is a `Theorem` whose fact has kind
@@ -86,13 +93,22 @@ prints a ledger naming who decided what.
   empty or not a string, raises `TypeError` where it is written. `lanky check`
   asks no oracle to establish an axiom, and has the oracles of the `test`
   trust class look for a counterexample to it, which is kept: an axiom copied
-  down wrong is `refuted (axiom)` and fails the check. The pytest plugin
-  collects and samples an axiom as it does a theorem.
+  down wrong is `refuted (axiom)` and fails the check. What the sampling
+  says about the hypotheses is kept too: an axiom whose hypotheses no draw
+  satisfied is examined for vacuity as a theorem is, so hypotheses a stronger
+  oracle shows inconsistent make it `assumed (axiom) (vacuous)` and fail the
+  check, and otherwise it gets the `WARNING` line; that oracle is asked about
+  the hypotheses alone, never about the axiom. The pytest plugin collects and
+  samples an axiom as it does a theorem.
 - **`@theorem(uses=[...])`.** A theorem names the facts it rests on:
   theorems, axioms, `Fact`s or fact ids (`lanky.theory.fact_ids`), which
   become its fact's `rests_on`. A single entry need not be in a list; an entry
   that names no one fact, such as a plugin's object that owns several, is
-  refused where the decorator is written. The oracles are not handed the
+  refused where the decorator is written, and so is `uses=None`, which is
+  what a name bound to nothing by mistake holds (a theorem that uses nothing
+  leaves `uses=` out). So is a positional argument that is not the function
+  to decorate: `@theorem(gauss)` and `@axiom("Kress")` are `uses=` and
+  `cite=` without their keywords, and say so. The oracles are not handed the
   statements a theorem uses: what `uses=` records is what the theorem is
   worth. `@theorem` written bare works as before, and so does `@theorem()`.
 - **Example.** `examples/gauss.py`, two worked theorems, runnable three ways,
@@ -351,9 +367,8 @@ listed because it changes behaviour a reader could already have depended on.
   `reason` whenever it has one, each of its lines indented, and
   `no witness recorded` when there is neither (a plugin's own `witness`, as
   loopty's isl oracle records, counted as one; it is now printed too, see
-  below). An empty
-  counterexample is no longer printed: `-> 1 == 2` shows its reason without
-  the `counterexample: {}` line above it. The JSON ledger keeps every field,
+  below). An empty counterexample is no longer printed: `-> 1 == 2` shows its
+  reason without the `counterexample: {}` line above it. The JSON ledger keeps every field,
   the empty counterexample included. The new `lanky.cli.refutation_lines`
   builds the block.
 - **A quantifier over a refined domain reads the refinement.** The property

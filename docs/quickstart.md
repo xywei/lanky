@@ -307,8 +307,11 @@ things in that table are new.
   the assumptions it rests on: whatever it rests on, directly or through other
   facts, that nothing here established. That is an axiom, another `assumed`
   fact, a `refuted` one, a fact on a circle of facts that rest on each other,
-  or an id this ledger does not hold, such as a theorem in a file the check did
-  not collect. `gauss` is not among them, because it is tested.
+  or an id this ledger does not hold: a theorem of another file, since each
+  file checked has a ledger of its own, or an id written wrong. `lanky check`
+  names such an id in an `UNRESOLVED` line under the table, since in the row it
+  reads like any other assumption. `gauss` is not among them, because it is
+  tested.
 - The `EFFECTIVE` column. What each fact is worth once what it rests on is
   counted: the weakest status over the fact and everything below it, so a
   proof from an assumption is worth the assumption. The column is there only
@@ -319,13 +322,15 @@ The status column is still each fact's own. `tested` says how strongly `cubes`
 is established given what it uses; the oracles decide it as they decide any
 theorem, and are not handed the statements it uses. `--json` carries
 `rests_on`, `effective` and `under` for every fact, and the exit code depends
-on neither: it is 0 here, since nothing is refuted.
+on none of them: it is 0 here, since nothing is refuted.
 
 Copy the axiom down wrong, with `i**2` for `i**3` on the left, and the property
 tester refutes it. The row reads `refuted (axiom)`, `cubes` is worth `refuted`
 in the `EFFECTIVE` column, the counterexample is printed under the table, and
-`lanky check` exits 1. `pytest examples/nicomachus.py` samples the axiom as a
-test item too.
+`lanky check` exits 1. So does an axiom whose hypotheses were copied down so
+that nothing satisfies them, once Lean shows them inconsistent: it reads
+`assumed (axiom) (vacuous)`, as a theorem would read `proved (vacuous)`.
+`pytest examples/nicomachus.py` samples the axiom as a test item too.
 
 A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
 it builds, naming other facts by id.
