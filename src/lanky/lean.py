@@ -385,6 +385,8 @@ def _domain_guards(var: Var, domain: Any, types: _Types) -> list[str]:
     if isinstance(domain, Sort) and domain.name == "Nat":
         return [f"0 ≤ {name}"]
     if isinstance(domain, FinType):
+        if _in_mathlib():
+            _require_integer_bound(domain, types)
         return [f"0 ≤ {name}", f"{name} < {_render(domain.bound, _CMP + 1, types)}"]
     if isinstance(domain, Refined):
         inner = {**types, var.name: domain}
@@ -738,6 +740,22 @@ def _require_integers(expr: prim.FloorDiv | prim.Remainder, types: _Types) -> No
             )
 
 
+def _require_integer_bound(domain: FinType, types: _Types) -> None:
+    """Refuse a ``Fin`` whose bound is not an integer.
+
+    The tester walks ``Fin[x]`` as ``range(int(x))``, which truncates a real
+    ``x``, while the guard ``i < x`` over a cast ``i`` does not: ``Fin[2.5]``
+    has two points in Python and three in Lean. Core Lean cannot print a real
+    bound at all; the Mathlib dialect could, and must not.
+    """
+    kind = _kind(domain.bound, types)
+    if kind != "Int":
+        raise UnsupportedTerm(
+            f"{domain} has a {kind} bound, which Python truncates to an integer "
+            "and Lean would compare the index with as it stands"
+        )
+
+
 def _render_quotient(expr: prim.Quotient, outer: int, types: _Types) -> str:
     """Print true division as division in ``ℝ``, or in ``ℂ`` when a side is complex.
 
@@ -817,6 +835,7 @@ def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
     guards = list(conjuncts(expr.guard))
     for position in reversed(range(len(expr.binders))):
         var, domain = expr.binders[position]
+        _require_integer_bound(_unrefined(domain), layers[position])
         bound = _render(_unrefined(domain).bound, _ATOM, layers[position])
         conditions = []
         refined = domain
@@ -910,7 +929,10 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
         return expr.name
     expr = _integral(expr)
     if isinstance(expr, int | float | Fraction | bool | complex):
-        return _parens(_render_number(expr), _ADD if _is_negative(expr) else _ATOM, outer)
+        text = _render_number(expr)
+        # an ascribed literal is bracketed already, whatever its sign
+        atomic = text.startswith("(") or not _is_negative(expr)
+        return _parens(text, _ATOM if atomic else _ADD, outer)
     if expr is None:
         raise UnsupportedTerm("cannot print an empty term in Lean")
     if isinstance(expr, Forall | Exists):

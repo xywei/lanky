@@ -240,6 +240,7 @@ def test_a_float_is_the_rational_python_holds() -> None:
     natural arithmetic, where ``1 - 2 ** n`` truncates.
     """
     assert mathlib(x + 0.5, x=Real) == "x + (1 / 2 : ℝ)"
+    assert mathlib(x * -0.5, x=Real) == "x * (-1 / 2 : ℝ)"
     assert mathlib(x + 0.1, x=Real) == "x + (3602879701896397 / 36028797018963968 : ℝ)"
     assert mathlib(1 - 2.0**n >= 0, n=Nat) == "1 - (2 : ℝ) ^ n.toNat ≥ 0"
     # pymbolic's operators refuse a Fraction, so a plugin builds these node by node
@@ -333,6 +334,17 @@ def test_a_reduction_is_a_finset_sum() -> None:
     assert mathlib(refined >= 0, n=Nat, x=Real) == "(∑ i ∈ Finset.Ico 0 n with i > 2, x * i) ≥ 0"
     with pytest.raises(UnsupportedTerm, match="no finite extent"):
         print_lean(Forall(((n, Nat),), Sum(((i, Nat),), i) >= 0), mathlib=True)
+
+
+def test_an_index_type_with_a_real_bound_is_declined() -> None:
+    """``Fin[2.5]`` is ``range(2)`` to the tester and three points to ``i < 5/2``."""
+    for domain in (FinType(x), FinType(2.5), FinType(x + 1)):
+        with pytest.raises(UnsupportedTerm, match="bound"):
+            print_lean(Forall(((x, Real), (i, domain)), i >= 0), mathlib=True)
+        with pytest.raises(UnsupportedTerm, match="bound"):
+            print_lean(Forall(((x, Real),), Sum(((i, domain),), i) >= 0), mathlib=True)
+    # an integral Fraction is an integer bound
+    assert "i < 3" in print_lean(Forall(((i, FinType(Fraction(3, 1))),), i >= 0), mathlib=True)
 
 
 def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
