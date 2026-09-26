@@ -9,6 +9,13 @@ dropped. The result is a ledger that reads like the source file.
 
 A check collects the claims the file itself defines, and none from the modules
 it imports: ``lanky check a.py b.py`` is how two files are checked together.
+
+A check imports into the process that runs it. :func:`check_path` is the check
+of one file in this process, and the modules the file imports stay imported
+after it, so a second file that imports a module of the same name gets the one
+already in ``sys.modules``, wherever it came from. The ``lanky check`` command
+is what keeps files apart: files with different source roots (see
+:func:`source_roots`) are checked in processes of their own.
 """
 
 from __future__ import annotations
@@ -36,6 +43,7 @@ __all__ = [
     "hypotheses_fact",
     "import_path",
     "oracle_lines",
+    "source_roots",
 ]
 
 
@@ -86,6 +94,30 @@ def _package_of(path: Path) -> tuple[str, Path] | None:
     return ".".join(reversed(parts)), directory
 
 
+def source_roots(path: str | Path) -> tuple[Path, ...]:
+    """The directories a check of the file puts on ``sys.path``, resolved.
+
+    They are the file's own directory and, for a file inside a package (see
+    :func:`_package_of`), the directory that package is found from:
+    ``root/pkg/sub/mod.py`` gives ``(root/pkg/sub, root)``, and ``main.py``
+    in ``project`` gives ``(project,)``. :func:`import_path` puts exactly
+    these on ``sys.path`` while the file executes, so they are what an
+    absolute import in the file can find that a check of a file with other
+    roots cannot.
+
+    ``lanky check`` reads them to keep files apart: files with the same roots
+    are checked in one process, and files with different ones each in a
+    process of their own, since a module the first imported would otherwise
+    answer the second's import of the same name.
+    """
+    path = Path(path).resolve()
+    roots = [path.parent]
+    package = _package_of(path)
+    if package is not None:
+        roots.append(package[1])
+    return tuple(dict.fromkeys(roots))
+
+
 def _refuse_a_package_imported_elsewhere(path: Path, package: str, root: Path) -> None:
     """Raise ``ImportError`` if this process holds another package of the same name.
 
@@ -93,8 +125,11 @@ def _refuse_a_package_imported_elsewhere(path: Path, package: str, root: Path) -
     ``sys.path``, so once ``pkg`` (or ``pkg.sub``) has been imported from one
     source tree, a file of another tree's ``pkg`` would have its ``from
     .helpers import ...`` answered by the first tree's modules, and its ledger
-    computed from code it does not contain. That happens in ``lanky check
-    a/pkg/mod.py b/pkg/mod.py``. Every level of the package that is already
+    computed from code it does not contain. That happens when
+    :func:`check_path` is called on ``a/pkg/mod.py`` and then on
+    ``b/pkg/mod.py`` in one process; ``lanky check`` checks the two in
+    processes of their own, since their source roots differ (see
+    :func:`source_roots`). Every level of the package that is already
     imported has to be the directory the file sits under; a package imported
     from that same directory, by an earlier check of the same tree, say, is
     the one the file would get anyway.
@@ -138,6 +173,10 @@ def import_path(path: str | Path) -> Any:
     ``__init__``, as before. A package of the same name already imported
     from another directory is refused with ``ImportError`` rather than
     lent to the file (see :func:`_refuse_a_package_imported_elsewhere`).
+
+    The directories that go on ``sys.path`` are the file's
+    :func:`source_roots`, which is how ``lanky check`` decides which files
+    share a process.
     """
     path = Path(path).resolve()
     if not path.is_file():
@@ -146,14 +185,13 @@ def import_path(path: str | Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot import {path}")
-    directories = [str(path.parent)]
     package = _package_of(path)
     if package is not None:
         _refuse_a_package_imported_elsewhere(path, *package)
         spec = _PackageSpec(spec, package[0])
-        directories.append(str(package[1]))
     module = importlib.util.module_from_spec(spec)
-    added = [entry for entry in dict.fromkeys(directories) if entry not in sys.path]
+    directories = [str(root) for root in source_roots(path)]
+    added = [entry for entry in directories if entry not in sys.path]
     for entry in reversed(added):
         sys.path.insert(0, entry)
     previous = sys.modules.get(name)
@@ -794,6 +832,19 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     Only the objects this import registers are considered, and they are
     released from the registry afterwards, so checking several files in one
     process keeps their ledgers apart and does not accumulate them.
+
+    What it does not keep apart is their imports. The file is imported into
+    the calling process, and every check that process runs shares one
+    ``sys.modules``: after ``check_path("a/main.py")`` has imported
+    ``a/helpers.py`` as ``helpers``, ``check_path("b/main.py")`` gets that
+    module for its own ``import helpers``, and its claims are built against
+    the other directory's code without a word. (A relative import is the
+    exception: a package of the same name imported from another directory is
+    refused, see :func:`import_path`.) This function keeps that behavior, as
+    any import in a long-lived process does. The ``lanky check`` command
+    checks files whose source roots differ (see :func:`source_roots`) in
+    processes of their own, and a caller of this function that checks files
+    from several roots needs to do the same.
     """
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
 
