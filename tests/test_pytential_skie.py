@@ -462,6 +462,13 @@ def test_a_rule_set_refuses_what_is_not_one_rule(tmp_path, lp) -> None:
         lp.RuleSet(module.one_side)
     with pytest.raises(TypeError, match="read off an @axiom"):
         lp.RuleSet(module.not_an_axiom)
+    rules = lp.RuleSet(module.jump_D)
+    with pytest.raises(TypeError, match="names the operator that makes it so"):
+        rules.not_second_kind()
+    with pytest.raises(TypeError, match="names D' twice"):
+        rules.not_second_kind(lp.Dp, lp.Dp)
+    with pytest.raises(TypeError, match="is not one"):
+        rules.not_second_kind(lp.Dp + lp.S)
 
 
 # }}}

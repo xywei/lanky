@@ -834,15 +834,24 @@ class RuleSet:
         return registry.register_object(BoundaryEquation(fn, rules=self, verdict=FIRST_KIND))
 
     def not_second_kind(self, *operators: Operator) -> Callable[[Any], BoundaryEquation]:
-        """A decorator: the operator is not second kind, because of the operators named."""
-        names = []
+        """A decorator: the operator is not second kind, because of the operators named.
+
+        Raises:
+            TypeError: If no operator is named, one is named twice, or one is
+                not a boundary operator.
+        """
+        names: list[str] = []
         for operator in operators:
             atoms = list(operator.terms)
             if len(atoms) != 1 or not isinstance(atoms[0], Symbol):
                 raise TypeError(
                     f"not_second_kind names boundary operators, and {operator} is not one"
                 )
+            if atoms[0].name in names:
+                raise TypeError(f"not_second_kind names {atoms[0].name} twice")
             names.append(atoms[0].name)
+        if not names:
+            raise TypeError("not_second_kind names the operator that makes it so, as in (Dp)")
         verdict = Verdict("not second kind", tuple(sorted(names, key=lambda n: _ORDER.get(n, 9))))
 
         def decorate(fn: Any) -> BoundaryEquation:
