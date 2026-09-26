@@ -56,8 +56,8 @@ class TheoremItem(pytest.Item):
             reason = report.reason or "no draw satisfied the hypotheses"
             pytest.skip(f"{reason}: {self.name}")
         if report.goal_reached == 0:
-            # Every draw was valid and the goal held at each, because its
-            # quantifier got through to no point: its guard never held.
+            # The goal held at every valid draw because its quantifier got
+            # through to no point at any of them: its guard never held.
             pytest.skip(f"{report.reason}: {self.name}")
 
     def repr_failure(self, excinfo: Any, style: Any = None) -> str:

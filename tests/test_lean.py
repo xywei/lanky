@@ -1859,6 +1859,57 @@ def test_lean_leaves_a_goal_guard_the_sampler_misses_to_a_warning(
     assert "WARNING flipped at rare.py:7" in capsys.readouterr().out
 
 
+_SCOPED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Fn, Nat\n\n\n"
+    "@theorem\n"
+    "def below_three(\n"
+    "    n: Nat, off: Fn[Fin[n + 1], Nat], h: n < 3\n"
+    ") -> all(off(i) >= 0 for i in Fin[n + 1] if i > 5):\n"
+    '    """The guard has a point once n is 6, and none where the hypothesis holds."""\n'
+)
+
+
+def test_lean_asks_whether_a_goal_guard_is_empty_under_the_hypotheses(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """``i > 5`` is empty wherever ``n < 3`` holds, and has a point once ``n`` is 6.
+
+    The question put to Lean keeps the hypotheses, so with ``h`` the guard is
+    shown empty and the claim is vacuous. Without ``h`` no draw gets through
+    the guard either, since the sizes drawn stay below 6, but it is not empty,
+    so Lean cannot show it empty and the check only warns: a guard empty for
+    some values of the variables is not vacuous.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    scoped = tmp_path / "scoped.py"
+    scoped.write_text(_SCOPED, encoding="utf-8")
+    (fact,) = list(check_path(scoped))
+    assert fact.status is Status.PROVED
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by lean"
+    )
+    assert cli.main(["check", str(scoped)]) == 1
+    assert "VACUOUS below_three at scoped.py:7" in capsys.readouterr().out
+
+    unscoped = tmp_path / "unscoped.py"
+    unscoped.write_text(_SCOPED.replace(", h: n < 3", ""), encoding="utf-8")
+    (fact,) = list(check_path(unscoped))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["goal_unreached"] == (
+        "the goal's guard i > 5 never held in 200 valid draws"
+    )
+    assert cli.main(["check", str(unscoped)]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING below_three at unscoped.py:7" in printed
+    assert "VACUOUS" not in printed
+
+
 def test_lean_shows_the_quickstart_flipped_goal_guard_vacuous(
     lean_oracle: LeanOracle, tmp_path, capsys
 ) -> None:
