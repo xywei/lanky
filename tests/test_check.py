@@ -980,6 +980,49 @@ def test_a_plugin_fact_rests_on_another_facts_id(tmp_path) -> None:
     assert row.startswith("assumed under scan:postcondition  -")
 
 
+SPELLED = (
+    CITED
+    + '''
+
+@theorem(uses=[cubes, "theorem:helpers.lemma@12", "theorem:helpers.lemma@12"])
+def spelled(n: Nat) -> n + 0 == n:
+    """Rests on a fact of this file, and on an id no fact here has."""
+'''
+)
+
+
+def test_an_id_no_fact_in_the_ledger_has_is_named_under_the_table(tmp_path, capsys) -> None:
+    """A ``uses=`` string that names nothing is an assumption, and is said to be one.
+
+    It is sound to count it as ``assumed``, and the row does, but in the row
+    it reads like any other assumption, and a misspelt id would pass for one.
+    So the check names it under the table, once, under the fact that rests on
+    it, and the exit code stays 0, because an id of another file's fact is
+    this case too and is not a mistake.
+    """
+    path = write_file(tmp_path, SPELLED)
+    out = tmp_path / "out.json"
+    assert cli.main(["check", path, "--json", str(out)]) == 0
+    printed = capsys.readouterr().out.splitlines()
+    (index,) = [i for i, line in enumerate(printed) if line.startswith("UNRESOLVED")]
+    assert printed[index].startswith("UNRESOLVED spelled at claims.py:")
+    assert printed[index].endswith(
+        ": rests on theorem:helpers.lemma@12, which this ledger does not hold"
+    )
+    assert printed[index + 1] == (
+        "  counted as an assumption; a fact of another file is in that file's ledger, "
+        "not this one"
+    )
+    rows = json.loads(out.read_text(encoding="utf-8"))
+    nicomachus = rows[1]["id"]
+    assert rows[-1]["rests_on"] == [rows[2]["id"], "theorem:helpers.lemma@12"]
+    assert rows[-1]["under"] == [nicomachus, "theorem:helpers.lemma@12"]
+    assert rows[-1]["effective"] == "assumed"
+    # a file whose facts rest on facts it holds prints no such line
+    assert cli.main(["check", write_file(tmp_path, CITED)]) == 0
+    assert "UNRESOLVED" not in capsys.readouterr().out
+
+
 def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
     """The quickstart's table for ``examples/nicomachus.py`` is the real one.
 

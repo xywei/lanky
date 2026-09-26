@@ -24,13 +24,16 @@ changes the exit code: a fact resting on a refuted one fails the check through
 the refuted one, and a fact resting on an assumption is no more a failure than
 the assumption.
 
-Two more things are printed under the table and do not change the exit code. A
-statement whose sampled reading could not be run where a stronger oracle's
+Three more things are printed under the table and do not change the exit code.
+A statement whose sampled reading could not be run where a stronger oracle's
 could, or disagrees with it, is reported under ``SEMANTICS`` (a division by
 zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
-status its oracle gave it. And a statement whose hypotheses no draw satisfied,
-and that no oracle could show inconsistent, gets a ``WARNING`` line: the claim
-may be vacuous, or its hypotheses may hold only where the sampler does not look.
+status its oracle gave it. A statement whose hypotheses no draw satisfied, and
+that no oracle could show inconsistent, gets a ``WARNING`` line: the claim may
+be vacuous, or its hypotheses may hold only where the sampler does not look.
+And a fact that rests on an id no fact in the ledger has gets an
+``UNRESOLVED`` line naming it: the id counts as an assumption, and it is either
+written wrong or names a fact of another file, which is in that file's ledger.
 """
 
 from __future__ import annotations
@@ -76,8 +79,9 @@ class CheckVerb:
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
-        nothing is checked. A semantics disagreement and a warning about
-        hypotheses no draw satisfied are printed but do not fail the check.
+        nothing is checked. A semantics disagreement, a warning about
+        hypotheses no draw satisfied and an id a fact rests on that the
+        ledger does not hold are printed but do not fail the check.
 
         Whether a file exists is asked before anything is imported rather than
         read off a ``FileNotFoundError``, because the file can raise one of its
@@ -149,6 +153,7 @@ class CheckVerb:
             for note in fact.provenance.get("semantics", ()):
                 print(f"  {note}")
         vacuous = CheckVerb._report_hypotheses(ledger)
+        CheckVerb._report_unresolved(ledger)
         refuted = ledger.by_status(Status.REFUTED)
         if not refuted:
             return vacuous
@@ -186,6 +191,32 @@ class CheckVerb:
                 print(f"  {sampled}")
             CheckVerb._print_detail(fact)
         return bool(vacuous)
+
+    @staticmethod
+    def _report_unresolved(ledger: Ledger) -> None:
+        """Name, under the fact that rests on it, each id no fact in the ledger has.
+
+        Such an id counts as an assumption in what the fact is worth (see
+        :meth:`lanky.ledger.Ledger.support`), and the table lists it after
+        ``under``, where it reads like any other assumption. It is either
+        written wrong, a ``uses=`` string that names nothing, or the id of a
+        fact of another file, since each file checked has a ledger of its own;
+        lanky cannot tell which, so it says which id it is and leaves the exit
+        code alone, because naming a fact of another file is not a mistake.
+        """
+        for fact in ledger:
+            missing = [entry for entry in dict.fromkeys(fact.rests_on) if entry not in ledger]
+            if not missing:
+                continue
+            print()
+            print(
+                f"UNRESOLVED {fact.owner} at {fact.where}: rests on "
+                f"{', '.join(missing)}, which this ledger does not hold"
+            )
+            print(
+                "  counted as an assumption; a fact of another file is in that "
+                "file's ledger, not this one"
+            )
 
     @staticmethod
     def _print_detail(fact: Any) -> None:
