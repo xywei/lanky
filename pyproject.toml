@@ -67,6 +67,7 @@ select = ["E", "F", "I", "UP", "B"]
 "tests/test_lean.py" = ["F821"]
 "tests/test_adversarial.py" = ["F821"]
 "tests/test_semantics.py" = ["F821"]
+"tests/test_mathlib.py" = ["F821"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
