@@ -20,6 +20,7 @@ import pymbolic.primitives as prim
 import pytest
 
 from lanky import theorem
+from lanky.check import import_path
 from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
@@ -36,6 +37,7 @@ from lanky.oracles.lean import (
     tactic_ladder,
     use_tactic,
 )
+from lanky.plugins import registry
 from lanky.prelude import Bool, Fin, FinType, Fn, Int, Nat, Real
 from lanky.terms import Abs, Exists, Forall, Sum, Var
 
@@ -1335,6 +1337,33 @@ def test_a_closed_comparison_means_in_lean_what_it_means_in_python(
     proved = lean_oracle.establish(true)
     assert proved.status is Status.PROVED
     assert "(-1 : Int) ≠ 0" in proved.provenance["lean_source"]
+
+
+def test_the_pytential_demonstrations_arithmetic_is_proved(
+    lean_oracle: LeanOracle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one part of ``examples/pytential_skie.py`` Lean touches, it proves.
+
+    Each second-kind claim states that its identity coefficient is not zero,
+    as integer arithmetic on the numerator; the verdicts themselves rest on
+    axioms and a rule engine, and nothing about compactness goes to Lean.
+    """
+    examples = Path(__file__).resolve().parent.parent / "examples"
+    monkeypatch.syspath_prepend(str(examples))
+    monkeypatch.setattr(registry, "oracles", list(registry.oracles))
+    with registry.collecting():
+        demo = import_path(examples / "pytential_skie.py")
+    coefficients = [
+        fact for claim in demo.CLAIMS for fact in claim.facts() if fact.kind == "coefficient"
+    ]
+    assert [fact.statement for fact in coefficients] == [
+        "coefficient of I: -1/2 != 0",
+        "coefficient of I: 1/2 != 0",
+        "coefficient of I: 1/2 != 0",
+    ]
+    for fact in coefficients:
+        proved = lean_oracle.establish(fact)
+        assert proved.status is Status.PROVED, proved.provenance
 
 
 def test_lean_reports_a_goal_it_cannot_close(lean_oracle: LeanOracle) -> None:
