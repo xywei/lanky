@@ -1345,7 +1345,12 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
     assert lines[2].startswith("tested                   tested     property-test")
     assert lines[3].startswith("assumed (axiom)          assumed    -")
     assert lines[4].startswith("tested under nicomachus  assumed    property-test")
-    assert lines[-1] == "3 facts: 1 assumed, 2 tested"
+    assert lines[6] == "3 facts: 1 assumed, 2 tested"
+    assert lines[7:] == [
+        "",
+        f"CITED nicomachus at {nicomachus.where}: "
+        "Nicomachus of Gerasa, Introduction to Arithmetic",
+    ]
     data = json.loads(out.read_text(encoding="utf-8"))
     assert [(row["owner"], row["status"], row["effective"], row["under"]) for row in data] == [
         ("gauss", "tested", "tested", []),
@@ -1379,6 +1384,8 @@ def test_an_axiom_false_as_written_is_refuted(tmp_path, capsys) -> None:
     assert "tested under nicomachus  refuted    property-test" in printed
     assert "REFUTED nicomachus at claims.py:" in printed
     assert "  counterexample: {'n': " in printed
+    # the reference is where to look for what was copied down wrong
+    assert "\nCITED nicomachus at claims.py:" in printed
 
 
 def test_an_axiom_is_never_offered_to_a_stronger_oracle(tmp_path, monkeypatch) -> None:
@@ -1497,6 +1504,313 @@ def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
     assert cli.main(["check", str(root / "examples" / "nicomachus.py")]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
     assert shown == printed
+
+
+# }}}
+
+
+# {{{ what stands behind a decision: a citation, a trust class
+
+
+def test_lanky_check_prints_each_axioms_citation_under_the_table(tmp_path, capsys) -> None:
+    """The citation is what stands behind an ``assumed (axiom)`` row, so it is shown.
+
+    It used to be in the JSON alone. A citation of several lines is indented
+    under its first, and a file with no axiom prints no ``CITED`` line.
+    """
+    text = CITED.replace(
+        '@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")',
+        '@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic,\\nbook II, ch. 20")',
+    )
+    path = write_file(tmp_path, text)
+    _gauss, nicomachus, _cubes = check_path(path)
+    assert cli.main(["check", path]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    summary = lines.index("3 facts: 1 assumed, 2 tested")
+    assert lines[summary + 1 :] == [
+        "",
+        f"CITED nicomachus at {nicomachus.where}: "
+        "Nicomachus of Gerasa, Introduction to Arithmetic,",
+        "  book II, ch. 20",
+    ]
+
+    assert cli.main(["check", write_file(tmp_path)]) == 1
+    assert "CITED" not in capsys.readouterr().out
+
+
+def test_the_oracle_that_settles_a_fact_leaves_its_trust_class(tmp_path) -> None:
+    """The status says what kind of evidence; ``trust_class`` says how far to trust its decider."""
+    true_claim, false_claim = check_path(write_file(tmp_path))
+    assert true_claim.provenance["trust_class"] == "test"
+    assert false_claim.provenance["trust_class"] == "test"
+
+
+class Simplifier:
+    """A heuristic that decides every theorem it is shown, as a careless simplifier might."""
+
+    name = "simplifier"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        return fact.with_status(Status.DECIDED, self.name)
+
+
+def test_a_fact_a_heuristic_decides_is_marked_in_the_table_and_the_json(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A heuristic is asked before the property tester, and its ``decided`` says what it is.
+
+    Before the ``heuristic`` class existed, an oracle naming it ranked below
+    the tester, which refuted ``false_claim`` before the simplifier was asked.
+    Now the simplifier is asked first, and the tester still refutes
+    ``false_claim``: a counterexample overrules a heuristic's answer, which is
+    not guaranteed, and the provenance says whose answer it overruled.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, Simplifier()])
+    path = write_file(tmp_path)
+    true_claim, false_claim = check_path(path)
+    assert (true_claim.status, true_claim.decided_by) == (Status.DECIDED, "simplifier")
+    assert true_claim.provenance["trust_class"] == "heuristic"
+    assert true_claim.is_heuristic
+    assert (false_claim.status, false_claim.decided_by) == (Status.REFUTED, "property-test")
+    assert false_claim.provenance["trust_class"] == "test"
+    assert not false_claim.is_heuristic
+    assert false_claim.provenance["overruled"] == "simplifier, a heuristic, decided it"
+    assert "n" in false_claim.provenance["counterexample"]
+    out = tmp_path / "out.json"
+    assert cli.main(["check", path, "--json", str(out)]) == 1
+    printed = capsys.readouterr().out
+    lines = printed.splitlines()
+    assert lines[2].startswith("decided (heuristic)  simplifier")
+    assert lines[3].startswith("refuted              property-test")
+    heading = f"REFUTED false_claim at {false_claim.where}: {false_claim.statement}"
+    block = lines[lines.index(heading) :]
+    assert block[1:4] == [
+        f"  counterexample: {false_claim.provenance['counterexample']}",
+        "  the goal is false at this assignment",
+        "  simplifier, a heuristic, decided it, and this draw overrules it",
+    ]
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert [row["provenance"]["trust_class"] for row in data] == ["heuristic", "test"]
+
+
+class Hasty:
+    """A heuristic that decides every theorem it is shown, the false ones too."""
+
+    name = "hasty"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        return fact.with_status(Status.DECIDED, self.name)
+
+
+CLOSED_FACTS = '''
+from __future__ import annotations
+
+import pymbolic.primitives as prim
+
+from lanky.ledger import Fact
+from lanky.plugins import registry
+from lanky.rewrites import Rewrite
+
+
+class Closed(Rewrite):
+    """Two statements with no variable and no hypothesis in them, one false."""
+
+    def facts(self):
+        return (
+            Fact(id="closed:true", kind="theorem", statement="1 - 2 < 0",
+                 term=prim.Comparison(prim.Sum((1, -2)), "<", 0), owner="true_closed"),
+            Fact(id="closed:false", kind="theorem", statement="1 - 2 >= 0",
+                 term=prim.Comparison(prim.Sum((1, -2)), ">=", 0), owner="false_closed"),
+        )
+
+
+def nothing():
+    return None, None
+
+
+claims = registry.register_object(Closed(nothing))
+'''
+
+
+def test_a_counterexample_overrules_a_heuristic_where_nothing_else_would_look(
+    tmp_path, monkeypatch
+) -> None:
+    """A statement with no hypotheses and no semantics gap is sampled after a heuristic too.
+
+    Only such facts are cross-checked after a decision procedure or a kernel,
+    and there a counterexample is only recorded. After a heuristic every fact
+    is sampled, and a counterexample stands in place of its answer.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    # Lean, where it is installed, proves the true statement before the
+    # heuristic is asked, which is right and beside the point here.
+    tester = [oracle for oracle in registry.oracles if oracle.trust_class() == "test"]
+    monkeypatch.setattr(registry, "oracles", [*tester, Hasty()])
+    true_closed, false_closed = check_path(write_file(tmp_path, CLOSED_FACTS))
+    assert (true_closed.status, true_closed.decided_by) == (Status.DECIDED, "hasty")
+    assert "overruled" not in true_closed.provenance
+    assert (false_closed.status, false_closed.decided_by) == (Status.REFUTED, "property-test")
+    assert false_closed.provenance["overruled"] == "hasty, a heuristic, decided it"
+
+
+class Flaky:
+    """A tester whose draws pass the first time it is asked, and refute every time after."""
+
+    name = "flaky-test"
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    def trust_class(self) -> str:
+        return "test"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        self.asked += 1
+        if self.asked == 1:
+            return fact.with_status(Status.TESTED, self.name, samples=1, valid=1)
+        return fact.with_status(
+            Status.REFUTED, self.name, counterexample={"n": 0}, reason="drawn again"
+        )
+
+
+GUARDED = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def guarded(n: Nat, h: n >= 1) -> n + 0 == n:
+    """Its hypothesis holds at almost every draw."""
+'''
+
+
+def test_a_heuristics_answer_is_sampled_once(tmp_path, monkeypatch) -> None:
+    """One sample both looks for a counterexample and says what is recorded.
+
+    A fact with hypotheses that a heuristic established used to be sampled
+    for a counterexample, and then sampled again to record what sampling
+    says about the hypotheses. A tester seeded afresh, or one that keeps
+    state, can pass the first time and refute the second, and that
+    refutation was only recorded, leaving the heuristic's answer standing
+    and the check passing.
+    """
+    from lanky.plugins import registry
+
+    flaky = Flaky()
+    monkeypatch.setattr(registry, "oracles", [flaky, Hasty()])
+    (fact,) = check_path(write_file(tmp_path, GUARDED))
+    assert flaky.asked == 1
+    assert (fact.status, fact.decided_by) == (Status.DECIDED, "hasty")
+    assert "semantics_disagreement" not in fact.provenance
+
+
+class Leaning:
+    """A heuristic that decides every theorem, on a lemma it names and a reason it gives."""
+
+    name = "leaning"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        from dataclasses import replace
+
+        leaning = replace(fact, rests_on=(*fact.rests_on, "lemma"))
+        return leaning.with_status(Status.DECIDED, self.name, detail="by the lemma")
+
+
+def test_what_a_heuristic_added_goes_with_its_overruled_answer(tmp_path, monkeypatch) -> None:
+    """The refutation is the tester's, of the fact as it was handed over.
+
+    A heuristic's answer can come with what it rests on and why; once a
+    counterexample overrules it, neither is what the refuted fact rests on,
+    and only ``overruled`` says what the heuristic had answered.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    tester = [oracle for oracle in registry.oracles if oracle.trust_class() == "test"]
+    monkeypatch.setattr(registry, "oracles", [*tester, Leaning()])
+    true_claim, false_claim = check_path(write_file(tmp_path))
+    assert (true_claim.status, true_claim.rests_on) == (Status.DECIDED, ("lemma",))
+    assert true_claim.provenance["detail"] == "by the lemma"
+    assert (false_claim.status, false_claim.decided_by) == (Status.REFUTED, "property-test")
+    assert false_claim.rests_on == ()
+    assert "detail" not in false_claim.provenance
+    assert false_claim.provenance["overruled"] == "leaning, a heuristic, decided it"
+
+
+class RashSimplifier:
+    """A heuristic that says every set of hypotheses is inconsistent."""
+
+    name = "rash-simplifier"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "hypotheses"
+
+    def establish(self, fact, /):
+        return fact.with_status(Status.PROVED, self.name)
+
+
+RARE = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def rare(n: Nat, h: n == 1000) -> n + 0 == n:
+    """Its hypothesis holds only where the sampler does not look."""
+'''
+
+
+def test_a_heuristic_is_not_enough_to_make_a_fact_vacuous(tmp_path, monkeypatch, capsys) -> None:
+    """A vacuous fact fails the check, and a heuristic's answer is not guaranteed.
+
+    A counterexample overrules a heuristic elsewhere, and where no draw
+    satisfies the hypotheses there is none to be had. So only a decision
+    procedure or a kernel is asked whether the hypotheses are inconsistent,
+    and here the fact keeps its warning.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, RashSimplifier()])
+    path = write_file(tmp_path, RARE)
+    (fact,) = check_path(path)
+    assert not fact.is_vacuous
+    assert fact.provenance["unsatisfied"]
+    assert cli.main(["check", path]) == 0
+    assert "WARNING rare at claims.py:" in capsys.readouterr().out
 
 
 # }}}

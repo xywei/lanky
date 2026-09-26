@@ -25,8 +25,10 @@ changes the exit code: a fact resting on a refuted one fails the check through
 the refuted one, and a fact resting on an assumption is no more a failure than
 the assumption.
 
-Three more things are printed under the table and do not change the exit code.
-A statement whose sampled reading could not be run where a stronger oracle's
+Four more things are printed under the table and do not change the exit code.
+Each axiom is named in a ``CITED`` line with the citation it is taken on,
+which is the one thing that stands behind an ``assumed (axiom)`` row. A
+statement whose sampled reading could not be run where a stronger oracle's
 could, or disagrees with it, is reported under ``SEMANTICS`` (a division by
 zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
 status its oracle gave it. A statement whose hypotheses no draw satisfied, and
@@ -96,9 +98,9 @@ class CheckVerb:
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
-        nothing is checked. A semantics disagreement, a warning about
-        hypotheses no draw satisfied and an id a fact rests on that the
-        ledger does not hold are printed but do not fail the check.
+        nothing is checked. An axiom's citation, a semantics disagreement, a
+        warning about hypotheses no draw satisfied and an id a fact rests on
+        that the ledger does not hold are printed but do not fail the check.
 
         Whether a file exists is asked before anything is imported rather than
         read off a ``FileNotFoundError``, because the file can raise one of its
@@ -270,6 +272,7 @@ class CheckVerb:
         A fact fails when it is refuted or vacuous.
         """
         print(ledger.render())
+        CheckVerb._report_citations(ledger)
         for fact in ledger:
             disagreement = fact.provenance.get(
                 "semantics_disagreement"
@@ -294,6 +297,29 @@ class CheckVerb:
             for line in refutation_lines(fact):
                 print(f"  {line}")
         return True
+
+    @staticmethod
+    def _report_citations(ledger: Ledger) -> None:
+        """Name each axiom under the table, with the citation it is taken on.
+
+        An axiom is ``assumed`` on its author's word that a reference says
+        what it says, so the citation is what a reader of its row needs, and
+        it used to be in the JSON alone. The lines come right under the table,
+        one per axiom in the table's order, because they explain rows of it:
+        the ``assumed (axiom)`` ones, and every ``under`` that names one. A
+        refuted axiom keeps its line, since the reference is where to look
+        for what was copied down wrong. A citation of several lines is
+        indented under its first.
+        """
+        cited = [fact for fact in ledger if fact.is_axiom and fact.provenance.get("cite")]
+        if not cited:
+            return
+        print()
+        for fact in cited:
+            first, *rest = str(fact.provenance["cite"]).splitlines() or [""]
+            print(f"CITED {fact.owner} at {fact.where}: {first}")
+            for line in rest:
+                print(f"  {line}")
 
     @staticmethod
     def _report_hypotheses(ledger: Ledger) -> bool:

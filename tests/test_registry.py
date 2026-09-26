@@ -69,6 +69,49 @@ def test_oracles_are_sorted_strongest_first() -> None:
     ]
 
 
+class RankedOracle(DemoOracle):
+    """An oracle of a chosen name and trust class, which establishes nothing."""
+
+    def __init__(self, name: str, trust: str) -> None:
+        self.name = name
+        self.trust = trust
+
+    def trust_class(self) -> str:
+        return self.trust
+
+
+def test_a_heuristic_is_tried_after_a_decision_procedure_and_before_a_test() -> None:
+    """``heuristic`` sits between ``test`` and ``decision-procedure``.
+
+    A simplifier that is right when it answers, but may not answer, is worth
+    more than a sample and less than a decision procedure, and is asked in
+    that order. An unknown class is still tried last.
+    """
+    strength = plugins.TRUST_STRENGTH
+    assert (
+        strength["test"]
+        < strength["heuristic"]
+        < strength["decision-procedure"]
+        < strength["kernel"]
+    )
+    registry = Registry()
+    for name, trust in (
+        ("sampler", "test"),
+        ("unknown", "astrology"),
+        ("simplifier", "heuristic"),
+        ("prover", "kernel"),
+        ("isl", "decision-procedure"),
+    ):
+        registry.register_oracle(RankedOracle(name, trust))
+    assert [oracle.name for oracle in registry.sorted_oracles()] == [
+        "prover",
+        "isl",
+        "simplifier",
+        "sampler",
+        "unknown",
+    ]
+
+
 def test_term_lowerings_are_a_table_a_plugin_fills() -> None:
     registry = Registry()
 

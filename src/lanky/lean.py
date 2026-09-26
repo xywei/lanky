@@ -88,7 +88,11 @@ without its cast; anything else could be negative, where Python's ``**`` gives a
 float, and is declined. A literal base is ascribed, ``(2 : Int) ^ m.toNat``:
 with its variable only in the ``Nat`` exponent, nothing else would tell Lean
 that ``1 - 2 ** m`` is integer arithmetic, and it would read a numeral with no
-typed neighbour as a ``Nat``.
+typed neighbour as a ``Nat``. A comparison with no variable on either side,
+and a base with none in it, which only a term built node by node can hold,
+are ascribed for the same reason: ``(1 - 2 : Int) ≥ 0``, where the bare ``1 -
+2 ≥ 0`` is a truncated ``Nat`` subtraction Lean proves, and ``(1 - 2 : Int) ^
+m.toNat``.
 
 The printer is a recursive descent with Lean's own operator precedences, so the
 emitted source is the source a Lean user would have written, and it is worth
@@ -487,14 +491,20 @@ def _render_base(expr: Any, types: _Types) -> str:
     m >= 0`` would elaborate as a statement about ``Nat``, where the
     subtraction truncates and the claim is true, while Python computes ``-1``
     at ``m = 1``. Ascribing the literal base, ``(2 : Int) ^ m.toNat``, gives
-    every numeral around it the type ``Int``. Any other base is typed already:
-    it has a variable, a cast or a call in it that is an ``Int``, or it is a
-    power whose own base this rule has typed. An integral ``Fraction`` is the
-    ``int`` it equals (:func:`_integral`), and is ascribed the same way.
+    every numeral around it the type ``Int``. So is a base of literals alone,
+    ``(1 - 2 : Int) ^ m.toNat``, which only a term built node by node holds,
+    since Python computes ``(1 - 2)`` before lanky sees it: bare, ``(1 - 2) ^
+    m.toNat ≥ 0`` is ``0 ^ m.toNat ≥ 0`` over ``Nat``, which Lean proves. Any
+    other base is typed already: it has a variable, a cast or a call in it
+    that is an ``Int``, or it is a power whose own base this rule has typed.
+    An integral ``Fraction`` is the ``int`` it equals (:func:`_integral`), and
+    is ascribed the same way.
     """
     expr = _integral(expr)
     if isinstance(expr, int) and not isinstance(expr, bool):
         return f"({expr} : Int)"
+    if _closed_arithmetic(expr):
+        return f"({_render(expr, _QUANT, types)} : Int)"
     return _render(expr, _POW + 1, types)
 
 
@@ -591,10 +601,10 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
         relation = _RELATIONS.get(expr.operator)
         if relation is None:
             raise UnsupportedTerm(f"unknown comparison operator {expr.operator!r}")
-        text = (
-            f"{_render(expr.left, _CMP + 1, types)} {relation} "
-            f"{_render(expr.right, _CMP + 1, types)}"
-        )
+        left = _render(expr.left, _CMP + 1, types)
+        if _closed_arithmetic(expr.left) and _closed_arithmetic(expr.right):
+            left = f"({_render(expr.left, _QUANT, types)} : Int)"
+        text = f"{left} {relation} {_render(expr.right, _CMP + 1, types)}"
         return _parens(text, _CMP, outer)
     if isinstance(expr, prim.LogicalAnd):
         text = " ∧ ".join(_render_prop(child, _AND + 1, types) for child in expr.children)
@@ -627,6 +637,32 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
             return f"({text} : Int)"
         return _parens(text, _APP, outer)
     raise UnsupportedTerm(f"cannot print {type(expr).__name__} in Lean: {expr!r}")
+
+
+def _closed_arithmetic(expr: Any) -> bool:
+    """Whether ``expr`` is arithmetic on integer literals alone, with no name in it.
+
+    Such an expression gives Lean nothing to read the type of its numerals
+    off, and Lean then reads them as ``Nat``, where ``1 - 2`` is ``0`` and
+    ``-1`` does not elaborate. lanky reads every statement as integer
+    arithmetic, so a comparison of two of them is ascribed ``Int`` (see
+    :func:`_render`), and so is the base of a power (see
+    :func:`_render_base`). Python answers such a comparison itself when it is
+    written in an annotation, so only a term built node by node holds one:
+    a plugin's claim that a coefficient it computed is not zero, say.
+    """
+    expr = _integral(expr)
+    if isinstance(expr, bool):
+        return False
+    if isinstance(expr, int):
+        return True
+    if isinstance(expr, prim.Sum | prim.Product):
+        return all(_closed_arithmetic(child) for child in expr.children)
+    if isinstance(expr, prim.FloorDiv | prim.Remainder):
+        return _closed_arithmetic(expr.numerator) and _closed_arithmetic(expr.denominator)
+    if isinstance(expr, prim.Power):
+        return _closed_arithmetic(expr.base) and _closed_arithmetic(expr.exponent)
+    return False
 
 
 def _is_negative(value: Any) -> bool:

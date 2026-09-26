@@ -233,6 +233,16 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     guard never holds says nothing either, whatever the hypotheses do. A fact
     whose goal quantifies is cross-checked for that reason too.
 
+    The oracle that settles a fact, establishing or refuting it, leaves its
+    trust class in the provenance as ``trust_class``. A status says what kind
+    of evidence a fact has, and the trust class says how far its decider is to
+    be trusted: ``decided`` by a decision procedure and ``decided`` by a
+    heuristic are worth different things, and the table marks the second
+    (see :meth:`lanky.ledger.Ledger.render`). A heuristic's answer is not
+    guaranteed and a counterexample is, so a fact a heuristic established is
+    sampled all the same, and a counterexample overrules it
+    (:func:`_cross_check`).
+
     An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted, or
     shown vacuous (see :func:`_examine_axiom`). It is ``assumed`` on its
     citation, which is its author's word and not an oracle's, and a stronger
@@ -263,10 +273,34 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
         if result is None:
             continue
         if result.status is not Status.ASSUMED:
-            fact = _cross_check(result, gaps, verbose=verbose)
+            result = result.with_status(result.status, trust_class=oracle.trust_class())
+            fact = _cross_check(result, gaps, handed=fact, verbose=verbose)
             break
         fact = result
     return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
+
+
+def _overruled(fact: Fact, sampled: Fact, tester: str) -> Fact:
+    """The refuted fact that a counterexample to a heuristic's answer leaves.
+
+    ``fact`` is what the heuristic established and ``sampled`` the refutation
+    the oracle ``tester`` of the ``test`` class found, sampling the fact as it
+    was handed to the oracles, so that nothing the heuristic added to it (its
+    ``detail``, what it said the fact rests on) is kept. The refutation stands
+    in place of the answer, with the tester's trust class, and says what it
+    overruled, as ``overruled`` in the provenance and in the last line of the
+    ``reason``, which ``lanky check`` prints under the table.
+    """
+    overruled = f"{fact.decided_by}, a heuristic, {fact.status.value} it"
+    reason = sampled.provenance.get("reason")
+    note = f"{overruled}, and this draw overrules it"
+    return sampled.with_status(
+        Status.REFUTED,
+        tester,
+        trust_class="test",
+        overruled=overruled,
+        reason=f"{reason}\n{note}" if reason else note,
+    )
 
 
 def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
@@ -314,7 +348,7 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
         if result.status is Status.REFUTED:
             if verbose:
                 print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
-            return result
+            return result.with_status(result.status, trust_class=oracle.trust_class())
         # A test oracle that does not count the goal's points (a plugin's,
         # say) records nothing about the guard, and says nothing against it,
         # so a later one that does is still heard, as for the hypotheses.
@@ -410,13 +444,31 @@ def _skipped(provenance: dict) -> str | None:
     return f"a draw could not be completed: {skipped[0]}" if skipped else None
 
 
-def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fact:
+def _cross_check(
+    fact: Fact,
+    gaps: tuple[str, ...],
+    handed: Fact | None = None,
+    verbose: bool = False,
+) -> Fact:
     """Sample a fact a stronger oracle established, and record what sampling says.
 
-    Only for a fact that carries a semantics note, has hypotheses (see
-    :func:`has_hypotheses`) or has a goal that is a universal, and only to
-    record what the sampled reading says. The status a stronger oracle gave
-    stands.
+    ``fact`` is what the stronger oracle made of ``handed``, the fact as it
+    was offered to the oracles, and ``handed`` is what is sampled (``fact``
+    itself when it is not given). Only for a fact that carries a semantics
+    note, has hypotheses (see :func:`has_hypotheses`) or has a goal that is a
+    universal, and only to record what the sampled reading says. The status a
+    stronger oracle gave stands.
+
+    Except after a heuristic. Its answer is worth more than a sample's pass
+    and is still not guaranteed, while a counterexample is definite, so a
+    fact a heuristic established is sampled whether or not it has hypotheses,
+    a goal quantifier or a semantics gap, and a refutation from any oracle of
+    the ``test`` class stands in place of the answer (:func:`_overruled`). The
+    fact is sampled once, and what those draws say about its hypotheses and
+    its goal is recorded as for any other fact: drawn again to be recorded, a
+    sample could come out otherwise the second time, and a counterexample
+    found only then would only be recorded. Nothing is done for a heuristic's
+    refutation, which a sample cannot overturn.
 
     Three things are worth recording. A counterexample is the loud one: the
     Python reading is false where a stronger oracle established the statement,
@@ -439,62 +491,91 @@ def _cross_check(fact: Fact, gaps: tuple[str, ...], verbose: bool = False) -> Fa
     """
     if fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
         return fact
-    if not gaps and not has_hypotheses(fact.term) and _goal_quantifier(fact.term) is None:
+    heuristic = fact.is_heuristic
+    if (
+        not heuristic
+        and not gaps
+        and not has_hypotheses(fact.term)
+        and _goal_quantifier(fact.term) is None
+    ):
         return fact
+    sampled = fact if handed is None else handed
+    recorded = None
     for oracle in registry.sorted_oracles():
-        if TRUST_STRENGTH.get(oracle.trust_class(), 0) != 1:
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
         available, _reason = oracle_availability(oracle)
         if not available:
             continue
         try:
-            if not oracle.can_establish(fact):
+            if not oracle.can_establish(sampled):
                 continue
-            result = oracle.establish(fact)
+            result = oracle.establish(sampled)
         except Exception:  # noqa: BLE001 - a cross-check must not fail a check
             continue
         if result is None:
             continue
-        if result.status is Status.REFUTED:
-            counterexample = result.provenance.get("counterexample")
+        if result.status is Status.REFUTED and heuristic:
             if verbose:
-                print(
-                    f"  {oracle.name} refutes the sampled reading of a "
-                    f"{fact.status.value} fact: {counterexample}"
-                )
-            return fact.with_status(
-                fact.status,
-                semantics_disagreement=(
-                    f"{oracle.name} refutes this statement under lanky's Python reading"
-                ),
-                semantics_counterexample=counterexample,
+                answer = f"{fact.decided_by}, a heuristic, {fact.status.value}"
+                print(f"  {oracle.name} refutes what {answer}")
+            return _overruled(fact, result, oracle.name)
+        if recorded is not None:
+            # After a heuristic every tester is asked for a counterexample,
+            # and the first one to say anything else is what is recorded.
+            continue
+        recorded = _record_sample(fact, result, oracle.name, gaps, verbose=verbose)
+        if recorded is not None and not heuristic:
+            return recorded
+    return fact if recorded is None else recorded
+
+
+def _record_sample(
+    fact: Fact, result: Fact, tester: str, gaps: tuple[str, ...], verbose: bool = False
+) -> Fact | None:
+    """``fact`` with what one sample of it found recorded, or ``None`` when it found nothing.
+
+    ``result`` is what the oracle ``tester`` made of the fact, whose status a
+    stronger oracle gave and which stands (see :func:`_cross_check`).
+    """
+    if result.status is Status.REFUTED:
+        counterexample = result.provenance.get("counterexample")
+        if verbose:
+            print(
+                f"  {tester} refutes the sampled reading of a "
+                f"{fact.status.value} fact: {counterexample}"
             )
-        goal = _goal_marks(result.provenance, fact.term)
-        if verbose and goal.get("goal_unreached"):
-            print(f"  {oracle.name}: {goal['goal_unreached']}")
-        unsatisfied = _never_satisfied(result.provenance)
-        if unsatisfied:
-            if verbose:
-                print(f"  {oracle.name}: {unsatisfied}")
-            return fact.with_status(
-                fact.status,
-                unsatisfied=unsatisfied,
-                unsatisfied_detail=_skipped(result.provenance),
-                **goal,
-            )
-        untestable = _never_drawn(result.provenance)
-        if untestable:
-            if verbose:
-                print(f"  {oracle.name}: {untestable}")
-            return fact.with_status(fact.status, untestable=untestable, **goal)
-        undecided = result.provenance.get("untested")
-        if gaps and undecided and result.provenance.get("undecided"):
-            if verbose:
-                print(f"  {oracle.name} could not run the sampled reading: {undecided}")
-            return fact.with_status(fact.status, semantics_undecided=undecided, **goal)
-        if goal:
-            return fact.with_status(fact.status, **goal)
-    return fact
+        return fact.with_status(
+            fact.status,
+            semantics_disagreement=f"{tester} refutes this statement under lanky's Python reading",
+            semantics_counterexample=counterexample,
+        )
+    goal = _goal_marks(result.provenance, fact.term)
+    if verbose and goal.get("goal_unreached"):
+        print(f"  {tester}: {goal['goal_unreached']}")
+    unsatisfied = _never_satisfied(result.provenance)
+    if unsatisfied:
+        if verbose:
+            print(f"  {tester}: {unsatisfied}")
+        return fact.with_status(
+            fact.status,
+            unsatisfied=unsatisfied,
+            unsatisfied_detail=_skipped(result.provenance),
+            **goal,
+        )
+    untestable = _never_drawn(result.provenance)
+    if untestable:
+        if verbose:
+            print(f"  {tester}: {untestable}")
+        return fact.with_status(fact.status, untestable=untestable, **goal)
+    undecided = result.provenance.get("untested")
+    if gaps and undecided and result.provenance.get("undecided"):
+        if verbose:
+            print(f"  {tester} could not run the sampled reading: {undecided}")
+        return fact.with_status(fact.status, semantics_undecided=undecided, **goal)
+    if goal:
+        return fact.with_status(fact.status, **goal)
+    return None
 
 
 def _examine_vacuity(fact: Fact, verbose: bool = False) -> Fact:
@@ -630,7 +711,7 @@ def _examine_goal_guard(fact: Fact, verbose: bool = False) -> Fact:
         unreached = _goal_marks(fact.provenance, fact.term).get("goal_unreached")
         if unreached:
             fact = fact.with_status(fact.status, goal_unreached=unreached)
-    found = _stronger_than_a_test(goal_guard_fact(fact), verbose=verbose)
+    found = _stronger_than_a_heuristic(goal_guard_fact(fact), verbose=verbose)
     if found is None:
         return fact
     name, result = found
@@ -714,28 +795,32 @@ def goal_guard_fact(fact: Fact) -> Fact:
 
 
 def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
-    """The first oracle stronger than a test that proves the hypotheses inconsistent.
+    """The first decision procedure or kernel that proves the hypotheses inconsistent.
 
     Returns the oracle's name and the fact it established (see
     :func:`hypotheses_fact`), or ``None`` when no such oracle establishes it.
     A test cannot: no draw satisfying the hypotheses is exactly what is in
-    question. For consistent hypotheses every attempt fails, so what Lean is
-    asked is its short ladder, which for a goal of ``False`` is the five cheap
-    tactics.
+    question. Neither can a heuristic. Its answer is not guaranteed, and what
+    keeps a wrong one out of the ledger elsewhere is a counterexample overruling
+    it (:func:`_cross_check`), which a question no draw satisfies cannot have; so
+    a vacuous fact, which fails the check, needs an answer that is. For consistent
+    hypotheses every attempt fails, so what Lean is asked is its short ladder,
+    which for a goal of ``False`` is the five cheap tactics.
     """
-    return _stronger_than_a_test(hypotheses_fact(fact), verbose=verbose)
+    return _stronger_than_a_heuristic(hypotheses_fact(fact), verbose=verbose)
 
 
-def _stronger_than_a_test(question: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
-    """The first oracle stronger than a test that establishes ``question``.
+def _stronger_than_a_heuristic(question: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
+    """The first decision procedure or kernel that establishes ``question``.
 
     Returns the oracle's name and the fact it established, or ``None``. This
     is how a claim of vacuity is settled (:func:`hypotheses_fact`,
     :func:`goal_guard_fact`): a test is what raised the question, and cannot
-    answer it.
+    answer it, and a heuristic's answer is not guaranteed, while a vacuous
+    fact fails the check (see :func:`_inconsistency`).
     """
     for oracle in registry.sorted_oracles():
-        if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["test"]:
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["heuristic"]:
             continue
         available, _reason = oracle_availability(oracle)
         if not available:
