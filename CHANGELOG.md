@@ -431,8 +431,9 @@ listed because it changes behaviour a reader could already have depended on.
   whether it sampled by whether it drew, not by what its binders are: over
   `i in Fin[n], k in Nat` at `n = 0` nothing is drawn and the domain is empty,
   so the universal is vacuously `True`, the existential `False` and the sum
-  `0`, where they used to be undecided, and the refutation of such an
-  existential says why every point was tried.
+  `0`. The existential, and a universal over a sampled refinement, used to be
+  undecided there, and the refutation of such an existential says why every
+  point was tried.
 - **A later binder's domain names the binders before it.**
   `lanky.terms.free_variables` reported `i` free in
   `all(j < n for i in Fin[n] for j in Fin[i])`, whose inner `Fin[i]` is the

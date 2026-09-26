@@ -326,9 +326,9 @@ was refuted. `lanky.semantics.notes(term)` is the check.
   statement asserts it. Negate it,
   `def denied(n: Nat) -> ~all(k < 100 for k in Nat)`, which is true, and the
   same draws would refute it, so the tester reads a pass of a sampled `all`
-  under `~`, in a hypothesis or a guard, or inside a sum as undecided: the row
-  reads `assumed`, with the reason. A draw that breaks a sampled `all` is a
-  counterexample wherever it stands.
+  under `~`, in a hypothesis or the guard of an `all`, or inside a sum as
+  undecided: the row reads `assumed`, with the reason. A draw that breaks a
+  sampled `all` is a counterexample wherever it stands.
 - `uv sync --group dev --extra lean`, put a Lean toolchain the REPL supports on
   `PATH` (the README's Install section says which; CI uses v4.29.1), and watch
   a row change from `tested` to `proved`. The first run builds a Lean REPL,

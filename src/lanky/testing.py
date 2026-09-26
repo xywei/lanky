@@ -48,11 +48,11 @@ that held at no point is not evidence that it holds.
 *A universal over a sampled domain that held at every draw, where the
 statement does not assert it.* A sampled quantifier can be refuted, because a
 counterexample is real, but never confirmed. A pass is evidence, which is what
-``TESTED`` means for a goal; under a negation, in a hypothesis or a guard, and
-inside a sum or a comparison, the ``True`` would be used as a certainty, so it
-is undecided instead (:class:`~lanky.terms.Polarity`). The hypotheses are read
-standing there: ``all(k < m for k in Nat)`` held at four draws does not admit a
-draw of ``m`` to the test.
+``TESTED`` means for a goal; under a negation, in a hypothesis or the guard of
+a universal, and inside a sum or a comparison, the ``True`` would be used as a
+certainty, so it is undecided instead (:class:`~lanky.terms.Polarity`). The
+hypotheses are read standing there: ``all(k < m for k in Nat)`` held at four
+draws does not admit a draw of ``m`` to the test.
 
 *A sum over a sampled domain.* The draws of ``Nat`` are not ``Nat``, and
 adding them up is not ``sum(... for k in Nat)``.

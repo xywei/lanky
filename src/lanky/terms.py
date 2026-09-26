@@ -108,11 +108,11 @@ class Undecided(Exception):
     it is a real counterexample, but a pass over a handful of draws is only
     evidence that it holds. That is what ``TESTED`` means where the statement
     asserts the universal, and nothing anywhere else: under a negation, in a
-    hypothesis or a guard, or inside a sum, a ``True`` would be used as a
-    certainty, so evaluation declines there (see :class:`Polarity`), and it
-    declines as well when no draw reached the universal's guarded domain at
-    all. A sum over a sampled domain declines wherever it stands, because the
-    draws are not the domain.
+    hypothesis or the guard of a universal, or inside a sum, a ``True`` would
+    be used as a certainty, so evaluation declines there (see
+    :class:`Polarity`), and it declines as well when no draw reached the
+    universal's guarded domain at all. A sum over a sampled domain declines
+    wherever it stands, because the draws are not the domain.
     """
 
 
@@ -1238,9 +1238,10 @@ def _decline_sampled_pass(expr: Forall, walk: _Walk, polarity: Polarity) -> None
 
     The universal does not stand ``POSITIVE``. Held at every draw is evidence
     that it holds, which the statement may use where it asserts the universal
-    and nowhere else: under a negation, in a hypothesis or a guard, the
-    ``True`` would count against the statement or let a draw into the test,
-    and inside a sum or a comparison it would be used as a value.
+    and nowhere else: under a negation, in a hypothesis or the guard of a
+    universal, the ``True`` would count against the statement or let a draw
+    into the test, and inside a sum or a comparison it would be used as a
+    value.
 
     Raises:
         Undecided: In either case.

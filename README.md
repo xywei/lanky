@@ -164,9 +164,9 @@ sharp.
   `any` that a draw witnesses really true, but an `any` that no draw witnesses
   is undecided, not false, and a `forall` that holds at every draw counts as
   evidence only where the statement asserts it. Under `~`, in a hypothesis or
-  a guard, and inside a sum or a comparison it is undecided, and so is a
-  `forall` whose guard or refinement no draw passes, and a sum over draws of
-  `Nat`. The tester declines such a draw and, when no draw decides the
+  the guard of an `all`, and inside a sum or a comparison it is undecided, and
+  so is a `forall` whose guard or refinement no draw passes, and a sum over
+  draws of `Nat`. The tester declines such a draw and, when no draw decides the
   statement, the fact stays `ASSUMED` with the reason. Over `Fin` the domain is
   enumerated and both answers hold. A quantifier over a refined domain `T & p`,
   which a plugin building terms by hand can write, ranges over the points of
