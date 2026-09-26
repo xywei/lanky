@@ -1,0 +1,14 @@
+# The Lake project lanky's Lean oracle runs in when Mathlib mode is on.
+#
+# It has no code of its own: it exists so that the Lean REPL, started with
+# `lake env` in this directory, can `import Mathlib`. The revision is pinned
+# to the Mathlib release for the toolchain in lean-toolchain, which has to be
+# one the REPL lean-interact drives has a build for, and lake-manifest.json
+# pins every dependency to a commit. `lake exe cache get` fetches Mathlib's
+# compiled files; nothing here should ever build Mathlib from source.
+name = "lanky_mathlib"
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4.git"
+rev = "v4.29.1"
