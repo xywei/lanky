@@ -192,16 +192,18 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted, or
     shown vacuous (see :func:`_examine_axiom`). It is ``assumed`` on its
     citation, which is its author's word and not an oracle's, and a stronger
-    status from one would make it a theorem that says it is an axiom.
+    status from one would make it a theorem that says it is an axiom. Its
+    semantics gaps are noted all the same, since the sampling that looks for
+    a counterexample to it is the reading a gap leaves without an answer.
     """
-    if fact.is_axiom:
-        return _examine_axiom(fact, verbose=verbose)
     gaps = semantics.notes(fact.term)
     if gaps:
         fact = fact.with_status(fact.status, semantics=list(gaps))
         if verbose:
             for note in gaps:
                 print(f"  semantics: {note}")
+    if fact.is_axiom:
+        return _examine_axiom(fact, verbose=verbose)
     for oracle in registry.sorted_oracles():
         available, reason = oracle_availability(oracle)
         if not available:

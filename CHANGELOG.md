@@ -98,8 +98,10 @@ prints a ledger naming who decided what.
   satisfied is examined for vacuity as a theorem is, so hypotheses a stronger
   oracle shows inconsistent make it `assumed (axiom) (vacuous)` and fail the
   check, and otherwise it gets the `WARNING` line; that oracle is asked about
-  the hypotheses alone, never about the axiom. The pytest plugin collects and
-  samples an axiom as it does a theorem.
+  the hypotheses alone, never about the axiom. Its semantics gaps (a division
+  by something that may be zero) are recorded in its provenance as a
+  theorem's are. The pytest plugin collects and samples an axiom as it does a
+  theorem.
 - **`@theorem(uses=[...])`.** A theorem names the facts it rests on:
   theorems, axioms, `Fact`s or fact ids (`lanky.theory.fact_ids`), which
   become its fact's `rests_on`. A single entry need not be in a list; an entry

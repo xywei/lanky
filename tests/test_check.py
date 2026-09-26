@@ -244,6 +244,33 @@ def test_a_division_by_zero_is_a_gap_the_ledger_records(tmp_path) -> None:
         assert "zero" in fact.provenance["semantics_undecided"]
 
 
+def test_an_axiom_records_its_division_by_zero_gap_too(tmp_path, capsys) -> None:
+    """An axiom is sampled for a counterexample, and the gap is where sampling is blind.
+
+    It used to skip the note: an axiom went to its own examination before the
+    gaps were read, so ``n // m`` with ``m`` possibly zero left nothing in the
+    provenance, and a reader could not tell that some draws were never
+    answered. The note is in the provenance and the verbose output, and the
+    axiom stays ``assumed``.
+    """
+    from lanky.semantics import DIVISION_BY_ZERO
+
+    path = tmp_path / "divaxiom.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import axiom\n"
+        "from lanky.prelude import Nat\n\n\n"
+        '@axiom(cite="the division algorithm")\n'
+        "def divides(n: Nat, m: Nat) -> (n // m) * m + n % m == n:\n"
+        '    """Floor division and remainder put a number back together."""\n',
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path, verbose=True))
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["semantics"] == [DIVISION_BY_ZERO]
+    assert f"  semantics: {DIVISION_BY_ZERO}" in capsys.readouterr().out.splitlines()
+
+
 def test_an_application_outside_its_domain_is_never_proved(tmp_path, capsys) -> None:
     """A family applied past its own domain must not come back ``proved``.
 
