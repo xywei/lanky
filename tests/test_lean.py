@@ -1022,6 +1022,80 @@ def test_the_repl_cache_is_outside_the_virtual_environment(monkeypatch) -> None:
     assert "site-packages" not in default_cache_dir()
 
 
+class _KilledOnTimeout:
+    """A stand-in for lean-interact's server, which kills itself on a timeout.
+
+    lean-interact's ``LeanServer`` kills its REPL process when a command runs
+    past its timeout, and answers every later command with a
+    ``ChildProcessError`` until ``start`` is called again; this does the same
+    without a Lean.
+    """
+
+    def __init__(self) -> None:
+        self.alive = True
+        self.starts = 0
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def start(self) -> None:
+        self.starts += 1
+        self.alive = True
+
+    def kill(self) -> None:
+        self.alive = False
+
+    def run(self, command, timeout=None):
+        from types import SimpleNamespace
+
+        if not self.alive:
+            raise ChildProcessError("The Lean server is not running.")
+        if timeout is not None and timeout < 1e-3:
+            self.kill()
+            raise TimeoutError("The Lean server did not respond in time and is now killed.")
+        return SimpleNamespace(messages=(), sorries=())
+
+
+def test_a_core_session_starts_a_killed_server_again(monkeypatch) -> None:
+    """#32: one attempt that timed out cost every Lean proof after it in the process.
+
+    The driver kills the server on a timeout and never starts it again, and a
+    core session went on sending commands to the dead one, each answered with
+    "The Lean server is not running", while the session had no error and the
+    oracle said it was available. The session now starts it again before the
+    next command, as a Mathlib session already did.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "lean_interact", SimpleNamespace(Command=lambda **fields: fields)
+    )
+    session = LeanSession(timeout=60)
+    session.server = server = _KilledOnTimeout()
+    assert session.run("theorem t : True := trivial\n") == (True, "")
+    session.timeout = 1e-6
+    closed, detail = session.run("theorem t : True := trivial\n")
+    assert not closed
+    assert detail.startswith("TimeoutError")
+    assert not server.alive
+    session.timeout = 60
+    assert session.run("theorem t : True := trivial\n") == (True, "")
+    assert server.starts == 1
+    assert session.error is None
+
+    # a server that will not start again is a reason, reported from then on
+    def refuse() -> None:
+        raise ChildProcessError("The Lean server could not be started")
+
+    server.kill()
+    server.start = refuse
+    closed, detail = session.run("theorem t : True := trivial\n")
+    assert not closed
+    assert detail == session.error
+    assert "could not be restarted" in detail
+
+
 def test_an_unavailable_oracle_is_named_in_the_check_report(monkeypatch) -> None:
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
@@ -1467,10 +1541,43 @@ def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle) -> None:
         assert result.decided_by is None
         assert result.provenance["lean_reason"]
 
-    # a timeout is a failed attempt, not a refutation either
-    impatient = LeanOracle(timeout=1e-6, session=lean_oracle.session)
-    result = impatient.establish(plainly_false.fact())
-    assert result.status is not Status.REFUTED
+    # A timeout is a failed attempt, not a refutation either. The timeout that
+    # applies is the session's, so the impatient oracle gets a session of its
+    # own: an oracle handed the module's session never timed out at all.
+    impatient = LeanOracle(session=LeanSession(timeout=1e-6))
+    try:
+        result = impatient.establish(plainly_false.fact())
+    finally:
+        impatient.session.close()
+    assert result.status is Status.ASSUMED
+    assert result.provenance["lean_reason"].startswith("TimeoutError")
+    assert result.provenance["lean_tried"] == len(tactic_ladder(statement_of(plainly_false.term)))
+
+
+def test_a_session_survives_an_attempt_that_timed_out(lean_oracle: LeanOracle) -> None:
+    """#32 with a real Lean: the attempts after a timeout are elaborated, not refused.
+
+    The driver kills the REPL on a timeout. The next command used to come back
+    as "The Lean server is not running", on this fact and on every fact after
+    it in the process; the session now starts the REPL again first.
+    """
+    source = "theorem t (x : Nat) : x + 0 = x := by omega\n"
+    session = LeanSession(timeout=lean_oracle.session.timeout)
+    try:
+        assert session.run(source) == (True, "")
+        session.timeout = 1e-6
+        closed, detail = session.run(source)
+        assert not closed
+        assert detail.startswith("TimeoutError")
+        session.timeout = lean_oracle.session.timeout
+        assert session.run(source) == (True, "")
+        assert session.error is None
+        proved = LeanOracle(session=session).establish(commutes.fact())
+        assert proved.status is Status.PROVED
+    finally:
+        session.close()
+
+
 
 
 def test_a_session_runs_lean_source_directly(lean_oracle: LeanOracle) -> None:

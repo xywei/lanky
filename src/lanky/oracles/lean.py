@@ -287,15 +287,21 @@ class LeanSession:
     is a whole declaration elaborated in a fresh environment, so attempts cannot
     contaminate each other and a failed tactic leaves nothing behind.
 
+    The REPL driver kills the server when a command runs past its timeout, and
+    does not start it again. A session starts it again before the next
+    command, so that one slow attempt costs that attempt and not every proof
+    after it in the process: the dead server used to answer every later
+    command with ``The Lean server is not running``, while the session still
+    reported no error and the oracle still reported itself available.
+
     ``mathlib`` names a Lake project with Mathlib fetched (see
     :mod:`lanky.mathlib`), and makes this a Mathlib session: the REPL runs in
     that project, Mathlib is imported once when the session starts, and every
     command is elaborated in the environment the import left, which is as
     fresh for each attempt as core Lean's empty one. The Lean version is the
-    project's, not one chosen from the toolchains installed. A server the
-    REPL driver killed, which it does to a command that runs past its timeout,
-    is started again with Mathlib imported before the next command, since the
-    import is part of what the session is.
+    project's, not one chosen from the toolchains installed. A server started
+    again after a timeout imports Mathlib again, since the import is part of
+    what the session is.
     """
 
     def __init__(
@@ -415,7 +421,12 @@ class LeanSession:
         return True
 
     def _revive(self) -> bool:
-        """Start a Mathlib session's server again if the driver killed it."""
+        """Start again a server the driver killed; a Mathlib session imports Mathlib again.
+
+        A server that will not start again leaves its reason in :attr:`error`,
+        which the oracle reports from then on, as it does a session that
+        could not be opened.
+        """
         alive = getattr(self.server, "is_alive", None)
         if alive is None or alive():
             return True
@@ -424,6 +435,8 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - a server that will not start is a reason
             self.error = f"the Lean REPL could not be restarted ({exc})"
             return False
+        if self.mathlib is None:
+            return True
         return self._import_mathlib()
 
     def close(self) -> None:
@@ -451,9 +464,9 @@ class LeanSession:
 
         if not self.start():
             return False, self.error or "no Lean session"
+        if not self._revive():
+            return False, self.error or "no Lean session"
         if self.mathlib is not None:
-            if not self._revive():
-                return False, self.error or "no Lean session"
             command = Command(cmd=source, env=self.environment)
         else:
             command = Command(cmd=source)
