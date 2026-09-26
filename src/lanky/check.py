@@ -256,7 +256,7 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
     stronger oracles are asked about that guard alone.
     """
     marks: dict[str, Any] = {}
-    goal: dict[str, Any] | None = None
+    goal: dict[str, Any] = {}
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
@@ -277,7 +277,10 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
             if verbose:
                 print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
             return result
-        if goal is None:
+        # A test oracle that does not count the goal's points (a plugin's,
+        # say) records nothing about the guard, and says nothing against it,
+        # so a later one that does is still heard, as for the hypotheses.
+        if not goal:
             goal = _goal_marks(result.provenance, fact.term)
         if not marks:
             unsatisfied = _never_satisfied(result.provenance)
@@ -289,7 +292,7 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
                 }
             elif untestable:
                 marks = {"untestable": untestable}
-    marks.update(goal or {})
+    marks.update(goal)
     if marks:
         fact = fact.with_status(fact.status, **marks)
     return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)

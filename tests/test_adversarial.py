@@ -2301,6 +2301,48 @@ def test_an_axiom_whose_goal_guard_is_empty_is_vacuous(tmp_path, oracles, capsys
     assert "assumed (axiom) (vacuous)  -" in capsys.readouterr().out
 
 
+class PassesQuietly:
+    """A test-class oracle that passes every fact and counts nothing about the goal.
+
+    That is a plugin's own sampler, registered before the property tester:
+    its pass records no ``goal_reached``, so it says nothing about the goal's
+    guard either way.
+    """
+
+    name = "quiet-test"
+
+    def trust_class(self) -> str:
+        return "test"
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.term is not None
+
+    def establish(self, fact: Fact, /) -> Fact:
+        return fact.with_status(Status.TESTED, self.name, samples=1, valid=1)
+
+
+def test_an_axiom_goal_guard_is_examined_past_a_test_oracle_that_counts_nothing(
+    tmp_path, oracles
+) -> None:
+    """The property tester's count is heard though another test oracle answered first.
+
+    An axiom is sampled by every oracle of the ``test`` class, and the first
+    pass used to settle what was known about the goal's guard, even when it
+    recorded nothing about it; the property tester's ``goal_reached: 0``
+    after it was dropped, and the axiom was never shown vacuous.
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), PassesQuietly(), TestOracle())
+    source = SCAN_GUARD.replace("import theorem", "import axiom").replace(
+        "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
+    )
+    path = _write(tmp_path, source, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert shown == ["goal-guard"]
+    assert fact.provenance["goal_reached"] == 0
+    assert fact.is_vacuous
+
+
 def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() -> None:
     """The question put to the stronger oracles, as the fact they are offered."""
     from lanky.check import goal_guard_fact
