@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 import pymbolic.primitives as prim
@@ -658,6 +659,93 @@ def test_the_adapter_reads_one_boundary_and_constant_factors(lp) -> None:
         lp.from_pytential(IntG(sigma, True))
 
 
+def test_the_adapter_finds_the_density_wherever_it_is(lp) -> None:
+    """A density inside a power is no parameter: ``sigma**1 * S(sigma)`` is no multiple of ``S``.
+
+    Every node a coefficient is read from is looked into for the density.
+    ``sigma**1 * sigma`` was read as the identity times a parameter named
+    ``sigma``, and ``sigma**1 * S(sigma)`` as ``sigma*S``.
+    """
+    sigma = prim.Variable("sigma")
+    with pytest.raises(lp.OutsideFragment, match="multiplies operators together"):
+        lp.from_pytential(prim.Product((prim.Power(sigma, 1), sigma)))
+    with pytest.raises(lp.OutsideFragment, match="applies the density in a way"):
+        lp.from_pytential(prim.Power(sigma, 2))
+    with pytest.raises(lp.OutsideFragment, match="applies the density in a way"):
+        lp.from_pytential(prim.Power(IntG(sigma, "avg"), 1))
+
+
+class AxisTargetDerivative:
+    """Stands for sumpy's derivative in the target along one axis."""
+
+    def __init__(self, axis: int, inner_kernel) -> None:
+        self.axis, self.inner_kernel = axis, inner_kernel
+
+
+class DirectionalSourceDerivative:
+    """Stands for sumpy's derivative in the source along a vector the ``IntG`` holds."""
+
+    def __init__(self, inner_kernel, dir_vec_name: str = "dsource_vec") -> None:
+        self.inner_kernel, self.dir_vec_name = inner_kernel, dir_vec_name
+
+
+@dataclass(frozen=True)
+class Place:
+    """Stands for a DOF descriptor, such as the nodes inside a normal hold."""
+
+    geometry: object
+    granularity: object = None
+
+
+def normal(axis: int, geometry=None):
+    """Stands for a component of a boundary's normal, which pytential names alike for all."""
+    return prim.CommonSubexpression(Place(geometry), f"normal_e{axis}")
+
+
+def single_layer_normal_derivative(geometry, along):
+    """``S'`` on ``geometry`` as pytential builds it, with the normal of ``along``."""
+    terms = []
+    for axis in range(2):
+        node = IntG(prim.Variable("sigma"), "avg", geometry, geometry)
+        node.target_kernel = AxisTargetDerivative(axis, LaplaceKernel(2))
+        terms.append(prim.Product((normal(axis, along), node)))
+    return prim.Sum(tuple(terms))
+
+
+def double_layer(geometry, along):
+    """``D`` on ``geometry`` as pytential builds it, along the normal of ``along``."""
+    node = IntG(prim.Variable("sigma"), "avg", geometry, geometry)
+    node.source_kernels = (DirectionalSourceDerivative(LaplaceKernel(2)),)
+    node.kernel_arguments = {"dsource_vec": [normal(0, along), normal(1, along)]}
+    return node
+
+
+def test_the_adapter_reads_the_normal_of_the_boundary_the_operator_is_on(lp) -> None:
+    """pytential names every boundary's normal alike, so whose it is is read off its nodes.
+
+    ``S'`` on one boundary dotted with another's normal, or a double layer
+    along another boundary's normal, is a layer operator of neither, and was
+    read as one because the names matched.
+    """
+    assert str(lp.from_pytential(single_layer_normal_derivative("b", "b"))) == "S'"
+    assert str(lp.from_pytential(single_layer_normal_derivative(None, None))) == "S'"
+    assert str(lp.from_pytential(double_layer("b", "b"))) == "D"
+    with pytest.raises(lp.OutsideFragment, match="normal of the boundary they are taken on"):
+        lp.from_pytential(single_layer_normal_derivative("b", None))
+    with pytest.raises(lp.OutsideFragment, match="normal of the boundary the density is on"):
+        lp.from_pytential(double_layer("b", "a"))
+    # a normal whose nodes name two boundaries, or none, is the normal of neither
+    node = double_layer("a", "a")
+    node.kernel_arguments["dsource_vec"][0] = prim.CommonSubexpression(
+        (Place("a"), Place("b")), "normal_e0"
+    )
+    with pytest.raises(lp.OutsideFragment, match="normal of the boundary the density is on"):
+        lp.from_pytential(node)
+    node.kernel_arguments["dsource_vec"][0] = prim.CommonSubexpression(1, "normal_e0")
+    with pytest.raises(lp.OutsideFragment, match="normal of the boundary the density is on"):
+        lp.from_pytential(node)
+
+
 # }}}
 
 
@@ -739,6 +827,33 @@ def test_the_adapter_refuses_what_it_does_not_read(lp) -> None:
     with pytest.raises(lp.OutsideFragment, match="a normal component, outside a normal derivative"):
         lp.from_pytential(
             sym.normal(2).as_vector()[0] * sym.S(laplace, sigma, qbx_forced_limit="avg")
+        )
+    with pytest.raises(lp.OutsideFragment, match="multiplies operators together"):
+        lp.from_pytential(sigma**1 * sym.S(laplace, sigma, qbx_forced_limit="avg"))
+
+
+def test_the_adapter_reads_whose_normal_it_is(lp) -> None:
+    """Every boundary's normal is named ``normal_e0``, ``normal_e1``; its nodes say whose it is."""
+    sym, laplace, _helmholtz = _pytential()
+    from pytential.symbolic.primitives import dd_axis
+
+    sigma = sym.var("sigma")
+    on_b = {"qbx_forced_limit": "avg", "source": "b", "target": "b"}
+    assert str(lp.from_pytential(sym.Sp(laplace, sigma, **on_b))) == "S'"
+    assert str(lp.from_pytential(sym.Dp(laplace, sigma, **on_b))) == "D'"
+    assert str(lp.from_pytential(sym.D(laplace, sigma, **on_b))) == "D"
+    single_layer_on_b = sym.S(laplace, sigma, **on_b)
+    with pytest.raises(lp.OutsideFragment, match="normal of the boundary they are taken on"):
+        lp.from_pytential(
+            sum(sym.normal(2).as_vector()[i] * dd_axis(i, 2, single_layer_on_b) for i in range(2))
+        )
+    single_layer = sym.S(laplace, sigma, qbx_forced_limit="avg")
+    with pytest.raises(lp.OutsideFragment, match="normal of the boundary they are taken on"):
+        lp.from_pytential(
+            sum(
+                sym.normal(2, dofdesc="b").as_vector()[i] * dd_axis(i, 2, single_layer)
+                for i in range(2)
+            )
         )
 
 

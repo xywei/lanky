@@ -82,6 +82,7 @@ their structure, and it refuses what it does not recognize.
 
 from __future__ import annotations
 
+import dataclasses
 import numbers
 import re
 from collections.abc import Callable, Iterable
@@ -1364,7 +1365,10 @@ def from_pytential(expr: Any, density: str = "sigma") -> Operator:
     the normal's components, the common subexpressions pytential names
     ``normal_e0``, ``normal_e1``, ..., as unknowns: the coefficient of the
     derivative along axis ``i`` has to be the ``i``-th of them, times the same
-    scalar for every axis.
+    scalar for every axis. pytential gives every boundary's normal those
+    names, so each component is read with the geometry the descriptors
+    inside it name, and it has to be the normal of the boundary the operator
+    is on.
 
     The rules speak of one boundary, so every ``IntG`` has to have its
     density on one geometry and its targets on one, and a limit on the
@@ -1403,6 +1407,8 @@ def from_pytential(expr: Any, density: str = "sigma") -> Operator:
             key = atom
         out[key] = out.get(key, ZERO) + coefficient
     dim = kernel[0][1] if kernel else 0
+    # the normal a normal derivative is along is the one of the boundary it is taken on
+    on = kernel[0][2][1] if kernel else None
     for (potential, limit), by_axis in gradients.items():
         if sorted(by_axis) != list(range(dim)):
             raise OutsideFragment(
@@ -1411,10 +1417,11 @@ def from_pytential(expr: Any, density: str = "sigma") -> Operator:
             )
         common = None
         for axis, coefficient in by_axis.items():
-            reduced = _divide_by_normal(coefficient, axis)
+            reduced = _divide_by_normal(coefficient, axis, on)
             if reduced is None or (common is not None and reduced != common):
                 raise OutsideFragment(
-                    f"the target derivatives of {potential} are not weighted by the normal"
+                    f"the target derivatives of {potential} are not weighted by the normal "
+                    "of the boundary they are taken on"
                 )
             common = reduced
         if limit is None:
@@ -1442,20 +1449,66 @@ def _boundary_atom(potential: str, limit: Any, normal: bool) -> Symbol | OneSide
 
 
 def _normal_leaf(value: Any) -> Poly | None:
+    """A component of a boundary's normal as an unknown, named for its axis and its boundary."""
     if isinstance(value, prim.CommonSubexpression):
         match = _NORMAL.fullmatch(str(value.prefix or ""))
         if match:
-            return Poly.variable(f"normal[{match.group(1)}]")
+            return Poly.variable(_normal_name(int(match.group(1)), _normal_geometry(value.child)))
     return None
+
+
+def _normal_name(axis: int, geometry: Any) -> str:
+    """``normal[0]@'circle'``: the unknown for one component of one boundary's normal."""
+    return f"normal[{axis}]@{geometry!r}"
+
+
+class _Unknown:
+    """The boundary of a normal whose nodes name none, or several: no boundary is it."""
+
+    def __repr__(self) -> str:
+        return "<no one boundary>"
+
+
+_NO_ONE_BOUNDARY = _Unknown()
+
+
+def _normal_geometry(expr: Any) -> Any:
+    """The geometry a normal's component is computed on, read off the descriptors in it.
+
+    pytential names the components of every boundary's normal alike,
+    ``normal_e0``, ``normal_e1``, ..., and what tells one boundary's from
+    another's is the DOF descriptors of the nodes inside, which name the
+    geometry. One geometry, the default one read as ``None`` (see
+    :func:`_geometry`), is the answer; for none or several the answer is a
+    boundary no operator is on, so the component matches no normal.
+    """
+    found: list[Any] = []
+    pending = [expr]
+    while pending:
+        node = pending.pop()
+        if hasattr(node, "geometry") and hasattr(node, "granularity"):
+            geometry = _geometry(node)
+            if not any(geometry == seen for seen in found):
+                found.append(geometry)
+        elif isinstance(node, tuple | list):
+            pending.extend(node)
+        elif dataclasses.is_dataclass(node) and not isinstance(node, type):
+            pending.extend(getattr(node, field.name) for field in dataclasses.fields(node))
+        elif isinstance(node, prim.ExpressionNode):
+            pending.extend(node.__getinitargs__())
+    return found[0] if len(found) == 1 else _NO_ONE_BOUNDARY
 
 
 def _normal_names(poly: Poly) -> set[str]:
     return {name for name in poly.names() if name.startswith("normal[")}
 
 
-def _divide_by_normal(poly: Poly, axis: int) -> Poly | None:
-    """``poly`` over the ``axis``-th normal component, when every term has it once and no other."""
-    wanted = f"normal[{axis}]"
+def _divide_by_normal(poly: Poly, axis: int, geometry: Any) -> Poly | None:
+    """``poly`` over the ``axis``-th component of ``geometry``'s normal.
+
+    ``None`` unless every term has that component once and no other.
+    """
+    wanted = _normal_name(axis, geometry)
     items = []
     for monomial, coefficient in poly.terms:
         normals = [(n, p) for n, p in monomial if n.startswith("normal[")]
@@ -1472,6 +1525,12 @@ def _is_density(value: Any, density: str) -> bool:
 
 
 def _mentions_operator(value: Any, density: str) -> bool:
+    """Whether the density, or an operator applied to it, is anywhere in ``value``.
+
+    Every node :func:`scalar` reads a polynomial from is looked into, so that
+    no density reaches it to be read as a parameter: ``sigma**1 * S(sigma)``
+    is no multiple of ``S``.
+    """
     if _is_density(value, density) or type(value).__name__ == "IntG":
         return True
     if isinstance(value, prim.CommonSubexpression):
@@ -1481,6 +1540,10 @@ def _mentions_operator(value: Any, density: str) -> bool:
     if isinstance(value, prim.Quotient):
         return _mentions_operator(value.numerator, density) or _mentions_operator(
             value.denominator, density
+        )
+    if isinstance(value, prim.Power):
+        return _mentions_operator(value.base, density) or _mentions_operator(
+            value.exponent, density
         )
     return False
 
@@ -1608,8 +1671,11 @@ def _intg(node: Any, density: str, kernel: list[Any]) -> tuple[_Layer | _Gradien
         direction = source.dir_vec_name
         vector = node.kernel_arguments[direction]
         for index, component in enumerate(vector):
-            if scalar(component, _normal_leaf) != Poly.variable(f"normal[{index}]"):
-                raise OutsideFragment("a source derivative along something that is not the normal")
+            if scalar(component, _normal_leaf) != Poly.variable(_normal_name(index, places[0])):
+                raise OutsideFragment(
+                    "a source derivative along something that is not the normal of the "
+                    "boundary the density is on"
+                )
         potential, source = "D", source.inner_kernel
     if source != target:
         raise OutsideFragment(f"source kernel {source} and target kernel {target} differ")
