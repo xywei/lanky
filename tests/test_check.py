@@ -1143,6 +1143,218 @@ def test_a_copy_that_fails_kills_the_child(monkeypatch) -> None:
     assert child.returncode is not None and child.returncode != 0
 
 
+def _lanky_check(tmp_path, *files, options=(), **popen):
+    """``lanky check FILE...`` as a process of its own, its interpreter given ``options``.
+
+    Lean is off, and the environment variables that mirror interpreter
+    options are left out, so that the options are the ones given here.
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "LANKY_LEAN_DISABLE": "1"}
+    for name in ("PYTHONOPTIMIZE", "PYTHONWARNINGS", "PYTHONDEVMODE", "PYTHONINTMAXSTRDIGITS"):
+        env.pop(name, None)
+    return subprocess.Popen(
+        [sys.executable, *options, "-m", "lanky.cli", "check", *map(str, files)],
+        cwd=tmp_path,
+        env=env,
+        **popen,
+    )
+
+
+FLAGS = '''\
+from __future__ import annotations
+
+import sys
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+print("child options:", sys.flags.optimize, sys.warnoptions, sorted(sys._xoptions.items()))
+
+
+@theorem
+def reflexive(n: Nat) -> n == n:
+    """True."""
+'''
+
+
+def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
+    """#28: ``-O``, ``-W`` and ``-X`` given to the command's interpreter reach each child.
+
+    A child was started as ``python -P -c ...``, so only the environment
+    variables that mirror some of the options reached it: under ``python -O``
+    a checked file ran with its assertions on in a child, and off where its
+    root was the only one.
+    """
+    import subprocess
+
+    flags = tmp_path / "a" / "flags.py"
+    flags.parent.mkdir()
+    flags.write_text(FLAGS, encoding="utf-8")
+    good = _rooted(tmp_path / "b", 2)
+    options = ("-O", "-W", "always::UserWarning", "-X", "int_max_str_digits=5000")
+    command = _lanky_check(
+        tmp_path, flags, good, options=options, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    out, err = command.communicate(timeout=120)
+    assert command.returncode == 0, (out, err)
+    printed = [line for line in out.decode().splitlines() if line.startswith("child options:")]
+    assert printed == [
+        "child options: 1 ['always::UserWarning'] [('int_max_str_digits', '5000')]"
+    ]
+
+
+SLOW = '''\
+import os
+import time
+
+with open({pidfile!r}, "w", encoding="utf-8") as handle:
+    handle.write(str(os.getpid()))
+time.sleep(60)
+'''
+
+
+def _gone(pid: int) -> bool:
+    """Whether process ``pid`` has ended; one ended and not yet reaped counts."""
+    import os
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:  # pragma: no cover - a pid taken by another user's process
+        return True
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except (OSError, IndexError):  # no /proc: alive, as far as can be told
+        return False
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+@pytest.mark.parametrize("name", ["SIGTERM", "SIGKILL"])
+def test_a_child_ends_when_the_command_is_ended_alone(tmp_path, name) -> None:
+    """#28: a signal sent to ``lanky check`` alone ends the child checking a root too.
+
+    Such a signal ends the command at once, with nothing run on the way out,
+    and the child used to keep checking for no one: here, sleeping out the
+    minute its file sleeps. It now gets ``SIGTERM`` when its parent ends.
+    """
+    import signal
+    import subprocess
+    import time
+
+    pidfile = tmp_path / "child.pid"
+    slow = tmp_path / "a" / "slow.py"
+    slow.parent.mkdir()
+    slow.write_text(SLOW.format(pidfile=str(pidfile)), encoding="utf-8")
+    good = _rooted(tmp_path / "b", 2)
+    command = _lanky_check(
+        tmp_path, slow, good, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    child = None
+    try:
+        deadline = time.monotonic() + 60
+        while child is None:
+            assert command.poll() is None, "the command ended before its child began"
+            assert time.monotonic() < deadline, "the child never began"
+            text = pidfile.read_text(encoding="utf-8") if pidfile.exists() else ""
+            child = int(text) if text else None
+            time.sleep(0.05)
+        command.send_signal(getattr(signal, name))
+        command.wait(timeout=30)
+        deadline = time.monotonic() + 20
+        while not _gone(child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert _gone(child), "the child outlived the command"
+    finally:
+        if command.poll() is None:
+            command.kill()
+            command.wait()
+        if child is not None and not _gone(child):
+            import os
+
+            os.kill(child, signal.SIGKILL)
+
+
+LEAVES_ONE_RUNNING = '''\
+import subprocess
+import sys
+
+left = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+with open({pidfile!r}, "w", encoding="utf-8") as handle:
+    handle.write(str(left.pid))
+print("left one running")
+'''
+
+
+def test_a_process_a_checked_file_leaves_running_does_not_hold_the_check_up(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#28: a background process that has a child's output as its own does not hold the command.
+
+    The command read the child's output to its end, and a process the checked
+    file started, and left running with the child's standard output and error
+    as its own, kept them open for the minute it sleeps. Once the child has
+    exited, its output is copied until it goes quiet.
+    """
+    import os
+    import signal
+    import sys
+    import time
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    pidfile = tmp_path / "left.pid"
+    leaves = tmp_path / "a" / "leaves.py"
+    leaves.parent.mkdir()
+    leaves.write_text(LEAVES_ONE_RUNNING.format(pidfile=str(pidfile)), encoding="utf-8")
+    good = _rooted(tmp_path / "b", 2)
+    started = time.monotonic()
+    try:
+        assert cli.main(["check", str(leaves), str(good)]) == 0
+        assert time.monotonic() - started < 30
+        printed = capsys.readouterr().out
+        assert "left one running\n" in printed
+        assert printed.count("1 facts: 1 tested") == 1
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+        if pidfile.exists():
+            left = int(pidfile.read_text(encoding="utf-8"))
+            if not _gone(left):
+                os.kill(left, signal.SIGKILL)
+
+
+def test_a_slow_output_loses_nothing_a_child_wrote(monkeypatch) -> None:
+    """Time spent writing to a slow ``sys.stdout`` (a pager, say) is not quiet.
+
+    Each write here takes longer than the grace a stream gets once the child
+    has exited, and every line the child wrote is still copied.
+    """
+    import sys
+    import time
+
+    class Slow:
+        encoding = "utf-8"
+
+        def __init__(self) -> None:
+            self.parts: list[str] = []
+
+        def write(self, text: str) -> None:
+            time.sleep(1.5 * cli._GRACE)
+            self.parts.append(text)
+
+    out = Slow()
+    monkeypatch.setattr(sys, "stdout", out)
+    child = _sleeper(
+        "import time\nfor i in range(3):\n    print(i, flush=True)\n    time.sleep(0.2)\n"
+    )
+    assert cli._follow(child) == 0
+    assert "".join(out.parts) == "0\n1\n2\n"
+
+
 def test_check_path_imports_into_the_calling_process(tmp_path, monkeypatch) -> None:
     """The API keeps one process, as documented: the command is what keeps roots apart.
 
