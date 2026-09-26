@@ -4,9 +4,11 @@ One file, four commands, and the output each one prints. Everything below was
 run in this repository on 2026-09-25 with `uv run`; the numbers and the Lean
 source are copied from the terminal, not written from memory. The one thing that
 drifts is a timing, which is a property of the machine and not of the claim. The
-`lanky check` table is held to more than that: the test suite compares it with a
+`lanky check` output is held to more than that: the test suite compares it with a
 real run, as it stands where Lean is installed (CI has a job for that) and with
-its `proved` row read as `tested` where it is not.
+its `proved` row read as `tested` where it is not. That holds for the `gap.py`
+blocks in [One reading of arithmetic](#one-reading-of-arithmetic) too: the
+suite writes `gap.py` from the snippet shown there and checks it both ways.
 
 ```sh
 git clone https://github.com/xywei/lanky.git
@@ -235,6 +237,7 @@ refuted  property-test  gap.py:7  truncated  n : Nat |- n - 1 >= 0
 
 REFUTED truncated at gap.py:7: n : Nat |- n - 1 >= 0
   counterexample: {'n': 0}
+  the goal is false at this assignment
 ```
 
 That is the output with the Lean extra and without it, and `lanky check` exits

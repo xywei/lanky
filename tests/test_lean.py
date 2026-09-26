@@ -10,6 +10,7 @@ green suite.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -1090,6 +1091,84 @@ def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) ->
     _assert_abridged([_read_as_tested(line) for line in readme], printed)
 
 
+#: The command the quickstart shows the ledger of ``gap.py`` for.
+CHECK_GAP = "uv run lanky check gap.py"
+
+
+def _python_after(document: str, marker: str) -> str:
+    """The first ``python`` block in ``document`` after the line that contains ``marker``."""
+    lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
+    at = next((index for index, line in enumerate(lines) if marker in line), None)
+    assert at is not None, f"{document} no longer says {marker!r}"
+    start = lines.index("```python", at) + 1
+    return "\n".join(lines[start : lines.index("```", start)]) + "\n"
+
+
+def _block_from(document: str, first: str) -> list[str]:
+    """The lines of the fenced block in ``document`` whose first line starts with ``first``."""
+    lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
+    at = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
+    assert at is not None, f"{document} no longer shows a block starting {first!r}"
+    return [line.rstrip() for line in lines[at : lines.index("```", at)]]
+
+
+def _div_zero_snippet() -> str:
+    """``div_zero`` as the quickstart spells it inline, decorated and given a body."""
+    text = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+    found = re.search(r"`(def div_zero\([^`]*)`", text)
+    assert found is not None, "docs/quickstart.md no longer shows div_zero"
+    return f'@theorem\n{found.group(1)}:\n    """Total in Lean, an exception in Python."""\n'
+
+
+def _write_gap(directory: Path, snippet: str) -> Path:
+    """``gap.py`` as the quickstart has a reader write it: gauss.py's imports, then ``snippet``.
+
+    The imports are read off ``examples/gauss.py``, from its ``__future__``
+    import up to its first theorem, which is what puts the snippet's
+    decorator on line 7, where the quickstart's ``WHERE`` column has it. Each
+    file gets a directory of its own, so no import of one is taken for the
+    other.
+    """
+    lines = (ROOT / "examples" / "gauss.py").read_text(encoding="utf-8").splitlines(keepends=True)
+    start = next(index for index, line in enumerate(lines) if line.startswith("from __future__"))
+    end = next(index for index, line in enumerate(lines) if line.startswith("@theorem"))
+    directory.mkdir()
+    path = directory / "gap.py"
+    path.write_text("".join(lines[start:end]) + snippet, encoding="utf-8")
+    return path
+
+
+def _check_gap(path: Path, capsys, code: int) -> list[str]:
+    """``lanky check`` on one ``gap.py``, as the lines it prints; it has to exit with ``code``."""
+    from lanky import cli
+
+    assert cli.main(["check", str(path)]) == code
+    return [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+
+
+def _gap_rows(tmp_path: Path, capsys) -> tuple[list[str], list[str]]:
+    """What ``lanky check`` prints for ``truncated`` and for ``div_zero``."""
+    snippet = _python_after("docs/quickstart.md", "Put this in `gap.py`")
+    truncated = _check_gap(_write_gap(tmp_path / "truncated", snippet), capsys, 1)
+    div_zero = _check_gap(_write_gap(tmp_path / "div_zero", _div_zero_snippet()), capsys, 0)
+    return truncated, div_zero
+
+
+def test_without_lean_the_quickstart_gap_transcripts_hold(monkeypatch, tmp_path, capsys) -> None:
+    """The quickstart's ``gap.py`` blocks are a real run too, without Lean.
+
+    ``truncated`` prints the same block with Lean and without, the refutation
+    included, and exits 1; ``div_zero`` reads ``assumed`` with no
+    ``SEMANTICS`` block, because the only oracle left could not run it, and
+    exits 0. The file is written from the quickstart's own snippet.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    truncated, div_zero = _gap_rows(tmp_path, capsys)
+    assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
+    assert div_zero[2].split()[:4] == ["assumed", "-", "gap.py:7", "div_zero"]
+    assert not any(line.startswith("SEMANTICS") for line in div_zero)
+
+
 # }}}
 
 
@@ -1277,6 +1356,25 @@ def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, 
     readme = _printed_after("README.md", "lanky check examples/gauss.py")
     _assert_abridged(readme, printed)
     assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
+
+
+def test_the_quickstart_gap_transcripts_are_what_check_prints(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """The quickstart's ``gap.py`` blocks are what ``lanky check`` prints with Lean.
+
+    They were kept by hand: the rendering of a refuted fact, the tester's
+    counterexample and the semantics note could all drift from them. With
+    Lean, ``truncated`` is still refuted by the tester, and ``div_zero`` reads
+    ``proved lean`` with the ``SEMANTICS`` block the quickstart shows.
+    """
+    truncated, div_zero = _gap_rows(tmp_path, capsys)
+    assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
+    assert div_zero[2].split()[:4] == ["proved", "lean", "gap.py:7", "div_zero"]
+    semantics = _block_from("docs/quickstart.md", "SEMANTICS div_zero")
+    assert semantics[0] in div_zero
+    at = div_zero.index(semantics[0])
+    assert div_zero[at : at + len(semantics)] == semantics
 
 
 def test_lean_does_not_prove_an_integral_fraction_base_by_truncation(
