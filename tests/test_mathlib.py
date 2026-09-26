@@ -303,6 +303,9 @@ def test_the_elementary_functions_are_mathlibs() -> None:
         print_lean(Forall(((z, Complex),), log(z) == log(z)), mathlib=True)
     with pytest.raises(UnsupportedTerm, match="needs Real.exp"):
         print_lean(exp_positive.term)
+    # a node built by hand with a function lanky has no Mathlib name for
+    with pytest.raises(UnsupportedTerm, match="does not print"):
+        print_lean(Forall(((x, Real),), Elementary("sin", x) <= 1), mathlib=True)
 
 
 def test_a_complex_logarithm_is_declined_for_its_branch_cut() -> None:

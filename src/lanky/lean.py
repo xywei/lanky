@@ -813,8 +813,14 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
     ``cmath.log(complex(-1, -0.0))`` is ``-πi`` and ``cmath.log(complex(-1,
     0.0))`` is ``πi``, while Lean's complex numbers have no signed zero and
     ``Complex.log (-1)`` is ``π * I`` from either side. The complex
-    exponential is entire, and has no cut to disagree about.
+    exponential is entire, and has no cut to disagree about. An
+    :class:`~lanky.terms.Elementary` built by hand with any other function is
+    declined too.
     """
+    if expr.function not in _ELEMENTARY:
+        raise UnsupportedTerm(
+            f"{render(expr)} applies {expr.function!r}, which lanky does not print"
+        )
     real, complex_ = _ELEMENTARY[expr.function]
     name = complex_ if _kind(expr.argument, types) == "Complex" else real
     if name is None:
