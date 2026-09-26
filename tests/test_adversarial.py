@@ -2022,3 +2022,33 @@ def test_an_inner_binder_named_like_a_parameter_does_not_order_the_draws() -> No
 
 
 # }}}
+
+
+# {{{ a guard the annotation would drop
+
+
+DROPPED_GUARD = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    "@theorem\n"
+    "def counted(n: Nat) -> sum(1 for i in Fin[3] if n > 100) == 0:\n"
+    '    """True for n <= 100, where the guard holds nowhere; false above."""\n'
+)
+
+
+def test_a_guard_the_annotation_would_drop_fails_the_import(tmp_path, capsys) -> None:
+    """#24: the sum was ``3`` before any sampling, and ``counted`` was refuted at ``n = 3``.
+
+    The guard is refused while the annotation is evaluated, so the file does
+    not import, and the traceback names the ways to keep the condition.
+    """
+    path = _write(tmp_path, DROPPED_GUARD, "probe_guard.py")
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "could not be imported" in printed
+    assert "SymbolicBoolError: this sum(...) walks a concrete domain" in printed
+    assert "REFUTED" not in printed
+
+
+# }}}

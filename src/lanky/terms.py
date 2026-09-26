@@ -28,7 +28,9 @@ off the generator's code object so that the printed statement says ``r`` and not
 ``_i3``. A ``if`` clause in the generator records a guard: the truth value of a
 symbolic proposition is undefined, so :meth:`PropositionMixin.__bool__` uses the
 request as the signal that a guard was written, and raises outside binder
-tracing.
+tracing. A concrete domain (``Fin[3]``) binds no binder: it is walked, and
+the builtin answers over what the generator yielded, so a symbolic guard there
+has nowhere to go and is refused rather than dropped.
 """
 
 from __future__ import annotations
@@ -693,22 +695,92 @@ def binders(gen: Iterable[Any]) -> tuple[tuple[Var, Any], ...]:
     return _drive(gen).binders
 
 
+#: Where a condition that does not mention the loop variable can go instead,
+#: per builtin. A sum has no such place: its value would depend on the condition.
+_OUTSIDE = {
+    "all": "~(condition) | all(body for ...)",
+    "any": "(condition) & any(body for ...)",
+}
+
+
+def _refuse_a_dropped_guard(driven: _Driven, word: str) -> None:
+    """Raise if a generator over a concrete domain captured a symbolic guard.
+
+    A concrete domain (``Fin[3]``) is walked point by point, so the generator
+    binds no binder and the quantifier is answered by the builtin, over the
+    values it yielded. A guard that mentions a variable of the statement
+    (``if n > 100``) has no truth value at a point. Asking for one while the
+    generator is traced records it and answers ``True``, so every point was
+    yielded and the guard was dropped: ``sum(1 for i in Fin[3] if n > 100)``
+    became ``3`` before any sampling happened, and the statement around it a
+    constant, refuted at draws where it is true. ``all`` and ``any`` dropped
+    the guard the same way whenever the body was a concrete value.
+
+    Keeping the guard point by point would need it recorded against each value
+    rather than pooled in the trace, so it is refused instead, naming the ways
+    to write the condition that do keep it: outside the quantifier, for a
+    condition that does not mention the loop variable, or over a domain with a
+    symbolic bound, where the quantifier is a term that carries its guard. The
+    body is no place for it: a symbolic body over a concrete domain is refused
+    already, when the builtin asks it for a truth value.
+
+    Raises:
+        SymbolicBoolError: If the trace bound no binder and recorded a guard.
+    """
+    if driven.binders or driven.guard is None:
+        return
+    # The trace pools what every point recorded, so a guard that does not
+    # mention the loop variable comes back once per point; it is named once.
+    captured = " and ".join(dict.fromkeys(render(g) for g in conjuncts(driven.guard)))
+    inverted = (
+        ""
+        if driven.values
+        else " (it held at no point, so it was written with Python's `not`, "
+        "which inverts the answer lanky gives while capturing it; write `~(...)`)"
+    )
+    outside = _OUTSIDE.get(word)
+    moved = (
+        f"a condition that does not mention the loop variable can stand outside "
+        f"the quantifier, as in {outside}; otherwise "
+        if outside
+        else ""
+    )
+    raise SymbolicBoolError(
+        f"this {word}(...) walks a concrete domain point by point, and its guard "
+        f"{captured!r} is symbolic, with no truth value at a point, so lanky "
+        f"would have to drop it, which changes the statement{inverted}; {moved}"
+        "give the domain a symbolic bound (a variable m with the hypothesis "
+        "m == 3, say), so that the quantifier is a term that keeps its guard"
+    )
+
+
 def forall(gen: Iterable[Any]) -> Any:
     """Universal quantification; the replacement for the builtin ``all``.
 
     Symbolic domains give a :class:`Forall` term, concrete ones the plain
     ``bool`` that ``all`` would have answered.
+
+    Raises:
+        SymbolicBoolError: If the domain is concrete and the guard symbolic,
+            which the builtin would drop (see :func:`_refuse_a_dropped_guard`).
     """
     driven = _drive(gen)
     if not driven.binders:
+        _refuse_a_dropped_guard(driven, "all")
         return builtins.all(driven.values)
     return Forall(driven.binders, driven.body, driven.guard)
 
 
 def exists(gen: Iterable[Any]) -> Any:
-    """Existential quantification; the replacement for the builtin ``any``."""
+    """Existential quantification; the replacement for the builtin ``any``.
+
+    Raises:
+        SymbolicBoolError: If the domain is concrete and the guard symbolic,
+            as for :func:`forall`.
+    """
     driven = _drive(gen)
     if not driven.binders:
+        _refuse_a_dropped_guard(driven, "any")
         return builtins.any(driven.values)
     return Exists(driven.binders, driven.body, driven.guard)
 
@@ -719,9 +791,16 @@ def sum_(gen: Iterable[Any]) -> Any:
     Over a symbolic domain this is a :class:`Sum` term whose reduced domain is
     known; over a concrete one it is the ordinary Python (or numpy) sum, so the
     same source runs under plain ``python``.
+
+    Raises:
+        SymbolicBoolError: If the domain is concrete and the guard symbolic,
+            as for :func:`forall`. A sum of symbolic values over a concrete
+            domain is added up without asking any value for its truth, so
+            nothing else would have noticed the guard go.
     """
     driven = _drive(gen)
     if not driven.binders:
+        _refuse_a_dropped_guard(driven, "sum")
         return builtins.sum(driven.values)
     return Sum(driven.binders, driven.body, driven.guard)
 

@@ -253,6 +253,51 @@ def test_a_proposition_is_not_a_bool_outside_tracing() -> None:
         bool(n < 1)
 
 
+def test_a_symbolic_guard_over_a_concrete_domain_is_refused() -> None:
+    """A concrete domain is walked, and a symbolic guard over it used to be dropped (#24).
+
+    Capturing the guard answers ``True``, so every point was yielded and the
+    builtin answered over all of them: ``sum(1 for i in Fin[3] if n > 100)``
+    was ``3``, and ``all`` and ``any`` with a concrete body lost the guard
+    the same way. Each is refused now, naming a way to keep the condition.
+    """
+    f, n = Var("f"), Var("n")
+    with pytest.raises(SymbolicBoolError, match="give the domain a symbolic bound"):
+        sum_(1 for i in Fin[3] if n > 100)
+    with pytest.raises(SymbolicBoolError, match=r"as in ~\(condition\) \| all\(body for"):
+        forall(i >= 0 for i in Fin[3] if n > 100)
+    with pytest.raises(SymbolicBoolError, match=r"as in \(condition\) & any\(body for"):
+        exists(i >= 0 for i in Fin[3] if n > 100)
+    # a sum of symbolic values is added up without asking any of them for a
+    # truth value, so nothing else noticed the guard go
+    with pytest.raises(SymbolicBoolError, match="its guard 'n > 1' is symbolic"):
+        sum_(f(i) for i in Fin[2] if n > 1)
+    # a guard that mentions the point is named as each point recorded it
+    with pytest.raises(SymbolicBoolError, match="its guard 'n > 0 and n > 1'"):
+        sum_(1 for i in Fin[2] if i < n)
+    # a guard written with `not` held at no point, and the message says why
+    with pytest.raises(SymbolicBoolError, match="Python's `not`"):
+        forall(i >= 0 for i in Fin[3] if not (n > 100))
+
+
+def test_the_ways_the_refusal_names_keep_the_condition() -> None:
+    """A concrete guard is Python's, and the two spellings the refusal suggests work.
+
+    A condition that does not mention the loop variable stands outside the
+    quantifier, and a domain with a symbolic bound keeps its guard in the term.
+    """
+    m, n = Var("m"), Var("n")
+    assert sum_(1 for i in Fin[3] if i > 0) == 2
+    assert forall(i >= 1 for i in Fin[3] if i > 0) is True
+    outside = ~(n > 100) | forall(i > 0 for i in Fin[3])
+    assert evaluate(outside, {"n": 3}) is True
+    assert evaluate(outside, {"n": 101}) is False
+    kept = sum_(1 for i in Fin[m] if n > 100)
+    assert render(kept) == "sum(1 for i in Fin(m) if n > 100)"
+    assert evaluate(kept, {"m": 3, "n": 3}) == 0
+    assert evaluate(kept, {"m": 3, "n": 101}) == 3
+
+
 # }}}
 
 
