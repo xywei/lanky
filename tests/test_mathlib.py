@@ -582,16 +582,36 @@ def test_a_function_outside_its_python_domain_decides_nothing() -> None:
     assert report.ok and report.valid > 0
 
 
-def test_the_readings_gaps_over_the_reals_are_noted() -> None:
-    assert TRUE_DIVISION_BY_ZERO in notes(_divided_back.term)
-    assert notes(Forall(((x, Real),), x / 2 == x * 0.5)) == ()
-    assert notes(_sqrt_of_negative.term) == (OUTSIDE_THE_DOMAIN,)
-    assert OUTSIDE_THE_DOMAIN in notes(Forall(((x, Real),), log(x * x) == 2 * log(x)))
-    assert notes(Forall(((x, Real),), Elementary("log", 2) > 0)) == ()
-    assert notes(_exp_add.term) == ()
+def test_the_readings_gaps_over_the_reals_are_noted_in_mathlib_mode() -> None:
+    assert TRUE_DIVISION_BY_ZERO in notes(_divided_back.term, mathlib=True)
+    assert notes(Forall(((x, Real),), x / 2 == x * 0.5), mathlib=True) == ()
+    assert notes(_sqrt_of_negative.term, mathlib=True) == (OUTSIDE_THE_DOMAIN,)
+    assert OUTSIDE_THE_DOMAIN in notes(
+        Forall(((x, Real),), log(x * x) == 2 * log(x)), mathlib=True
+    )
+    assert notes(Forall(((x, Real),), Elementary("log", 2) > 0), mathlib=True) == ()
+    assert notes(_exp_add.term, mathlib=True) == ()
     # the integer note is the integer one, and the two can stand together
     both = Forall(((n, Nat), (x, Real)), n // n + x / x == 2)
+    assert notes(both, mathlib=True) == (DIVISION_BY_ZERO, TRUE_DIVISION_BY_ZERO)
+
+
+def test_core_mode_notes_what_it_always_noted(monkeypatch) -> None:
+    """Core Lean declines a true division, a ``log`` and a ``sqrt``: no reading to part from.
+
+    So out of Mathlib mode a statement with one records what it recorded before
+    Mathlib mode existed, and the mode is read from the variable, as the
+    oracle reads it.
+    """
+    both = Forall(((n, Nat), (x, Real)), n // n + x / x == 2)
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    assert notes(_divided_back.term) == ()
+    assert notes(_sqrt_of_negative.term) == ()
+    assert notes(both) == (DIVISION_BY_ZERO,)
+    assert notes(both, mathlib=False) == (DIVISION_BY_ZERO,)
+    monkeypatch.setenv("LANKY_LEAN_MATHLIB", "/nowhere")
     assert notes(both) == (DIVISION_BY_ZERO, TRUE_DIVISION_BY_ZERO)
+    assert notes(_sqrt_of_negative.term) == (OUTSIDE_THE_DOMAIN,)
 
 
 # }}}

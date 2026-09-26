@@ -22,9 +22,15 @@ is a Lean theorem and a Python exception. A divisor that is a nonzero integer
 literal is the one case that can be ruled out by looking, so it is the one case
 that carries no note.
 
-The Mathlib dialect of the printer reads two more things Lean totalizes, and
-they get notes of the same kind whether or not Mathlib is installed, since they
-are properties of the statement and not of the machine:
+The Mathlib dialect of the printer reads two more things Lean totalizes, and in
+Mathlib mode (``LANKY_LEAN_MATHLIB``, see :mod:`lanky.mathlib`) they get notes
+of the same kind. Out of it they get none. Core Lean declines a statement with
+either, so there is no second reading for the sampled one to part from, and a
+note would change what a core-mode ledger records for a statement it reads as it
+always did. The mode is a choice of reading, not a fact about the machine:
+that is why the integer note is made whether or not Lean is installed, and
+these two only when Mathlib mode is chosen, whether or not its project is
+ready.
 
 *True division by something that may be zero.* ``x / 0`` is ``0`` in a Mathlib
 field and a ``ZeroDivisionError`` in Python, whatever the sort.
@@ -52,6 +58,7 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.mathlib import project_directory
 from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import Elementary, Exists, Forall, Sum, init_args
 
@@ -222,25 +229,29 @@ def leaves_the_domain(term: Any) -> bool:
     )
 
 
-def notes(term: Any) -> tuple[str, ...]:
+def notes(term: Any, mathlib: bool | None = None) -> tuple[str, ...]:
     """The semantics gaps this term is exposed to, as lines for a provenance.
 
     An empty tuple is the common case and the one worth having: arithmetic over
     ``Nat`` and ``Int``, subtraction and floor division included, means the same
     thing to every oracle, so only a division that may be by zero is noted, and
-    in a statement Mathlib reads, a true division that may be by zero and a
-    logarithm or square root that may leave its Python domain.
+    in Mathlib mode, a true division that may be by zero and a logarithm or
+    square root that may leave its Python domain. ``mathlib`` says whether the
+    statement is read in Mathlib mode; ``None``, the default, reads the mode
+    from ``LANKY_LEAN_MATHLIB`` as the Lean oracle does.
     """
     if term is None:
         return ()
+    if mathlib is None:
+        mathlib = project_directory() is not None
     try:
         sorts = sorts_of(term)
         found: list[str] = []
         if ("Nat" in sorts or "Int" in sorts) and divides_by_possible_zero(term):
             found.append(DIVISION_BY_ZERO)
-        if truly_divides_by_possible_zero(term):
+        if mathlib and truly_divides_by_possible_zero(term):
             found.append(TRUE_DIVISION_BY_ZERO)
-        if leaves_the_domain(term):
+        if mathlib and leaves_the_domain(term):
             found.append(OUTSIDE_THE_DOMAIN)
     except Exception:  # noqa: BLE001 - a note is never worth failing a check over
         return ()
