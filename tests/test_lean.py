@@ -1114,11 +1114,19 @@ def _python_after(document: str, marker: str) -> str:
 
 
 def _block_from(document: str, first: str) -> list[str]:
-    """The lines of the fenced block in ``document`` whose first line starts with ``first``."""
+    """The lines of the fenced block in ``document`` whose first line starts with ``first``.
+
+    A block inside a list item is indented with it, and comes back without
+    the indentation, as the command printed it.
+    """
     lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
-    at = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
+    at = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith(first)), None
+    )
     assert at is not None, f"{document} no longer shows a block starting {first!r}"
-    return [line.rstrip() for line in lines[at : lines.index("```", at)]]
+    indent = len(lines[at]) - len(lines[at].lstrip())
+    end = next(index for index in range(at, len(lines)) if lines[index].strip() == "```")
+    return [line[indent:].rstrip() for line in lines[at:end]]
 
 
 def _div_zero_snippet() -> str:
@@ -1176,6 +1184,33 @@ def test_without_lean_the_quickstart_gap_transcripts_hold(monkeypatch, tmp_path,
     assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
     assert div_zero[2].split()[:4] == ["assumed", "-", "gap.py:7", "div_zero"]
     assert not any(line.startswith("SEMANTICS") for line in div_zero)
+
+
+def _check_flipped_gauss(directory: Path, capsys, code: int) -> list[str]:
+    """``examples/gauss.py`` with the guard of ``scan_monotone``'s goal flipped, as checked.
+
+    The quickstart has a reader flip ``if a <= b`` to ``if (a < b) & (a > b)``
+    in the example itself, so the file keeps its name and its lines.
+    """
+    source = (ROOT / "examples" / "gauss.py").read_text(encoding="utf-8")
+    assert "if a <= b):" in source
+    directory.mkdir()
+    path = directory / "gauss.py"
+    path.write_text(source.replace("if a <= b):", "if (a < b) & (a > b)):"), encoding="utf-8")
+    return _check_gap(path, capsys, code)
+
+
+def test_without_lean_the_quickstart_goal_guard_warning_holds(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The quickstart's warning for a flipped goal guard is a real run, without Lean."""
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    printed = _check_flipped_gauss(tmp_path / "flipped", capsys, 0)
+    warning = _block_from("docs/quickstart.md", "WARNING scan_monotone at gauss.py:39")
+    at = printed.index(warning[0])
+    assert printed[at : at + len(warning)] == warning
+    row = next(line for line in printed if "scan_monotone" in line and "gauss.py:39" in line)
+    assert row.split()[:2] == ["tested", "property-test"]
 
 
 # }}}
@@ -1819,6 +1854,17 @@ def test_lean_leaves_a_goal_guard_the_sampler_misses_to_a_warning(
     )
     assert cli.main(["check", str(path)]) == 0
     assert "WARNING flipped at rare.py:7" in capsys.readouterr().out
+
+
+def test_lean_shows_the_quickstart_flipped_goal_guard_vacuous(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """What the quickstart says Lean does with the flipped guard: vacuous, and exit 1."""
+    printed = _check_flipped_gauss(tmp_path / "flipped", capsys, 1)
+    row = next(line for line in printed if "scan_monotone" in line and "gauss.py:39" in line)
+    assert row.startswith("proved (vacuous)  lean")
+    assert any(line.startswith("VACUOUS scan_monotone at gauss.py:39") for line in printed)
+    assert not any(line.startswith("WARNING") for line in printed)
 
 
 def test_the_statement_the_oracle_sends_is_the_one_it_records(

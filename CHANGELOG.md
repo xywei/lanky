@@ -537,6 +537,78 @@ listed because it changes behaviour a reader could already have depended on.
   not empty, and then the `reason`, which usually talks about them. A value
   that prints as several lines is indented line by line. A plugin's own keys,
   such as loopty's `witness_text`, stay in the JSON.
+- **A goal whose own guard never holds is vacuous, and the ledger says so.**
+  A scan postcondition with its guard flipped,
+  `all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q))`,
+  holds at every draw because its guard holds at no point, and the row read
+  `tested`, or `proved lean`, since `omega` proves it from the guard, with
+  nothing under the table (#17). #5 looked at the theorem's hypotheses and not
+  at the guard of a quantifier inside the goal. The property tester now
+  counts, per draw the hypotheses admit, whether the goal's quantifier got
+  through to a point of its guarded domain (`TestReport.goal_reached`), and a
+  goal that never did records `goal_reached: 0`; under `pytest` such a theorem
+  is skipped, with the guard in the reason. A fact whose goal is a universal
+  is cross-checked by the tester when a stronger oracle established it, as a
+  fact with hypotheses already was. When no draw got through, the stronger
+  oracles are asked whether the guard is empty for every assignment the
+  hypotheses admit (`lanky.check.goal_guard_fact`, the goal with its body
+  replaced by `False`). If one proves it, the fact is marked `vacuous`, with
+  `vacuous_by` and `vacuous_evidence`, exactly as #5 marks inconsistent
+  hypotheses: the row reads `proved (vacuous)`, a `VACUOUS` block follows the
+  table, and `lanky check` exits 1. If none can, and some draws were valid,
+  the provenance records `goal_unreached` ("the goal's guard p < q and p > q
+  never held in 200 valid draws") and a `WARNING` line follows the table, with
+  exit code 0. A guard that is empty only for some values of the variables,
+  as `Fin[n]` is at `n = 0`, gets through at some draw and is never flagged. A
+  goal with no guard whose domain never has a point, such as `Fin[n - n]`, is
+  the same case. An axiom's goal guard is examined as a theorem's is, and the
+  stronger oracles are asked about the guard, never about the axiom. Only the
+  goal's outermost quantifier is examined.
+- **A symbolic guard over a concrete domain is refused rather than dropped.**
+  `sum(1 for i in Fin[3] if n > 100) == 0` became `False` while the annotation
+  was evaluated, and was refuted at `n = 3`, where it is true, with Lean and
+  without (#24). Over a concrete domain the generator binds no binder and the
+  builtin answers over the values it yielded, and capturing the guard answers
+  `True`, so every point was yielded and the guard was lost; `all` and `any`
+  lost it the same way whenever the body was concrete, so
+  `any(i >= 0 for i in Fin[3] if n > 100)` read `tested`. `lanky.terms.forall`,
+  `exists` and `sum_` now raise `SymbolicBoolError` when the trace bound no
+  binder and recorded a guard, naming the guard and the ways to keep the
+  condition: outside the quantifier, as in `~(condition) | all(body for ...)`,
+  when it does not mention the loop variable, or over a domain with a symbolic
+  bound, where the quantifier is a term that keeps its guard. The file does not
+  import, and `lanky check` prints the traceback and exits 1. A concrete guard
+  over a concrete domain is Python's, as before.
+- **The connectives are three-valued.** A connective stopped at the first
+  operand the tester could not decide, so `~all(k < 100 for k in Nat) | (n >= 0)`
+  read `assumed` and the same disjunction with its operands swapped read
+  `tested` (#25). The new `lanky.terms.conjoin` and `disjoin` read their
+  operands as Kleene's strong connectives: a false operand settles a
+  conjunction and a true one a disjunction, whatever an operand before it
+  could not answer, and when nothing settles it the first open answer is
+  raised again. An open answer is `Undecided`, or a `ZeroDivisionError`,
+  which is Python's side of Lean's total division. The evaluator's `&` and
+  `|`, the tester's walk of a conjunction in the goal, the list of hypotheses
+  and the propositions of a refinement all read their operands this way, so
+  the order they are written in no longer changes what a draw decides: both
+  disjunctions read `tested`, a conjunction whose first conjunct is undecided
+  and whose second is false is refuted, and a draw one hypothesis breaks is
+  rejected however the others come out. A false operand still stops the walk,
+  so `(k > 0) & (10 // k > 1)` never divides by zero. An operand after an
+  undecided one is evaluated now, and one that is not a proposition is refused
+  where the undecided operand used to hide it.
+- **A refinement is read as the hypothesis it is.** `n: Nat & all(k < n + 100
+  for k in Nat)` stopped the property test: `Refined.holds` evaluated the
+  refinement with no sampler, the quantifier over `Nat` raised `ValueError`,
+  and the row read `assumed` with "property-test could not run" (#26).
+  `Refined.holds` takes a sampler and reads its propositions standing
+  `NEGATIVE`, and the tester hands it one made from the draw's random source
+  and the values drawn so far, for a parameter's refinement, a family's
+  codomain, and a refinement of the binder domain of a definitional
+  hypothesis. A draw of `k` that breaks the universal rejects the value, and
+  one at which it held at every draw leaves the draw undecided, so `refined`
+  reads `assumed` with a reason that names the refinement; an existential a
+  draw witnesses admits the value.
 
 ### Notes
 
