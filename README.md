@@ -88,11 +88,14 @@ sharp.
 
 **Works.**
 
-- `lanky check FILE [--json OUT] [--verbose]`, exit code 1 on any refutation
-  or vacuous claim. Each refuted fact is repeated under the table with its
-  counterexample, its witness and its reason, the three standard provenance
-  keys, read the same way whichever oracle or plugin refuted it; or with
-  `no witness recorded` when it carries none of them.
+- `lanky check FILE... [--json OUT] [--verbose]`, exit code 1 on any
+  refutation or vacuous claim. Each refuted fact is repeated under the table
+  with its counterexample, its witness and its reason, the three standard
+  provenance keys, read the same way whichever oracle or plugin refuted it; or
+  with `no witness recorded` when it carries none of them. Files from
+  different source roots are checked in a process per root, so two
+  directories that each hold a `helpers.py` are each checked against their
+  own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
@@ -296,7 +299,12 @@ Decorators are inert and registering: `@theorem` returns a callable object that
 runs natively and puts itself in the registry. `lanky check FILE` imports the
 file and reads the registry, keeping the claims defined in that file and none
 from the modules it imports; `lanky check a.py b.py` checks both, each for its
-own. No environment variable changes what the code means.
+own. A process imports a module of one name once, so files whose source roots
+differ (the directories a check puts on `sys.path`: the file's own, and the one
+its package is found from) are checked in child processes, one per root, while
+files that share their roots share a process as they always did. `check_path`,
+the function underneath, imports into the process that calls it. No
+environment variable changes what the code means.
 
 ## Name
 

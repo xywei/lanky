@@ -116,6 +116,14 @@ prints one ledger per file, each under a `==> a.py <==` heading. A file inside
 a package may use relative imports; it is given its package while it is
 checked.
 
+Files from different source roots, the directories a check puts on
+`sys.path` (the file's own, and for a file in a package the one its package is
+found from), are checked in processes of their own, one per root, because a
+process imports a module of one name once: `lanky check a/claims.py
+b/claims.py` checks each file against the `helpers.py` beside it. Files that
+share their roots share a process, and `check_path` imports into the process
+that calls it.
+
 The two rows differ, and the difference is the product.
 
 - `scan_monotone` is `proved` by `lean`. The Lean oracle printed the statement as

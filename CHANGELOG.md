@@ -537,6 +537,31 @@ listed because it changes behaviour a reader could already have depended on.
   not empty, and then the `reason`, which usually talks about them. A value
   that prints as several lines is indented line by line. A plugin's own keys,
   such as loopty's `witness_text`, stay in the JSON.
+- **Files from different source roots are checked in processes of their
+  own.** `lanky check a/claims.py b/claims.py` checked the files one after
+  another in one process, so when each directory held its own `helpers.py`,
+  the second file's `import helpers` found the first directory's module in
+  `sys.modules`, and its claims were decided against code it does not
+  contain, without a word (#9). Two trees' packages of one name were refused
+  with an `ImportError` instead, which failed the check on a file that is
+  fine. The command now groups the files by their source roots, the
+  directories a check puts on `sys.path` (the file's own, and for a file in a
+  package the one its package is found from), which the new
+  `lanky.check.source_roots` returns. Files that share their roots, a single
+  file always among them, are checked in the command's own process one after
+  another, and print what they always printed. When the roots differ, each
+  group is checked in a child process of its own, one after another, started
+  with the same interpreter, `sys.path`, `sys.argv`, working directory and
+  environment, and what a child prints is copied line by line to the
+  command's standard output and error. The ledgers come out root by root, in
+  the order each root first appears on the command line, and `--json` lists
+  the facts in that order. A child that ends before it reports, because a
+  checked file called `sys.exit` while it was imported or because it could
+  not be started, is named in a line and fails the check, and the other roots
+  are still checked. A child finds its plugins through their entry points, as
+  the `lanky` command does. `check_path` keeps its behavior, which its
+  docstring now states: it imports into the process that calls it, and still
+  refuses a package of one name imported from another directory.
 
 ### Notes
 
