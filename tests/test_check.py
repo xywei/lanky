@@ -834,3 +834,150 @@ def test_an_empty_witness_is_not_printed(capsys) -> None:
 
 
 # }}}
+
+
+# {{{ facts rest on facts
+
+CITED = '''
+"""An axiom, and a theorem that rests on it."""
+
+from __future__ import annotations
+
+from lanky import axiom, theorem
+from lanky.prelude import Fin, Nat
+
+
+@theorem
+def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
+    """Gauss."""
+
+
+@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+    """The sum of the first cubes is the square of the sum of the first numbers."""
+
+
+@theorem(uses=[nicomachus, gauss])
+def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
+    """The sum of the cubes, in closed form."""
+'''
+
+
+def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> None:
+    """The axiom is ``assumed`` on its citation; the theorem is tested under it.
+
+    Every statement here has a sum in it, which core Lean cannot print, so the
+    ledger is the same with Lean and without it.
+    """
+    path = write_file(tmp_path, CITED)
+    ledger = check_path(path)
+    gauss, nicomachus, cubes = ledger
+    assert nicomachus.kind == "axiom"
+    assert nicomachus.status is Status.ASSUMED
+    assert nicomachus.decided_by is None
+    assert nicomachus.provenance["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
+    # sampled for a counterexample, and nothing of a pass is kept
+    assert "valid" not in nicomachus.provenance
+    assert cubes.status is Status.TESTED
+    assert cubes.rests_on == (nicomachus.id, gauss.id)
+    assert ledger.support(cubes).effective is Status.ASSUMED
+    assert ledger.support(cubes).under == (nicomachus.id,)
+    assert ledger.support(gauss).effective is Status.TESTED
+
+    out = tmp_path / "out.json"
+    assert cli.main(["check", path, "--json", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split()[:3] == ["STATUS", "EFFECTIVE", "BY"]
+    assert lines[2].startswith("tested                   tested     property-test")
+    assert lines[3].startswith("assumed (axiom)          assumed    -")
+    assert lines[4].startswith("tested under nicomachus  assumed    property-test")
+    assert lines[-1] == "3 facts: 1 assumed, 2 tested"
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert [(row["owner"], row["status"], row["effective"], row["under"]) for row in data] == [
+        ("gauss", "tested", "tested", []),
+        ("nicomachus", "assumed", "assumed", []),
+        ("cubes", "tested", "assumed", [nicomachus.id]),
+    ]
+    assert data[2]["rests_on"] == [nicomachus.id, gauss.id]
+    assert data[1]["provenance"]["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
+
+
+def test_an_axiom_false_as_written_is_refuted(tmp_path, capsys) -> None:
+    """A citation copied down wrong is caught, and fails the check.
+
+    The cube became a square on one side. The reference says nothing of the
+    sort, and the property tester's counterexample is definite whatever the
+    citation says; what rests on the axiom is worth a refutation.
+    """
+    cube = "sum(i**3 for i in Fin[n + 1]) =="
+    path = write_file(tmp_path, CITED.replace(cube, cube.replace("**3", "**2"), 1))
+    ledger = check_path(path)
+    _gauss, nicomachus, cubes = ledger
+    assert nicomachus.status is Status.REFUTED
+    assert nicomachus.decided_by == "property-test"
+    assert nicomachus.provenance["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
+    assert nicomachus.provenance["counterexample"]
+    assert ledger.support(cubes).effective is Status.REFUTED
+
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "\nrefuted (axiom)  " in printed
+    assert "tested under nicomachus  refuted    property-test" in printed
+    assert "REFUTED nicomachus at claims.py:" in printed
+    assert "  counterexample: {'n': " in printed
+
+
+def test_an_axiom_is_never_offered_to_a_stronger_oracle(tmp_path, monkeypatch) -> None:
+    """Whatever a prover would say of an axiom, it is not asked.
+
+    An oracle stronger than a test that establishes everything it is shown
+    would make the axiom ``proved``; it proves the theorem, and never sees the
+    axiom.
+    """
+    from lanky.plugins import registry
+
+    shown: list[str] = []
+
+    class ProvesEverything:
+        name = "proves-everything"
+
+        def trust_class(self) -> str:
+            return "kernel"
+
+        def can_establish(self, fact, /) -> bool:
+            return True
+
+        def establish(self, fact, /):
+            shown.append(fact.kind)
+            return fact.with_status(Status.PROVED, self.name)
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, ProvesEverything()])
+    _gauss, nicomachus, cubes = check_path(write_file(tmp_path, CITED))
+    assert nicomachus.status is Status.ASSUMED
+    assert cubes.status is Status.PROVED
+    assert "axiom" not in shown
+    assert shown.count("theorem") >= 2
+
+
+def test_a_plugin_fact_rests_on_another_facts_id(tmp_path) -> None:
+    """``rests_on`` is set by whoever builds the fact, and read off the ledger."""
+    post = Fact(id="scan:postcondition", kind="postcondition", statement="...", owner="scan")
+    restated = Fact(
+        id="program:solve:scan:postcondition",
+        kind="postcondition-in-scope",
+        statement="after scan(...) in solve: ...",
+        owner="solve",
+        rests_on=(post.id,),
+    )
+    bounds = Fact(
+        id="scan:bounds", kind="in-bounds", statement="...", status=Status.DECIDED, owner="scan"
+    )
+    ledger = Ledger([post, restated, bounds])
+    assert ledger.support(restated).under == ("scan:postcondition",)
+    row = ledger.render().splitlines()[3]
+    # the kernel owns many facts, so the one meant is named by its id
+    assert row.startswith("assumed under scan:postcondition  -")
+
+
+# }}}

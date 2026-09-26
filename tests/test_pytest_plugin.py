@@ -83,3 +83,29 @@ def test_theorems_do_not_leak_between_modules(pytester) -> None:
     result = pytester.runpytest("-v")
     result.assert_outcomes(passed=2)
     result.stdout.fnmatch_lines(["*test_one.py::claim*", "*test_two.py::claim*"])
+
+
+AXIOMS = '''
+from __future__ import annotations
+
+from lanky import axiom
+from lanky.prelude import Fin, Nat
+
+
+@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+    """The sum of the first cubes is the square of the sum of the first numbers."""
+
+
+@axiom(cite="the same, copied down wrong")
+def miscopied(n: Nat) -> sum(i**2 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+    """A square where the reference has a cube."""
+'''
+
+
+def test_axioms_are_collected_and_sampled(pytester) -> None:
+    """An axiom is a statement, and a test run is where a miscopied one shows up."""
+    pytester.makepyfile(test_axioms=AXIOMS)
+    result = pytester.runpytest("-v", "-rA")
+    result.assert_outcomes(passed=1, failed=1)
+    result.stdout.fnmatch_lines(["*test_axioms.py::nicomachus PASSED*", "*counterexample*"])

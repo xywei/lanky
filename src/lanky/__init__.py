@@ -11,10 +11,12 @@ property test and the file still runs under plain ``python``.
 
 What lanky itself owns is small: terms, the prelude of sorts and index types, a
 ledger of facts (each with a status: tested, decided, proved, certified, assumed,
-refuted) and four plugin interfaces (theories, oracles, executors, CLI verbs)
-discovered through entry points. Lean is an oracle and the property tester is an
-oracle; a polyhedral plugin such as loopty registers its own theory, its own
-decision procedure, and its own verbs, and lanky never imports it.
+refuted; and the facts it rests on, which bound what it is worth) and four
+plugin interfaces (theories, oracles, executors, CLI verbs) discovered through
+entry points. Lean is an oracle and the property tester is an oracle; a
+polyhedral plugin such as loopty registers its own theory, its own decision
+procedure, and its own verbs, and lanky never imports it. A result lanky cannot
+establish enters on a citation, through ``@axiom``.
 
 Three commands over one file: ``python file.py`` runs it, ``pytest`` tests the
 theorems, ``lanky check file.py`` prints the ledger of every claim and who
@@ -43,12 +45,13 @@ from lanky.terms import (
     render,
 )
 from lanky.terms import sum_ as sum  # noqa: A004 - lanky.sum is a reduction term
-from lanky.theory import Theorem, theorem
+from lanky.theory import Axiom, Theorem, axiom, theorem
 
 __version__ = "0.1.0.dev0"
 
 __all__ = [
     "Abs",
+    "Axiom",
     "Bool",
     "Executor",
     "Exists",
@@ -75,6 +78,7 @@ __all__ = [
     "Verb",
     "__version__",
     "abs_",
+    "axiom",
     "check_path",
     "evaluate",
     "exists",

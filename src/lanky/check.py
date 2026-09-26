@@ -188,7 +188,14 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     Last, a fact whose hypotheses no draw satisfied is examined for vacuity
     (:func:`_examine_vacuity`): a claim that nothing is ever at stake in says
     nothing, however strongly it is established, and the ledger says so.
+
+    An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted (see
+    :func:`_examine_axiom`). It is ``assumed`` on its citation, which is its
+    author's word and not an oracle's, and a stronger status from one would
+    make it a theorem that says it is an axiom.
     """
+    if fact.is_axiom:
+        return _examine_axiom(fact, verbose=verbose)
     gaps = semantics.notes(fact.term)
     if gaps:
         fact = fact.with_status(fact.status, semantics=list(gaps))
@@ -214,6 +221,41 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             break
         fact = result
     return _examine_vacuity(fact, verbose=verbose)
+
+
+def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
+    """Sample an axiom for a counterexample, and keep it ``assumed`` without one.
+
+    An axiom is taken on its citation, so no oracle is asked to establish it.
+    It can still be false as written: a citation copied down with a sign
+    flipped or a bound off by one states something the reference does not,
+    and everything that rests on it rests on that. A counterexample is
+    definite whatever the citation says, so the oracles of the ``test`` trust
+    class sample it, as they sample any statement, and a refutation is kept,
+    with the citation still in the provenance, so that ``lanky check`` fails
+    on it. A pass is not kept, since it would make the axiom a tested theorem.
+    The stronger oracles are not asked: what they establish would be thrown
+    away the same way, and a prover's attempt costs what a sample does not.
+    """
+    for oracle in registry.sorted_oracles():
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
+            continue
+        available, _reason = oracle_availability(oracle)
+        if not available:
+            continue
+        try:
+            if not oracle.can_establish(fact):
+                continue
+            result = oracle.establish(fact)
+        except Exception as exc:  # noqa: BLE001 - one oracle must not stop the rest
+            if verbose:
+                print(f"  {oracle.name} raised {type(exc).__name__}: {exc}")
+            continue
+        if result is not None and result.status is Status.REFUTED:
+            if verbose:
+                print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
+            return result
+    return fact
 
 
 def has_hypotheses(term: Any) -> bool:

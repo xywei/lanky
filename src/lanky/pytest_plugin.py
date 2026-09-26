@@ -9,6 +9,10 @@ rather than passed: a vacuous pass is not evidence and must not read like one.
 A theorem bound to a name starting with an underscore is not collected, which
 is how a module keeps a statement it does not want run.
 
+An axiom is collected too. The ledger takes it on its citation, and a
+counterexample to the statement as written is how a citation copied down wrong
+shows up, here as in ``lanky check``.
+
 The plugin is installed under the ``pytest11`` entry-point group, so it is
 active wherever lanky is installed.
 """
@@ -58,7 +62,7 @@ class TheoremItem(pytest.Item):
 
     def reportinfo(self) -> tuple[Any, int, str]:
         """Point at the theorem's source line."""
-        return self.path, self.theorem.line - 1, f"theorem {self.name}"
+        return self.path, self.theorem.line - 1, f"{self.theorem.noun} {self.name}"
 
 
 def pytest_pycollect_makeitem(collector: Any, name: str, obj: object) -> Any:
