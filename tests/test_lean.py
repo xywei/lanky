@@ -1947,6 +1947,16 @@ def scan(
 @theorem
 def truth(true: Bool) -> true == True:
     """False at true = False."""
+
+
+@theorem
+def empty(fun: Nat, at: Nat, h0: fun + at < 0) -> fun == at:
+    """Vacuous: no two naturals sum below zero."""
+
+
+@theorem
+def unreached(n: Nat) -> all(show == n for show in Fin[n] if show > n + 5):
+    """Vacuous: the goal's guard holds nowhere."""
 '''
 
 
@@ -1957,7 +1967,10 @@ def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_pat
     variables, the first hypothesis shadowed the variable ``h0``, and the
     scan's goal names its variables ``show`` and ``at``, which the induction
     strategy has to write as the statement does. ``truth`` is false, and Lean
-    proved it, reading ``true = true``; the tester refutes it.
+    proved it, reading ``true = true``; the tester refutes it. The questions
+    whether a claim is vacuous are printed the same way, and they failed the
+    same way: ``empty``'s hypotheses and ``unreached``'s goal guard only got a
+    warning that no draw satisfied them, and the check passed.
     """
     from lanky.check import check_path
 
@@ -1973,6 +1986,8 @@ def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_pat
     assert "theorem «scoped» (a : Int)" in by_owner["scoped"].provenance["lean_source"]
     truth = by_owner["truth"]
     assert (truth.status, truth.decided_by) == (Status.REFUTED, "property-test")
+    for owner in ("empty", "unreached"):
+        assert by_owner[owner].is_vacuous, (owner, by_owner[owner].provenance)
 
 
 #: Lean source that prints every token of the parser's table, one to a line.

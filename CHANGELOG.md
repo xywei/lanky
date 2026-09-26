@@ -829,9 +829,12 @@ listed because it changes behaviour a reader could already have depended on.
   variable with the hypothesis `0 ≤ h0`, and Lean read the goal's `h0` as the
   proof. The ladder's `intro` names a goal binder's guards the same way,
   clear of every binder of the goal, where a guard of `a` named `hd` was
-  shadowed by a later binder `hd`. And a variable named `true` or `false` made the Boolean literal name
-  the variable: `def truth(true: Bool) -> true == True` printed as
-  `true = true`, which Lean proved, though the claim is false at
+  shadowed by a later binder `hd`. The questions whether a claim is vacuous
+  are printed the same way, so a claim over such names whose hypotheses, or
+  whose goal's guard, Lean shows empty is now vacuous and fails the check,
+  where it got a warning. And a variable named `true` or `false` made the
+  Boolean literal name the variable: `def truth(true: Bool) -> true == True`
+  printed as `true = true`, which Lean proved, though the claim is false at
   `true = False`. Where such a variable is in scope the literal is now
   `Bool.true`, and the tester refutes the claim. `LeanStatement` gains
   `variables`, the lanky names of its binders; its `binders` hold the names
