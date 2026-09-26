@@ -136,7 +136,8 @@ real one means the same thing either way. What each subterm is, an integer, a
 real or a complex number, is read off the scope (:func:`_kind`), and a floor
 division, a remainder or an order comparison over something that is not an
 integer, or not real, is declined rather than printed with a meaning Python
-does not give it.
+does not give it. So is a ``Fin`` whose bound is not an integer, which the
+tester walks as ``range(int(x))``.
 """
 
 from __future__ import annotations

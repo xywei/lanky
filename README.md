@@ -183,9 +183,9 @@ sharp.
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real`, true division and
   an exponent that could be negative raise rather than emit source Lean would
   reject. In Mathlib mode all but the last are printed, and what is still
-  declined is a sum over `Nat`, a floor division or a remainder of a real, an
-  order between complex numbers and a complex square root: each would be
-  printed with a meaning Python does not give it.
+  declined is a sum over `Nat`, a `Fin` with a real bound, a floor division or
+  a remainder of a real, an order between complex numbers and a complex
+  square root: each would be printed with a meaning Python does not give it.
 - Over `Real` and `Complex` the readings are not one. The tester computes in
   floating point (with fractions for `Real.exact`) and Lean over `ℝ` and `ℂ`,
   so an identity that holds only up to rounding, such as

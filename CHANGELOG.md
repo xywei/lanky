@@ -76,10 +76,10 @@ prints a ledger naming who decided what.
     sum over `Fin` binders as `∑ i ∈ Finset.Ico 0 n`, with a guard or a
     refinement as `with`. A floor division by a literal is ascribed,
     `(n / 2 : ℤ)`, so that next to a real it is cast whole rather than turned
-    into real division of the cast `n`. It declines a sum over `Nat`, a floor
-    division or remainder of a real, an order between complex numbers and a
-    complex square root, each of which would print a meaning Python does not
-    give.
+    into real division of the cast `n`. It declines a sum over `Nat`, a `Fin`
+    with a real bound (which the tester truncates), a floor division or
+    remainder of a real, an order between complex numbers and a complex square
+    root, each of which would print a meaning Python does not give.
   - The ladder, in Mathlib mode, runs the core attempts first (their closers
     extended with `linarith`, `nlinarith`, `positivity`, `ring_nf` and
     `norm_num`), then `norm_num`, `positivity`, `ring`, `field_simp`,
