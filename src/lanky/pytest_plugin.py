@@ -6,6 +6,8 @@ plugin collects every :class:`~lanky.theory.Theorem` it finds in a collected
 module under a public name and runs it, reporting a counterexample as the
 failure. A theorem whose hypotheses no draw satisfied is reported as skipped
 rather than passed: a vacuous pass is not evidence and must not read like one.
+Nor is a pass of a goal whose quantifier's guard held at no draw, which is
+skipped as well, with the guard in the reason.
 A theorem bound to a name starting with an underscore is not collected, which
 is how a module keeps a statement it does not want run.
 
@@ -53,6 +55,10 @@ class TheoremItem(pytest.Item):
             # could not be completed, or a statement no draw could decide.
             reason = report.reason or "no draw satisfied the hypotheses"
             pytest.skip(f"{reason}: {self.name}")
+        if report.goal_reached == 0:
+            # The goal held at every valid draw because its quantifier got
+            # through to no point at any of them: its guard never held.
+            pytest.skip(f"{report.reason}: {self.name}")
 
     def repr_failure(self, excinfo: Any, style: Any = None) -> str:
         """Report the counterexample without a Python traceback."""

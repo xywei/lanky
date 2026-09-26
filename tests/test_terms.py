@@ -31,7 +31,7 @@ from lanky.terms import (
     structurally_equal,
     sum_,
 )
-from lanky.testing import sort_sampler
+from lanky.testing import check, sort_sampler
 
 
 def test_scope_invents_variables() -> None:
@@ -251,6 +251,158 @@ def test_a_proposition_is_not_a_bool_outside_tracing() -> None:
     n = Var("n")
     with pytest.raises(SymbolicBoolError, match="undefined"):
         bool(n < 1)
+
+
+def test_a_symbolic_guard_over_a_concrete_domain_is_refused() -> None:
+    """A concrete domain is walked, and a symbolic guard over it used to be dropped (#24).
+
+    Capturing the guard answers ``True``, so every point was yielded and the
+    builtin answered over all of them: ``sum(1 for i in Fin[3] if n > 100)``
+    was ``3``, and ``all`` and ``any`` with a concrete body lost the guard
+    the same way. Each is refused now, naming a way to keep the condition.
+    """
+    f, n = Var("f"), Var("n")
+    with pytest.raises(SymbolicBoolError, match="give the domain a symbolic bound"):
+        sum_(1 for i in Fin[3] if n > 100)
+    with pytest.raises(SymbolicBoolError, match=r"as in ~\(condition\) \| all\(body for"):
+        forall(i >= 0 for i in Fin[3] if n > 100)
+    with pytest.raises(SymbolicBoolError, match=r"as in \(condition\) & any\(body for"):
+        exists(i >= 0 for i in Fin[3] if n > 100)
+    # a sum of symbolic values is added up without asking any of them for a
+    # truth value, so nothing else noticed the guard go
+    with pytest.raises(SymbolicBoolError, match="its guard 'n > 1' is symbolic"):
+        sum_(f(i) for i in Fin[2] if n > 1)
+    # a guard that mentions the point is named as each point recorded it
+    with pytest.raises(SymbolicBoolError, match="its guard 'n > 0 and n > 1'"):
+        sum_(1 for i in Fin[2] if i < n)
+    # a guard written with `not` held at no point, and the message says why
+    with pytest.raises(SymbolicBoolError, match="if it was written with Python's `not`"):
+        forall(i >= 0 for i in Fin[3] if not (n > 100))
+    # so does one joined with `and` to a concrete condition that holds at no
+    # point, and the message does not claim it was a `not`
+    with pytest.raises(SymbolicBoolError, match="no point got through it: if it was") as raised:
+        sum_(1 for i in Fin[3] if (n > 3) and (i > 5))
+    assert "so it was written with" not in str(raised.value)
+
+
+def test_the_ways_the_refusal_names_keep_the_condition() -> None:
+    """A concrete guard is Python's, and the two spellings the refusal suggests work.
+
+    A condition that does not mention the loop variable stands outside the
+    quantifier, and a domain with a symbolic bound keeps its guard in the term.
+    """
+    m, n = Var("m"), Var("n")
+    assert sum_(1 for i in Fin[3] if i > 0) == 2
+    assert forall(i >= 1 for i in Fin[3] if i > 0) is True
+    outside = ~(n > 100) | forall(i > 0 for i in Fin[3])
+    assert evaluate(outside, {"n": 3}) is True
+    assert evaluate(outside, {"n": 101}) is False
+    kept = sum_(1 for i in Fin[m] if n > 100)
+    assert render(kept) == "sum(1 for i in Fin(m) if n > 100)"
+    assert evaluate(kept, {"m": 3, "n": 3}) == 0
+    assert evaluate(kept, {"m": 3, "n": 101}) == 3
+
+
+# }}}
+
+
+# {{{ three-valued connectives
+
+
+def _undecided() -> bool:
+    raise Undecided("open")
+
+
+def test_conjoin_and_disjoin_are_kleenes_strong_connectives() -> None:
+    """The settling answer wins wherever it stands, and the walk stops there.
+
+    A false operand settles a conjunction and a true one a disjunction,
+    whatever an operand before it could not answer; with nothing to settle
+    it, the first open answer is raised again. An operand after the settling
+    one is never asked.
+    """
+    from lanky.terms import conjoin, disjoin
+
+    asked: list[bool] = []
+
+    def ask(value: bool):
+        def operand() -> bool:
+            asked.append(value)
+            return value
+
+        return operand
+
+    assert conjoin([_undecided, ask(False), ask(False)]) is False
+    assert asked == [False]
+    assert disjoin([_undecided, ask(True), ask(True)]) is True
+    assert conjoin([ask(True), ask(True)]) is True
+    assert disjoin([ask(False), ask(False)]) is False
+    with pytest.raises(Undecided, match="open"):
+        conjoin([_undecided, ask(True)])
+    with pytest.raises(Undecided, match="open"):
+        disjoin([ask(False), _undecided])
+    with pytest.raises(ZeroDivisionError):
+        conjoin([lambda: 1 // 0 > 0, _undecided, ask(True)])
+    assert conjoin([]) is True
+    assert disjoin([]) is False
+
+
+def test_a_connective_goes_on_past_an_undecided_operand() -> None:
+    """``p | q`` and ``q | p`` agree, and so do ``p & q`` and ``q & p`` (#25).
+
+    ``~all(k < 100 for k in Nat)`` is undecided: the universal held at every
+    draw, and under ``~`` that would be used as a certainty. A disjunction
+    with a true operand is true, and a conjunction with a false one false,
+    whatever that operand is, and the walk used to stop at the undecided
+    operand and give the answer up when it came first.
+    """
+    k, n = Var("k"), Var("n")
+    undecided = ~Forall(((k, Nat),), k < 100)
+    for claim in (undecided | (n >= 0), (n >= 0) | undecided):
+        assert evaluate(claim, {"n": 3}, _sampler()) is True
+    for claim in (undecided & (n < 0), (n < 0) & undecided):
+        assert evaluate(claim, {"n": 3}, _sampler()) is False
+    for claim in (
+        undecided | (n < 0),
+        (n < 0) | undecided,
+        undecided & (n >= 0),
+        (n >= 0) & undecided,
+    ):
+        with pytest.raises(Undecided, match="assumes or denies it"):
+            evaluate(claim, {"n": 3}, _sampler())
+    # an operand after an undecided one is asked now, and one that is not a
+    # proposition is refused, where the undecided operand used to hide it
+    with pytest.raises(TypeError, match="not a proposition"):
+        evaluate(undecided | (n + 1), {"n": 3}, _sampler())
+
+
+def test_a_division_by_zero_is_an_operand_with_no_answer() -> None:
+    """Python raises where Lean's division is total, and another operand can still settle it.
+
+    ``(10 // n > 1) | (n == 0)`` is true at ``n = 0`` under every reading of
+    the division, and it raised ``ZeroDivisionError``; a false operand before
+    the division still keeps it from being evaluated at all.
+    """
+    n = Var("n")
+    assert evaluate((10 // n > 1) | (n == 0), {"n": 0}) is True
+    assert evaluate((10 // n > 1) & (n != 0), {"n": 0}) is False
+    assert evaluate((n > 0) & (10 // n > 1), {"n": 0}) is False
+    with pytest.raises(ZeroDivisionError):
+        evaluate((10 // n > 1) | (n > 0), {"n": 0})
+
+
+def test_a_refinement_is_one_conjunction_read_three_valued() -> None:
+    """``T & p & q`` rejects a point ``q`` rejects, whatever ``p`` could not answer there.
+
+    As a parameter's sort and as a binder's domain alike: at ``i = 0`` the
+    first proposition divides by zero, and the second rejects the point.
+    """
+    i, n = Var("i"), Var("n")
+    assert (Nat & (10 // n > 1) & (n > 5)).holds({"n": 0}) is False
+    claim = Forall(((i, Fin[3] & (10 // i > 1) & (i > 5)),), i < 0)
+    assert evaluate(claim, {}) is True
+    with pytest.raises(ZeroDivisionError):
+        (Nat & (10 // n > 1) & (n < 5)).holds({"n": 0})
 
 
 # }}}
@@ -714,6 +866,71 @@ def test_every_answer_is_one_its_position_allows() -> None:
                 assert allowed, (render(term), n, polarity, answer)
     # the check is only worth something if a fair share of answers were given
     assert decided > 500
+
+
+def _divided(rng: random.Random, depth: int) -> tuple:
+    """A random statement whose atoms may divide by zero, with its truth per reading.
+
+    ``10 // n > 1`` and ``10 % n == 0`` have no value at ``n = 0`` in Python,
+    and a total division gives them one, so the truth takes a ``reading``
+    that says what each of them is there. The sampled atoms of
+    :func:`_atoms` are mixed in, so that an open answer meets an evidence
+    one in the same connective.
+    """
+    n = Var("n")
+    shape = rng.randrange(4) if depth else 0
+    if shape == 0:
+        divided = [
+            (10 // n > 1, lambda p, r: r[0] if p["n"] == 0 else 10 // p["n"] > 1),
+            (10 % n == 0, lambda p, r: r[1] if p["n"] == 0 else 10 % p["n"] == 0),
+        ]
+        sampled = [
+            (atom, lambda p, r, truth=truth: truth(p)) for atom, truth in _atoms(False)
+        ]
+        return rng.choice(divided + sampled)
+    left, true_left = _divided(rng, depth - 1)
+    right, true_right = _divided(rng, depth - 1)
+    if shape == 1:
+        return ~left, lambda p, r: not true_left(p, r)
+    if shape == 2:
+        return left & right, lambda p, r: true_left(p, r) and true_right(p, r)
+    return left | right, lambda p, r: true_left(p, r) or true_right(p, r)
+
+
+def test_every_answer_holds_under_every_reading_of_a_division_by_zero() -> None:
+    """A connective settled past a division by zero is settled whatever the quotient is.
+
+    ``&`` and ``|`` read a ``ZeroDivisionError`` as an operand with no answer
+    (#25), and another operand may settle them: ``(10 // n > 1) | (n == 0)``
+    is true at ``n = 0`` under every reading of the division, Lean's total
+    one included. So every answer, at every polarity, has to be one its
+    position allows under each reading, and the tester's refutations have to
+    be real under each.
+    """
+    rng = random.Random(0)
+    readings = [(a, b) for a in (False, True) for b in (False, True)]
+    decided = 0
+    for trial in range(150):
+        term, truth = _divided(rng, 4)
+        for n in range(3):
+            for polarity in (Polarity.POSITIVE, Polarity.NEGATIVE):
+                try:
+                    answer = evaluate(term, {"n": n}, _sampler(trial), polarity)
+                except (Undecided, ZeroDivisionError):
+                    continue
+                decided += 1
+                for reading in readings:
+                    expected = truth({"n": n}, reading)
+                    if polarity is Polarity.POSITIVE:
+                        allowed = answer or not expected
+                    else:
+                        allowed = expected or not answer
+                    assert allowed, (render(term), n, polarity, answer, reading)
+        report = check([("n", Nat)], [], term, samples=20, seed=trial)
+        if not report.ok:
+            point = {"n": report.counterexample["n"]}
+            assert not any(truth(point, reading) for reading in readings), render(term)
+    assert decided > 300
 
 
 # }}}

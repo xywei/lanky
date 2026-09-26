@@ -398,6 +398,28 @@ it builds, naming other facts by id.
   machines: Lean proves the claim and cannot prove `False`, and the exit code
   is 0. Under `pytest` a theorem with unsatisfiable hypotheses is reported as
   skipped.
+- A goal's own guard can be vacuous too. Flip the one in `scan_monotone`'s
+  goal in `examples/gauss.py`, `if (a < b) & (a > b)` for `if a <= b`. The
+  hypotheses still hold at every draw, and so does the goal, because its
+  guard holds at no point, so nothing about the offsets is at stake. The
+  property tester counts, per draw, whether the goal's quantifier got through
+  its guard to a point, and when it never did, it says so. Without Lean the
+  row reads `tested`, and under the table:
+
+  ```text
+  WARNING scan_monotone at gauss.py:39: the goal's guard a < b and a > b never held in 200 valid draws
+    no oracle could show it empty, so the goal may be vacuous
+  ```
+
+  With Lean, `omega` proves the goal from its guard, and Lean is then asked
+  whether the guard is empty wherever the hypotheses hold, which is the goal
+  with its body replaced by `False`. It is, so the row reads
+  `proved (vacuous)`, a `VACUOUS` block follows the table, and `lanky check`
+  exits 1. A guard that is empty only for some values of the variables, as
+  `Fin[n]` is at `n = 0`, gets through at some draw and is never flagged. A
+  guard that holds only where the sampler does not look, such as `a == 7`, gets
+  the warning with Lean too, since Lean cannot show it empty. Under `pytest`
+  such a theorem is skipped, with the guard in the reason.
 - Write `def unwitnessed() -> any(x == 100 for x in Nat)` and check it with
   `LANKY_LEAN_DISABLE=1`, so that the property tester is the only oracle. `Nat`
   is sampled rather than enumerated, so no draw witnesses the statement, and no
@@ -416,7 +438,10 @@ it builds, naming other facts by id.
   same draws would refute it, so the tester reads a pass of a sampled `all`
   under `~`, in a hypothesis or the guard of an `all`, or inside a sum as
   undecided: the row reads `assumed`, with the reason. A draw that breaks a
-  sampled `all` is a counterexample wherever it stands.
+  sampled `all` is a counterexample wherever it stands. An undecided operand
+  does not decide a connective, though: `~all(k < 100 for k in Nat) | (n >= 0)`
+  reads `tested`, because `n >= 0` holds at every draw and a disjunction with
+  a true operand is true, and it reads the same with the operands swapped.
 - `uv sync --group dev --extra lean`, put a Lean toolchain the REPL supports on
   `PATH` (the README's Install section says which; CI uses v4.29.1), and watch
   a row change from `tested` to `proved`. The first run builds a Lean REPL,
