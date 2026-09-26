@@ -918,7 +918,12 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
     assert lines[2].startswith("tested                   tested     property-test")
     assert lines[3].startswith("assumed (axiom)          assumed    -")
     assert lines[4].startswith("tested under nicomachus  assumed    property-test")
-    assert lines[-1] == "3 facts: 1 assumed, 2 tested"
+    assert lines[6] == "3 facts: 1 assumed, 2 tested"
+    assert lines[7:] == [
+        "",
+        f"CITED nicomachus at {nicomachus.where}: "
+        "Nicomachus of Gerasa, Introduction to Arithmetic",
+    ]
     data = json.loads(out.read_text(encoding="utf-8"))
     assert [(row["owner"], row["status"], row["effective"], row["under"]) for row in data] == [
         ("gauss", "tested", "tested", []),
@@ -952,6 +957,8 @@ def test_an_axiom_false_as_written_is_refuted(tmp_path, capsys) -> None:
     assert "tested under nicomachus  refuted    property-test" in printed
     assert "REFUTED nicomachus at claims.py:" in printed
     assert "  counterexample: {'n': " in printed
+    # the reference is where to look for what was copied down wrong
+    assert "\nCITED nicomachus at claims.py:" in printed
 
 
 def test_an_axiom_is_never_offered_to_a_stronger_oracle(tmp_path, monkeypatch) -> None:
@@ -1076,6 +1083,32 @@ def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
 
 
 # {{{ what stands behind a decision: a citation, a trust class
+
+
+def test_lanky_check_prints_each_axioms_citation_under_the_table(tmp_path, capsys) -> None:
+    """The citation is what stands behind an ``assumed (axiom)`` row, so it is shown.
+
+    It used to be in the JSON alone. A citation of several lines is indented
+    under its first, and a file with no axiom prints no ``CITED`` line.
+    """
+    text = CITED.replace(
+        '@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")',
+        '@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic,\\nbook II, ch. 20")',
+    )
+    path = write_file(tmp_path, text)
+    _gauss, nicomachus, _cubes = check_path(path)
+    assert cli.main(["check", path]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    summary = lines.index("3 facts: 1 assumed, 2 tested")
+    assert lines[summary + 1 :] == [
+        "",
+        f"CITED nicomachus at {nicomachus.where}: "
+        "Nicomachus of Gerasa, Introduction to Arithmetic,",
+        "  book II, ch. 20",
+    ]
+
+    assert cli.main(["check", write_file(tmp_path)]) == 1
+    assert "CITED" not in capsys.readouterr().out
 
 
 def test_the_oracle_that_settles_a_fact_leaves_its_trust_class(tmp_path) -> None:

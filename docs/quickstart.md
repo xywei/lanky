@@ -297,15 +297,18 @@ assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus 
 tested under nicomachus  assumed    property-test  nicomachus.py:43  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
 
 3 facts: 1 assumed, 2 tested
+
+CITED nicomachus at nicomachus.py:38: Nicomachus of Gerasa, Introduction to Arithmetic
 ```
 
-The same with Lean and without it, since every statement has a sum in it. Three
-things in that table are new.
+The same with Lean and without it, since every statement has a sum in it. Four
+things in that output are new.
 
-- `assumed (axiom)`. The axiom is taken on its citation, which `--json`
-  carries as `cite` in its provenance, and no oracle is asked to establish it.
-  It is still sampled for a counterexample, because a citation copied down
-  wrong states something the reference does not.
+- `assumed (axiom)`. The axiom is taken on its citation, which the `CITED`
+  line under the table shows and `--json` carries as `cite` in its provenance,
+  and no oracle is asked to establish it. It is still sampled for a
+  counterexample, because a citation copied down wrong states something the
+  reference does not.
 - `tested under nicomachus`. `cubes` survived its draws, and the status names
   the assumptions it rests on: whatever it rests on, directly or through other
   facts, that nothing here established. That is an axiom, another `assumed`
@@ -320,6 +323,9 @@ things in that table are new.
   proof from an assumption is worth the assumption. The column is there only
   when some fact is worth less than its own status says, so a ledger in which
   nothing rests on anything, like `gauss.py`'s, looks as it always did.
+- The `CITED` line. Each axiom is named under the table with the citation it
+  is taken on, one line per axiom in the table's order, since that is what
+  stands behind its row and behind every `under` that names it.
 
 The status column is still each fact's own. `tested` says how strongly `cubes`
 is established given what it uses; the oracles decide it as they decide any
