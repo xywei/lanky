@@ -1810,6 +1810,43 @@ def test_a_sampled_universal_in_a_goal_is_still_refuted() -> None:
     assert TestOracle().establish(denied.fact()).status is Status.REFUTED
 
 
+def test_an_antecedent_is_read_where_it_stands_however_it_is_spelled() -> None:
+    """``~p | q`` is how an implication is written, and ``p`` stands under the ``~``.
+
+    Each of these is true, and each was refuted on the strength of four draws
+    of ``k``: the antecedent of an implication, the guard of an existential
+    under a negation, and an existential hypothesis whose guard is the sampled
+    universal. They are ``assumed`` now. The consequent of an implication is
+    asserted, and a draw that breaks a universal there still refutes it.
+    """
+
+    @theorem
+    def implied(n: Nat) -> ~all(k < 100 for k in Nat) | (n < 0):
+        """True: the antecedent is false, since k = 100 is a natural."""
+
+    @theorem
+    def unwitnessed(n: Nat) -> ~any(i >= 0 for i in Fin[n + 1] if all(k < 100 for k in Nat)):
+        """True: the guard is false, so nothing is a witness."""
+
+    @theorem
+    def admitted(n: Nat, h: any(i == 0 for i in Fin[n + 1] if all(k < 100 for k in Nat))) -> n < 0:
+        """True vacuously: the hypothesis is false at every n."""
+
+    for claim in (implied, unwitnessed, admitted):
+        fact = TestOracle().establish(claim.fact())
+        assert fact.status is Status.ASSUMED, claim.__name__
+        assert fact.provenance["valid"] == 0
+        assert "assumes or denies it" in fact.provenance["untested"]
+
+    @theorem
+    def consequent(n: Nat) -> ~(n >= 0) | all(k < 3 for k in Nat):
+        """False: 3 is a natural."""
+
+    fact = TestOracle().establish(consequent.fact())
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["n"] >= 0
+
+
 def test_a_sampled_universal_used_as_a_value_is_undecided() -> None:
     """Compared with a truth value, or counted by a sum, a pass over draws is a value.
 
