@@ -2198,6 +2198,38 @@ def test_a_guard_a_point_got_through_at_an_undecided_draw_is_not_empty(
     assert "WARNING" not in capsys.readouterr().out
 
 
+def test_a_proof_of_a_universal_goal_is_sampled_for_a_disagreement(
+    tmp_path, oracles, capsys
+) -> None:
+    """A goal that quantifies is cross-checked now, hypotheses or not, and it can disagree.
+
+    The statement has no hypotheses and no semantics gap, so a proof of it
+    used to go unsampled. The goal quantifies, so the tester runs, and here
+    it refutes what the stand-in proved: that is reported under
+    ``SEMANTICS``, the status the stronger oracle gave stands, and the exit
+    code is 0, as for any other disagreement.
+    """
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1", "n: Nat) -> all(i < 1 for i in Fin[n])"
+    )
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(tmp_path, source)
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert fact.provenance["semantics_disagreement"] == (
+        "property-test refutes this statement under lanky's Python reading"
+    )
+    point = fact.provenance["semantics_counterexample"]
+    assert point["i"] >= 1
+    assert point["n"] > point["i"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert (
+        "SEMANTICS vacuous at vacuous.py:7: property-test refutes this statement "
+        "under lanky's Python reading"
+    ) in printed
+
+
 def test_a_goal_whose_domain_is_always_empty_is_vacuous_too(tmp_path, oracles, capsys) -> None:
     """With no guard, the goal's domain is what never has a point: ``Fin[n - n]``."""
     source = VACUOUS.replace(
