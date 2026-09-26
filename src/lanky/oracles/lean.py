@@ -67,6 +67,7 @@ from lanky.lean import (
     dialect,
     domain_guards,
     is_natural,
+    lean_identifier,
     statement_of,
 )
 from lanky.ledger import Fact, Status
@@ -523,7 +524,10 @@ def _goal_intro(
     last. Returning the binder variables and the guards as terms as well is
     what lets a strategy decide which variable to induce on, and the fourth
     value names, for each natural variable, the hypothesis ``0 ≤ a`` that makes
-    it one, which is what an induction on it has to start from.
+    it one, which is what an induction on it has to start from. The names are
+    Lean source, so a variable named like a keyword is quoted, as the printer
+    quotes it (:func:`lanky.lean.lean_identifier`); the fourth value is keyed
+    by the lanky name.
 
     The guards are rendered to be counted, and rendering a bound such as
     ``Fin[2 ** n]`` needs to know that ``n`` is a natural, so each binder's
@@ -534,14 +538,16 @@ def _goal_intro(
     if not isinstance(goal, Forall):
         return [], [], [], {}
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
+    # every binder's name is taken before a guard is named, so that a guard of
+    # an earlier binder is never named like a later one, which would shadow it
+    used |= {lean_identifier(var.name) for var, _ in goal.binders}
     names: list[str] = []
     variables: list[Var] = []
     naturals: dict[str, str] = {}
     guards = list(conjuncts(goal.guard))
     scope = dict(statement.types)
     for position, (var, domain) in enumerate(goal.binders):
-        names.append(var.name)
-        used.add(var.name)
+        names.append(lean_identifier(var.name))
         variables.append(var)
         conditions = domain_guards(var, domain, scope)
         scope = {**scope, var.name: domain}
@@ -616,6 +622,9 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     target, companion = _induction_target(variables, guards)
     if target is None or target.name not in naturals:
         return []
+    induced = lean_identifier(target.name)
+    if companion is not None:
+        companion = lean_identifier(companion)
     closers = _closers(statement)
     peel = [f"  {_PEEL_SUM}"] if _has_reduction(statement) else []
     used = set(names) | {name for name, _ in statement.binders}
@@ -632,7 +641,7 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     # The induction reverts every hypothesis that mentions the variable, and
     # the hypothesis it gets back takes them as premises again; at most every
     # name introduced after the variable, and the attempts count down from there.
-    later = len(names) - names.index(target.name) - 1
+    later = len(names) - names.index(induced) - 1
     applied = _fresh("hih", used)
     apply_ih = " | ".join(
         f"(have {applied} := {hypothesis}{' (by omega)' * count})"
@@ -649,8 +658,8 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
         )
     head = [f"intro {' '.join(names)}"] if names else []
     head += [
-        f"obtain ⟨{target.name}, rfl⟩ := Int.eq_ofNat_of_zero_le {naturals[target.name]}",
-        f"induction {target.name} with",
+        f"obtain ⟨{induced}, rfl⟩ := Int.eq_ofNat_of_zero_le {naturals[target.name]}",
+        f"induction {induced} with",
         "| zero =>",
         f"  {zero}",
         f"| succ {step} {hypothesis} =>",
@@ -735,7 +744,12 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     closers = _closers(statement)
     scripts = []
-    for position, (name, _sort) in enumerate(statement.binders):
+    # a statement built by hand may leave out the lanky names, which are then
+    # the printed ones
+    variables = statement.variables or tuple(name for name, _ in statement.binders)
+    for position, ((printed, _sort), name) in enumerate(
+        zip(statement.binders, variables, strict=True)
+    ):
         if name not in bounds or not is_natural(statement.types.get(name)):
             continue
         anchors = statement.anchors or (len(statement.binders),) * len(statement.hypotheses)
@@ -763,8 +777,8 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
         scripts.append(
             "\n".join(
                 [
-                    f"obtain ⟨{name}, rfl⟩ := Int.eq_ofNat_of_zero_le {own[0]}",
-                    f"induction {name} with",
+                    f"obtain ⟨{printed}, rfl⟩ := Int.eq_ofNat_of_zero_le {own[0]}",
+                    f"induction {printed} with",
                     "| zero =>",
                     f"  {_PEEL_SUM}",
                     f"  {closers}",

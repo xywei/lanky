@@ -79,7 +79,17 @@ A name has to mean in the printed source what it meant in Python, too. A
 generator's first domain is evaluated before its binder exists, so the bound in
 ``all(i > 0 for i in Fin[i])`` is an outer ``i``; printed as a guard after the
 binder it would be the binder itself, and the statement vacuous, so a binder
-that captures a name its own domain mentions is declined.
+that captures a name its own domain mentions is declined. Python accepts as a
+name many words Lean reserves, ``fun``, ``at``, ``show``, ``scoped`` and
+``end`` among them, and Mathlib reserves more, such as ``lemma`` and ``to``;
+Lean cannot parse a statement with one of them where a name should be, so
+such a name is printed quoted, ``«fun»``, which is the same name to Lean
+(:func:`lean_identifier`). The hypotheses of a theorem are named ``h0``,
+``h1``, ..., unless a variable of the statement already has that name: the
+hypothesis would shadow it, and the goal's ``h0`` would be a proof. And a
+variable named ``true`` or ``false`` would be what the bare Boolean literal
+names, which makes ``true == True`` read ``true = true`` and proves it, so
+where one is in scope the literal is ``Bool.true``.
 
 An exponent is the one operand ``Int`` does not take: Lean's ``^`` on ``Int``
 wants a ``Nat``. A literal is printed as it is, a ``Nat`` or ``Fin`` variable as
@@ -157,6 +167,7 @@ numeral.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -187,6 +198,7 @@ __all__ = [
     "dialect",
     "domain_guards",
     "is_natural",
+    "lean_identifier",
     "lean_type",
     "print_lean",
     "statement_of",
@@ -254,6 +266,137 @@ _ATOM = 2048
 def _parens(text: str, inner: int, outer: int) -> str:
     """Parenthesize when the printed operator binds more loosely than its context."""
     return f"({text})" if inner < outer else text
+
+
+# }}}
+
+
+# {{{ names
+
+#: The words Lean reads as keywords, of those a Python name can spell: every
+#: token in the parser's table of Lean v4.29.1 that is written like an ASCII
+#: identifier, read with ``import Lean`` and then with ``import Mathlib`` in
+#: the pinned project (see :mod:`lanky.mathlib`), which adds the second group.
+#: Both dialects quote every one of them: quoting a name that needs no quoting
+#: changes nothing Lean reads, and the Mathlib dialect prints the core fragment
+#: exactly as core Lean does. The Lean tests compare the list with the table
+#: of the Lean they run against, so a toolchain that reserves a new word fails
+#: them rather than a proof.
+_KEYWORDS = frozenset(
+    """
+    Prop Sort StateRefT Type _ abbrev add_decl_doc assert_not_exists
+    assert_not_imported at attribute axiom bif binder_predicate break builtin_dsimproc
+    builtin_dsimproc_decl builtin_grind_propagator builtin_initialize builtin_simproc
+    builtin_simproc_decl by by_elab calc catch class coinductive coinductive_fixpoint
+    continue dbg_trace declare_bitwise_int_theorems declare_bitwise_uint_theorems
+    declare_command_config_elab declare_config_elab declare_config_getter
+    declare_eval_bin declare_eval_bin_bitwise declare_eval_bin_bool_pred
+    declare_int_theorems declare_simp_like_tactic declare_sint_simprocs
+    declare_syntax_cat declare_uint_simprocs declare_uint_theorems decreasing_by def
+    deriving do docs_to_verso dsimproc dsimproc_decl elab elab_rules elab_stx_quot else
+    end eval_prec eval_prio example exists export extends finally for forall from fun
+    generalizing grind_annotated grind_pattern grind_propagator have haveI hiding if
+    import in include include_str inductive inductive_fixpoint inferInstanceAs infix
+    infixl infixr init_grind_norm init_quot initialize instance leading_parser let letI
+    let_delayed let_expr let_fun let_tmp local logNamedError logNamedErrorAt
+    logNamedWarning logNamedWarningAt macro macro_rules match match_expr matches
+    max_prec meta mod_cast mut mutual namespace nat_lit no_index nofun nomatch
+    noncomputable nonrec norm_cast_add_elim notation omit opaque open partial
+    partial_fixpoint postfix prefix private protected public recommended_spelling
+    register_builtin_option register_error_explanation register_grind_attr
+    register_label_attr register_linter_set register_option register_parser_alias
+    register_simp_attr register_tactic_tag renaming repeat reprove return run_cmd
+    run_elab run_meta scoped seal section set_library_suggestions set_option show
+    show_panel_widgets show_term show_term_elab simproc simproc_decl sorry structure
+    suffices syntax tactic_alt tactic_extension tactic_name tactic_tag termination_by
+    test_extern then theorem throwError throwErrorAt throwNamedError throwNamedErrorAt
+    trailing_parser try unif_hint universe unless unsafe unseal until using variable
+    where while with with_annotate_term with_weak_namespace without_expected_type
+
+    GL PiType add_aesop_rules alias assert_no_sorry assumeInstancesCommuteDummy
+    declare_aesop_rule_sets deprecate deprecated_module distTriang erase_aesop_rules
+    extend_docs from_lrat guard_min_heartbeats initialize_simps_projections
+    insert_to_additive_translation irreducible_def kerodon lemma let_impl_detail
+    library_note library_note2 lrat_proof mk_iff_of_inductive_prop name_poly_vars
+    nosimp notation3 over proof_wanted recall register_hint says stacks sudo
+    suppress_compilation to to_dual_insert_cast to_dual_insert_cast_fun unset_option
+    unsuppress_compilation variables whatsnew
+    """.split()
+)
+
+#: A name Lean reads as it is written, unless it is a keyword: an ASCII letter
+#: or ``_``, then ASCII letters, digits and ``_``. Lean's names allow more than
+#: this (Greek letters, subscripts, ``'``, ``!`` and ``?``), and a name that
+#: uses more is quoted, which costs nothing.
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def lean_identifier(name: str) -> str:
+    """Lean source for the name ``name``, which reads as that name and nothing else.
+
+    A Python name is most often a Lean name as it stands. The exceptions are
+    the words Lean reserves (:data:`_KEYWORDS`), which Python accepts as names
+    (``def f(fun: Nat)`` has a variable ``fun``, and a theorem may be called
+    ``scoped``), and a name with a character outside ASCII letters, digits and
+    ``_``, such as ``λ``, a Lean keyword too, or ``é``, which Lean does not
+    start a name with. Those are written ``«fun»``, Lean 4's quotation of an
+    identifier, which is the same name to Lean and never a keyword.
+
+    Raises:
+        UnsupportedTerm: For a name the quotation cannot hold: an empty one,
+            or one with ``«``, ``»`` or a character that does not print. No
+            Python identifier is one, but a :class:`~lanky.terms.Var` built
+            by hand can be.
+    """
+    if _PLAIN_NAME.fullmatch(name) and name not in _KEYWORDS:
+        return name
+    if not name or "«" in name or "»" in name or not name.isprintable():
+        raise UnsupportedTerm(f"the name {name!r} cannot be written as a Lean identifier")
+    return f"«{name}»"
+
+
+def _mentioned(term: Any) -> set[str]:
+    """Every name ``term`` mentions, free or bound, in a body, a guard or a domain."""
+    found: set[str] = set()
+    stack = [term]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Var | prim.Variable):
+            found.add(node.name)
+        elif isinstance(node, Forall | Exists | Sum):
+            for var, domain in node.binders:
+                found.add(var.name)
+                stack.append(domain)
+            stack.extend(child for child in (node.body, node.guard) if child is not None)
+        elif isinstance(node, Refined):
+            stack.append(node.base)
+            stack.extend(node.props)
+        elif isinstance(node, FinType):
+            stack.append(node.bound)
+        elif isinstance(node, FnType):
+            stack.extend((node.domain, node.codomain))
+        elif isinstance(node, prim.ExpressionNode):
+            for child in init_args(node):
+                stack.extend(child if isinstance(child, tuple) else (child,))
+    return found
+
+
+def _hypothesis_name(index: int, taken: set[str]) -> str:
+    """``h{index}``, or ``h{index}_1`` and on while a name in ``taken`` is that.
+
+    ``taken`` holds every name the statement mentions (:func:`_mentioned`),
+    and gets the one returned. A hypothesis named like a variable would
+    shadow it in the parameters after it, so ``def named(h0: Nat, b: Nat) ->
+    h0 + b == b + h0`` would state that a proof plus ``b`` is ``b`` plus a
+    proof, and nothing would prove it.
+    """
+    stem = name = f"h{index}"
+    suffix = 1
+    while name in taken:
+        name = f"{stem}_{suffix}"
+        suffix += 1
+    taken.add(name)
+    return name
 
 
 # }}}
@@ -632,7 +775,7 @@ def _render_exponent(expr: Any, types: _Types) -> str:
     if isinstance(expr, int) and not isinstance(expr, bool) and expr >= 0:
         return str(expr)
     if isinstance(expr, Var | prim.Variable) and is_natural(types.get(expr.name)):
-        return f"{expr.name}.toNat"
+        return f"{lean_identifier(expr.name)}.toNat"
     if isinstance(expr, prim.Call | prim.Subscript) and is_natural(
         _application_type(expr, types)
     ):
@@ -897,7 +1040,7 @@ def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
         if position == len(expr.binders) - 1:
             conditions += [_render_prop(guard, _AND + 1, inner) for guard in guards]
         condition = f" with {' ∧ '.join(conditions)}" if conditions else ""
-        text = f"∑ {var.name} ∈ Finset.Ico (0 : ℤ) {bound}{condition}, {text}"
+        text = f"∑ {lean_identifier(var.name)} ∈ Finset.Ico (0 : ℤ) {bound}{condition}, {text}"
     return _parens(text, _QUANT, outer)
 
 
@@ -946,7 +1089,7 @@ def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
         else:
             for condition in reversed(conditions):
                 text = f"{condition} ∧ {text}"
-        text = f"{word} {var.name} : {_lean_type(domain)}, {text}"
+        text = f"{word} {lean_identifier(var.name)} : {_lean_type(domain)}, {text}"
     return _parens(text, _QUANT, outer)
 
 
@@ -973,13 +1116,18 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
     ``types`` maps the names bound around ``expr`` to their lanky types. It is
     what tells an application of a family with natural values, which is cast
     to ``Int`` where it is used as a number, from anything else; a name it does
-    not know, a free variable of an open term, is printed as it stands.
+    not know, a free variable of an open term, is printed as it stands. A name
+    is quoted where Lean would read it as something else (:func:`lean_identifier`).
     """
     if isinstance(expr, Var | prim.Variable):
-        return expr.name
+        return lean_identifier(expr.name)
     expr = _integral(expr)
     if isinstance(expr, int | float | Fraction | bool | complex):
         text = _render_number(expr)
+        if isinstance(expr, bool) and text in types:
+            # a variable named ``true`` is in scope, and the bare literal
+            # would be that variable (see the module docstring)
+            text = f"Bool.{text}"
         # an ascribed literal is bracketed already, whatever its sign
         atomic = text.startswith("(") or not _is_negative(expr)
         return _parens(text, _ATOM if atomic else _ADD, outer)
@@ -1103,7 +1251,17 @@ def print_lean(expr: Any, mathlib: bool | None = None) -> str:
     """
     with dialect(mathlib):
         check_applications(expr)
-        return _render_prop(expr, _QUANT, {})
+        return _render_prop(expr, _QUANT, _free_scope(expr))
+
+
+def _free_scope(term: Any) -> dict[str, Any]:
+    """The scope an open term is printed in: its free names, with no type known.
+
+    A free name gets no type from this, and is printed as it always was; that
+    it is in scope is what keeps a ``true`` among them from being taken for
+    the Boolean literal (see :func:`_render`).
+    """
+    return dict.fromkeys(sorted(free_variables(term)))
 
 
 # }}}
@@ -1542,11 +1700,17 @@ class LeanStatement:
     follow it in the parameter list, and the statement's hypotheses follow
     the last binder, which is where :func:`print_lean` puts them too.
 
+    Every name is Lean source: a keyword Python accepts as a name is quoted
+    (:func:`lean_identifier`), and a hypothesis is never named like a
+    variable of the statement.
+
     Attributes:
         name: The theorem's Lean name (see :attr:`declared_name`).
         binders: ``(name, Lean type)`` pairs, in order.
         hypotheses: ``(name, Lean proposition)`` pairs; the names are invented
-            here, since a lanky guard is a conjunction and carries none.
+            here, since a lanky guard is a conjunction and carries none:
+            ``h0``, ``h1``, ..., each with a suffix if a variable of the
+            statement has its name.
         goal: The conclusion, as Lean source.
         goal_term: The conclusion as a lanky term, which is what a tactic
             strategy inspects to decide what to induce on.
@@ -1559,6 +1723,10 @@ class LeanStatement:
             cast to ``Int``).
         mathlib: Whether the statement was printed in the Mathlib dialect,
             and so has to be elaborated where Mathlib is imported.
+        variables: The lanky name of each binder, in the order of
+            ``binders``, which is what ``types`` is keyed by and what a
+            strategy compares with a term's names; ``binders`` has the names
+            as Lean source.
     """
 
     name: str
@@ -1570,6 +1738,7 @@ class LeanStatement:
     anchors: tuple[int, ...] = field(default_factory=tuple)
     types: dict[str, Any] = field(default_factory=dict)
     mathlib: bool = False
+    variables: tuple[str, ...] = field(default_factory=tuple)
 
     def _parameters(self) -> list[tuple[bool, int]]:
         """The parameters in order, as ``(is_hypothesis, index)`` pairs."""
@@ -1639,12 +1808,17 @@ class LeanStatement:
 
 
 def _lean_name(name: str) -> str:
-    """Turn a Python qualified name into a usable Lean identifier."""
+    """Turn a Python qualified name into a usable Lean identifier.
+
+    A name that is a Lean keyword once cleaned, a theorem called ``scoped``
+    or ``open``, say, is quoted (:func:`lean_identifier`), and so is one with
+    a letter outside ASCII.
+    """
     cleaned = "".join(character if character.isalnum() else "_" for character in name)
     cleaned = cleaned.strip("_") or "lanky_claim"
     if cleaned[0].isdigit():
         cleaned = f"lanky_{cleaned}"
-    return cleaned
+    return lean_identifier(cleaned)
 
 
 def statement_of(
@@ -1679,17 +1853,19 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
     hypotheses: list[tuple[str, str]] = []
     hypothesis_terms: list[Any] = []
     anchors: list[int] = []
-    types: dict[str, Any] = {}
+    types: dict[str, Any] = _free_scope(term)
+    taken = _mentioned(term)
     for var, domain in term.binders:
         guards = _domain_guards(var, domain, types)
         types = {**types, var.name: domain}
-        binders.append((var.name, _lean_type(domain)))
+        binders.append((lean_identifier(var.name), _lean_type(domain)))
         for guard in guards:
-            hypotheses.append((f"h{len(hypotheses)}", guard))
+            hypotheses.append((_hypothesis_name(len(hypotheses), taken), guard))
             hypothesis_terms.append(None)
             anchors.append(len(binders))
     for guard in conjuncts(term.guard):
-        hypotheses.append((f"h{len(hypotheses)}", _render_prop(guard, _QUANT, types)))
+        text = _render_prop(guard, _QUANT, types)
+        hypotheses.append((_hypothesis_name(len(hypotheses), taken), text))
         hypothesis_terms.append(guard)
         anchors.append(len(binders))
     return LeanStatement(
@@ -1702,6 +1878,7 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
         anchors=tuple(anchors),
         types=types,
         mathlib=mathlib,
+        variables=tuple(var.name for var, _ in term.binders),
     )
 
 

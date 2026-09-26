@@ -25,6 +25,7 @@ from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
     check_applications,
+    lean_identifier,
     lean_type,
     print_lean,
     statement_of,
@@ -589,6 +590,173 @@ def test_a_binderless_statement_keeps_its_hypotheses() -> None:
     assert statement.binders == ()
     assert statement.hypotheses == (("h0", "p > 1"),)
     assert statement.goal == "p > 0"
+
+
+# }}}
+
+
+# {{{ names Lean would read as something else
+
+
+def _scoped():
+    @theorem
+    def scoped(a: Nat, b: Nat) -> a + b == b + a:
+        """A true claim under a name that is a Lean keyword."""
+
+    return scoped
+
+
+def _keyword_binders():
+    @theorem
+    def binders(fun: Nat, at: Nat) -> fun + at == at + fun:
+        """The same claim over variables whose names are Lean keywords."""
+
+    return binders
+
+
+def _named_like_a_hypothesis():
+    @theorem
+    def named(h0: Nat, b: Nat) -> h0 + b == b + h0:
+        """The same claim over a variable named like the first hypothesis."""
+
+    return named
+
+
+def _truth():
+    @theorem
+    def truth(true: Bool) -> true == True:  # noqa: E712 - the point of it
+        """False at ``true = False``, over a variable named like the Boolean literal."""
+
+    return truth
+
+
+def _scan_with_keyword_binders():
+    @theorem
+    def scan_keywords(
+        size: Nat,
+        cnt: Fn[Fin[size], Nat],
+        off: Fn[Fin[size + 1], Nat],
+        h0: off(0) == 0,
+        hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[size]),
+    ) -> all(
+        off(show) <= off(at) for show in Fin[size + 1] for at in Fin[size + 1] if show <= at
+    ):
+        """The scan's monotonicity, with its goal's variables named like Lean keywords."""
+
+    return scan_keywords
+
+
+def test_a_name_lean_reserves_is_quoted() -> None:
+    """#38: a keyword, or a letter outside ASCII, is written ``«name»``, the same name to Lean.
+
+    The list of keywords is Lean's parser table, core and Mathlib's both; a
+    name Lean reads as it is stays as it is.
+    """
+    assert lean_identifier("size") == "size"
+    assert lean_identifier("h0_1") == "h0_1"
+    assert lean_identifier("Fun") == "Fun"
+    for word in ("fun", "at", "show", "end", "scoped", "open", "Type", "exists", "_"):
+        assert lean_identifier(word) == f"«{word}»"
+    for word in ("lemma", "to", "over"):  # reserved once Mathlib is imported
+        assert lean_identifier(word) == f"«{word}»"
+    for name in ("λ", "é", "x₁"):
+        assert lean_identifier(name) == f"«{name}»"
+    for name in ("", "a»b", "«a", "a\nb"):
+        with pytest.raises(UnsupportedTerm, match="cannot be written as a Lean identifier"):
+            lean_identifier(name)
+
+
+def test_a_theorem_named_like_a_keyword_is_declared_under_its_quoted_name() -> None:
+    """``theorem scoped`` does not parse, and every tactic of the ladder failed on it."""
+    scoped = _scoped()
+    statement = statement_of(scoped.term, "scoped")
+    assert statement.name == "«scoped»"
+    assert statement.source("omega").startswith("theorem «scoped» (a : Int) (h0 : 0 ≤ a) ")
+    mathlib = statement_of(scoped.term, "scoped", mathlib=True)
+    assert mathlib.declared_name == "Lanky.«scoped»"
+    # a qualified name is cleaned first, and quoted only if what is left needs it
+    assert statement_of(scoped.term, "test_x.<locals>.scoped").name == "test_x__locals__scoped"
+    assert statement_of(scoped.term, "lemma").name == "«lemma»"
+
+
+def test_variables_named_like_keywords_are_quoted_wherever_they_are_printed() -> None:
+    """A parameter, a bound variable, an exponent and a reduction's binder alike."""
+    binders = _keyword_binders()
+    statement = statement_of(binders.term, "binders")
+    assert statement.binders == (("«fun»", "Int"), ("«at»", "Int"))
+    assert statement.variables == ("fun", "at")
+    assert statement.hypotheses == (("h0", "0 ≤ «fun»"), ("h1", "0 ≤ «at»"))
+    assert statement.goal == "«fun» + «at» = «at» + «fun»"
+    assert print_lean(binders.term) == (
+        "∀ «fun» : Int, 0 ≤ «fun» → ∀ «at» : Int, 0 ≤ «at» → «fun» + «at» = «at» + «fun»"
+    )
+
+    show, end = Var("show"), Var("end")
+    bound = Forall(((n, Nat),), Forall(((show, FinType(n)),), show < 2**show))
+    assert print_lean(bound) == (
+        "∀ n : Int, 0 ≤ n → ∀ «show» : Int, 0 ≤ «show» → «show» < n → "
+        "«show» < (2 : Int) ^ «show».toNat"
+    )
+    reduction = Forall(((n, Nat),), Sum(((end, FinType(n)),), end) >= 0)
+    assert "(∑ «end» ∈ Finset.Ico (0 : ℤ) n, «end») ≥ 0" in print_lean(reduction, mathlib=True)
+
+
+def test_a_variable_named_like_a_hypothesis_does_not_meet_one() -> None:
+    """The hypothesis ``0 ≤ h0`` named ``h0`` shadowed the variable, and the goal's ``h0``
+    was the proof: ``named`` read ``tested`` with Lean's "Application type mismatch".
+
+    A hypothesis takes the next name no variable of the statement has, bound
+    ones in the goal included, since the ladder introduces those after the
+    hypotheses.
+    """
+    statement = statement_of(_named_like_a_hypothesis().term, "named")
+    assert statement.hypotheses == (("h0_1", "0 ≤ h0"), ("h1", "0 ≤ b"))
+    assert statement.source("omega").startswith(
+        "theorem named (h0 : Int) (h0_1 : 0 ≤ h0) (b : Int) (h1 : 0 ≤ b) : h0 + b = b + h0"
+    )
+
+    first, second = Var("h0"), Var("h1")
+    goal = Forall(((second, FinType(b)),), second < b)
+    statement = statement_of(Forall(((first, Nat), (b, Nat)), goal), "t")
+    assert [name for name, _ in statement.hypotheses] == ["h0_1", "h1_1"]
+    assert "intro h1 hd hd_1" in tactic_ladder(statement)[5]
+
+
+def test_a_variable_named_true_is_not_the_boolean_literal() -> None:
+    """``true == True`` over a ``Bool`` named ``true`` printed as ``true = true``.
+
+    Lean proves that by ``simp``, and the claim is false at ``true = False``.
+    Where a variable of that name is in scope, free or bound, the literal is
+    written ``Bool.true``; elsewhere it is printed as it always was.
+    """
+    truth = _truth()
+    assert statement_of(truth.term, "truth").goal == "true = Bool.true"
+    assert print_lean(truth.term) == "∀ true : Bool, true = Bool.true"
+    assert print_lean(Var("false") == False) == "false = Bool.false"  # noqa: E712
+    assert print_lean(f(a) == True) == "f a = true"  # noqa: E712
+
+
+def test_the_ladder_names_a_keyword_variable_as_the_printer_does() -> None:
+    """The strategy's ``intro``, ``obtain`` and ``induction`` quote what the statement quotes."""
+    ladder = tactic_ladder(statement_of(_scan_with_keyword_binders().term, "scan_keywords"))
+    script = ladder[-2]
+    assert "intro «show» hd hd_1 «at» hd_2 hd_3 hg" in script
+    assert "obtain ⟨«at», rfl⟩ := Int.eq_ofNat_of_zero_le hd_2" in script
+    assert "induction «at» with" in script
+    assert "by_cases hlt : (k : Int) < «show»" in script
+
+
+def test_the_ladder_names_no_guard_like_a_later_binder() -> None:
+    """A guard of ``a`` named ``hd`` was shadowed by a later goal binder named ``hd``.
+
+    The script then traded ``a`` for a natural through ``hd``, which by then
+    was the variable and not the guard ``0 ≤ a``.
+    """
+    guard = Var("hd")
+    term = Forall(((n, Nat),), Forall(((a, Nat), (guard, Nat)), guard + a >= a + n - n))
+    (script,) = induction_scripts(statement_of(term, "t"))
+    assert script.startswith("intro a hd_1 hd hd_2\n")
+    assert "obtain ⟨hd, rfl⟩ := Int.eq_ofNat_of_zero_le hd_2" in script
 
 
 # }}}
@@ -1578,6 +1746,122 @@ def test_a_session_survives_an_attempt_that_timed_out(lean_oracle: LeanOracle) -
         session.close()
 
 
+#: #38's reproduction, with the two cases its review added: a goal whose
+#: variables the induction strategy has to name, and a variable named like the
+#: Boolean literal.
+_KEYWORD_CLAIMS = '''\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Bool, Fin, Fn, Nat
+
+
+@theorem
+def commutes(a: Nat, b: Nat) -> a + b == b + a:
+    """A name Lean accepts."""
+
+
+@theorem
+def scoped(a: Nat, b: Nat) -> a + b == b + a:
+    """The same claim under a name that is a Lean keyword."""
+
+
+@theorem
+def binders(fun: Nat, at: Nat) -> fun + at == at + fun:
+    """The same claim over variables whose names are Lean keywords."""
+
+
+@theorem
+def named(h0: Nat, b: Nat) -> h0 + b == b + h0:
+    """The same claim over a variable named like the first hypothesis."""
+
+
+@theorem
+def scan(
+    size: Nat,
+    cnt: Fn[Fin[size], Nat],
+    off: Fn[Fin[size + 1], Nat],
+    h0: off(0) == 0,
+    hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[size]),
+) -> all(off(show) <= off(at) for show in Fin[size + 1] for at in Fin[size + 1] if show <= at):
+    """The scan's monotonicity, with its goal's variables named like Lean keywords."""
+
+
+@theorem
+def truth(true: Bool) -> true == True:
+    """False at true = False."""
+'''
+
+
+def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_path) -> None:
+    """#38: every row below ``commutes`` read ``tested``, with a parse error as its reason.
+
+    ``scoped`` is a keyword theorem name, ``fun`` and ``at`` are keyword
+    variables, the first hypothesis shadowed the variable ``h0``, and the
+    scan's goal names its variables ``show`` and ``at``, which the induction
+    strategy has to write as the statement does. ``truth`` is false, and Lean
+    proved it, reading ``true = true``; the tester refutes it.
+    """
+    from lanky.check import check_path
+
+    path = tmp_path / "p8_keywords.py"
+    path.write_text(_KEYWORD_CLAIMS, encoding="utf-8")
+    by_owner = {fact.owner: fact for fact in check_path(path)}
+    for owner in ("commutes", "scoped", "binders", "named", "scan"):
+        fact = by_owner[owner]
+        assert (fact.status, fact.decided_by) == (Status.PROVED, "lean"), (
+            owner,
+            fact.provenance.get("lean_reason"),
+        )
+    assert "theorem «scoped» (a : Int)" in by_owner["scoped"].provenance["lean_source"]
+    truth = by_owner["truth"]
+    assert (truth.status, truth.decided_by) == (Status.REFUTED, "property-test")
+
+
+#: Lean source that prints every token of the parser's table, one to a line.
+_PRINT_TOKENS = """\
+open Lean Parser in
+#eval show CoreM Unit from do
+  for token in (getTokenTable (← getEnv)).findPrefix "" do
+    IO.println token
+"""
+
+
+def _reserved_words(session: LeanSession, source: str) -> set[str]:
+    """The words spelled like ASCII identifiers that Lean reads as tokens, as it prints them."""
+    from lean_interact import Command
+
+    assert session.start(), session.error
+    response = session.server.run(Command(cmd=source), timeout=session.timeout)
+    printed = "\n".join(
+        str(item.data)
+        for item in response.messages
+        if str(getattr(item, "severity", "")).endswith("info")
+    )
+    return {word for word in printed.split() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", word)}
+
+
+def test_every_word_lean_reserves_is_quoted(lean_oracle: LeanOracle) -> None:
+    """The keyword list is Lean's own, read from the Lean this suite runs against.
+
+    A toolchain that reserves a word the list does not have fails here rather
+    than in a proof. And a statement over a variable named after each word of
+    the list elaborates, so every quoted name is one Lean reads.
+    """
+    # a session of its own, so that the module's does not keep Lean imported
+    session = LeanSession(timeout=lean_oracle.session.timeout)
+    try:
+        reserved = _reserved_words(session, f"import Lean\n\n{_PRINT_TOKENS}")
+    finally:
+        session.close()
+    assert {"fun", "at", "scoped", "show", "Type"} <= reserved
+    assert sorted(word for word in reserved if not lean_identifier(word).startswith("«")) == []
+
+    from lanky.lean import _KEYWORDS
+
+    everything = Forall(tuple((Var(word), Int) for word in sorted(_KEYWORDS)), True)
+    closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(everything)}\n")
+    assert closed, detail
 
 
 def test_a_session_runs_lean_source_directly(lean_oracle: LeanOracle) -> None:
