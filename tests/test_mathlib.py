@@ -506,6 +506,9 @@ def test_the_oracle_follows_the_variable_when_it_is_asked(monkeypatch, tmp_path)
     pinned = LeanSession()
     monkeypatch.setenv("LANKY_LEAN_MATHLIB", str(tmp_path))
     assert LeanOracle(session=pinned).session is pinned
+    # and so does one a session is assigned to, as when session was an attribute
+    oracle.session = pinned
+    assert oracle.session is pinned
 
 
 def test_mathlib_mode_takes_what_core_lean_declines(monkeypatch, tmp_path) -> None:

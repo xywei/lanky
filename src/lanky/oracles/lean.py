@@ -835,6 +835,15 @@ class LeanOracle:
             session = self._sessions[project] = LeanSession(self.timeout, mathlib=project)
         return session
 
+    @session.setter
+    def session(self, session: LeanSession) -> None:
+        """Pin a session, as passing one to the constructor does.
+
+        ``session`` was a plain attribute before Mathlib mode, and code that
+        assigns one keeps working: the oracle uses it whatever the variable says.
+        """
+        self._pinned = session
+
     def trust_class(self) -> str:
         """Lean's kernel checks the proof, the strongest evidence lanky has."""
         return "kernel"
