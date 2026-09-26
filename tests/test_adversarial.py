@@ -2168,6 +2168,36 @@ def test_a_guard_empty_only_for_some_outer_values_is_never_flagged(
     assert "VACUOUS" not in printed
 
 
+def test_a_guard_a_point_got_through_at_an_undecided_draw_is_not_empty(
+    tmp_path, oracles, capsys
+) -> None:
+    """A point that got through the guard counts, even where the draw decided nothing.
+
+    At ``n <= 3`` the guard holds nowhere and the draw is a valid pass. Above
+    that a point gets through, and the body, a sampled universal under ``~``,
+    leaves the draw undecided. No valid draw got through, but a point did, so
+    the guard is not empty: nothing is warned about, and no stronger oracle is
+    asked whether it is.
+    """
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+        "n: Nat) -> all(~all(k < 100 for k in Nat) for i in Fin[n] if n > 3)",
+    )
+    path = _write(tmp_path, source)
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    (fact,) = list(check_path(path))
+    assert shown == ["theorem"]
+    assert "goal_reached" not in fact.provenance
+    oracles(TestOracle())
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+    assert fact.provenance["undecided"] > 0
+    assert "goal_reached" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+
 def test_a_goal_whose_domain_is_always_empty_is_vacuous_too(tmp_path, oracles, capsys) -> None:
     """With no guard, the goal's domain is what never has a point: ``Fin[n - n]``."""
     source = VACUOUS.replace(

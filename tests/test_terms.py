@@ -31,7 +31,7 @@ from lanky.terms import (
     structurally_equal,
     sum_,
 )
-from lanky.testing import sort_sampler
+from lanky.testing import check, sort_sampler
 
 
 def test_scope_invents_variables() -> None:
@@ -276,8 +276,13 @@ def test_a_symbolic_guard_over_a_concrete_domain_is_refused() -> None:
     with pytest.raises(SymbolicBoolError, match="its guard 'n > 0 and n > 1'"):
         sum_(1 for i in Fin[2] if i < n)
     # a guard written with `not` held at no point, and the message says why
-    with pytest.raises(SymbolicBoolError, match="Python's `not`"):
+    with pytest.raises(SymbolicBoolError, match="if it was written with Python's `not`"):
         forall(i >= 0 for i in Fin[3] if not (n > 100))
+    # so does one joined with `and` to a concrete condition that holds at no
+    # point, and the message does not claim it was a `not`
+    with pytest.raises(SymbolicBoolError, match="no point got through it: if it was") as raised:
+        sum_(1 for i in Fin[3] if (n > 3) and (i > 5))
+    assert "so it was written with" not in str(raised.value)
 
 
 def test_the_ways_the_refusal_names_keep_the_condition() -> None:
@@ -861,6 +866,71 @@ def test_every_answer_is_one_its_position_allows() -> None:
                 assert allowed, (render(term), n, polarity, answer)
     # the check is only worth something if a fair share of answers were given
     assert decided > 500
+
+
+def _divided(rng: random.Random, depth: int) -> tuple:
+    """A random statement whose atoms may divide by zero, with its truth per reading.
+
+    ``10 // n > 1`` and ``10 % n == 0`` have no value at ``n = 0`` in Python,
+    and a total division gives them one, so the truth takes a ``reading``
+    that says what each of them is there. The sampled atoms of
+    :func:`_atoms` are mixed in, so that an open answer meets an evidence
+    one in the same connective.
+    """
+    n = Var("n")
+    shape = rng.randrange(4) if depth else 0
+    if shape == 0:
+        divided = [
+            (10 // n > 1, lambda p, r: r[0] if p["n"] == 0 else 10 // p["n"] > 1),
+            (10 % n == 0, lambda p, r: r[1] if p["n"] == 0 else 10 % p["n"] == 0),
+        ]
+        sampled = [
+            (atom, lambda p, r, truth=truth: truth(p)) for atom, truth in _atoms(False)
+        ]
+        return rng.choice(divided + sampled)
+    left, true_left = _divided(rng, depth - 1)
+    right, true_right = _divided(rng, depth - 1)
+    if shape == 1:
+        return ~left, lambda p, r: not true_left(p, r)
+    if shape == 2:
+        return left & right, lambda p, r: true_left(p, r) and true_right(p, r)
+    return left | right, lambda p, r: true_left(p, r) or true_right(p, r)
+
+
+def test_every_answer_holds_under_every_reading_of_a_division_by_zero() -> None:
+    """A connective settled past a division by zero is settled whatever the quotient is.
+
+    ``&`` and ``|`` read a ``ZeroDivisionError`` as an operand with no answer
+    (#25), and another operand may settle them: ``(10 // n > 1) | (n == 0)``
+    is true at ``n = 0`` under every reading of the division, Lean's total
+    one included. So every answer, at every polarity, has to be one its
+    position allows under each reading, and the tester's refutations have to
+    be real under each.
+    """
+    rng = random.Random(0)
+    readings = [(a, b) for a in (False, True) for b in (False, True)]
+    decided = 0
+    for trial in range(150):
+        term, truth = _divided(rng, 4)
+        for n in range(3):
+            for polarity in (Polarity.POSITIVE, Polarity.NEGATIVE):
+                try:
+                    answer = evaluate(term, {"n": n}, _sampler(trial), polarity)
+                except (Undecided, ZeroDivisionError):
+                    continue
+                decided += 1
+                for reading in readings:
+                    expected = truth({"n": n}, reading)
+                    if polarity is Polarity.POSITIVE:
+                        allowed = answer or not expected
+                    else:
+                        allowed = expected or not answer
+                    assert allowed, (render(term), n, polarity, answer, reading)
+        report = check([("n", Nat)], [], term, samples=20, seed=trial)
+        if not report.ok:
+            point = {"n": report.counterexample["n"]}
+            assert not any(truth(point, reading) for reading in readings), render(term)
+    assert decided > 300
 
 
 # }}}

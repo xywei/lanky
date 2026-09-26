@@ -1186,17 +1186,20 @@ def test_without_lean_the_quickstart_gap_transcripts_hold(monkeypatch, tmp_path,
     assert not any(line.startswith("SEMANTICS") for line in div_zero)
 
 
-def _check_flipped_gauss(directory: Path, capsys, code: int) -> list[str]:
+def _check_flipped_gauss(
+    directory: Path, capsys, code: int, guard: str = "(a < b) & (a > b)"
+) -> list[str]:
     """``examples/gauss.py`` with the guard of ``scan_monotone``'s goal flipped, as checked.
 
     The quickstart has a reader flip ``if a <= b`` to ``if (a < b) & (a > b)``
-    in the example itself, so the file keeps its name and its lines.
+    in the example itself, so the file keeps its name and its lines; it
+    mentions ``a == 7`` as well, a guard only the sampler misses.
     """
     source = (ROOT / "examples" / "gauss.py").read_text(encoding="utf-8")
     assert "if a <= b):" in source
     directory.mkdir()
     path = directory / "gauss.py"
-    path.write_text(source.replace("if a <= b):", "if (a < b) & (a > b)):"), encoding="utf-8")
+    path.write_text(source.replace("if a <= b):", f"if {guard}):"), encoding="utf-8")
     return _check_gap(path, capsys, code)
 
 
@@ -1865,6 +1868,23 @@ def test_lean_shows_the_quickstart_flipped_goal_guard_vacuous(
     assert row.startswith("proved (vacuous)  lean")
     assert any(line.startswith("VACUOUS scan_monotone at gauss.py:39") for line in printed)
     assert not any(line.startswith("WARNING") for line in printed)
+
+
+def test_lean_leaves_the_quickstart_guard_the_sampler_misses_to_a_warning(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """What the quickstart says of ``a == 7``: the warning with Lean too, and exit 0.
+
+    No draw has a point ``7``, since the sizes drawn stay below it, and Lean
+    cannot show the guard empty, because it is not.
+    """
+    printed = _check_flipped_gauss(tmp_path / "rare", capsys, 0, guard="a == 7")
+    assert (
+        "WARNING scan_monotone at gauss.py:39: the goal's guard a == 7 never held "
+        "in 200 valid draws"
+    ) in printed
+    assert "  no oracle could show it empty, so the goal may be vacuous" in printed
+    assert not any(line.startswith("VACUOUS") for line in printed)
 
 
 def test_the_statement_the_oracle_sends_is_the_one_it_records(

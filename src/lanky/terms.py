@@ -805,11 +805,15 @@ def _refuse_a_dropped_guard(driven: _Driven, word: str) -> None:
     # The trace pools what every point recorded, so a guard that does not
     # mention the loop variable comes back once per point; it is named once.
     captured = " and ".join(dict.fromkeys(render(g) for g in conjuncts(driven.guard)))
+    # No point got through. Python's `not` does that, since it inverts the
+    # answer lanky gives while capturing the guard, but so does a concrete
+    # condition joined with `and` that holds at no point, so the hint is
+    # conditional.
     inverted = (
         ""
         if driven.values
-        else " (it held at no point, so it was written with Python's `not`, "
-        "which inverts the answer lanky gives while capturing it; write `~(...)`)"
+        else " (no point got through it: if it was written with Python's `not`, "
+        "which inverts the answer lanky gives while capturing it, write `~(...)`)"
     )
     outside = _OUTSIDE.get(word)
     moved = (
