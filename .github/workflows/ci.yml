@@ -63,10 +63,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # This job syncs the `lean` extra and the other does not, so it keeps a
+      # uv cache entry of its own; sharing one, it restored a cache without
+      # lean-interact and downloaded the driver again on every run.
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+          cache-suffix: lean
 
       # The toolchain is a download of several hundred megabytes that unpacks
       # to about 2.7 GB, so it is kept between runs.
