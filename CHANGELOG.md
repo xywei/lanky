@@ -57,10 +57,69 @@ prints a ledger naming who decided what.
   --verbose` prints it, and when a stronger oracle established such a fact the
   property tester is still run as a cross-check so that a counterexample under
   the Python reading is recorded rather than lost.
-- **Example.** `examples/gauss.py`, two worked theorems, runnable three ways.
+- **Facts rest on facts** (`lanky.ledger`). `Fact.rests_on` holds the ids of
+  the facts a fact was established from, as a tuple (a single string is
+  refused rather than read as one id per character). `Ledger.support(fact)`
+  reads the graph and returns a `Support`: `effective`, the weakest status over
+  the fact and everything it rests on, directly or through other facts, in the
+  order of the status ladder with `refuted` below `assumed`; and `under`, the
+  ids of the assumptions among them, in the order they are reached. An
+  assumption is a fact that is `assumed` (an axiom, or an obligation nobody
+  established) or `refuted`, an id the ledger does not hold (a claim of
+  another file, since each file checked has a ledger of its own, or an id
+  written wrong), or a fact on a circle of facts that rest on each other,
+  since a circular argument establishes nothing and every fact on the circle
+  or above it is worth `assumed` at most. Which facts are on a circle is found
+  once per ledger, so a long chain of facts is read in seconds. The table
+  names the
+  assumptions after the status, as in `proved under jump, compact`, by owner
+  when the owner names one fact in the ledger and by id otherwise, and grows an
+  `EFFECTIVE` column when some fact is worth less than its own status; a
+  ledger in which nothing rests on anything renders as before. `Fact.to_dict`
+  carries `rests_on`, and `Ledger.to_dicts`, which `Ledger.to_json` and
+  `lanky check --json` now write, adds `effective` and `under` for every fact.
+  The exit code does not change: a fact resting on a refuted one fails the
+  check through the refuted one. `lanky check` names each id a fact rests on
+  that its ledger does not hold in an `UNRESOLVED` line under the table, since
+  in the row it reads like any other assumption and a misspelt one would pass
+  for one; that does not fail the check either, because an id of another
+  file's fact is the same case.
+- **`@axiom(cite=...)`** (`lanky.theory`). A statement written like a theorem
+  and taken on a citation, for a result lanky cannot establish, such as a jump
+  relation from a textbook. `Axiom` is a `Theorem` whose fact has kind
+  `axiom`, id `axiom:<module>.<qualname>@<line>`, status `assumed` and the
+  citation as `cite` in its provenance; the table prints `assumed (axiom)`.
+  The citation is required: `@axiom` bare, or with a citation that is missing,
+  empty or not a string, raises `TypeError` where it is written. `lanky check`
+  asks no oracle to establish an axiom, and has the oracles of the `test`
+  trust class look for a counterexample to it, which is kept: an axiom copied
+  down wrong is `refuted (axiom)` and fails the check. What the sampling
+  says about the hypotheses is kept too: an axiom whose hypotheses no draw
+  satisfied is examined for vacuity as a theorem is, so hypotheses a stronger
+  oracle shows inconsistent make it `assumed (axiom) (vacuous)` and fail the
+  check, and otherwise it gets the `WARNING` line; that oracle is asked about
+  the hypotheses alone, never about the axiom. Its semantics gaps (a division
+  by something that may be zero) are recorded in its provenance as a
+  theorem's are. The pytest plugin collects and samples an axiom as it does a
+  theorem.
+- **`@theorem(uses=[...])`.** A theorem names the facts it rests on:
+  theorems, axioms, `Fact`s or fact ids (`lanky.theory.fact_ids`), which
+  become its fact's `rests_on`. A single entry need not be in a list; an entry
+  that names no one fact, such as a plugin's object that owns several, is
+  refused where the decorator is written, and so is `uses=None`, which is
+  what a name bound to nothing by mistake holds (a theorem that uses nothing
+  leaves `uses=` out). So is a positional argument that is not the function
+  to decorate: `@theorem(gauss)` and `@axiom("Kress")` are `uses=` and
+  `cite=` without their keywords, and say so. The oracles are not handed the
+  statements a theorem uses: what `uses=` records is what the theorem is
+  worth. `@theorem` written bare works as before, and so does `@theorem()`.
+- **Example.** `examples/gauss.py`, two worked theorems, runnable three ways,
+  and `examples/nicomachus.py`: Nicomachus's theorem as an axiom, and the
+  closed form of the sum of cubes, tested under it.
 - **Documentation.** A README that leads with what works, and
   `docs/quickstart.md`, which walks the worked file end to end with the output
-  the commands print.
+  the commands print, and then the axiom example, whose table the suite
+  compares with a real run.
 
 ### Changed
 
@@ -309,9 +368,9 @@ listed because it changes behaviour a reader could already have depended on.
   there is now the counterexample when it names something, then the fact's
   `reason` whenever it has one, each of its lines indented, and
   `no witness recorded` when there is neither (a plugin's own `witness`, as
-  loopty's isl oracle records, counts as one and stays in the JSON). An empty
-  counterexample is no longer printed: `-> 1 == 2` shows its reason without
-  the `counterexample: {}` line above it. The JSON ledger keeps every field,
+  loopty's isl oracle records, counted as one; it is now printed too, see
+  below). An empty counterexample is no longer printed: `-> 1 == 2` shows its
+  reason without the `counterexample: {}` line above it. The JSON ledger keeps every field,
   the empty counterexample included. The new `lanky.cli.refutation_lines`
   builds the block.
 - **A quantifier over a refined domain reads the refinement.** The property
@@ -467,6 +526,17 @@ listed because it changes behaviour a reader could already have depended on.
 - **The Lean CI job keeps a uv cache of its own.** It shared one with the
   job that does not sync the `lean` extra, and downloaded lean-interact
   again on every run; its setup-uv step now has `cache-suffix: lean` (#19).
+- **A refutation's witness is printed, whichever plugin recorded it.**
+  `refutation_lines` counted a plugin's `witness` against `no witness
+  recorded` without printing it, since printing it looked like lanky knowing
+  a plugin's provenance keys, so a fact loopty's isl oracle refuted, with the
+  cell that escapes an array as its witness, came out with an empty block and
+  the witness in the JSON alone (#20). The block under a `REFUTED` line is now
+  built from three standard provenance keys, read the same way for every
+  oracle and plugin: the `counterexample` and the `witness`, each when it is
+  not empty, and then the `reason`, which usually talks about them. A value
+  that prints as several lines is indented line by line. A plugin's own keys,
+  such as loopty's `witness_text`, stay in the JSON.
 
 ### Notes
 

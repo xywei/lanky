@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from lanky import theorem
-from lanky.ledger import Status
+from lanky import axiom, theorem
+from lanky.ledger import Fact, Status
 from lanky.plugins import registry
 from lanky.prelude import Fin, Fn, Int, Nat
-from lanky.theory import Theorem
+from lanky.theory import Axiom, Theorem
 
 
 @theorem
@@ -123,3 +123,166 @@ def test_families_are_sampled_as_tables() -> None:
 def test_the_lean_printer_is_not_here_yet() -> None:
     with pytest.raises(NotImplementedError):
         gauss.lean()
+
+
+# {{{ axioms, and what a theorem uses
+
+
+def cited() -> Axiom:
+    """An axiom, built inside a function so that pytest does not collect it."""
+
+    @axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+    def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+        """The sum of the first cubes is the square of the sum of the first numbers."""
+
+    return nicomachus
+
+
+def test_an_axiom_is_a_statement_taken_on_a_citation() -> None:
+    nicomachus = cited()
+    assert isinstance(nicomachus, Axiom)
+    assert isinstance(nicomachus, Theorem)
+    assert nicomachus.cite == "Nicomachus of Gerasa, Introduction to Arithmetic"
+    assert nicomachus.variables == (("n", Nat),)
+    fact = nicomachus.fact()
+    assert fact.id == f"axiom:{__name__}.cited.<locals>.nicomachus@{nicomachus.line}"
+    assert fact.id == nicomachus.fact_id
+    assert fact.kind == "axiom"
+    assert fact.is_axiom
+    assert fact.status is Status.ASSUMED
+    assert fact.decided_by is None
+    assert fact.provenance["cite"] == nicomachus.cite
+    assert fact.rests_on == ()
+    assert repr(nicomachus).startswith("<axiom nicomachus: n : Nat |- ")
+    # it is still a statement: it can be called and sampled
+    assert nicomachus(n=4).holds
+    assert nicomachus.report(n=20).ok
+    assert nicomachus in registry.objects
+
+
+def test_an_axiom_needs_a_citation() -> None:
+    """Without one it is a claim with nothing behind it, which ``assumed`` already says."""
+
+    def statement(n: Nat) -> n + 0 == n:
+        """Addition of zero."""
+
+    with pytest.raises(TypeError, match=r'needs a citation.*@axiom\(cite="..."\)'):
+        axiom(statement)
+    with pytest.raises(TypeError, match="needs a citation"):
+        axiom()
+    with pytest.raises(TypeError, match="needs a citation"):
+        axiom(cite=None)
+    with pytest.raises(TypeError, match="citation is empty"):
+        axiom(cite="  ")
+    with pytest.raises(TypeError, match="citation is a string"):
+        axiom(cite=("Kress", 1989))
+    with pytest.raises(TypeError, match="an axiom needs a goal"):
+
+        @axiom(cite="a textbook")
+        def no_goal(n: Nat):
+            """No return annotation."""
+
+
+def test_a_theorem_names_what_it_uses() -> None:
+    """``uses=`` takes theorems, axioms, facts and ids; they become ``rests_on``."""
+    nicomachus = cited()
+    plugin_fact = Fact(id="scan:postcondition", kind="postcondition", statement="...")
+
+    @theorem(uses=[nicomachus, gauss, plugin_fact, "kernel:spmv:traced", nicomachus])
+    def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
+        """The sum of the cubes, in closed form."""
+
+    assert isinstance(cubes, Theorem)
+    assert cubes.uses == (
+        nicomachus.fact_id,
+        gauss.fact_id,
+        "scan:postcondition",
+        "kernel:spmv:traced",
+    )
+    assert cubes.fact().rests_on == cubes.uses
+    assert cubes.fact().kind == "theorem"
+    assert cubes in registry.objects
+
+    # one entry need not be wrapped, and none is said with an empty list
+    @theorem(uses=nicomachus)
+    def single(n: Nat) -> n + 0 == n:
+        """Uses one fact."""
+
+    @theorem(uses=[])
+    def none(n: Nat) -> n + 0 == n:
+        """Uses nothing."""
+
+    @theorem()
+    def bare(n: Nat) -> n + 0 == n:
+        """Called with no arguments at all."""
+
+    assert single.fact().rests_on == (nicomachus.fact_id,)
+    assert none.fact().rests_on == ()
+    assert bare.fact().rests_on == ()
+    assert gauss.fact().rests_on == ()
+
+
+def test_uses_refuses_what_does_not_name_one_fact() -> None:
+    """Refused where the decorator is written, not when the file is checked."""
+    with pytest.raises(TypeError, match="is none of them"):
+
+        @theorem(uses=[object()])
+        def claim(n: Nat) -> n + 0 == n:
+            """Uses something that is not a fact."""
+
+    with pytest.raises(TypeError, match="or a list of them"):
+        theorem(uses=3)
+
+
+def test_uses_none_is_refused_rather_than_read_as_nothing() -> None:
+    """``uses=lemma`` with ``lemma`` bound to ``None`` by mistake names no fact.
+
+    Read as "uses nothing", the theorem would be worth its own status with
+    nothing to say that what it was meant to rest on went missing.
+    """
+    with pytest.raises(TypeError, match="uses=None names no fact"):
+
+        @theorem(uses=None)
+        def claim(n: Nat) -> n + 0 == n:
+            """Meant to rest on something."""
+
+    with pytest.raises(TypeError, match="uses=None names no fact"):
+        axiom(cite="a textbook", uses=None)
+    with pytest.raises(TypeError, match="is none of them"):
+        theorem(uses=[None])
+
+
+def test_a_decorator_refuses_what_is_not_the_function_it_decorates() -> None:
+    """``@theorem(gauss)`` is ``uses=`` without its keyword, ``@axiom("...")`` is ``cite=``.
+
+    Read as the function to decorate, the first failed on a theorem having no
+    code object and the second on a missing citation, neither saying why.
+    """
+    with pytest.raises(TypeError, match=r"@theorem decorates a typed function.*uses=\[\.\.\.\]"):
+
+        @theorem(gauss)
+        def claim(n: Nat) -> n + 0 == n:
+            """Meant to use gauss."""
+
+    with pytest.raises(TypeError, match="@theorem decorates a typed function"):
+        theorem([gauss])
+    with pytest.raises(TypeError, match=r'@axiom decorates a typed function.*cite="\.\.\."'):
+
+        @axiom("Kress, Linear Integral Equations")
+        def kress(n: Nat) -> n + 0 == n:
+            """Meant to be cited."""
+
+    with pytest.raises(TypeError, match="@axiom decorates a typed function"):
+        axiom(cited(), cite="a textbook")
+
+
+def test_an_axiom_can_rest_on_facts_too() -> None:
+    @axiom(cite="a textbook", uses=[gauss])
+    def restated(n: Nat) -> n + 0 == n:
+        """A cited result stated in terms of another."""
+
+    assert restated.fact().rests_on == (gauss.fact_id,)
+    assert restated.fact().provenance["cite"] == "a textbook"
+
+
+# }}}

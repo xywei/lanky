@@ -13,16 +13,27 @@ way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
 refuted does not depend on whether Lean is installed. What Lean adds is proofs,
 and the proof that a claim is vacuous, which fails a check that without it only
 warns (see below). Each refuted fact is repeated under the table with what
-explains it: its counterexample, its reason, or a line saying that nothing was
-recorded (see :func:`refutation_lines`).
+explains it: its ``counterexample``, its ``witness`` and its ``reason``, three
+standard provenance keys read the same way whichever oracle or plugin refuted
+it, or a line saying that none was recorded (see :func:`refutation_lines`).
 
-Two more things are printed under the table and do not change the exit code. A
-statement whose sampled reading could not be run where a stronger oracle's
+A fact that rests on others is worth no more than they are, and the table says
+so after its status (see :meth:`lanky.ledger.Ledger.support`); ``--json``
+carries each fact's ``effective`` status and the ids it is ``under``. Neither
+changes the exit code: a fact resting on a refuted one fails the check through
+the refuted one, and a fact resting on an assumption is no more a failure than
+the assumption.
+
+Three more things are printed under the table and do not change the exit code.
+A statement whose sampled reading could not be run where a stronger oracle's
 could, or disagrees with it, is reported under ``SEMANTICS`` (a division by
 zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
-status its oracle gave it. And a statement whose hypotheses no draw satisfied,
-and that no oracle could show inconsistent, gets a ``WARNING`` line: the claim
-may be vacuous, or its hypotheses may hold only where the sampler does not look.
+status its oracle gave it. A statement whose hypotheses no draw satisfied, and
+that no oracle could show inconsistent, gets a ``WARNING`` line: the claim may
+be vacuous, or its hypotheses may hold only where the sampler does not look.
+And a fact that rests on an id no fact in the ledger has gets an
+``UNRESOLVED`` line naming it: the id counts as an assumption, and it is either
+written wrong or names a fact of another file, which is in that file's ledger.
 """
 
 from __future__ import annotations
@@ -68,8 +79,9 @@ class CheckVerb:
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
-        nothing is checked. A semantics disagreement and a warning about
-        hypotheses no draw satisfied are printed but do not fail the check.
+        nothing is checked. A semantics disagreement, a warning about
+        hypotheses no draw satisfied and an id a fact rests on that the
+        ledger does not hold are printed but do not fail the check.
 
         Whether a file exists is asked before anything is imported rather than
         read off a ``FileNotFoundError``, because the file can raise one of its
@@ -113,7 +125,7 @@ class CheckVerb:
                 code = 1
                 continue
             checked += 1
-            facts.extend(fact.to_dict() for fact in ledger)
+            facts.extend(ledger.to_dicts())
             if self._report(ledger):
                 code = 1
         if args.json and checked:
@@ -141,6 +153,7 @@ class CheckVerb:
             for note in fact.provenance.get("semantics", ()):
                 print(f"  {note}")
         vacuous = CheckVerb._report_hypotheses(ledger)
+        CheckVerb._report_unresolved(ledger)
         refuted = ledger.by_status(Status.REFUTED)
         if not refuted:
             return vacuous
@@ -180,6 +193,32 @@ class CheckVerb:
         return bool(vacuous)
 
     @staticmethod
+    def _report_unresolved(ledger: Ledger) -> None:
+        """Name, under the fact that rests on it, each id no fact in the ledger has.
+
+        Such an id counts as an assumption in what the fact is worth (see
+        :meth:`lanky.ledger.Ledger.support`), and the table lists it after
+        ``under``, where it reads like any other assumption. It is either
+        written wrong, a ``uses=`` string that names nothing, or the id of a
+        fact of another file, since each file checked has a ledger of its own;
+        lanky cannot tell which, so it says which id it is and leaves the exit
+        code alone, because naming a fact of another file is not a mistake.
+        """
+        for fact in ledger:
+            missing = [entry for entry in dict.fromkeys(fact.rests_on) if entry not in ledger]
+            if not missing:
+                continue
+            print()
+            print(
+                f"UNRESOLVED {fact.owner} at {fact.where}: rests on "
+                f"{', '.join(missing)}, which this ledger does not hold"
+            )
+            print(
+                "  counted as an assumption; a fact of another file is in that "
+                "file's ledger, not this one"
+            )
+
+    @staticmethod
     def _print_detail(fact: Any) -> None:
         """The reason a draw could not be completed, when the tester recorded one."""
         detail = fact.provenance.get("unsatisfied_detail")
@@ -204,32 +243,42 @@ def _recorded(value: Any) -> bool:
 def refutation_lines(fact: Fact) -> list[str]:
     """The lines ``lanky check`` prints under a fact's ``REFUTED`` line.
 
-    The counterexample, when there is one that names something; then the
-    fact's ``reason``, whenever it has one, since a refutation with no
-    assignment to show (loopty's fact about a body it cannot trace) is
-    explained by nothing else, and one with an assignment is explained better
-    with it; and, when there is neither, a line saying so, so that a bare
-    ``REFUTED`` is never read as having been explained somewhere. A plugin's
-    own ``witness`` (loopty's isl oracle records one) counts as a witness for
-    that last line; it is not printed, and stays in the JSON with the rest of
-    the provenance. A reason of several lines comes back as several, so that
-    each is indented under the ``REFUTED`` line and not only the first.
+    Three provenance keys are standard, whichever oracle or plugin refuted the
+    fact, and each is printed when it says something. ``counterexample`` is
+    the assignment of the statement's variables that makes it false, as the
+    property tester records it. ``witness`` is the object that refutes it
+    when that is not an assignment: loopty's isl oracle records the cell that
+    escapes an array, or the pair of statement instances a schedule runs out
+    of order. ``reason`` is the explanation in words, and comes last, because
+    a reason usually talks about the counterexample or the witness above it; a
+    refutation with neither (loopty's fact about a body it cannot trace) is
+    explained by the reason alone. When none of the three is there, a line
+    says so, so that a bare ``REFUTED`` is never read as having been explained
+    somewhere.
 
-    An empty counterexample is not printed. A closed statement such as ``-> 1
-    == 2`` carries one on purpose, because no assignment is what makes it
-    false, and it used to be printed as ``counterexample: {}`` above the
-    reason, a line that says nothing; the reason is what explains it. The
-    JSON ledger keeps the empty counterexample, as it keeps every field.
+    The keys are read the same way for every plugin, and lanky knows no
+    other: a plugin's own keys, such as loopty's ``witness_text``, stay in the
+    JSON with the rest of the provenance. A value that prints as several lines
+    comes back as several, so that each is indented under the ``REFUTED``
+    line and not only the first.
+
+    An empty counterexample or witness is not printed. A closed statement such
+    as ``-> 1 == 2`` carries an empty counterexample on purpose, because no
+    assignment is what makes it false, and it used to be printed as
+    ``counterexample: {}`` above the reason, a line that says nothing; the
+    reason is what explains it. The JSON ledger keeps the empty
+    counterexample, as it keeps every field.
     """
     provenance = fact.provenance
-    lines = []
-    counterexample = provenance.get("counterexample")
-    if _recorded(counterexample):
-        lines.append(f"counterexample: {counterexample}")
+    lines: list[str] = []
+    for key in ("counterexample", "witness"):
+        value = provenance.get(key)
+        if _recorded(value):
+            lines.extend(f"{key}: {value}".splitlines())
     reason = provenance.get("reason")
     if _recorded(reason):
         lines.extend(str(reason).splitlines())
-    if not lines and not _recorded(provenance.get("witness")):
+    if not lines:
         lines.append("no witness recorded")
     return lines
 
