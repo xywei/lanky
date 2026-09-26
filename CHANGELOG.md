@@ -859,10 +859,11 @@ listed because it changes behaviour a reader could already have depended on.
   to their end. A process a checked file left running, with the child's
   output as its own, held the command up until it closed it; what it writes
   is now read and dropped, however often it writes, and a slow standard
-  output (a pager) loses nothing the child wrote. (Where every file shares
-  one root there is no child, and such a process holds whatever reads the
-  command's own output, as it would for any program.) No verdict and no
-  ledger changes.
+  output (a pager) loses nothing the child wrote. On Windows, where the
+  pipes cannot be waited on this way, a stream is still read to its end
+  (#47). (Where every file shares one root there is no child, and such a
+  process holds whatever reads the command's own output, as it would for
+  any program.) No verdict and no ledger changes.
 
 ### Notes
 

@@ -48,8 +48,8 @@ are checked against their own. Files that all share their roots are checked in
 this process, as :func:`lanky.check.check_path` checks a file, and print what
 they always printed (see :meth:`CheckVerb.run`). A child is started with this
 interpreter's command-line options, ends when this process ends, however it
-ends, and cannot hold the command up once it has exited, whatever it started
-(see :meth:`CheckVerb._check_in_children`).
+ends, and cannot hold the command up once it has exited, whatever it started,
+except on Windows (see :meth:`CheckVerb._check_in_children`).
 """
 
 from __future__ import annotations
@@ -241,7 +241,9 @@ class CheckVerb:
         :func:`_stop`). And once it has exited, its output is copied up to
         the last byte it wrote rather than until it ends (see
         :func:`_follow`), so a process a checked file left running with the
-        child's output as its own does not hold the command up.
+        child's output as its own does not hold the command up; except on
+        Windows, where a stream is still copied to its end (see
+        :func:`_copy_lines`).
         """
         code = 0
         checked = 0
@@ -753,7 +755,8 @@ def _copy_lines(
     rest is read to the end of the stream without being copied (see
     :func:`_follow`). A stream with no descriptor to wait on, and every
     stream on Windows, where a selector waits on sockets alone, is copied to
-    its end.
+    its end, so that there a process the child left running with the stream
+    as its own holds this process up until it closes it.
     """
     decoder = codecs.getincrementaldecoder("utf-8")(errors="backslashreplace")
     pending = ""
