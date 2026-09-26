@@ -829,6 +829,36 @@ def test_an_integral_fraction_is_the_integer_it_equals() -> None:
         print_lean(Forall(((n, Nat),), prim.Comparison(n, ">=", Fraction(1, 2))))
 
 
+#: ``1 - 2 >= 0``, built node by node: Python would answer it in an annotation.
+_CLOSED_SUBTRACTION = prim.Comparison(prim.Sum((1, -2)), ">=", 0)
+
+
+def test_a_comparison_with_no_name_in_it_is_integer_arithmetic() -> None:
+    """A closed comparison is ascribed ``Int``, as a literal base is.
+
+    With no variable on either side Lean has nothing to read the numerals'
+    type off, and reads them as ``Nat``: ``1 - 2 ≥ 0`` is then a truncated
+    subtraction Lean proves, and Python refutes, and ``-1 ≠ 0`` does not
+    elaborate at all. Such a term comes from a plugin, the demonstration's
+    claim that a coefficient it computed is not zero among them. A comparison
+    with a name in it is typed by the name, as before.
+    """
+    assert print_lean(_CLOSED_SUBTRACTION) == "(1 - 2 : Int) ≥ 0"
+    assert print_lean(prim.Comparison(-1, "!=", 0)) == "(-1 : Int) ≠ 0"
+    assert print_lean(prim.Comparison(Fraction(3, 1), "==", 3)) == "(3 : Int) = 3"
+    nested = Forall(
+        ((n, Nat),),
+        prim.LogicalOr((prim.Comparison(prim.Product((2, 3)), "<", 7), prim.Comparison(n, "<", 0))),
+    )
+    assert print_lean(nested) == "∀ n : Int, 0 ≤ n → (2 * 3 : Int) < 7 ∨ n < 0"
+    assert print_lean(Forall(((n, Nat),), prim.Comparison(n, ">=", 0))) == (
+        "∀ n : Int, 0 ≤ n → n ≥ 0"
+    )
+    assert print_lean(Forall(((f, Fn[Fin[1], Nat]),), prim.Comparison(f(0), ">=", 0))) == (
+        "∀ f : Int → Nat, (f 0 : Int) ≥ 0"
+    )
+
+
 # }}}
 
 
@@ -1281,6 +1311,30 @@ def test_a_pinned_tactic_is_the_one_that_runs(lean_oracle: LeanOracle) -> None:
         lean_oracle.tactics.clear()
     assert proved.status is Status.PROVED
     assert proved.provenance["tactic"] == "exact Int.add_comm x y"
+
+
+def test_a_closed_comparison_means_in_lean_what_it_means_in_python(
+    lean_oracle: LeanOracle,
+) -> None:
+    """``1 - 2 >= 0`` is not proved, and ``-1 != 0`` is, as the integer reading has it."""
+    false = Fact(
+        id="closed:false",
+        kind="coefficient",
+        statement="1 - 2 >= 0",
+        term=_CLOSED_SUBTRACTION,
+        owner="closed_false",
+    )
+    assert lean_oracle.establish(false).status is Status.ASSUMED
+    true = Fact(
+        id="closed:true",
+        kind="coefficient",
+        statement="-1 != 0",
+        term=prim.Comparison(-1, "!=", 0),
+        owner="closed_true",
+    )
+    proved = lean_oracle.establish(true)
+    assert proved.status is Status.PROVED
+    assert "(-1 : Int) ≠ 0" in proved.provenance["lean_source"]
 
 
 def test_lean_reports_a_goal_it_cannot_close(lean_oracle: LeanOracle) -> None:
