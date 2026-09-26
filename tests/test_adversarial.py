@@ -2129,3 +2129,97 @@ def test_a_guard_the_annotation_would_drop_fails_the_import(tmp_path, capsys) ->
 
 
 # }}}
+
+
+# {{{ a refinement that quantifies over a sampled domain
+
+
+REFINED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def refined(n: Nat & all(k < n + 100 for k in Nat)) -> n >= 0:\n"
+    '    """A parameter refinement that quantifies over naturals."""\n'
+)
+
+
+def test_a_refinement_over_a_sampled_domain_skips_the_draw(tmp_path, oracles, capsys) -> None:
+    """#26: the row is ``assumed`` with a reason that names the refinement.
+
+    The refinement was evaluated with no sampler, the quantifier over ``Nat``
+    raised, and the test stopped with "property-test could not run". It is
+    read as the hypothesis it is now: the universal held at every draw, which
+    admits no ``n`` for certain, so every draw is undecided.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, REFINED, "refined.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert "reason" not in fact.provenance
+    assert fact.provenance["untested"].startswith(
+        "no draw could decide the statement: the refinement of "
+        "Nat & (forall k in Nat. k < n + 100) cannot be evaluated at this draw"
+    )
+    assert fact.provenance["undecided"] == fact.provenance["samples"]
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_a_refinement_a_draw_breaks_rejects_that_draw(tmp_path, oracles, capsys) -> None:
+    """A draw of ``k`` that breaks the universal rejects the value it refines.
+
+    ``all(k < 0 for k in Nat)`` is broken by every draw, so no value of ``n``
+    is admitted and the hypotheses are never satisfied, which is what the
+    warning says; an existential a draw witnesses admits the value.
+    """
+    import random
+
+    from lanky.testing import SkipSample, Unevaluable, sample_value
+
+    k = Var("k")
+    with pytest.raises(SkipSample, match="satisfied its refinement") as raised:
+        sample_value(Nat & Forall(((k, Nat),), k < 0), random.Random(0), {}, "n")
+    assert not isinstance(raised.value, Unevaluable)
+
+    # each draw of n is tried 64 times before it is given up, so a small
+    # budget keeps this quick
+    oracles(TestOracle(samples=10))
+    path = _write(tmp_path, REFINED.replace("k < n + 100", "k < 0"), "refined.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 200 draws"
+    assert cli.main(["check", path]) == 0
+    assert "WARNING refined at refined.py:7" in capsys.readouterr().out
+
+    path = _write(
+        tmp_path, REFINED.replace("all(k < n + 100 for k in Nat)", "any(k >= n for k in Nat)")
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+
+
+def test_the_other_refinements_the_tester_reads_have_a_sampler_too() -> None:
+    """A family's codomain, and the binder domain of a definitional hypothesis.
+
+    Both were read without a sampler, and a quantifier over ``Nat`` in either
+    raised out of the test. The codomain's refinement leaves the draw
+    undecided, and the definition is left to the hypothesis filter.
+    """
+    from lanky.testing import check
+
+    f, i, k, m, n = Var("f"), Var("i"), Var("k"), Var("m"), Var("n")
+    codomain = Nat & Forall(((k, Nat),), k < m + 100)
+    report = check([("m", Nat), ("f", Fn[Fin[2], codomain])], [], f(0) >= 0, samples=20)
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided > 0
+    assert "the refinement of" in report.reason
+
+    definition = Forall(((i, Fin[n] & Forall(((k, Nat),), k < i + 100)),), f(i) == 0)
+    report = check([("n", Nat), ("f", Fn[Fin[n], Nat])], [definition], n >= 0, samples=20)
+    assert report.ok
+    assert report.valid > 0
+
+
+# }}}

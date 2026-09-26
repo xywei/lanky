@@ -76,6 +76,12 @@ settles a conjunction and a true disjunct a disjunction, whatever an operand
 before it could not answer, so the order the operands are written in does not
 change what a draw decides.
 
+A refinement is read as the hypothesis it is, standing ``NEGATIVE``, with a
+sampler for the quantifiers in it. ``n: Nat & all(k < n + 100 for k in Nat)``
+used to end the whole test, because the quantifier over ``Nat`` had no sampler
+to draw from; a draw of ``k`` that breaks it now rejects the value of ``n``,
+and one where it held at every draw leaves the draw undecided.
+
 A statement that is already a concrete ``True`` or ``False``, because it binds
 no variable and assumes nothing, is not sampled at all: there is nothing to
 draw, so it is reported once, as a pass or as a refutation with an empty
@@ -240,10 +246,10 @@ def sample_value(
     """
     if isinstance(sort, Refined):
         if name is None:
-            return sample_value(_entry_sort(sort, context), rng, context)
+            return sample_value(_entry_sort(sort, context, rng), rng, context)
         for _ in range(64):
             value = sample_value(sort.base, rng, context, name)
-            if _refinement_holds(sort, {**context, name: value}):
+            if _refinement_holds(sort, {**context, name: value}, rng):
                 return value
         raise SkipSample(f"no draw of {sort} satisfied its refinement")
     if isinstance(sort, FinType):
@@ -260,7 +266,7 @@ def sample_value(
             raise SkipSample(f"{domain} has a negative size")
         # A family over an empty domain exists whatever its codomain is, so the
         # codomain is only consulted when there is an entry to draw.
-        codomain = _entry_sort(sort.codomain, context) if bound else sort.codomain
+        codomain = _entry_sort(sort.codomain, context, rng) if bound else sort.codomain
         return Table(
             (sample_value(codomain, rng, context) for _ in range(bound)),
             name=name or "a family",
@@ -285,7 +291,7 @@ def sample_value(
     raise Unsampleable(f"no sampler for {sort!r}")
 
 
-def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
+def _entry_sort(codomain: Any, context: dict[str, Any], rng: random.Random) -> Any:
     """The sort a family's entries are drawn from, with its refinement settled.
 
     An entry has no name, so :func:`sample_value` is asked for one without a
@@ -316,7 +322,7 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
             f"entry: its refinement names {', '.join(unbound)}, which nothing "
             "drawn so far binds"
         )
-    if not _refinement_holds(codomain, context):
+    if not _refinement_holds(codomain, context, rng):
         raise SkipSample(
             f"{codomain} is empty at this draw, so it has no value to draw and "
             "no family into it has a point in its domain"
@@ -324,7 +330,7 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
     return codomain.base
 
 
-def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
+def _refinement_holds(sort: Refined, context: dict[str, Any], rng: random.Random) -> bool:
     """Whether the refinement of ``sort`` holds here; skip a draw it cannot judge.
 
     A refinement is evaluated like any other proposition, and one that divides
@@ -333,11 +339,20 @@ def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
     the ``ZeroDivisionError`` used to escape the sampler and end the whole
     test at the first such draw.
 
+    A refinement is read as the hypothesis it is (:meth:`Refined.holds`), with
+    a sampler made from ``rng`` and the values drawn so far, so that one which
+    quantifies over a sampled domain can be answered. ``n: Nat & all(k < n +
+    100 for k in Nat)`` was evaluated with no sampler, the quantifier over
+    ``Nat`` raised ``ValueError``, and that ended the whole test with "could
+    not run". Now a draw of ``k`` that breaks the universal rejects the draw of
+    ``n``, and one where it held at every draw of ``k`` is undecided, since
+    four draws that held do not admit ``n`` for certain.
+
     Raises:
         Unevaluable: If the refinement cannot be evaluated at these values.
     """
     try:
-        return sort.holds(context)
+        return sort.holds(context, sort_sampler(rng, context))
     except (Undecided, ZeroDivisionError) as exc:
         raise Unevaluable(
             f"the refinement of {sort} cannot be evaluated at this draw: "
@@ -502,6 +517,7 @@ def satisfy_hypotheses(
     hypotheses: Any,
     context: dict[str, Any],
     sorts: Any = None,
+    sampler: Any = None,
 ) -> None:
     """Make the definitional hypotheses true by construction, where possible.
 
@@ -527,6 +543,11 @@ def satisfy_hypotheses(
     filter reads it as a hypothesis, where a draw that breaks it rejects the
     draw and a pass over draws decides nothing (see the module docstring).
 
+    ``sampler`` answers a quantifier over a sampled domain inside a
+    refinement of a binder the walk visits, as the filter would; one the
+    draws leave open ends the walk and leaves the hypothesis to the filter.
+    Without it such a refinement raised ``ValueError`` and ended the test.
+
     Raises:
         SkipSample: If a definition demands a value the codomain does not have.
     """
@@ -545,7 +566,7 @@ def satisfy_hypotheses(
             ):
                 continue
             try:
-                for _ in binder_assignments(prop.binders, context):
+                for _ in binder_assignments(prop.binders, context, sampler):
                     _try(
                         lambda d=definition: _assign_definition(d[0], d[1], context, sorts)
                     )
@@ -664,10 +685,13 @@ def check(
             break
         report.samples += 1
         context: dict[str, Any] = {}
+        # The sampler reads sizes from the context as it fills, so it can
+        # answer a refinement of a definitional hypothesis's binder as well.
+        sampler = sort_sampler(rng, context)
         try:
             for name, sort in variables:
                 context[name] = sample_value(sort, rng, context, name)
-            satisfy_hypotheses(hypotheses, context, sorts)
+            satisfy_hypotheses(hypotheses, context, sorts, sampler)
         except SkipSample as exc:
             if isinstance(exc, Unsampleable):
                 report.unsampleable += 1
