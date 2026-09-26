@@ -17,7 +17,9 @@ reduction that a schedule reassociates has to say so.
 concrete integer it iterates as ``range(n)``, so the file runs under plain
 ``python``. When ``n`` is symbolic it yields exactly one generic point, a fresh
 bound variable, which is how a generator expression becomes a quantifier or a
-reduction over a domain rather than a loop over values.
+reduction over a domain rather than a loop over values. ``Fin[n] + Fin[m]`` is
+their sum, the disjoint union of the two, which lanky carries and a plugin
+gives a meaning (:class:`SumType`).
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ __all__ = [
     "Real",
     "Refined",
     "Sort",
+    "SumType",
     "exactness_of",
 ]
 
@@ -182,6 +185,12 @@ class FinType(LankyType):
         """
         return range(int(evaluate_expr(self.bound)))
 
+    def __add__(self, other: Any) -> SumType:
+        """``Fin[n] + Fin[m]``: the sum of two index types; see :class:`SumType`."""
+        if not isinstance(other, FinType | SumType):
+            return NotImplemented
+        return SumType.of(self, other)
+
 
 class _GenericPoint:
     """The iterator of a symbolic index type: one fresh bound variable, lazily.
@@ -231,6 +240,70 @@ class _FinFamily:
 
 #: ``Fin[n]`` is the index type of ``n`` points.
 Fin = _FinFamily()
+
+
+@dataclass(frozen=True, eq=False)
+class SumType(LankyType):
+    """``A + B``: the sum of index types, their disjoint union.
+
+    A point of ``Fin[n] + Fin[m]`` is a point of one of the pieces together
+    with which piece it is: ``(0, i)`` with ``i`` in ``Fin[n]``, or ``(1, j)``
+    with ``j`` in ``Fin[m]``. The pieces keep their order, because the position
+    of a piece is part of every point of it. ``Fin`` is a semiring
+    homomorphism, so ``Fin[n] + Fin[m]`` has as many points as ``Fin[n + m]``,
+    but it is not that type: it remembers where one piece ends and the next
+    begins, which is what a plugin that stores the pieces apart needs.
+
+    Chaining is flat, as it is for :class:`Refined`: ``A + B + C`` has three
+    pieces, whichever way it was bracketed. A piece may be any index type,
+    including one a plugin defines (loopty's polyhedral domains); such a type
+    builds the sum from its own ``__add__`` and ``__radd__`` with :meth:`of`.
+
+    lanky itself only carries a sum. It is not a binder domain yet, so a
+    quantifier cannot range over one, and a plugin gives it its meaning.
+    """
+
+    pieces: tuple[Any, ...]
+
+    @classmethod
+    def of(cls, *pieces: Any) -> SumType:
+        """The sum of ``pieces``, with every sum among them flattened into it."""
+        flat: list[Any] = []
+        for piece in pieces:
+            if isinstance(piece, SumType):
+                flat.extend(piece.pieces)
+            else:
+                flat.append(piece)
+        return cls(tuple(flat))
+
+    def __add__(self, other: Any) -> SumType:
+        """Add another piece, or the pieces of another sum, at the end."""
+        if not isinstance(other, FinType | SumType):
+            return NotImplemented
+        return SumType.of(self, other)
+
+    def __iter__(self) -> Any:
+        """Refuse: a sum is not a binder domain yet."""
+        raise TypeError(
+            f"cannot iterate {self}: a sum of index types is not a binder domain "
+            "yet; iterate one of its pieces"
+        )
+
+    def __str__(self) -> str:
+        """Print as ``Fin(n) + Fin(m)``."""
+        return " + ".join(str(piece) for piece in self.pieces)
+
+    def __repr__(self) -> str:
+        """Print as ``Fin(n) + Fin(m)``."""
+        return str(self)
+
+    def __eq__(self, other: Any) -> bool:
+        """Compare the pieces in order, structurally."""
+        return isinstance(other, SumType) and structurally_equal(self.pieces, other.pieces)
+
+    def __hash__(self) -> int:
+        """Hash the pieces."""
+        return hash(("SumType", self.pieces))
 
 
 @dataclass(frozen=True, eq=False)
