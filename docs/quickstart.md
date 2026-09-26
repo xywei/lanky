@@ -320,6 +320,15 @@ was refuted. `lanky.semantics.notes(term)` is the check.
   machine both rows read `proved lean` instead: `simp` finds the witness the
   sampler cannot. The point is what each oracle can honestly say, and the
   status column is where it says it.)
+- The mirror image is a sampled `all`, again with `LANKY_LEAN_DISABLE=1`.
+  `def bounded(n: Nat) -> all(k < 100 for k in Nat)` holds at every draw, and
+  the row reads `tested`: that is evidence, and the goal is where the
+  statement asserts it. Negate it,
+  `def denied(n: Nat) -> ~all(k < 100 for k in Nat)`, which is true, and the
+  same draws would refute it, so the tester reads a pass of a sampled `all`
+  under `~`, in a hypothesis or a guard, or inside a sum as undecided: the row
+  reads `assumed`, with the reason. A draw that breaks a sampled `all` is a
+  counterexample wherever it stands.
 - `uv sync --group dev --extra lean`, put a Lean toolchain the REPL supports on
   `PATH` (the README's Install section says which; CI uses v4.29.1), and watch
   a row change from `tested` to `proved`. The first run builds a Lean REPL,

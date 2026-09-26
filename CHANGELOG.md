@@ -327,9 +327,8 @@ listed because it changes behaviour a reader could already have depended on.
   when its base is, so the first statement is `tested` and the second is
   refuted with a reason saying that no point of the enumerated domain is a
   witness. A `forall` over a sampled refinement that rejects every draw
-  (`Nat & (k == 1000)`) raises `Undecided` (the new
-  `lanky.terms.decline_empty_walk`) rather than passing on no point, so the
-  fact stays `ASSUMED` with the reason; an existential over one was already
+  (`Nat & (k == 1000)`) raises `Undecided` rather than passing on no point,
+  so the fact stays `ASSUMED` with the reason; an existential over one was already
   undecided. A definitional hypothesis over a refined domain is assigned at
   the admitted points only, where the walk used to fail and end the test. A
   value of a refined sort drawn without a variable name is judged as a
@@ -394,6 +393,76 @@ listed because it changes behaviour a reader could already have depended on.
   finds under a stronger oracle's proof is recorded under `SEMANTICS` whether
   or not the fact carries a note, since with one reading of arithmetic it
   means one of the oracles is wrong.
+- **A sampled quantifier can be refuted but never confirmed.** A `forall`
+  over a sampled domain such as `Nat` that held at its four draws answered
+  `True` wherever it stood, which is evidence where the statement asserts it
+  and a certainty nowhere, so under a negation it became a refutation of a
+  true statement (`~all(k < 100 for k in Nat)`), in a hypothesis it admitted
+  a draw the statement excludes (`h: all(k < m for k in Nat)` with the goal
+  `m < 0`), and a sum over draws of `Nat` was added up as if it were the sum
+  over `Nat`; all three were `refuted`, at counterexamples that do not replay
+  (#14). The evaluator now tracks where each proposition stands, as the new
+  `lanky.terms.Polarity`: the goal and what it asserts stand `POSITIVE`; a
+  hypothesis, the operand of `~`, and the guard and the refinements of a
+  universal stand `NEGATIVE`; a proposition used as a value, in a comparison,
+  an arithmetic operation, a call or a sum, stands `MIXED`; an existential's
+  guard and refinements stand where it does. A sampled `forall` that holds at
+  every draw answers `True` only standing `POSITIVE`, and raises `Undecided`
+  anywhere else; one a draw breaks is `False` everywhere, and an existential
+  a draw witnesses is `True` everywhere, as before. A sum over a sampled
+  domain raises `Undecided` wherever it stands. `lanky.terms.evaluate` takes
+  the polarity (`POSITIVE` by default) and the property tester reads each
+  hypothesis standing `NEGATIVE`, so the three statements are `assumed` with
+  the reason and `lanky check` exits 0; `all(k < 3 for k in Nat)` as a goal is
+  still refuted. A quantified definitional hypothesis over a sampled domain,
+  such as `all(f(k) == 0 for k in Nat)`, is left to the hypothesis filter,
+  where it used to be walked without a sampler and end the test with "cannot
+  enumerate the binder domain".
+- **A guard no draw passes leaves a sampled `forall` undecided.**
+  `all(k < 0 for k in Nat if k > 100)` is false at `k = 101`, and no draw of
+  `k` passed the guard, so the `forall` held at no point and the fact was
+  `tested` over 200 valid draws of which none evaluated the body (#11). It
+  raises `Undecided` now, with a reason saying that no draw passed the guard,
+  exactly as the refinement spelling `k` in `Nat & (k > 100)` already did, so
+  the two spellings of one statement agree; a guarded `forall` over `Fin` is
+  unchanged. Both cases, and the three above, are settled by the new
+  `lanky.terms.LankyEvaluationMapper.guarded_assignments`, which the tester's
+  counterexample walk shares; `decline_empty_walk` is gone. A walk decides
+  whether it sampled by whether it drew, not by what its binders are: over
+  `i in Fin[n], k in Nat` at `n = 0` nothing is drawn and the domain is empty,
+  so the universal is vacuously `True`, the existential `False` and the sum
+  `0`, where they used to be undecided, and the refutation of such an
+  existential says why every point was tried.
+- **A later binder's domain names the binders before it.**
+  `lanky.terms.free_variables` reported `i` free in
+  `all(j < n for i in Fin[n] for j in Fin[i])`, whose inner `Fin[i]` is the
+  outer binder, because the domains were never reduced by the binders that
+  precede them (#12). Each domain is now read with the earlier binders bound,
+  and a binder's own domain, which is evaluated before it exists, keeps its
+  free names. A family whose codomain is refined by such a quantifier is
+  tested where its entries used to be refused, and an inner binder that shares
+  a parameter's name no longer orders the draws.
+- **An integral `Fraction` prints as the integer it is.** The Lean printer
+  ascribed `Int` to an `int` base of a power but not to `Fraction(2, 1)`,
+  which printed as the bare numeral `2`, so `1 - Fraction(2, 1) ** n >= 0`,
+  built node by node, was a statement about `Nat` that Lean proved by
+  truncation and Python refutes at `n = 1` (#16). An integral `Fraction` is
+  now read as the `int` it equals wherever a literal is treated specially: a
+  power's base is ascribed, a literal exponent is taken, a positive literal
+  divisor prints as `/`, and a negative summand as a subtraction. The
+  evaluator takes a `Fraction` literal as the constant it is, where pymbolic
+  refused it as an invalid foreign object and the tester could not run the
+  statement, so the claim is now refuted at `n = 1` with Lean and without.
+- **The quickstart's `gap.py` transcripts are held to a real run.** A test
+  writes `gap.py` from the quickstart's own snippet, with `examples/gauss.py`'s
+  imports, and compares what `lanky check` prints with the quickstart's
+  blocks, with Lean and without: the `truncated` refutation, and for
+  `div_zero` the `SEMANTICS` block with Lean and the `assumed` row without
+  (#18). It found the `truncated` block one line short since every refuted
+  fact started printing its reason.
+- **The Lean CI job keeps a uv cache of its own.** It shared one with the
+  job that does not sync the `lean` extra, and downloaded lean-interact
+  again on every run; its setup-uv step now has `cache-suffix: lean` (#19).
 
 ### Notes
 
