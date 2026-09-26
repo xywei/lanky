@@ -194,7 +194,10 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     of evidence a fact has, and the trust class says how far its decider is to
     be trusted: ``decided`` by a decision procedure and ``decided`` by a
     heuristic are worth different things, and the table marks the second
-    (see :meth:`lanky.ledger.Ledger.render`).
+    (see :meth:`lanky.ledger.Ledger.render`). A heuristic's answer is not
+    guaranteed and a counterexample is, so a fact a heuristic established is
+    sampled all the same, and a counterexample overrules it
+    (:func:`_overrule`).
 
     An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted, or
     shown vacuous (see :func:`_examine_axiom`). It is ``assumed`` on its
@@ -227,10 +230,55 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             continue
         if result.status is not Status.ASSUMED:
             result = result.with_status(result.status, trust_class=oracle.trust_class())
-            fact = _cross_check(result, gaps, verbose=verbose)
+            overruled = _overrule(fact, result, verbose=verbose)
+            fact = overruled or _cross_check(result, gaps, verbose=verbose)
             break
         fact = result
     return _examine_vacuity(fact, verbose=verbose)
+
+
+def _overrule(fact: Fact, result: Fact, verbose: bool = False) -> Fact | None:
+    """A counterexample to what a heuristic established, as the refuted fact; else ``None``.
+
+    ``fact`` is the fact as the heuristic was handed it and ``result`` what it
+    made of it. A heuristic's answer is worth more than a sample's pass and is
+    still not guaranteed, while a counterexample is definite, so the oracles
+    of the ``test`` trust class sample a fact a heuristic established, whether
+    or not it has hypotheses or a semantics gap, and a refutation from one
+    stands in place of the heuristic's answer. The provenance says what was
+    overruled, as ``overruled``, and so does the last line of the ``reason``,
+    which ``lanky check`` prints under the table. Nothing is done for a
+    heuristic's refutation, which a sample cannot overturn, or for an oracle
+    of any other class.
+    """
+    if result.provenance.get("trust_class") != "heuristic" or result.status is Status.REFUTED:
+        return None
+    for oracle in registry.sorted_oracles():
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
+            continue
+        available, _reason = oracle_availability(oracle)
+        if not available:
+            continue
+        try:
+            if not oracle.can_establish(fact):
+                continue
+            sampled = oracle.establish(fact)
+        except Exception:  # noqa: BLE001 - a sample must not fail a check
+            continue
+        if sampled is None or sampled.status is not Status.REFUTED:
+            continue
+        overruled = f"{result.decided_by}, a heuristic, {result.status.value} it"
+        if verbose:
+            print(f"  {oracle.name} refutes what {overruled}")
+        reason = sampled.provenance.get("reason")
+        note = f"{overruled}, and this draw overrules it"
+        return sampled.with_status(
+            Status.REFUTED,
+            trust_class=oracle.trust_class(),
+            overruled=overruled,
+            reason=f"{reason}\n{note}" if reason else note,
+        )
+    return None
 
 
 def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
@@ -526,8 +574,10 @@ def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None
     Returns the oracle's name and the fact it established (see
     :func:`hypotheses_fact`), or ``None`` when no such oracle establishes it.
     A test cannot: no draw satisfying the hypotheses is exactly what is in
-    question. Neither can a heuristic: a vacuous fact fails the check, and an
-    answer that is not guaranteed is not a reason to fail one. For consistent
+    question. Neither can a heuristic. Its answer is not guaranteed, and what
+    keeps a wrong one out of the ledger elsewhere is a counterexample overruling
+    it (:func:`_overrule`), which a question no draw satisfies cannot have; so
+    a vacuous fact, which fails the check, needs an answer that is. For consistent
     hypotheses every attempt fails, so what Lean is asked is its short ladder,
     which for a goal of ``False`` is the five cheap tactics.
     """

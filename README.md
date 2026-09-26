@@ -119,9 +119,11 @@ sharp.
   more about its target. `examples/pytential_skie.py` is the worked case.
 - Trust classes, strongest first: `kernel`, `decision-procedure`, `heuristic`,
   `test`. A decider complete for the fragment it accepts is a decision
-  procedure; one that can fail to answer inside it, such as a simplifier, is
-  a `heuristic`, and the table marks a fact it decided `decided (heuristic)`.
-  The oracle that settles a fact leaves its trust class in the provenance.
+  procedure; one that can fail to answer inside it, or whose answers are not
+  guaranteed, such as a simplifier, is a `heuristic`. The table marks a fact
+  one decided `decided (heuristic)`, and a counterexample the property tester
+  finds overrules it. The oracle that settles a fact leaves its trust class in
+  the provenance.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Bool`, `Prop`, `Fin[n]`, `Fn[A, B]`,
   refinement by `T & prop`, exactness classes.

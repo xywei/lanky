@@ -1140,6 +1140,9 @@ def test_a_fact_a_heuristic_decides_is_marked_in_the_table_and_the_json(
 
     Before the ``heuristic`` class existed, an oracle naming it ranked below
     the tester, which refuted ``false_claim`` before the simplifier was asked.
+    Now the simplifier is asked first, and the tester still refutes
+    ``false_claim``: a counterexample overrules a heuristic's answer, which is
+    not guaranteed, and the provenance says whose answer it overruled.
     """
     from lanky.plugins import registry
 
@@ -1147,17 +1150,94 @@ def test_a_fact_a_heuristic_decides_is_marked_in_the_table_and_the_json(
     monkeypatch.setattr(registry, "oracles", [*registry.oracles, Simplifier()])
     path = write_file(tmp_path)
     true_claim, false_claim = check_path(path)
-    for fact in (true_claim, false_claim):
-        assert (fact.status, fact.decided_by) == (Status.DECIDED, "simplifier")
-        assert fact.provenance["trust_class"] == "heuristic"
-        assert fact.is_heuristic
+    assert (true_claim.status, true_claim.decided_by) == (Status.DECIDED, "simplifier")
+    assert true_claim.provenance["trust_class"] == "heuristic"
+    assert true_claim.is_heuristic
+    assert (false_claim.status, false_claim.decided_by) == (Status.REFUTED, "property-test")
+    assert false_claim.provenance["trust_class"] == "test"
+    assert not false_claim.is_heuristic
+    assert false_claim.provenance["overruled"] == "simplifier, a heuristic, decided it"
+    assert "n" in false_claim.provenance["counterexample"]
     out = tmp_path / "out.json"
-    assert cli.main(["check", path, "--json", str(out)]) == 0
-    lines = capsys.readouterr().out.splitlines()
+    assert cli.main(["check", path, "--json", str(out)]) == 1
+    printed = capsys.readouterr().out
+    lines = printed.splitlines()
     assert lines[2].startswith("decided (heuristic)  simplifier")
-    assert lines[3].startswith("decided (heuristic)  simplifier")
+    assert lines[3].startswith("refuted              property-test")
+    heading = f"REFUTED false_claim at {false_claim.where}: {false_claim.statement}"
+    block = lines[lines.index(heading) :]
+    assert block[1:4] == [
+        f"  counterexample: {false_claim.provenance['counterexample']}",
+        "  the goal is false at this assignment",
+        "  simplifier, a heuristic, decided it, and this draw overrules it",
+    ]
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert [row["provenance"]["trust_class"] for row in data] == ["heuristic", "heuristic"]
+    assert [row["provenance"]["trust_class"] for row in data] == ["heuristic", "test"]
+
+
+class Hasty:
+    """A heuristic that decides every theorem it is shown, the false ones too."""
+
+    name = "hasty"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        return fact.with_status(Status.DECIDED, self.name)
+
+
+CLOSED_FACTS = '''
+from __future__ import annotations
+
+import pymbolic.primitives as prim
+
+from lanky.ledger import Fact
+from lanky.plugins import registry
+from lanky.rewrites import Rewrite
+
+
+class Closed(Rewrite):
+    """Two statements with no variable and no hypothesis in them, one false."""
+
+    def facts(self):
+        return (
+            Fact(id="closed:true", kind="theorem", statement="1 - 2 < 0",
+                 term=prim.Comparison(prim.Sum((1, -2)), "<", 0), owner="true_closed"),
+            Fact(id="closed:false", kind="theorem", statement="1 - 2 >= 0",
+                 term=prim.Comparison(prim.Sum((1, -2)), ">=", 0), owner="false_closed"),
+        )
+
+
+def nothing():
+    return None, None
+
+
+claims = registry.register_object(Closed(nothing))
+'''
+
+
+def test_a_counterexample_overrules_a_heuristic_where_nothing_else_would_look(
+    tmp_path, monkeypatch
+) -> None:
+    """A statement with no hypotheses and no semantics gap is sampled after a heuristic too.
+
+    Only such facts are cross-checked after a decision procedure or a kernel,
+    and there a counterexample is only recorded. After a heuristic every fact
+    is sampled, and a counterexample stands in place of its answer.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, Hasty()])
+    true_closed, false_closed = check_path(write_file(tmp_path, CLOSED_FACTS))
+    assert (true_closed.status, true_closed.decided_by) == (Status.DECIDED, "hasty")
+    assert "overruled" not in true_closed.provenance
+    assert (false_closed.status, false_closed.decided_by) == (Status.REFUTED, "property-test")
+    assert false_closed.provenance["overruled"] == "hasty, a heuristic, decided it"
 
 
 class RashSimplifier:
@@ -1189,10 +1269,12 @@ def rare(n: Nat, h: n == 1000) -> n + 0 == n:
 
 
 def test_a_heuristic_is_not_enough_to_make_a_fact_vacuous(tmp_path, monkeypatch, capsys) -> None:
-    """A vacuous fact fails the check, and an answer that is not guaranteed cannot do that.
+    """A vacuous fact fails the check, and a heuristic's answer is not guaranteed.
 
-    So only a decision procedure or a kernel is asked whether the hypotheses
-    are inconsistent, and here the fact keeps its warning.
+    A counterexample overrules a heuristic elsewhere, and where no draw
+    satisfies the hypotheses there is none to be had. So only a decision
+    procedure or a kernel is asked whether the hypotheses are inconsistent,
+    and here the fact keeps its warning.
     """
     from lanky.plugins import registry
 

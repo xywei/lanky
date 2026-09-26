@@ -452,11 +452,12 @@ column it is worth what they are.
   declines everything outside it with the reason (a verdict that depends on a
   parameter's value, two operators that are not a multiple of the identity
   plus a compact one, two kernels, a trace no axiom gives). A decider that can
-  fail to answer inside its own fragment, such as a computer-algebra
-  simplifier, declares the class `heuristic`, which ranks between `test` and
-  `decision-procedure`; the table marks a fact one decided as
-  `decided (heuristic)`, and only a decision procedure or a kernel can make a
-  fact vacuous.
+  fail to answer inside its own fragment, or whose answers are not
+  guaranteed, such as a computer-algebra simplifier, declares the class
+  `heuristic`, which ranks between `test` and `decision-procedure`. The table
+  marks a fact one decided as `decided (heuristic)`, a counterexample the
+  property tester finds overrules it, and only a decision procedure or a
+  kernel can make a fact vacuous.
 - **A refusal is a verdict, and names its term.** The single layer is claimed
   of the first kind (no identity term), and the Neumann trace of the combined
   field is claimed not of the second kind because of `D'`; both are decided.

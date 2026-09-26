@@ -61,12 +61,14 @@ ENTRY_POINT_GROUPS = (THEORY_GROUP, ORACLE_GROUP, EXECUTOR_GROUP, VERB_GROUP)
 #: decider complete for the fragment it accepts: it answers every claim in the
 #: fragment, declines everything outside it, and every answer it gives is right
 #: (isl for Presburger arithmetic, or a rule engine whose rules settle every
-#: claim they accept). ``heuristic`` is a decider that is right when it answers
-#: but may fail to answer inside its own fragment, or whose answers are not
-#: guaranteed: a computer-algebra simplifier, or a rule set with gaps. Its
-#: answer is worth more than a test's and less than a decision procedure's,
-#: and the ledger marks a fact it decided (see :meth:`lanky.ledger.Ledger.render`).
-#: ``test`` is evidence from execution.
+#: claim they accept). ``heuristic`` is a decider that may fail to answer inside
+#: its own fragment, or whose answers are not guaranteed: a computer-algebra
+#: simplifier, or a rule set with gaps. Its answer is worth more than a test's
+#: and less than a decision procedure's: the ledger marks a fact it settled
+#: (see :meth:`lanky.ledger.Ledger.render`), a counterexample overrules what it
+#: established, and it is not asked whether a fact's hypotheses are
+#: inconsistent (see :func:`lanky.check.establish`). ``test`` is evidence from
+#: execution.
 TRUST_STRENGTH: dict[str, int] = {
     "kernel": 4,
     "decision-procedure": 3,

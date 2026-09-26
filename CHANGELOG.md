@@ -132,17 +132,22 @@ prints a ledger naming who decided what.
   `theorem`; `lanky.Rewrite`, `lanky.RewriteTerm` and `lanky.rewrite` are
   exported.
 - **The `heuristic` trust class** (`lanky.plugins.TRUST_STRENGTH`). Between
-  `test` and `decision-procedure`, for a decider that is right when it answers
-  but may fail to answer inside its own fragment, or whose answers are not
-  guaranteed: a computer-algebra simplifier, a rule set with gaps (#2). A
-  rule engine complete for the fragment it accepts, answering every claim in
-  it and declining everything else, is a decision procedure for that fragment
-  and says so. A heuristic is asked after a decision procedure and before the
+  `test` and `decision-procedure`, for a decider that may fail to answer
+  inside its own fragment, or whose answers are not guaranteed: a
+  computer-algebra simplifier, a rule set with gaps (#2). A rule engine
+  complete for the fragment it accepts, answering every claim in it and
+  declining everything else, is a decision procedure for that fragment and
+  says so. A heuristic is asked after a decision procedure and before the
   property tester (an oracle naming the class used to rank below the tester,
-  as an unknown class still does); a fact it settles reads
-  `decided (heuristic)` in the table (`Fact.is_heuristic`); and it is not
-  asked whether a fact's hypotheses are inconsistent, since a vacuous fact
-  fails the check and an answer that is not guaranteed must not do that.
+  as an unknown class still does), and a fact it settles reads
+  `decided (heuristic)` in the table (`Fact.is_heuristic`). Its answer is not
+  guaranteed and a counterexample is, so a fact a heuristic established is
+  sampled all the same, with or without hypotheses, and a counterexample
+  overrules it: the fact is `refuted` by the tester, with `overruled` in its
+  provenance naming the heuristic. For the same reason a heuristic is not
+  asked whether a fact's hypotheses are inconsistent: a vacuous fact fails
+  the check, and where no draw satisfies the hypotheses there is no sample
+  to overrule a wrong answer.
 - **Example.** `examples/gauss.py`, two worked theorems, runnable three ways,
   and `examples/nicomachus.py`: Nicomachus's theorem as an axiom, and the
   closed form of the sum of cubes, tested under it. `examples/pytential_skie.py`

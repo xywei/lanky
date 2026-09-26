@@ -18,10 +18,9 @@ it says nothing, so the table prints ``proved (vacuous)`` and the provenance
 says who showed it (see :func:`lanky.check.establish`). An *axiom*, a fact of
 kind ``"axiom"``, is ``assumed`` on a citation rather than for want of an
 oracle, and the table prints ``assumed (axiom)``. A fact settled by an oracle
-of the ``heuristic`` trust class, one that is right when it answers but not
-guaranteed to (see :data:`lanky.plugins.TRUST_STRENGTH`), prints
-``decided (heuristic)``, so that it is not read as the answer of a decision
-procedure.
+of the ``heuristic`` trust class, one whose answer is not guaranteed (see
+:data:`lanky.plugins.TRUST_STRENGTH`), prints ``decided (heuristic)``, so that
+it is not read as the answer of a decision procedure.
 
 Facts rest on facts. A fact's ``rests_on`` names the ids of the facts it was
 established from: the lemmas a theorem ``uses``, the axioms a derivation
