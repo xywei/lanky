@@ -189,10 +189,10 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     (:func:`_examine_vacuity`): a claim that nothing is ever at stake in says
     nothing, however strongly it is established, and the ledger says so.
 
-    An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted (see
-    :func:`_examine_axiom`). It is ``assumed`` on its citation, which is its
-    author's word and not an oracle's, and a stronger status from one would
-    make it a theorem that says it is an axiom.
+    An axiom (:attr:`~lanky.ledger.Fact.is_axiom`) is only ever refuted, or
+    shown vacuous (see :func:`_examine_axiom`). It is ``assumed`` on its
+    citation, which is its author's word and not an oracle's, and a stronger
+    status from one would make it a theorem that says it is an axiom.
     """
     if fact.is_axiom:
         return _examine_axiom(fact, verbose=verbose)
@@ -236,7 +236,16 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
     on it. A pass is not kept, since it would make the axiom a tested theorem.
     The stronger oracles are not asked: what they establish would be thrown
     away the same way, and a prover's attempt costs what a sample does not.
+
+    What is kept of a pass is what it says against the hypotheses. An axiom
+    whose hypotheses no draw satisfied is examined for vacuity as a theorem
+    is (:func:`_examine_vacuity`), since hypotheses copied down wrong are as
+    likely as a goal copied down wrong: when a stronger oracle shows them
+    inconsistent the axiom is ``vacuous`` and the check fails, and otherwise
+    it gets the same warning. That asks the stronger oracles about the
+    hypotheses alone, never about the axiom.
     """
+    marks: dict[str, Any] = {}
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
@@ -251,11 +260,25 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
             if verbose:
                 print(f"  {oracle.name} raised {type(exc).__name__}: {exc}")
             continue
-        if result is not None and result.status is Status.REFUTED:
+        if result is None:
+            continue
+        if result.status is Status.REFUTED:
             if verbose:
                 print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
             return result
-    return fact
+        if not marks:
+            unsatisfied = _never_satisfied(result.provenance)
+            untestable = _never_drawn(result.provenance)
+            if unsatisfied:
+                marks = {
+                    "unsatisfied": unsatisfied,
+                    "unsatisfied_detail": _skipped(result.provenance),
+                }
+            elif untestable:
+                marks = {"untestable": untestable}
+    if marks:
+        fact = fact.with_status(fact.status, **marks)
+    return _examine_vacuity(fact, verbose=verbose)
 
 
 def has_hypotheses(term: Any) -> bool:
