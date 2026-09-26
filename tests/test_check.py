@@ -1232,7 +1232,10 @@ def test_a_counterexample_overrules_a_heuristic_where_nothing_else_would_look(
     from lanky.plugins import registry
 
     registry.load_entry_points()
-    monkeypatch.setattr(registry, "oracles", [*registry.oracles, Hasty()])
+    # Lean, where it is installed, proves the true statement before the
+    # heuristic is asked, which is right and beside the point here.
+    tester = [oracle for oracle in registry.oracles if oracle.trust_class() == "test"]
+    monkeypatch.setattr(registry, "oracles", [*tester, Hasty()])
     true_closed, false_closed = check_path(write_file(tmp_path, CLOSED_FACTS))
     assert (true_closed.status, true_closed.decided_by) == (Status.DECIDED, "hasty")
     assert "overruled" not in true_closed.provenance
