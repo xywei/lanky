@@ -1243,6 +1243,101 @@ def test_a_counterexample_overrules_a_heuristic_where_nothing_else_would_look(
     assert false_closed.provenance["overruled"] == "hasty, a heuristic, decided it"
 
 
+class Flaky:
+    """A tester whose draws pass the first time it is asked, and refute every time after."""
+
+    name = "flaky-test"
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    def trust_class(self) -> str:
+        return "test"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        self.asked += 1
+        if self.asked == 1:
+            return fact.with_status(Status.TESTED, self.name, samples=1, valid=1)
+        return fact.with_status(
+            Status.REFUTED, self.name, counterexample={"n": 0}, reason="drawn again"
+        )
+
+
+GUARDED = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def guarded(n: Nat, h: n >= 1) -> n + 0 == n:
+    """Its hypothesis holds at almost every draw."""
+'''
+
+
+def test_a_heuristics_answer_is_sampled_once(tmp_path, monkeypatch) -> None:
+    """One sample both looks for a counterexample and says what is recorded.
+
+    A fact with hypotheses that a heuristic established used to be sampled
+    for a counterexample, and then sampled again to record what sampling
+    says about the hypotheses. A tester seeded afresh, or one that keeps
+    state, can pass the first time and refute the second, and that
+    refutation was only recorded, leaving the heuristic's answer standing
+    and the check passing.
+    """
+    from lanky.plugins import registry
+
+    flaky = Flaky()
+    monkeypatch.setattr(registry, "oracles", [flaky, Hasty()])
+    (fact,) = check_path(write_file(tmp_path, GUARDED))
+    assert flaky.asked == 1
+    assert (fact.status, fact.decided_by) == (Status.DECIDED, "hasty")
+    assert "semantics_disagreement" not in fact.provenance
+
+
+class Leaning:
+    """A heuristic that decides every theorem, on a lemma it names and a reason it gives."""
+
+    name = "leaning"
+
+    def trust_class(self) -> str:
+        return "heuristic"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        from dataclasses import replace
+
+        leaning = replace(fact, rests_on=(*fact.rests_on, "lemma"))
+        return leaning.with_status(Status.DECIDED, self.name, detail="by the lemma")
+
+
+def test_what_a_heuristic_added_goes_with_its_overruled_answer(tmp_path, monkeypatch) -> None:
+    """The refutation is the tester's, of the fact as it was handed over.
+
+    A heuristic's answer can come with what it rests on and why; once a
+    counterexample overrules it, neither is what the refuted fact rests on,
+    and only ``overruled`` says what the heuristic had answered.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    tester = [oracle for oracle in registry.oracles if oracle.trust_class() == "test"]
+    monkeypatch.setattr(registry, "oracles", [*tester, Leaning()])
+    true_claim, false_claim = check_path(write_file(tmp_path))
+    assert (true_claim.status, true_claim.rests_on) == (Status.DECIDED, ("lemma",))
+    assert true_claim.provenance["detail"] == "by the lemma"
+    assert (false_claim.status, false_claim.decided_by) == (Status.REFUTED, "property-test")
+    assert false_claim.rests_on == ()
+    assert "detail" not in false_claim.provenance
+    assert false_claim.provenance["overruled"] == "leaning, a heuristic, decided it"
+
+
 class RashSimplifier:
     """A heuristic that says every set of hypotheses is inconsistent."""
 
