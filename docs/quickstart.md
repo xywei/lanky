@@ -396,7 +396,9 @@ verdict about that operator. The rules are eight axioms, each with its
 citation: the four jump relations, `compact(S)`, `compact(D)`, `compact(S')`,
 and `~scalar_plus_compact(D')`, which says that `D'`, being hypersingular, is
 no multiple of the identity plus a compact operator. The engine reads its
-rules off their statements and applies nothing else.
+rules off their statements and applies nothing else about layer potentials;
+of operators in general it uses only that compact ones form a linear space and
+that the identity is not one of them.
 
 ```console
 $ uv run lanky check examples/pytential_skie.py

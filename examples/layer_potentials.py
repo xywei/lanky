@@ -23,8 +23,14 @@ and reads its rules off their statements: ``trace(D, s) == D + s / 2 * I``
 is the rule for the Dirichlet trace of ``D`` from either side,
 ``compact(S)`` says that ``S`` is compact, and ``~scalar_plus_compact(Dp)``
 that ``D'`` is not a multiple of the identity plus a compact operator. The
-engine applies nothing else, so a verdict rests on exactly the axioms it names,
-and an axiom copied down wrong changes the verdicts that use it.
+engine applies nothing else about layer potentials, so a verdict rests on
+exactly the axioms it names, and an axiom copied down wrong changes the
+verdicts that use it. Two facts about operators in general it uses without an
+axiom: compact operators form a linear space, so a combination of them is
+compact, and the identity is not compact, the functions on a boundary being
+infinitely many dimensions, so the identity coefficient of ``c*I`` plus a
+compact operator is one number, and a compact operator is not of the second
+kind.
 
 The claims. A :class:`BoundaryEquation` is a lanky rewrite, from the trace of a
 representation to the boundary operator it is claimed to be, under the
