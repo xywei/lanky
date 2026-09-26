@@ -114,6 +114,8 @@ def test_a_subclass_claims_more_than_the_rewrite() -> None:
     """The extension point a plugin uses to add a claim about the target."""
 
     class Checked(Rewrite):
+        noun = "checked rewrite"
+
         def facts(self):
             fact = self.fact()
             about = Fact(
@@ -135,6 +137,9 @@ def test_a_subclass_claims_more_than_the_rewrite() -> None:
     assert rewrite_row.kind == "rewrite"
     assert target_row.kind == "about-the-target"
     assert target_row.rests_on == (rewrite_row.id,)
+    # what the subclass is called in messages does not change the fact's shape
+    assert rewrite_row.id == obj.fact_id
+    assert repr(obj).startswith("<checked rewrite claimed: ")
 
 
 def test_a_malformed_rewrite_is_refused_where_it_is_written() -> None:

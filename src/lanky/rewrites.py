@@ -144,7 +144,8 @@ class Rewrite:
             none, or returns anything but a pair.
     """
 
-    #: What the claim is called in messages, in its fact's kind and id.
+    #: What the claim is called in messages. Its fact's kind is ``"rewrite"``
+    #: whatever a subclass calls it, since that is the shape an oracle reads.
     noun = "rewrite"
 
     def __init__(self, fn: Any, *, obligation: Any = "equal", uses: Any = ()) -> None:
@@ -191,7 +192,7 @@ class Rewrite:
     @property
     def fact_id(self) -> str:
         """The id the rewrite's fact carries, unique per definition, as a theorem's is."""
-        return fact_id(self.noun, self.qualname, module=self.module, line=self.line)
+        return fact_id("rewrite", self.qualname, module=self.module, line=self.line)
 
     def fact(self) -> Fact:
         """This rewrite as a ledger entry, before any oracle has seen it."""

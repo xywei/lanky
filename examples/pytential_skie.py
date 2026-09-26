@@ -108,7 +108,7 @@ def jump_Sp(gamma: C2Boundary, s: Side) -> normal_derivative(S, s) == Sp - s / 2
 
 @axiom(cite=BOTH)
 def jump_Dp(gamma: C2Boundary, s: Side) -> normal_derivative(D, s) == Dp:
-    """The normal derivative of the double-layer potential is continuous, for a Hölder density."""
+    """The normal derivative of the double-layer potential is continuous, for a C^{1,α} density."""
 
 
 @axiom(cite=BOTH)
