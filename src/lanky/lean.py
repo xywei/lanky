@@ -663,10 +663,13 @@ def _affine(expr: Any) -> dict[str, int] | None:
     Affine is as far as this goes, and far enough: an index expression is
     ``r + 1`` or ``2 * i`` or ``n - 1``, and anything else (a division, a
     family application, a product of two variables) is not something the check
-    can reason about, so it answers ``None`` and the caller declines.
+    can reason about, so it answers ``None`` and the caller declines. An
+    integral ``Fraction`` is the integer it equals (:func:`_integral`), as it
+    is where it is printed.
     """
     if isinstance(expr, bool):
         return None
+    expr = _integral(expr)
     if isinstance(expr, int):
         return {_CONSTANT: expr}
     if isinstance(expr, Var | prim.Variable):

@@ -806,8 +806,9 @@ def test_an_integral_fraction_is_the_integer_it_equals() -> None:
     ``Int`` and an integral ``Fraction`` was not, so ``_FRACTION_BASE`` printed
     as ``1 - 2 ^ n.toNat ≥ 0``, a statement about ``Nat`` that Lean proves by
     truncating and Python refutes at ``n = 1``. A literal exponent, a positive
-    literal divisor and a negative summand read the same way, and a fraction
-    that is not an integer still needs a field.
+    literal divisor, a negative summand and a coefficient of -1 read the same
+    way, a family applied at one is applied at an integer the bounds check can
+    see, and a fraction that is not an integer still needs a field.
     """
     assert print_lean(_FRACTION_BASE) == "∀ n : Int, 0 ≤ n → 1 - (2 : Int) ^ n.toNat ≥ 0"
     squared = prim.Comparison(prim.Power(n, Fraction(2, 1)), ">=", 0)
@@ -816,6 +817,14 @@ def test_an_integral_fraction_is_the_integer_it_equals() -> None:
     assert print_lean(Forall(((n, Nat),), halved)) == "∀ n : Int, 0 ≤ n → n / 2 ≤ n"
     lowered = prim.Comparison(prim.Sum((n, Fraction(-3, 1))), "<", n)
     assert print_lean(Forall(((n, Nat),), lowered)) == "∀ n : Int, 0 ≤ n → n - 3 < n"
+    # a coefficient of -1 is a subtraction too, whichever kind of literal it is
+    negated = prim.Comparison(prim.Sum((n, prim.Product((Fraction(-1, 1), i)))), "<=", n)
+    assert print_lean(Forall(((n, Nat), (i, Nat)), negated)) == (
+        "∀ n : Int, 0 ≤ n → ∀ i : Int, 0 ≤ i → n - i ≤ n"
+    )
+    # and a family applied at one is applied at the integer, in bounds
+    applied = Forall(((f, Fn[Fin[1], Nat]),), prim.Comparison(f(Fraction(0, 1)), ">=", 0))
+    assert print_lean(applied) == "∀ f : Int → Nat, (f 0 : Int) ≥ 0"
     with pytest.raises(UnsupportedTerm, match="needs a field"):
         print_lean(Forall(((n, Nat),), prim.Comparison(n, ">=", Fraction(1, 2))))
 

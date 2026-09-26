@@ -450,9 +450,12 @@ listed because it changes behaviour a reader could already have depended on.
   now read as the `int` it equals wherever a literal is treated specially: a
   power's base is ascribed, a literal exponent is taken, a positive literal
   divisor prints as `/`, and a negative summand as a subtraction. The
-  evaluator takes a `Fraction` literal as the constant it is, where pymbolic
-  refused it as an invalid foreign object and the tester could not run the
-  statement, so the claim is now refuted at `n = 1` with Lean and without.
+  semantics note and the bounds check of a family application read it the same
+  way, so a `Fraction(2, 1)` divisor carries no division-by-zero note and a
+  family applied at `Fraction(0, 1)` is in bounds. The evaluator takes a
+  `Fraction` literal as the constant it is, where pymbolic refused it as an
+  invalid foreign object and the tester could not run the statement, so the
+  claim is now refuted at `n = 1` with Lean and without.
 - **The quickstart's `gap.py` transcripts are held to a real run.** A test
   writes `gap.py` from the quickstart's own snippet, with `examples/gauss.py`'s
   imports, and compares what `lanky check` prints with the quickstart's
