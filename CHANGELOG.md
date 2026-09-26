@@ -173,9 +173,71 @@ prints a ledger naming who decided what.
   `cite=` without their keywords, and say so. The oracles are not handed the
   statements a theorem uses: what `uses=` records is what the theorem is
   worth. `@theorem` written bare works as before, and so does `@theorem()`.
+- **Rewrites** (`lanky.rewrites`). A transformation some tool made, stated
+  as a claim: a source, a target, and the obligation between them that an
+  oracle discharges (#2). `@rewrite` decorates a function of no arguments that
+  returns `(source, target)`, runs it once where it is decorated, and
+  registers a `Rewrite`; `obligation=` names what has to hold (`"equal"` by
+  default) and `uses=` works as it does for `@theorem`. The fact has kind
+  `rewrite`, id `rewrite:<module>.<qualname>@<line>`, a `RewriteTerm` (source,
+  target, obligation, compared by identity, since a side may be a lanky term)
+  as its term, and the statement `source ~> target (obligation)`. No built-in
+  oracle takes a `RewriteTerm`, so a rewrite stays `assumed` until an oracle
+  that knows its obligation decides it. `rewrite_fact` builds the same fact
+  for a plugin that makes its facts itself, as loopty's schedule steps do,
+  and a subclass of `Rewrite` claims more about its target by overriding
+  `facts`. A function that takes arguments or returns anything but a pair,
+  an obligation that is not a name, and `@rewrite("equal")` are refused where
+  they are written. The theory, named `rewrite`, is built in beside
+  `theorem`; `lanky.Rewrite`, `lanky.RewriteTerm` and `lanky.rewrite` are
+  exported.
+- **The `heuristic` trust class** (`lanky.plugins.TRUST_STRENGTH`). Between
+  `test` and `decision-procedure`, for a decider that may fail to answer
+  inside its own fragment, or whose answers are not guaranteed: a
+  computer-algebra simplifier, a rule set with gaps (#2). A rule engine
+  complete for the fragment it accepts, answering every claim in it and
+  declining everything else, is a decision procedure for that fragment and
+  says so. A heuristic is asked after a decision procedure and before the
+  property tester (an oracle naming the class used to rank below the tester,
+  as an unknown class still does), and a fact it settles reads
+  `decided (heuristic)` in the table (`Fact.is_heuristic`). Its answer is not
+  guaranteed and a counterexample is, so a fact a heuristic established is
+  sampled all the same, once, with or without hypotheses, and a
+  counterexample overrules it: the fact is `refuted` by the tester, with
+  `overruled` in its provenance naming the heuristic. What rests on a fact a
+  heuristic settled is worth a heuristic's answer: of two facts with one
+  status the heuristic's is the weaker, `Support.heuristic` says so, the
+  `EFFECTIVE` column prints `decided (heuristic)`, and `--json` carries
+  `effective_heuristic` for every fact. For the same reason a heuristic is
+  not asked whether a fact's hypotheses are inconsistent: a vacuous fact
+  fails the check, and where no draw satisfies the hypotheses there is no
+  sample to overrule a wrong answer.
 - **Example.** `examples/gauss.py`, two worked theorems, runnable three ways,
   and `examples/nicomachus.py`: Nicomachus's theorem as an axiom, and the
-  closed form of the sum of cubes, tested under it.
+  closed form of the sum of cubes, tested under it. `examples/pytential_skie.py`
+  (#2) asks of five integral representations, Laplace Dirichlet with the
+  double and the single layer, Laplace Neumann with the single layer, and
+  Helmholtz with the combined field for Dirichlet and for Neumann data,
+  whether each gives a boundary equation of the second kind on a closed
+  boundary of class C². Each is a rewrite from the representation's trace to
+  its boundary operator under the obligation `jump relations`, a verdict
+  about that operator, and for a second-kind claim the arithmetic that the
+  identity coefficient is not zero, which Lean proves as integer arithmetic
+  on the numerator. The verdicts are decided by a rule engine in
+  `examples/layer_potentials.py` whose rules are eight `@axiom`s, the four
+  jump relations and the three compactness statements from Kress's *Linear
+  Integral Equations* and Colton and Kress, and the hypersingularity of `D'`,
+  read off the axioms' statements; it claims `decision-procedure` for the
+  fragment it accepts and declines the rest with the reason. The single
+  layer is refused as first kind (no identity term), and the Neumann data
+  as not second kind because `D'` is no multiple of the identity plus a
+  compact operator. `python` prints the table and the reasons; `lanky check`
+  exits 0 with every verdict `decided` by `layer-rules` under the axioms it
+  applied. Where pytential imports, the demonstration also translates the
+  five built with `pytential.sym`, and two of pytential's own
+  `DirichletOperator` pairs, through `layer_potentials.from_pytential`;
+  pytential is never a lanky dependency and `import lanky` does not import
+  it.
 - **Documentation.** A README that leads with what works, and
   `docs/quickstart.md`, which walks the worked file end to end with the output
   the commands print, and then the axiom example, whose table the suite
@@ -614,6 +676,125 @@ listed because it changes behaviour a reader could already have depended on.
   not empty, and then the `reason`, which usually talks about them. A value
   that prints as several lines is indented line by line. A plugin's own keys,
   such as loopty's `witness_text`, stay in the JSON.
+- **A goal whose own guard never holds is vacuous, and the ledger says so.**
+  A scan postcondition with its guard flipped,
+  `all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q))`,
+  holds at every draw because its guard holds at no point, and the row read
+  `tested`, or `proved lean`, since `omega` proves it from the guard, with
+  nothing under the table (#17). #5 looked at the theorem's hypotheses and not
+  at the guard of a quantifier inside the goal. The property tester now
+  counts, per draw the hypotheses admit, whether the goal's quantifier got
+  through to a point of its guarded domain (`TestReport.goal_reached`), and a
+  goal that never did records `goal_reached: 0`; under `pytest` such a theorem
+  is skipped, with the guard in the reason. A fact whose goal is a universal
+  is cross-checked by the tester when a stronger oracle established it, as a
+  fact with hypotheses already was. When no draw got through, the stronger
+  oracles are asked whether the guard is empty for every assignment the
+  hypotheses admit (`lanky.check.goal_guard_fact`, the goal with its body
+  replaced by `False`). If one proves it, the fact is marked `vacuous`, with
+  `vacuous_by` and `vacuous_evidence`, exactly as #5 marks inconsistent
+  hypotheses: the row reads `proved (vacuous)`, a `VACUOUS` block follows the
+  table, and `lanky check` exits 1. If none can, and some draws were valid,
+  the provenance records `goal_unreached` ("the goal's guard p < q and p > q
+  never held in 200 valid draws") and a `WARNING` line follows the table, with
+  exit code 0. A guard that is empty only for some values of the variables,
+  as `Fin[n]` is at `n = 0`, gets through at some draw and is never flagged. A
+  goal with no guard whose domain never has a point, such as `Fin[n - n]`, is
+  the same case. An axiom's goal guard is examined as a theorem's is, and the
+  stronger oracles are asked about the guard, never about the axiom. Only the
+  goal's outermost quantifier is examined.
+- **A symbolic guard over a concrete domain is refused rather than dropped.**
+  `sum(1 for i in Fin[3] if n > 100) == 0` became `False` while the annotation
+  was evaluated, and was refuted at `n = 3`, where it is true, with Lean and
+  without (#24). Over a concrete domain the generator binds no binder and the
+  builtin answers over the values it yielded, and capturing the guard answers
+  `True`, so every point was yielded and the guard was lost; `all` and `any`
+  lost it the same way whenever the body was concrete, so
+  `any(i >= 0 for i in Fin[3] if n > 100)` read `tested`. `lanky.terms.forall`,
+  `exists` and `sum_` now raise `SymbolicBoolError` when the trace bound no
+  binder and recorded a guard, naming the guard and the ways to keep the
+  condition: outside the quantifier, as in `~(condition) | all(body for ...)`,
+  when it does not mention the loop variable, or over a domain with a symbolic
+  bound, where the quantifier is a term that keeps its guard. The file does not
+  import, and `lanky check` prints the traceback and exits 1. A concrete guard
+  over a concrete domain is Python's, as before.
+- **The connectives are three-valued.** A connective stopped at the first
+  operand the tester could not decide, so `~all(k < 100 for k in Nat) | (n >= 0)`
+  read `assumed` and the same disjunction with its operands swapped read
+  `tested` (#25). The new `lanky.terms.conjoin` and `disjoin` read their
+  operands as Kleene's strong connectives: a false operand settles a
+  conjunction and a true one a disjunction, whatever an operand before it
+  could not answer, and when nothing settles it the first open answer is
+  raised again. An open answer is `Undecided`, or a `ZeroDivisionError`,
+  which is Python's side of Lean's total division. The evaluator's `&` and
+  `|`, the tester's walk of a conjunction in the goal, the list of hypotheses
+  and the propositions of a refinement all read their operands this way, so
+  the order they are written in no longer changes what a draw decides: both
+  disjunctions read `tested`, a conjunction whose first conjunct is undecided
+  and whose second is false is refuted, and a draw one hypothesis breaks is
+  rejected however the others come out. A false operand still stops the walk,
+  so `(k > 0) & (10 // k > 1)` never divides by zero. An operand after an
+  undecided one is evaluated now, and one that is not a proposition is refused
+  where the undecided operand used to hide it.
+- **A refinement is read as the hypothesis it is.** `n: Nat & all(k < n + 100
+  for k in Nat)` stopped the property test: `Refined.holds` evaluated the
+  refinement with no sampler, the quantifier over `Nat` raised `ValueError`,
+  and the row read `assumed` with "property-test could not run" (#26).
+  `Refined.holds` takes a sampler and reads its propositions standing
+  `NEGATIVE`, and the tester hands it one made from the draw's random source
+  and the values drawn so far, for a parameter's refinement, a family's
+  codomain, and a refinement of the binder domain of a definitional
+  hypothesis. A draw of `k` that breaks the universal rejects the value, and
+  one at which it held at every draw leaves the draw undecided, so `refined`
+  reads `assumed` with a reason that names the refinement; an existential a
+  draw witnesses admits the value.
+- **Files from different source roots are checked in processes of their
+  own.** `lanky check a/claims.py b/claims.py` checked the files one after
+  another in one process, so when each directory held its own `helpers.py`,
+  the second file's `import helpers` found the first directory's module in
+  `sys.modules`, and its claims were decided against code it does not
+  contain, without a word (#9). Two trees' packages of one name were refused
+  with an `ImportError` instead, which failed the check on a file that is
+  fine. The command now groups the files by their source roots, the
+  directories a check puts on `sys.path` (the file's own, and for a file in a
+  package the one its package is found from), which the new
+  `lanky.check.source_roots` returns. Files that share their roots, a single
+  file always among them, are checked in the command's own process one after
+  another, and print what they always printed. When the roots differ, each
+  group is checked in a child process of its own, one after another, started
+  with the same interpreter, `sys.path`, `sys.argv`, working directory and
+  environment, and what a child prints is copied line by line to the
+  command's standard output and error. The ledgers come out root by root, in
+  the order each root first appears on the command line, and `--json` lists
+  the facts in that order. A child that ends before it reports, because a
+  checked file called `sys.exit` while it was imported or because it could
+  not be started, is named in a line and fails the check, and the other roots
+  are still checked. A child finds its plugins through their entry points, as
+  the `lanky` command does. `check_path` keeps its behavior, which its
+  docstring now states: it imports into the process that calls it, and still
+  refuses a package of one name imported from another directory.
+- **`lanky check` names each axiom's citation.** An axiom's `cite` was in
+  the JSON alone, though it is the one thing that stands behind an
+  `assumed (axiom)` row (#2). Each axiom now gets a `CITED` line right under
+  the table, `CITED nicomachus at nicomachus.py:38: Nicomachus of Gerasa,
+  Introduction to Arithmetic`, one per axiom in the table's order, a refuted
+  one included; a citation of several lines is indented under its first. The
+  exit code does not change, and the quickstart's table for
+  `examples/nicomachus.py` has the line.
+- **The oracle that settles a fact leaves its trust class.** A status says
+  what kind of evidence a fact has; how far its decider is to be trusted was
+  nowhere in the ledger. `lanky.check.establish` now records the trust class
+  of the oracle that established or refuted a fact as `trust_class` in its
+  provenance, which is what the table's `decided (heuristic)` mark reads.
+- **A comparison with no variable in it is integer arithmetic in Lean.** The
+  printer wrote a closed comparison, which only a term built node by node can
+  hold, with bare numerals, and Lean read those as `Nat`: `1 - 2 >= 0` was a
+  truncated subtraction Lean proved and Python refuted, and `-1 != 0` did not
+  elaborate. Its left side is now ascribed, `(1 - 2 : Int) ≥ 0`, as a literal
+  base of a power already was, and so is a base of a power with no variable
+  in it: `(1 - 2) ** n >= 0` printed as `(1 - 2) ^ n.toNat ≥ 0`, which Lean
+  read over `Nat` and proved. The demonstration's coefficient facts are such
+  comparisons.
 
 ### Notes
 

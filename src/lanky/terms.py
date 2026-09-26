@@ -29,7 +29,9 @@ off the generator's code object so that the printed statement says ``r`` and not
 ``_i3``. A ``if`` clause in the generator records a guard: the truth value of a
 symbolic proposition is undefined, so :meth:`PropositionMixin.__bool__` uses the
 request as the signal that a guard was written, and raises outside binder
-tracing.
+tracing. A concrete domain (``Fin[3]``) binds no binder: it is walked, and
+the builtin answers over what the generator yielded, so a symbolic guard there
+has nowhere to go and is refused rather than dropped.
 """
 
 from __future__ import annotations
@@ -77,7 +79,9 @@ __all__ = [
     "Var",
     "binder_assignments",
     "binders",
+    "conjoin",
     "conjuncts",
+    "disjoin",
     "elementary_value",
     "evaluate",
     "evaluate_annotations",
@@ -170,6 +174,80 @@ class Polarity(enum.Enum):
     def flipped(self) -> Polarity:
         """Where the operand of a negation that stands here stands."""
         return Polarity(-self.value)
+
+
+#: What an operand with no answer at the values in hand raises: a quantifier the
+#: draws leave open (:class:`Undecided`), a division by zero, which Python
+#: raises where Lean's integer division is total, and an elementary function
+#: outside its Python domain (:class:`UndefinedValue`), where Mathlib's is
+#: total. None of them is a truth value, and none is an error in the statement.
+_OPEN = (Undecided, ZeroDivisionError, UndefinedValue)
+
+
+def conjoin(operands: Iterable[Callable[[], bool]]) -> bool:
+    """The conjunction of ``operands``, read three-valued, as Kleene's strong ``and``.
+
+    Each operand is a thunk that answers a truth value, and they are asked in
+    order. The first ``False`` answers the conjunction, whatever an operand
+    before it could not answer: a conjunction with a false conjunct is false
+    however the others come out. An operand with no answer here (see
+    :data:`_OPEN`) is passed over and the walk goes on, and when nothing
+    settles the conjunction the first such answer is raised again at the end.
+    So ``p & q`` and ``q & p`` agree, where a walk that stopped at its first
+    undecided operand gave up on a conjunction a later operand refutes.
+
+    That is sound wherever the conjunction stands. One operand's certain
+    ``False`` settles it, whatever the undecided operand would have been, and
+    a ``True`` counts for as much as it did before.
+
+    The walk still stops at the first ``False``, so an operand after it is
+    never asked: ``(k > 0) & (10 // k > 1)`` does not divide by zero at
+    ``k = 0``. An operand after an undecided one is asked now, and anything it
+    raises that is not an open answer (a ``TypeError`` for a value that is not
+    a truth value, say) is raised; the undecided operand used to keep it from
+    being asked at all.
+
+    Raises:
+        Undecided: If no operand is ``False`` and one of them was undecided,
+            or the ``ZeroDivisionError`` or :class:`UndefinedValue` that one
+            raised.
+    """
+    pending: Exception | None = None
+    for operand in operands:
+        try:
+            if not operand():
+                return False
+        except _OPEN as exc:
+            if pending is None:
+                pending = exc
+    if pending is not None:
+        raise pending
+    return True
+
+
+def disjoin(operands: Iterable[Callable[[], bool]]) -> bool:
+    """The disjunction of ``operands``, read three-valued; the mirror of :func:`conjoin`.
+
+    The first ``True`` answers the disjunction, whatever an operand before it
+    could not answer, and when no operand is ``True`` the first open answer is
+    raised again.
+
+    Raises:
+        Undecided: If no operand is ``True`` and one of them was undecided,
+            or the ``ZeroDivisionError`` or :class:`UndefinedValue` that one
+            raised.
+    """
+    pending: Exception | None = None
+    for operand in operands:
+        try:
+            if operand():
+                return True
+        except _OPEN as exc:
+            if pending is None:
+                pending = exc
+    if pending is not None:
+        raise pending
+    return False
 
 
 # {{{ operator-overloading mixins
@@ -740,22 +818,96 @@ def binders(gen: Iterable[Any]) -> tuple[tuple[Var, Any], ...]:
     return _drive(gen).binders
 
 
+#: Where a condition that does not mention the loop variable can go instead,
+#: per builtin. A sum has no such place: its value would depend on the condition.
+_OUTSIDE = {
+    "all": "~(condition) | all(body for ...)",
+    "any": "(condition) & any(body for ...)",
+}
+
+
+def _refuse_a_dropped_guard(driven: _Driven, word: str) -> None:
+    """Raise if a generator over a concrete domain captured a symbolic guard.
+
+    A concrete domain (``Fin[3]``) is walked point by point, so the generator
+    binds no binder and the quantifier is answered by the builtin, over the
+    values it yielded. A guard that mentions a variable of the statement
+    (``if n > 100``) has no truth value at a point. Asking for one while the
+    generator is traced records it and answers ``True``, so every point was
+    yielded and the guard was dropped: ``sum(1 for i in Fin[3] if n > 100)``
+    became ``3`` before any sampling happened, and the statement around it a
+    constant, refuted at draws where it is true. ``all`` and ``any`` dropped
+    the guard the same way whenever the body was a concrete value.
+
+    Keeping the guard point by point would need it recorded against each value
+    rather than pooled in the trace, so it is refused instead, naming the ways
+    to write the condition that do keep it: outside the quantifier, for a
+    condition that does not mention the loop variable, or over a domain with a
+    symbolic bound, where the quantifier is a term that carries its guard. The
+    body is no place for it: a symbolic body over a concrete domain is refused
+    already, when the builtin asks it for a truth value.
+
+    Raises:
+        SymbolicBoolError: If the trace bound no binder and recorded a guard.
+    """
+    if driven.binders or driven.guard is None:
+        return
+    # The trace pools what every point recorded, so a guard that does not
+    # mention the loop variable comes back once per point; it is named once.
+    captured = " and ".join(dict.fromkeys(render(g) for g in conjuncts(driven.guard)))
+    # No point got through. Python's `not` does that, since it inverts the
+    # answer lanky gives while capturing the guard, but so does a concrete
+    # condition joined with `and` that holds at no point, so the hint is
+    # conditional.
+    inverted = (
+        ""
+        if driven.values
+        else " (no point got through it: if it was written with Python's `not`, "
+        "which inverts the answer lanky gives while capturing it, write `~(...)`)"
+    )
+    outside = _OUTSIDE.get(word)
+    moved = (
+        f"a condition that does not mention the loop variable can stand outside "
+        f"the quantifier, as in {outside}; otherwise "
+        if outside
+        else ""
+    )
+    raise SymbolicBoolError(
+        f"this {word}(...) walks a concrete domain point by point, and its guard "
+        f"{captured!r} is symbolic, with no truth value at a point, so lanky "
+        f"would have to drop it, which changes the statement{inverted}; {moved}"
+        "give the domain a symbolic bound (a variable m with the hypothesis "
+        "m == 3, say), so that the quantifier is a term that keeps its guard"
+    )
+
+
 def forall(gen: Iterable[Any]) -> Any:
     """Universal quantification; the replacement for the builtin ``all``.
 
     Symbolic domains give a :class:`Forall` term, concrete ones the plain
     ``bool`` that ``all`` would have answered.
+
+    Raises:
+        SymbolicBoolError: If the domain is concrete and the guard symbolic,
+            which the builtin would drop (see :func:`_refuse_a_dropped_guard`).
     """
     driven = _drive(gen)
     if not driven.binders:
+        _refuse_a_dropped_guard(driven, "all")
         return builtins.all(driven.values)
     return Forall(driven.binders, driven.body, driven.guard)
 
 
 def exists(gen: Iterable[Any]) -> Any:
-    """Existential quantification; the replacement for the builtin ``any``."""
+    """Existential quantification; the replacement for the builtin ``any``.
+
+    Raises:
+        SymbolicBoolError: If the domain is concrete and the guard symbolic,
+            as for :func:`forall`.
+    """
     driven = _drive(gen)
     if not driven.binders:
+        _refuse_a_dropped_guard(driven, "any")
         return builtins.any(driven.values)
     return Exists(driven.binders, driven.body, driven.guard)
 
@@ -766,9 +918,16 @@ def sum_(gen: Iterable[Any]) -> Any:
     Over a symbolic domain this is a :class:`Sum` term whose reduced domain is
     known; over a concrete one it is the ordinary Python (or numpy) sum, so the
     same source runs under plain ``python``.
+
+    Raises:
+        SymbolicBoolError: If the domain is concrete and the guard symbolic,
+            as for :func:`forall`. A sum of symbolic values over a concrete
+            domain is added up without asking any value for its truth, so
+            nothing else would have noticed the guard go.
     """
     driven = _drive(gen)
     if not driven.binders:
+        _refuse_a_dropped_guard(driven, "sum")
         return builtins.sum(driven.values)
     return Sum(driven.binders, driven.body, driven.guard)
 
@@ -1026,6 +1185,12 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     printer gives the same binder (``T`` plus the guard ``p``), so the two
     readings of the statement agree.
 
+    A connective reads its operands three-valued (:func:`conjoin`,
+    :func:`disjoin`). An operand the values in hand cannot answer does not
+    stop it, and a later operand that settles it, a ``False`` in a
+    conjunction or a ``True`` in a disjunction, answers it all the same, so
+    the order the operands are written in does not change the answer.
+
     Wherever a proposition's truth is read, in a connective, a guard, a
     refinement or the body of a quantifier, the value has to be a truth value
     (:func:`truth_value`). pymbolic's own connectives apply Python's
@@ -1105,13 +1270,19 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         current assignment, the binder included, the innermost refinement
         first, so ``Nat & (k > 0) & (10 // k > 1)`` never divides by zero, and
         standing at ``polarity``. A proposition that cannot be answered
-        raises, as a guard does, and the caller decides what that means (the
-        property tester drops the draw).
+        raises, as a guard does, unless a later one rejects the point, and
+        the caller decides what that means (the property tester drops the
+        draw).
         """
         if not isinstance(domain, _refined_type()):
             return True
-        return self._admits(domain.base, polarity) and all(
-            self._truth_at(polarity, p) for p in domain.props
+        # One conjunction, read three-valued (conjoin): a proposition that
+        # rejects the point settles it, whatever an earlier one could not answer.
+        return conjoin(
+            [
+                lambda: self._admits(domain.base, polarity),
+                *(lambda p=p: self._truth_at(polarity, p) for p in domain.props),
+            ]
         )
 
     def assignments(
@@ -1226,12 +1397,20 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         return truth_value(self._at(polarity, expr), expr)
 
     def map_logical_and(self, expr: prim.LogicalAnd) -> bool:
-        """Every operand, left to right, stopping at the first false one."""
-        return all(self._truth(child) for child in expr.children)
+        """Every operand, left to right, stopping at the first false one.
+
+        An operand the values in hand cannot answer does not stop the walk: a
+        later false one still settles the conjunction (:func:`conjoin`).
+        """
+        return conjoin(lambda child=child: self._truth(child) for child in expr.children)
 
     def map_logical_or(self, expr: prim.LogicalOr) -> bool:
-        """Some operand, left to right, stopping at the first true one."""
-        return any(self._truth(child) for child in expr.children)
+        """Some operand, left to right, stopping at the first true one.
+
+        An operand the values in hand cannot answer does not stop the walk: a
+        later true one still settles the disjunction (:func:`disjoin`).
+        """
+        return disjoin(lambda child=child: self._truth(child) for child in expr.children)
 
     def map_logical_not(self, expr: prim.LogicalNot) -> bool:
         """The negation of the operand, which stands opposite to it."""

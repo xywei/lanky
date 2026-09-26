@@ -645,6 +645,24 @@ def test_a_function_outside_its_python_domain_decides_nothing() -> None:
     assert report.ok and report.valid > 0
 
 
+def test_a_function_outside_its_python_domain_is_an_operand_with_no_answer() -> None:
+    """A connective reads ``log(0)`` as it reads a division by zero (#25).
+
+    Python has no value there and Mathlib's is total, so another operand
+    still settles the connective, whichever side it is written on, and a
+    conjunct the draw breaks refutes the goal however the other one fares.
+    """
+    for claim in ((log(x) > 1) & (x > 0), (x > 0) & (log(x) > 1)):
+        assert evaluate(claim, {"x": 0}) is False
+    for claim in ((log(x) > 1) | (x == 0), (x == 0) | (log(x) > 1)):
+        assert evaluate(claim, {"x": 0}) is True
+    with pytest.raises(UndefinedValue):
+        evaluate((log(x) > 1) | (x > 0), {"x": 0})
+    report = check([("x", Real)], [], (sqrt(x) >= 0) & (x >= 0))
+    assert not report.ok
+    assert report.counterexample["x"] < 0
+
+
 def test_the_readings_gaps_over_the_reals_are_noted_in_mathlib_mode() -> None:
     assert TRUE_DIVISION_BY_ZERO in notes(_divided_back.term, mathlib=True)
     assert notes(Forall(((x, Real),), x / 2 == x * 0.5), mathlib=True) == ()

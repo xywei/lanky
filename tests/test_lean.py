@@ -20,6 +20,7 @@ import pymbolic.primitives as prim
 import pytest
 
 from lanky import theorem
+from lanky.check import import_path
 from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
@@ -36,6 +37,7 @@ from lanky.oracles.lean import (
     tactic_ladder,
     use_tactic,
 )
+from lanky.plugins import registry
 from lanky.prelude import Bool, Fin, FinType, Fn, Int, Nat, Real
 from lanky.terms import Abs, Exists, Forall, Sum, Var
 
@@ -829,6 +831,60 @@ def test_an_integral_fraction_is_the_integer_it_equals() -> None:
         print_lean(Forall(((n, Nat),), prim.Comparison(n, ">=", Fraction(1, 2))))
 
 
+#: ``1 - 2 >= 0``, built node by node: Python would answer it in an annotation.
+_CLOSED_SUBTRACTION = prim.Comparison(prim.Sum((1, -2)), ">=", 0)
+
+
+def test_a_comparison_with_no_name_in_it_is_integer_arithmetic() -> None:
+    """A closed comparison is ascribed ``Int``, as a literal base is.
+
+    With no variable on either side Lean has nothing to read the numerals'
+    type off, and reads them as ``Nat``: ``1 - 2 ≥ 0`` is then a truncated
+    subtraction Lean proves, and Python refutes, and ``-1 ≠ 0`` does not
+    elaborate at all. Such a term comes from a plugin, the demonstration's
+    claim that a coefficient it computed is not zero among them. A comparison
+    with a name in it is typed by the name, as before.
+    """
+    assert print_lean(_CLOSED_SUBTRACTION) == "(1 - 2 : Int) ≥ 0"
+    assert print_lean(prim.Comparison(-1, "!=", 0)) == "(-1 : Int) ≠ 0"
+    assert print_lean(prim.Comparison(Fraction(3, 1), "==", 3)) == "(3 : Int) = 3"
+    nested = Forall(
+        ((n, Nat),),
+        prim.LogicalOr((prim.Comparison(prim.Product((2, 3)), "<", 7), prim.Comparison(n, "<", 0))),
+    )
+    assert print_lean(nested) == "∀ n : Int, 0 ≤ n → (2 * 3 : Int) < 7 ∨ n < 0"
+    assert print_lean(Forall(((n, Nat),), prim.Comparison(n, ">=", 0))) == (
+        "∀ n : Int, 0 ≤ n → n ≥ 0"
+    )
+    assert print_lean(Forall(((f, Fn[Fin[1], Nat]),), prim.Comparison(f(0), ">=", 0))) == (
+        "∀ f : Int → Nat, (f 0 : Int) ≥ 0"
+    )
+
+
+#: ``(1 - 2) ** n >= 0`` over ``Nat``, built node by node: Python would compute
+#: ``1 - 2`` in an annotation. False at ``n = 1``.
+_CLOSED_BASE = Forall(((n, Nat),), prim.Comparison(prim.Power(prim.Sum((1, -2)), n), ">=", 0))
+
+
+def test_a_base_with_no_name_in_it_is_an_integer() -> None:
+    """A base of literals alone is ascribed ``Int``, as a literal base is.
+
+    ``n`` is only in the exponent, as ``n.toNat``, a ``Nat``, and the base has
+    no name in it either, so nothing typed its numerals: ``(1 - 2) ^ n.toNat
+    ≥ 0`` was ``0 ^ n.toNat ≥ 0`` over ``Nat``, which Lean proves and Python
+    refutes at ``n = 1``, the closed comparison's gap again one level down.
+    """
+    assert print_lean(_CLOSED_BASE) == "∀ n : Int, 0 ≤ n → (1 - 2 : Int) ^ n.toNat ≥ 0"
+    product = prim.Comparison(prim.Power(prim.Product((2, 3)), n), ">=", 1)
+    assert print_lean(Forall(((n, Nat),), product)) == (
+        "∀ n : Int, 0 ≤ n → (2 * 3 : Int) ^ n.toNat ≥ 1"
+    )
+    # a base with a name in it is typed by the name, as before
+    assert print_lean(Forall(((n, Nat),), (n - 2) ** n >= 0)) == (
+        "∀ n : Int, 0 ≤ n → (n - 2) ^ n.toNat ≥ 0"
+    )
+
+
 # }}}
 
 
@@ -1114,11 +1170,19 @@ def _python_after(document: str, marker: str) -> str:
 
 
 def _block_from(document: str, first: str) -> list[str]:
-    """The lines of the fenced block in ``document`` whose first line starts with ``first``."""
+    """The lines of the fenced block in ``document`` whose first line starts with ``first``.
+
+    A block inside a list item is indented with it, and comes back without
+    the indentation, as the command printed it.
+    """
     lines = (ROOT / document).read_text(encoding="utf-8").splitlines()
-    at = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
+    at = next(
+        (index for index, line in enumerate(lines) if line.lstrip().startswith(first)), None
+    )
     assert at is not None, f"{document} no longer shows a block starting {first!r}"
-    return [line.rstrip() for line in lines[at : lines.index("```", at)]]
+    indent = len(lines[at]) - len(lines[at].lstrip())
+    end = next(index for index in range(at, len(lines)) if lines[index].strip() == "```")
+    return [line[indent:].rstrip() for line in lines[at:end]]
 
 
 def _div_zero_snippet() -> str:
@@ -1176,6 +1240,36 @@ def test_without_lean_the_quickstart_gap_transcripts_hold(monkeypatch, tmp_path,
     assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
     assert div_zero[2].split()[:4] == ["assumed", "-", "gap.py:7", "div_zero"]
     assert not any(line.startswith("SEMANTICS") for line in div_zero)
+
+
+def _check_flipped_gauss(
+    directory: Path, capsys, code: int, guard: str = "(a < b) & (a > b)"
+) -> list[str]:
+    """``examples/gauss.py`` with the guard of ``scan_monotone``'s goal flipped, as checked.
+
+    The quickstart has a reader flip ``if a <= b`` to ``if (a < b) & (a > b)``
+    in the example itself, so the file keeps its name and its lines; it
+    mentions ``a == 7`` as well, a guard only the sampler misses.
+    """
+    source = (ROOT / "examples" / "gauss.py").read_text(encoding="utf-8")
+    assert "if a <= b):" in source
+    directory.mkdir()
+    path = directory / "gauss.py"
+    path.write_text(source.replace("if a <= b):", f"if {guard}):"), encoding="utf-8")
+    return _check_gap(path, capsys, code)
+
+
+def test_without_lean_the_quickstart_goal_guard_warning_holds(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The quickstart's warning for a flipped goal guard is a real run, without Lean."""
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    printed = _check_flipped_gauss(tmp_path / "flipped", capsys, 0)
+    warning = _block_from("docs/quickstart.md", "WARNING scan_monotone at gauss.py:39")
+    at = printed.index(warning[0])
+    assert printed[at : at + len(warning)] == warning
+    row = next(line for line in printed if "scan_monotone" in line and "gauss.py:39" in line)
+    assert row.split()[:2] == ["tested", "property-test"]
 
 
 # }}}
@@ -1281,6 +1375,57 @@ def test_a_pinned_tactic_is_the_one_that_runs(lean_oracle: LeanOracle) -> None:
         lean_oracle.tactics.clear()
     assert proved.status is Status.PROVED
     assert proved.provenance["tactic"] == "exact Int.add_comm x y"
+
+
+def test_a_closed_comparison_means_in_lean_what_it_means_in_python(
+    lean_oracle: LeanOracle,
+) -> None:
+    """``1 - 2 >= 0`` is not proved, and ``-1 != 0`` is, as the integer reading has it."""
+    false = Fact(
+        id="closed:false",
+        kind="coefficient",
+        statement="1 - 2 >= 0",
+        term=_CLOSED_SUBTRACTION,
+        owner="closed_false",
+    )
+    assert lean_oracle.establish(false).status is Status.ASSUMED
+    true = Fact(
+        id="closed:true",
+        kind="coefficient",
+        statement="-1 != 0",
+        term=prim.Comparison(-1, "!=", 0),
+        owner="closed_true",
+    )
+    proved = lean_oracle.establish(true)
+    assert proved.status is Status.PROVED
+    assert "(-1 : Int) ≠ 0" in proved.provenance["lean_source"]
+
+
+def test_the_pytential_demonstrations_arithmetic_is_proved(
+    lean_oracle: LeanOracle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one part of ``examples/pytential_skie.py`` Lean touches, it proves.
+
+    Each second-kind claim states that its identity coefficient is not zero,
+    as integer arithmetic on the numerator; the verdicts themselves rest on
+    axioms and a rule engine, and nothing about compactness goes to Lean.
+    """
+    examples = Path(__file__).resolve().parent.parent / "examples"
+    monkeypatch.syspath_prepend(str(examples))
+    monkeypatch.setattr(registry, "oracles", list(registry.oracles))
+    with registry.collecting():
+        demo = import_path(examples / "pytential_skie.py")
+    coefficients = [
+        fact for claim in demo.CLAIMS for fact in claim.facts() if fact.kind == "coefficient"
+    ]
+    assert [fact.statement for fact in coefficients] == [
+        "coefficient of I: -1/2 != 0",
+        "coefficient of I: 1/2 != 0",
+        "coefficient of I: 1/2 != 0",
+    ]
+    for fact in coefficients:
+        proved = lean_oracle.establish(fact)
+        assert proved.status is Status.PROVED, proved.provenance
 
 
 def test_lean_reports_a_goal_it_cannot_close(lean_oracle: LeanOracle) -> None:
@@ -1402,6 +1547,23 @@ def test_lean_does_not_prove_an_integral_fraction_base_by_truncation(
         id="fraction_base", kind="theorem", statement="1 - 2**n >= 0", term=_FRACTION_BASE
     )
     closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_FRACTION_BASE)}\n")
+    assert closed, detail
+    assert lean_oracle.establish(fact).status is not Status.PROVED
+    checked = establish(fact)
+    assert checked.status is Status.REFUTED
+    assert checked.decided_by == "property-test"
+
+
+def test_lean_does_not_prove_a_closed_base_by_truncation(lean_oracle: LeanOracle) -> None:
+    """``(1 - 2) ** n >= 0`` is false at ``n = 1``, and Lean must not prove it.
+
+    Printed without the ``Int`` ascription its base was a truncated ``Nat``
+    subtraction, and Lean proved the statement; the tester refutes it.
+    """
+    from lanky.check import establish
+
+    fact = Fact(id="closed_base", kind="theorem", statement="(1 - 2)**n >= 0", term=_CLOSED_BASE)
+    closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_CLOSED_BASE)}\n")
     assert closed, detail
     assert lean_oracle.establish(fact).status is not Status.PROVED
     checked = establish(fact)
@@ -1750,6 +1912,154 @@ def test_lean_refutes_hypotheses_under_a_goal_it_cannot_state(
     assert fact.status is Status.ASSUMED
     assert fact.is_vacuous
     assert cli.main(["check", str(path)]) == 1
+
+
+_FLIPPED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Fn, Nat\n\n\n"
+    "@theorem\n"
+    "def flipped(\n"
+    "    n: Nat,\n"
+    "    cnt: Fn[Fin[n], Nat],\n"
+    "    off: Fn[Fin[n + 1], Nat],\n"
+    "    h: (off(0) == 0) & all(off(r + 1) == off(r) + cnt(r) for r in Fin[n]),\n"
+    ") -> all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q)):\n"
+    '    """The guard can never hold, so the goal holds at every draw."""\n'
+)
+
+
+def test_lean_shows_a_goal_guard_empty_and_the_claim_vacuous(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """#17 with a real Lean: the goal is proved from its guard, which is shown empty.
+
+    ``omega`` closes the goal from ``p < q`` and ``p > q``, which is a valid
+    proof of a goal that says nothing. The tester finds that no draw got
+    through the guard, and Lean proves the guard empty wherever the
+    hypotheses hold (the goal's body replaced by ``False``).
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "flipped.py"
+    path.write_text(_FLIPPED, encoding="utf-8")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert fact.decided_by == "lean"
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous_by"] == "lean"
+    assert fact.provenance["vacuous"].startswith("the goal's guard is empty")
+    source = fact.provenance["vacuous_evidence"]["lean_source"]
+    assert "p < q → p > q → False := by" in source
+    assert cli.main(["check", str(path)]) == 1
+    printed = capsys.readouterr().out
+    assert "proved (vacuous)  lean" in printed
+    assert "VACUOUS flipped at flipped.py:7" in printed
+
+
+def test_lean_leaves_a_goal_guard_the_sampler_misses_to_a_warning(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """``i == 7`` has a point once ``n`` is above 7, where no draw looks, and is not empty."""
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "rare.py"
+    path.write_text(
+        _FLIPPED.replace(
+            "all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q))",
+            "all(off(p) >= 0 for p in Fin[n + 1] if p == 7)",
+        ),
+        encoding="utf-8",
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["goal_unreached"] == (
+        "the goal's guard p == 7 never held in 200 valid draws"
+    )
+    assert cli.main(["check", str(path)]) == 0
+    assert "WARNING flipped at rare.py:7" in capsys.readouterr().out
+
+
+_SCOPED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Fn, Nat\n\n\n"
+    "@theorem\n"
+    "def below_three(\n"
+    "    n: Nat, off: Fn[Fin[n + 1], Nat], h: n < 3\n"
+    ") -> all(off(i) >= 0 for i in Fin[n + 1] if i > 5):\n"
+    '    """The guard has a point once n is 6, and none where the hypothesis holds."""\n'
+)
+
+
+def test_lean_asks_whether_a_goal_guard_is_empty_under_the_hypotheses(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """``i > 5`` is empty wherever ``n < 3`` holds, and has a point once ``n`` is 6.
+
+    The question put to Lean keeps the hypotheses, so with ``h`` the guard is
+    shown empty and the claim is vacuous. Without ``h`` no draw gets through
+    the guard either, since the sizes drawn stay below 6, but it is not empty,
+    so Lean cannot show it empty and the check only warns: a guard empty for
+    some values of the variables is not vacuous.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    scoped = tmp_path / "scoped.py"
+    scoped.write_text(_SCOPED, encoding="utf-8")
+    (fact,) = list(check_path(scoped))
+    assert fact.status is Status.PROVED
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by lean"
+    )
+    assert cli.main(["check", str(scoped)]) == 1
+    assert "VACUOUS below_three at scoped.py:7" in capsys.readouterr().out
+
+    unscoped = tmp_path / "unscoped.py"
+    unscoped.write_text(_SCOPED.replace(", h: n < 3", ""), encoding="utf-8")
+    (fact,) = list(check_path(unscoped))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["goal_unreached"] == (
+        "the goal's guard i > 5 never held in 200 valid draws"
+    )
+    assert cli.main(["check", str(unscoped)]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING below_three at unscoped.py:7" in printed
+    assert "VACUOUS" not in printed
+
+
+def test_lean_shows_the_quickstart_flipped_goal_guard_vacuous(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """What the quickstart says Lean does with the flipped guard: vacuous, and exit 1."""
+    printed = _check_flipped_gauss(tmp_path / "flipped", capsys, 1)
+    row = next(line for line in printed if "scan_monotone" in line and "gauss.py:39" in line)
+    assert row.startswith("proved (vacuous)  lean")
+    assert any(line.startswith("VACUOUS scan_monotone at gauss.py:39") for line in printed)
+    assert not any(line.startswith("WARNING") for line in printed)
+
+
+def test_lean_leaves_the_quickstart_guard_the_sampler_misses_to_a_warning(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """What the quickstart says of ``a == 7``: the warning with Lean too, and exit 0.
+
+    No draw has a point ``7``, since the sizes drawn stay below it, and Lean
+    cannot show the guard empty, because it is not.
+    """
+    printed = _check_flipped_gauss(tmp_path / "rare", capsys, 0, guard="a == 7")
+    assert (
+        "WARNING scan_monotone at gauss.py:39: the goal's guard a == 7 never held "
+        "in 200 valid draws"
+    ) in printed
+    assert "  no oracle could show it empty, so the goal may be vacuous" in printed
+    assert not any(line.startswith("VACUOUS") for line in printed)
 
 
 def test_the_statement_the_oracle_sends_is_the_one_it_records(

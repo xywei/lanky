@@ -2022,3 +2022,555 @@ def test_an_inner_binder_named_like_a_parameter_does_not_order_the_draws() -> No
 
 
 # }}}
+
+
+# {{{ a goal whose own guard never holds
+
+
+SCAN_GUARD = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Fn, Nat\n\n\n"
+    "@theorem\n"
+    "def flipped(\n"
+    "    n: Nat,\n"
+    "    cnt: Fn[Fin[n], Nat],\n"
+    "    off: Fn[Fin[n + 1], Nat],\n"
+    "    h: (off(0) == 0) & all(off(r + 1) == off(r) + cnt(r) for r in Fin[n]),\n"
+    ") -> all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if (p < q) & (p > q)):\n"
+    '    """The guard can never hold, so the goal holds at every draw."""\n'
+)
+
+FLIPPED_WARNING = "the goal's guard p < q and p > q never held in 200 valid draws"
+
+
+class ProvesAllButGoalGuard(ProvesEverything):
+    """The stand-in, declining the question whether the goal's guard is empty.
+
+    That is Lean faced with a guard that holds somewhere the sampler does not
+    look: the goal is proved, and the guard is not empty.
+    """
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.kind != "goal-guard" and super().can_establish(fact)
+
+
+def _recording(shown: list[str]) -> ProvesEverything:
+    """The stand-in that proves everything, keeping the kind of each fact it is shown."""
+
+    class Recording(ProvesEverything):
+        def establish(self, fact: Fact, /) -> Fact:
+            shown.append(fact.kind)
+            return super().establish(fact)
+
+    return Recording()
+
+
+def test_a_goal_whose_guard_never_holds_is_warned_about(tmp_path, oracles, capsys) -> None:
+    """#17: no draw got through the goal's guard, so the tester says so.
+
+    The hypotheses are satisfied by construction, every draw is valid, and the
+    goal held at each of them because ``(p < q) & (p > q)`` held at no point:
+    the row read ``tested`` and nothing was printed. The tester counts, per
+    draw, whether the goal's quantifier got through to a point, and with
+    nothing that could show the guard empty the check warns and exits 0.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+    assert fact.provenance["goal_reached"] == 0
+    assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
+    assert not fact.is_vacuous
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert f"WARNING flipped at scan_guard.py:7: {FLIPPED_WARNING}" in printed
+    assert "no oracle could show it empty, so the goal may be vacuous" in printed
+    assert "VACUOUS" not in printed
+
+
+def test_a_proof_of_a_goal_whose_guard_is_empty_is_vacuous(tmp_path, oracles, capsys) -> None:
+    """#17: a stronger oracle shows the guard empty, and the check fails.
+
+    The stand-in proves the claim, as Lean does from the contradictory guard,
+    and the cross-check finds that no draw got through it. The stand-in is then
+    asked whether the guard is empty for every assignment the hypotheses admit,
+    and says yes, so the fact is ``proved (vacuous)`` and ``lanky check`` exits
+    1, as it does for hypotheses nothing satisfies.
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
+    ledger = check_path(path)
+    (fact,) = list(ledger)
+    assert shown == ["theorem", "goal-guard"]
+    assert fact.status is Status.PROVED
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by stub-kernel"
+    )
+    assert fact.provenance["vacuous_by"] == "stub-kernel"
+    assert fact.provenance["vacuous_evidence"] == {"tactic": "stub"}
+    assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
+    assert "proved (vacuous)  stub-kernel" in ledger.render()
+    out_json = tmp_path / "ledger.json"
+    assert cli.main(["check", path, "--json", str(out_json)]) == 1
+    printed = capsys.readouterr().out
+    assert "VACUOUS flipped at scan_guard.py:7:" in printed
+    assert (
+        "  the goal's guard is empty wherever the hypotheses hold: proved by "
+        "stub-kernel, so the goal is never at stake"
+    ) in printed
+    assert f"  {FLIPPED_WARNING}" in printed
+    assert "WARNING" not in printed
+    (entry,) = json.loads(out_json.read_text(encoding="utf-8"))
+    assert entry["provenance"]["vacuous"]
+    assert entry["provenance"]["goal_reached"] == 0
+
+
+def test_a_goal_guard_no_oracle_can_show_empty_leaves_a_warning(tmp_path, oracles, capsys) -> None:
+    """The guard may hold where the sampler does not look: warn, and exit 0."""
+    oracles(ProvesAllButGoalGuard(), TestOracle())
+    path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert not fact.is_vacuous
+    assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert f"WARNING flipped at scan_guard.py:7: {FLIPPED_WARNING}" in printed
+    assert "(vacuous)" not in printed
+
+
+def test_a_guard_empty_only_for_some_outer_values_is_never_flagged(
+    tmp_path, oracles, capsys
+) -> None:
+    """``Fin[n]`` has no point at ``n = 0``, and that is normal.
+
+    Some draw gets through the goal's quantifier, so nothing is recorded and
+    no stronger oracle is asked whether the guard is empty.
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    path = _write(
+        tmp_path,
+        SCAN_GUARD.replace("(p < q) & (p > q)", "p <= q"),
+        "scan_guard.py",
+    )
+    (fact,) = list(check_path(path))
+    assert shown == ["theorem"]
+    assert not fact.is_vacuous
+    assert "goal_reached" not in fact.provenance
+    assert "goal_unreached" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "WARNING" not in printed
+    assert "VACUOUS" not in printed
+
+
+def test_a_guard_a_point_got_through_at_an_undecided_draw_is_not_empty(
+    tmp_path, oracles, capsys
+) -> None:
+    """A point that got through the guard counts, even where the draw decided nothing.
+
+    At ``n <= 3`` the guard holds nowhere and the draw is a valid pass. Above
+    that a point gets through, and the body, a sampled universal under ``~``,
+    leaves the draw undecided. No valid draw got through, but a point did, so
+    the guard is not empty: nothing is warned about, and no stronger oracle is
+    asked whether it is.
+    """
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+        "n: Nat) -> all(~all(k < 100 for k in Nat) for i in Fin[n] if n > 3)",
+    )
+    path = _write(tmp_path, source)
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    (fact,) = list(check_path(path))
+    assert shown == ["theorem"]
+    assert "goal_reached" not in fact.provenance
+    oracles(TestOracle())
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+    assert fact.provenance["undecided"] > 0
+    assert "goal_reached" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_a_proof_of_a_universal_goal_is_sampled_for_a_disagreement(
+    tmp_path, oracles, capsys
+) -> None:
+    """A goal that quantifies is cross-checked now, hypotheses or not, and it can disagree.
+
+    The statement has no hypotheses and no semantics gap, so a proof of it
+    used to go unsampled. The goal quantifies, so the tester runs, and here
+    it refutes what the stand-in proved: that is reported under
+    ``SEMANTICS``, the status the stronger oracle gave stands, and the exit
+    code is 0, as for any other disagreement.
+    """
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1", "n: Nat) -> all(i < 1 for i in Fin[n])"
+    )
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(tmp_path, source)
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert fact.provenance["semantics_disagreement"] == (
+        "property-test refutes this statement under lanky's Python reading"
+    )
+    point = fact.provenance["semantics_counterexample"]
+    assert point["i"] >= 1
+    assert point["n"] > point["i"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert (
+        "SEMANTICS vacuous at vacuous.py:7: property-test refutes this statement "
+        "under lanky's Python reading"
+    ) in printed
+
+
+def test_a_goal_whose_domain_is_always_empty_is_vacuous_too(tmp_path, oracles, capsys) -> None:
+    """With no guard, the goal's domain is what never has a point: ``Fin[n - n]``."""
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1", "n: Nat) -> all(i < 0 for i in Fin[n - n])"
+    )
+    oracles(TestOracle())
+    path = _write(tmp_path, source)
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+    unreached = "the goal's quantifier reached no point of its domain in 200 valid draws"
+    assert fact.provenance["goal_unreached"] == unreached
+    assert cli.main(["check", path]) == 0
+    assert f"WARNING vacuous at vacuous.py:7: {unreached}" in capsys.readouterr().out
+    oracles(ProvesEverything(), TestOracle())
+    (fact,) = list(check_path(path))
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"].startswith(
+        "the goal's domain is empty wherever the hypotheses hold"
+    )
+    assert cli.main(["check", path]) == 1
+
+
+def test_a_sampled_goal_whose_guard_is_empty_is_vacuous_under_a_proof(
+    tmp_path, oracles, capsys
+) -> None:
+    """Over ``Nat`` a guard no draw passes leaves every draw undecided, and none valid.
+
+    The statement has no hypotheses, so a proof of it was never cross-checked,
+    and ``(k > 5) & (k < 3)`` went unremarked under a ``proved`` row. The goal
+    quantifies, so the tester runs now: no draw got through the guard, and
+    the stronger oracle is asked whether it is empty. With the tester alone
+    the row is ``assumed``, its reason says that no draw passed the guard, and
+    there is no warning, since there was no valid draw to count.
+    """
+    source = VACUOUS.replace(
+        "n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1",
+        "n: Nat) -> all(k < 0 for k in Nat if (k > 5) & (k < 3))",
+    )
+    path = _write(tmp_path, source)
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    (fact,) = list(check_path(path))
+    assert shown == ["theorem", "goal-guard"]
+    assert fact.is_vacuous
+    assert "goal_unreached" not in fact.provenance
+    assert cli.main(["check", path]) == 1
+    oracles(TestOracle())
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert "passed the guard" in fact.provenance["untested"]
+    assert fact.provenance["goal_reached"] == 0
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_an_axiom_whose_goal_guard_is_empty_is_vacuous(tmp_path, oracles, capsys) -> None:
+    """An axiom's goal guard is examined as a theorem's is, never the axiom itself."""
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    source = SCAN_GUARD.replace("import theorem", "import axiom").replace(
+        "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
+    )
+    path = _write(tmp_path, source, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert shown == ["goal-guard"]
+    assert fact.status is Status.ASSUMED
+    assert fact.is_vacuous
+    assert cli.main(["check", path]) == 1
+    assert "assumed (axiom) (vacuous)  -" in capsys.readouterr().out
+
+
+class PassesQuietly:
+    """A test-class oracle that passes every fact and counts nothing about the goal.
+
+    That is a plugin's own sampler, registered before the property tester:
+    its pass records no ``goal_reached``, so it says nothing about the goal's
+    guard either way.
+    """
+
+    name = "quiet-test"
+
+    def trust_class(self) -> str:
+        return "test"
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.term is not None
+
+    def establish(self, fact: Fact, /) -> Fact:
+        return fact.with_status(Status.TESTED, self.name, samples=1, valid=1)
+
+
+def test_an_axiom_goal_guard_is_examined_past_a_test_oracle_that_counts_nothing(
+    tmp_path, oracles
+) -> None:
+    """The property tester's count is heard though another test oracle answered first.
+
+    An axiom is sampled by every oracle of the ``test`` class, and the first
+    pass used to settle what was known about the goal's guard, even when it
+    recorded nothing about it; the property tester's ``goal_reached: 0``
+    after it was dropped, and the axiom was never shown vacuous.
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), PassesQuietly(), TestOracle())
+    source = SCAN_GUARD.replace("import theorem", "import axiom").replace(
+        "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
+    )
+    path = _write(tmp_path, source, "scan_guard.py")
+    (fact,) = list(check_path(path))
+    assert shown == ["goal-guard"]
+    assert fact.provenance["goal_reached"] == 0
+    assert fact.is_vacuous
+
+
+def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() -> None:
+    """The question put to the stronger oracles, as the fact they are offered."""
+    from lanky.check import goal_guard_fact
+
+    n, p, q = Var("n"), Var("p"), Var("q")
+    goal = Forall(((p, Fin[n + 1]), (q, Fin[n + 1])), p <= q, (p < q) & (p > q))
+    fact = Fact(
+        id="theorem:t",
+        kind="theorem",
+        statement="t",
+        term=Forall(((n, Nat),), goal, n > 0),
+        owner="t",
+        provenance={"path": "/x/t.py", "line": 3, "tactic": "omega"},
+    )
+    question = goal_guard_fact(fact)
+    assert question.id == "theorem:t:goal-guard"
+    assert question.kind == "goal-guard"
+    assert question.provenance == {"path": "/x/t.py", "line": 3}
+    assert structurally_equal(question.term.binders, fact.term.binders)
+    assert structurally_equal(question.term.guard, fact.term.guard)
+    assert question.term.body.body is False
+    assert structurally_equal(question.term.body.binders, goal.binders)
+    assert structurally_equal(question.term.body.guard, goal.guard)
+    with pytest.raises(ValueError, match="no goal quantifier"):
+        goal_guard_fact(
+            Fact(id="u", kind="theorem", statement="u", term=Forall(((n, Nat),), n >= 0))
+        )
+
+
+# }}}
+
+
+# {{{ the order of the operands of a connective
+
+
+ORDER = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def left(n: Nat) -> ~all(k < 100 for k in Nat) | (n >= 0):\n"
+    '    """True: the right disjunct holds at every n."""\n\n\n'
+    "@theorem\n"
+    "def right(n: Nat) -> (n >= 0) | ~all(k < 100 for k in Nat):\n"
+    '    """The same statement with the disjuncts swapped."""\n'
+)
+
+
+def test_the_order_of_two_disjuncts_does_not_change_the_status(tmp_path, oracles) -> None:
+    """#25: ``left`` was ``assumed`` and ``right`` was ``tested``; both are ``tested``.
+
+    The first disjunct of ``left`` is undecided at every draw, and the walk
+    stopped there, though the second holds at every draw and settles it.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, ORDER, "order_probe.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    assert facts["left"].status is Status.TESTED
+    assert facts["right"].status is Status.TESTED
+
+
+def test_an_undecided_conjunct_does_not_hide_a_refuted_one() -> None:
+    """#25: a conjunction whose first conjunct is undecided and whose second is false is false.
+
+    As the whole goal, and in the body of the goal's quantifier, where the
+    tester walks the conjunction one conjunct at a time to find the point.
+    """
+
+    @theorem
+    def hidden(n: Nat) -> ~all(k < 100 for k in Nat) & (n < 0):
+        """False at every n: the second conjunct is."""
+
+    fact = TestOracle().establish(hidden.fact())
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["n"] >= 0
+
+    @theorem
+    def pointwise(n: Nat) -> all(~all(k < 100 for k in Nat) & (i < n) for i in Fin[n + 1]):
+        """False at i = n, where the second conjunct is."""
+
+    fact = TestOracle().establish(pointwise.fact())
+    assert fact.status is Status.REFUTED
+    point = fact.provenance["counterexample"]
+    assert point["i"] == point["n"]
+
+
+def test_a_hypothesis_a_draw_breaks_rejects_it_whatever_came_before() -> None:
+    """The hypotheses are one conjunction too, so ``h2`` rejects what ``h1`` cannot judge.
+
+    ``h1`` is undecided at every draw: the universal held at the draws of
+    ``k``, and a hypothesis has to hold for certain. Every draw used to be
+    counted as undecided, which says nothing against the hypotheses; ``h2``
+    holds at no draw, so no draw satisfies them, and the report says so.
+    """
+
+    @theorem
+    def split(n: Nat, h1: all(k < 100 for k in Nat), h2: n < 0) -> n == n + 1:
+        """True vacuously: neither hypothesis holds anywhere."""
+
+    report = split.report()
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided == 0
+    assert report.reason == "no draw satisfied the hypotheses, so nothing was tested"
+
+
+# }}}
+
+
+# {{{ a guard the annotation would drop
+
+
+DROPPED_GUARD = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    "@theorem\n"
+    "def counted(n: Nat) -> sum(1 for i in Fin[3] if n > 100) == 0:\n"
+    '    """True for n <= 100, where the guard holds nowhere; false above."""\n'
+)
+
+
+def test_a_guard_the_annotation_would_drop_fails_the_import(tmp_path, capsys) -> None:
+    """#24: the sum was ``3`` before any sampling, and ``counted`` was refuted at ``n = 3``.
+
+    The guard is refused while the annotation is evaluated, so the file does
+    not import, and the traceback names the ways to keep the condition.
+    """
+    path = _write(tmp_path, DROPPED_GUARD, "probe_guard.py")
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "could not be imported" in printed
+    assert "SymbolicBoolError: this sum(...) walks a concrete domain" in printed
+    assert "REFUTED" not in printed
+
+
+# }}}
+
+
+# {{{ a refinement that quantifies over a sampled domain
+
+
+REFINED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def refined(n: Nat & all(k < n + 100 for k in Nat)) -> n >= 0:\n"
+    '    """A parameter refinement that quantifies over naturals."""\n'
+)
+
+
+def test_a_refinement_over_a_sampled_domain_skips_the_draw(tmp_path, oracles, capsys) -> None:
+    """#26: the row is ``assumed`` with a reason that names the refinement.
+
+    The refinement was evaluated with no sampler, the quantifier over ``Nat``
+    raised, and the test stopped with "property-test could not run". It is
+    read as the hypothesis it is now: the universal held at every draw, which
+    admits no ``n`` for certain, so every draw is undecided.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, REFINED, "refined.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert "reason" not in fact.provenance
+    assert fact.provenance["untested"].startswith(
+        "no draw could decide the statement: the refinement of "
+        "Nat & (forall k in Nat. k < n + 100) cannot be evaluated at this draw"
+    )
+    assert fact.provenance["undecided"] == fact.provenance["samples"]
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_a_refinement_a_draw_breaks_rejects_that_draw(tmp_path, oracles, capsys) -> None:
+    """A draw of ``k`` that breaks the universal rejects the value it refines.
+
+    ``all(k < 0 for k in Nat)`` is broken by every draw, so no value of ``n``
+    is admitted and the hypotheses are never satisfied, which is what the
+    warning says; an existential a draw witnesses admits the value.
+    """
+    import random
+
+    from lanky.testing import SkipSample, Unevaluable, sample_value
+
+    k = Var("k")
+    with pytest.raises(SkipSample, match="satisfied its refinement") as raised:
+        sample_value(Nat & Forall(((k, Nat),), k < 0), random.Random(0), {}, "n")
+    assert not isinstance(raised.value, Unevaluable)
+
+    # each draw of n is tried 64 times before it is given up, so a small
+    # budget keeps this quick
+    oracles(TestOracle(samples=10))
+    path = _write(tmp_path, REFINED.replace("k < n + 100", "k < 0"), "refined.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 200 draws"
+    assert cli.main(["check", path]) == 0
+    assert "WARNING refined at refined.py:7" in capsys.readouterr().out
+
+    path = _write(
+        tmp_path, REFINED.replace("all(k < n + 100 for k in Nat)", "any(k >= n for k in Nat)")
+    )
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+
+
+def test_the_other_refinements_the_tester_reads_have_a_sampler_too() -> None:
+    """A family's codomain, and the binder domain of a definitional hypothesis.
+
+    Both were read without a sampler, and a quantifier over ``Nat`` in either
+    raised out of the test. The codomain's refinement leaves the draw
+    undecided, and the definition is left to the hypothesis filter.
+    """
+    from lanky.testing import check
+
+    f, i, k, m, n = Var("f"), Var("i"), Var("k"), Var("m"), Var("n")
+    codomain = Nat & Forall(((k, Nat),), k < m + 100)
+    report = check([("m", Nat), ("f", Fn[Fin[2], codomain])], [], f(0) >= 0, samples=20)
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided > 0
+    assert "the refinement of" in report.reason
+
+    definition = Forall(((i, Fin[n] & Forall(((k, Nat),), k < i + 100)),), f(i) == 0)
+    report = check([("n", Nat), ("f", Fn[Fin[n], Nat])], [definition], n >= 0, samples=20)
+    assert report.ok
+    assert report.valid > 0
+
+
+# }}}

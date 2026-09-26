@@ -77,6 +77,24 @@ there, so the table has no value for it and the draw decides nothing. The Lean
 printer refuses such an application outright (see :mod:`lanky.lean`), and this
 is the same reading on the Python side.
 
+A draw that one part of a statement cannot answer can still be settled by
+another. The connectives, and the list of hypotheses, are read three-valued
+(:func:`~lanky.terms.conjoin`, :func:`~lanky.terms.disjoin`): a false conjunct
+settles a conjunction and a true disjunct a disjunction, whatever an operand
+before it could not answer, so the order the operands are written in does not
+change what a draw decides.
+
+A refinement is read as the hypothesis it is, standing ``NEGATIVE``, with a
+sampler for the quantifiers in it. ``n: Nat & all(k < n + 100 for k in Nat)``
+used to end the whole test, because the quantifier over ``Nat`` had no sampler
+to draw from; a draw of ``k`` that breaks it now rejects the value of ``n``,
+and one where it held at every draw leaves the draw undecided.
+
+When the goal is a universal, the tester counts the draws at which its
+quantifier got through to a point of its guarded domain. A goal whose guard
+holds nowhere holds at every draw, and says nothing; the count is what lets
+:func:`lanky.check.establish` notice, and ask whether the guard is empty.
+
 A statement that is already a concrete ``True`` or ``False``, because it binds
 no variable and assumes nothing, is not sampled at all: there is nothing to
 draw, so it is reported once, as a pass or as a refutation with an empty
@@ -102,6 +120,7 @@ from lanky.terms import (
     Undecided,
     UndefinedValue,
     binder_assignments,
+    conjoin,
     evaluate,
     free_variables,
     render,
@@ -115,6 +134,7 @@ __all__ = [
     "Unevaluable",
     "Unsampleable",
     "check",
+    "goal_unreached_reason",
     "in_sort",
     "sample_value",
     "sampling_order",
@@ -246,10 +266,10 @@ def sample_value(
     """
     if isinstance(sort, Refined):
         if name is None:
-            return sample_value(_entry_sort(sort, context), rng, context)
+            return sample_value(_entry_sort(sort, context, rng), rng, context)
         for _ in range(64):
             value = sample_value(sort.base, rng, context, name)
-            if _refinement_holds(sort, {**context, name: value}):
+            if _refinement_holds(sort, {**context, name: value}, rng):
                 return value
         raise SkipSample(f"no draw of {sort} satisfied its refinement")
     if isinstance(sort, FinType):
@@ -266,7 +286,7 @@ def sample_value(
             raise SkipSample(f"{domain} has a negative size")
         # A family over an empty domain exists whatever its codomain is, so the
         # codomain is only consulted when there is an entry to draw.
-        codomain = _entry_sort(sort.codomain, context) if bound else sort.codomain
+        codomain = _entry_sort(sort.codomain, context, rng) if bound else sort.codomain
         return Table(
             (sample_value(codomain, rng, context) for _ in range(bound)),
             name=name or "a family",
@@ -295,7 +315,7 @@ def sample_value(
     raise Unsampleable(f"no sampler for {sort!r}")
 
 
-def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
+def _entry_sort(codomain: Any, context: dict[str, Any], rng: random.Random) -> Any:
     """The sort a family's entries are drawn from, with its refinement settled.
 
     An entry has no name, so :func:`sample_value` is asked for one without a
@@ -326,7 +346,7 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
             f"entry: its refinement names {', '.join(unbound)}, which nothing "
             "drawn so far binds"
         )
-    if not _refinement_holds(codomain, context):
+    if not _refinement_holds(codomain, context, rng):
         raise SkipSample(
             f"{codomain} is empty at this draw, so it has no value to draw and "
             "no family into it has a point in its domain"
@@ -334,7 +354,7 @@ def _entry_sort(codomain: Any, context: dict[str, Any]) -> Any:
     return codomain.base
 
 
-def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
+def _refinement_holds(sort: Refined, context: dict[str, Any], rng: random.Random) -> bool:
     """Whether the refinement of ``sort`` holds here; skip a draw it cannot judge.
 
     A refinement is evaluated like any other proposition, and one that divides
@@ -343,11 +363,20 @@ def _refinement_holds(sort: Refined, context: dict[str, Any]) -> bool:
     the ``ZeroDivisionError`` used to escape the sampler and end the whole
     test at the first such draw.
 
+    A refinement is read as the hypothesis it is (:meth:`Refined.holds`), with
+    a sampler made from ``rng`` and the values drawn so far, so that one which
+    quantifies over a sampled domain can be answered. ``n: Nat & all(k < n +
+    100 for k in Nat)`` was evaluated with no sampler, the quantifier over
+    ``Nat`` raised ``ValueError``, and that ended the whole test with "could
+    not run". Now a draw of ``k`` that breaks the universal rejects the draw of
+    ``n``, and one where it held at every draw of ``k`` is undecided, since
+    four draws that held do not admit ``n`` for certain.
+
     Raises:
         Unevaluable: If the refinement cannot be evaluated at these values.
     """
     try:
-        return sort.holds(context)
+        return sort.holds(context, sort_sampler(rng, context))
     except (Undecided, *_GAPS) as exc:
         raise Unevaluable(
             f"the refinement of {sort} cannot be evaluated at this draw: "
@@ -516,6 +545,7 @@ def satisfy_hypotheses(
     hypotheses: Any,
     context: dict[str, Any],
     sorts: Any = None,
+    sampler: Any = None,
 ) -> None:
     """Make the definitional hypotheses true by construction, where possible.
 
@@ -541,6 +571,11 @@ def satisfy_hypotheses(
     filter reads it as a hypothesis, where a draw that breaks it rejects the
     draw and a pass over draws decides nothing (see the module docstring).
 
+    ``sampler`` answers a quantifier over a sampled domain inside a
+    refinement of a binder the walk visits, as the filter would; one the
+    draws leave open ends the walk and leaves the hypothesis to the filter.
+    Without it such a refinement raised ``ValueError`` and ended the test.
+
     Raises:
         SkipSample: If a definition demands a value the codomain does not have.
     """
@@ -559,7 +594,7 @@ def satisfy_hypotheses(
             ):
                 continue
             try:
-                for _ in binder_assignments(prop.binders, context):
+                for _ in binder_assignments(prop.binders, context, sampler):
                     _try(
                         lambda d=definition: _assign_definition(d[0], d[1], context, sorts)
                     )
@@ -606,6 +641,16 @@ class TestReport:
     sort has no sampler (:class:`Unsampleable`). Such a draw never reached the
     hypotheses, so a report with any of them cannot say that no draw satisfied
     them, and its reason says that no draw could be completed instead.
+
+    ``goal_reached`` is for a goal that is a universal, and is ``None`` for any
+    other. It counts the draws the hypotheses admitted at which the goal's
+    quantifier reached a point of its guarded domain: a point of its domain
+    that its refinements and its guard admit. A draw counts whether or not the
+    statement was then decided at it, since a point that got through is a
+    point, and whether the goal held there is another question. When it is
+    zero, the guard held nowhere the tester looked, and the goal may say
+    nothing (see :func:`lanky.check.goal_guard_fact`); a pass over valid draws
+    then carries a ``reason`` that says so (:func:`goal_unreached_reason`).
     """
 
     ok: bool
@@ -616,6 +661,14 @@ class TestReport:
     unsampleable: int = 0
     reason: str = ""
     skipped: list[str] = field(default_factory=list)
+    goal_reached: int | None = None
+
+
+class _Reach:
+    """Whether the walk of a goal's quantifier got through to a point, at one draw."""
+
+    def __init__(self) -> None:
+        self.reached = False
 
 
 def check(
@@ -655,6 +708,15 @@ def check(
     for an existential that no point of an enumerated domain witnesses it says
     that (:func:`_refutation_reason`).
 
+    The hypotheses are one conjunction, read three-valued
+    (:func:`~lanky.terms.conjoin`): a hypothesis a draw breaks rejects it,
+    whatever an earlier hypothesis could not answer there.
+
+    When the goal is a universal the report counts the draws at which its
+    quantifier reached a point of its guarded domain (``goal_reached``), so
+    that a goal whose guard never holds is not passed over as a goal that
+    always does.
+
     A goal that is already a concrete value is not sampled. A theorem with no
     binders and no hypotheses whose return annotation evaluated to a ``bool``
     has nothing to draw, so it is answered once. A ``goal`` of ``None``
@@ -669,7 +731,7 @@ def check(
     rng = random.Random(seed)
     variables = sampling_order(variables)
     sorts = dict(variables)
-    report = TestReport(ok=True)
+    report = TestReport(ok=True, goal_reached=0 if isinstance(goal, Forall) else None)
     undecided_reason = ""
     unsampleable_reason = ""
     for _ in range(samples * REJECTION_FACTOR):
@@ -677,10 +739,13 @@ def check(
             break
         report.samples += 1
         context: dict[str, Any] = {}
+        # The sampler reads sizes from the context as it fills, so it can
+        # answer a refinement of a definitional hypothesis's binder as well.
+        sampler = sort_sampler(rng, context)
         try:
             for name, sort in variables:
                 context[name] = sample_value(sort, rng, context, name)
-            satisfy_hypotheses(hypotheses, context, sorts)
+            satisfy_hypotheses(hypotheses, context, sorts, sampler)
         except SkipSample as exc:
             if isinstance(exc, Unsampleable):
                 report.unsampleable += 1
@@ -691,20 +756,19 @@ def check(
             if len(report.skipped) < 3:
                 report.skipped.append(str(exc))
             continue
-        sampler = sort_sampler(rng, context)
+        reach = _Reach()
         try:
-            if not all(
-                truth_value(evaluate(h, context, sampler, Polarity.NEGATIVE), h)
-                for h in hypotheses
-            ):
+            if not _hypotheses_hold(hypotheses, context, sampler):
                 continue
-            satisfied, witness, failing = _falsify(goal, context, sampler)
+            satisfied, witness, failing = _falsify(goal, context, sampler, reach)
         except (Undecided, *_GAPS) as exc:
+            _count_reach(report, reach)
             report.undecided += 1
             undecided_reason = undecided_reason or _undecided_reason(exc)
             if len(report.skipped) < 3:
                 report.skipped.append(_undecided_reason(exc))
             continue
+        _count_reach(report, reach)
         report.valid += 1
         if not satisfied:
             report.ok = False
@@ -726,13 +790,56 @@ def check(
                 if hypotheses
                 else "no draw could be completed"
             )
+    elif report.goal_reached == 0:
+        report.reason = goal_unreached_reason(goal, report.valid)
     return report
+
+
+def goal_unreached_reason(goal: Forall, valid: int) -> str:
+    """Why a pass of a universal goal whose quantifier reached no point says nothing.
+
+    The line names the guard when the goal has one, since a guard that holds
+    nowhere is what a flipped or off-by-one condition looks like, and the
+    number of valid draws it held at none of.
+    """
+    if goal.guard is not None:
+        what = f"the goal's guard {render(goal.guard)} never held"
+    else:
+        what = "the goal's quantifier reached no point of its domain"
+    return f"{what} in {valid} valid draws"
+
+
+def _hypotheses_hold(hypotheses: Any, context: dict[str, Any], sampler: Any) -> bool:
+    """Whether a draw satisfies the hypotheses, for certain.
+
+    Each is read standing ``NEGATIVE`` (:class:`~lanky.terms.Polarity`), and
+    together they are one conjunction, read three-valued
+    (:func:`~lanky.terms.conjoin`): a hypothesis the draw breaks rejects it,
+    whatever an earlier one could not answer, so ``h: p & q`` and ``h: q & p``
+    reject the same draws.
+
+    Raises:
+        Undecided: If no hypothesis is false and one has no answer here, or
+            the ``ZeroDivisionError`` or :class:`~lanky.terms.UndefinedValue`
+            that one raised.
+    """
+    return conjoin(
+        lambda h=h: truth_value(evaluate(h, context, sampler, Polarity.NEGATIVE), h)
+        for h in hypotheses
+    )
+
+
+def _count_reach(report: TestReport, reach: _Reach) -> None:
+    """Count a draw at which the goal's quantifier got through to a point."""
+    if reach.reached and report.goal_reached is not None:
+        report.goal_reached += 1
 
 
 def _falsify(
     goal: Any,
     context: dict[str, Any],
     sampler: Any,
+    reach: _Reach | None = None,
 ) -> tuple[bool, dict[str, Any], Any]:
     """Evaluate ``goal``, and when it is false say at which quantified point.
 
@@ -759,12 +866,22 @@ def _falsify(
     (:meth:`~lanky.terms.LankyEvaluationMapper.guarded_assignments`), so it
     declines where the evaluator does: a ``forall`` over a sampled domain
     whose guard or refinement no draw satisfied.
+
+    A conjunction is read three-valued, as the evaluator reads it
+    (:func:`~lanky.terms.conjoin`): a conjunct that cannot be answered at this
+    draw does not hide a counterexample in a later one.
+
+    ``reach`` is told when the walk of the goal's own quantifier gets through
+    to a point, before the body is evaluated there, so it knows even when the
+    body then leaves the draw undecided. Only the outermost call is given one.
     """
     if isinstance(goal, Forall):
         scope = dict(context)
         mapper = LankyEvaluationMapper(scope, sampler, Polarity.POSITIVE)
         with closing(mapper.guarded_assignments(goal)) as walk:
             for _ in walk:
+                if reach is not None:
+                    reach.reached = True
                 holds, witness, failing = _falsify(goal.body, scope, sampler)
                 if not holds:
                     point = {var.name: scope[var.name] for var, _ in goal.binders}
@@ -772,10 +889,18 @@ def _falsify(
                     return False, point, failing
         return True, {}, None
     if isinstance(goal, prim.LogicalAnd):
+        pending: Exception | None = None
         for child in goal.children:
-            holds, witness, failing = _falsify(child, context, sampler)
+            try:
+                holds, witness, failing = _falsify(child, context, sampler)
+            except (Undecided, *_GAPS) as exc:
+                if pending is None:
+                    pending = exc
+                continue
             if not holds:
                 return False, witness, failing
+        if pending is not None:
+            raise pending
         return True, {}, None
     holds = truth_value(evaluate(goal, context, sampler), goal)
     return holds, {}, None if holds else goal

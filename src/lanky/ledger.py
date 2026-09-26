@@ -13,11 +13,16 @@ that are not on that ladder: ``ASSUMED`` (nobody tried, or nobody could) and
 proof, and the counterexample lives in the fact's provenance).
 
 One mark sits beside the status rather than in it. A fact whose hypotheses an
-oracle has shown inconsistent is *vacuous*: ``proved`` is still true of it, and
-it says nothing, so the table prints ``proved (vacuous)`` and the provenance
-says who showed it (see :func:`lanky.check.establish`). An *axiom*, a fact of
+oracle has shown inconsistent is *vacuous*, and so is one whose goal is a
+universal whose guard an oracle has shown empty wherever the hypotheses hold:
+``proved`` is still true of it, and it says nothing, so the table prints
+``proved (vacuous)`` and the provenance says who showed it (see
+:func:`lanky.check.establish`). An *axiom*, a fact of
 kind ``"axiom"``, is ``assumed`` on a citation rather than for want of an
-oracle, and the table prints ``assumed (axiom)``.
+oracle, and the table prints ``assumed (axiom)``. A fact settled by an oracle
+of the ``heuristic`` trust class, one whose answer is not guaranteed (see
+:data:`lanky.plugins.TRUST_STRENGTH`), prints ``decided (heuristic)``, so that
+it is not read as the answer of a decision procedure.
 
 Facts rest on facts. A fact's ``rests_on`` names the ids of the facts it was
 established from: the lemmas a theorem ``uses``, the axioms a derivation
@@ -25,10 +30,10 @@ cites, the callee postcondition a plugin restates. A status says how strongly
 a fact is established *given* those, so a proof from an assumption is worth
 no more than the assumption. The ledger reads that off the graph
 (:meth:`Ledger.support`): a fact's effective strength is the weakest status
-over everything it rests on, directly or through other facts, and the
-assumptions among those are what it is established *under*. The table prints
-``proved under jump, compact``, and an ``EFFECTIVE`` column when some fact is
-weaker than its own status says.
+over everything it rests on, directly or through other facts, a heuristic's
+being the weaker of two alike, and the assumptions among those are what it is
+established *under*. The table prints ``proved under jump, compact``, and an
+``EFFECTIVE`` column when some fact is weaker than its own status says.
 """
 
 from __future__ import annotations
@@ -166,8 +171,21 @@ class Fact:
 
     @property
     def is_vacuous(self) -> bool:
-        """Whether an oracle has shown that nothing satisfies this fact's hypotheses."""
+        """Whether an oracle has shown that nothing is ever at stake in this fact.
+
+        That is hypotheses nothing satisfies, or a goal whose guard is empty
+        wherever they hold; ``provenance["vacuous"]`` says which.
+        """
         return bool(self.provenance.get("vacuous"))
+
+    @property
+    def is_heuristic(self) -> bool:
+        """Whether the oracle that settled this fact is of the ``heuristic`` trust class.
+
+        :func:`lanky.check.establish` records the settling oracle's trust
+        class in the provenance as ``trust_class``.
+        """
+        return self.provenance.get("trust_class") == "heuristic"
 
     @property
     def is_axiom(self) -> bool:
@@ -229,10 +247,21 @@ class Support:
             order they are reached: those ``assumed`` or ``refuted``, those the
             ledger does not hold, and those that rest on themselves. Empty when
             the fact is established from established facts alone.
+        heuristic: Whether the weakest of them was settled by a heuristic (see
+            :attr:`Fact.is_heuristic`). Of two facts with one status, the one a
+            heuristic settled is the weaker, so a proof that rests on a
+            lemma a heuristic decided is worth ``decided (heuristic)``, and not
+            the ``decided`` of a decision procedure.
     """
 
     effective: Status
     under: tuple[str, ...]
+    heuristic: bool = False
+
+    @property
+    def text(self) -> str:
+        """What the fact is worth as the table prints it: ``decided (heuristic)``, say."""
+        return self.effective.value + (" (heuristic)" if self.heuristic else "")
 
 
 class Ledger:
@@ -275,7 +304,7 @@ class Ledger:
         return tuple(fact for fact in self if fact.status is status)
 
     def vacuous(self) -> tuple[Fact, ...]:
-        """Every fact whose hypotheses were shown inconsistent, in order."""
+        """Every fact shown vacuous (see :attr:`Fact.is_vacuous`), in order."""
         return tuple(fact for fact in self if fact.is_vacuous)
 
     def counts(self) -> dict[str, int]:
@@ -383,7 +412,8 @@ class Ledger:
         own assumptions.
 
         ``fact`` is a fact or an id; a fact not in the ledger is read against
-        the ledger all the same.
+        the ledger all the same. Of two facts with one status, one settled by
+        a heuristic is the weaker (see :attr:`Support.heuristic`).
         """
         if isinstance(fact, str):
             fact = self._facts[fact]
@@ -391,17 +421,21 @@ class Ledger:
         circles = self._on_circles()
         circular = {current for current in reached if current in circles}
         under: list[str] = []
-        weakest = fact.status
+        weakest, heuristic = fact.status, fact.is_heuristic
         for current in reached:
             held = self._facts.get(current)
             status = Status.ASSUMED if held is None else held.status
             if held is None or status in (Status.ASSUMED, Status.REFUTED) or current in circular:
                 under.append(current)
-            if STATUS_STRENGTH[status] < STATUS_STRENGTH[weakest]:
-                weakest = status
+            settled_by_heuristic = held is not None and held.is_heuristic
+            if (STATUS_STRENGTH[status], not settled_by_heuristic) < (
+                STATUS_STRENGTH[weakest],
+                not heuristic,
+            ):
+                weakest, heuristic = status, settled_by_heuristic
         if circular and STATUS_STRENGTH[weakest] > STATUS_STRENGTH[Status.ASSUMED]:
-            weakest = Status.ASSUMED
-        return Support(effective=weakest, under=tuple(under))
+            weakest, heuristic = Status.ASSUMED, False
+        return Support(effective=weakest, under=tuple(under), heuristic=heuristic)
 
     def _label(self, fact_id: str, owners: Counter) -> str:
         """How the table names a fact another one rests on.
@@ -422,10 +456,11 @@ class Ledger:
         """Every fact as a JSON-ready dictionary, with what it is worth here.
 
         :meth:`Fact.to_dict`, plus ``effective``, the status the fact is worth
-        once what it rests on is counted, and ``under``, the ids of the
-        assumptions it is established under (see :meth:`support`). Both are
-        there for every fact, a fact that rests on nothing carrying its own
-        status and an empty list.
+        once what it rests on is counted, ``effective_heuristic``, whether a
+        heuristic settled the fact that status is read off, and ``under``, the
+        ids of the assumptions it is established under (see :meth:`support`).
+        All three are there for every fact, a fact that rests on nothing
+        carrying its own status, its own mark and an empty list.
         """
         out = []
         for fact in self:
@@ -434,6 +469,7 @@ class Ledger:
                 {
                     **fact.to_dict(),
                     "effective": support.effective.value,
+                    "effective_heuristic": support.heuristic,
                     "under": list(support.under),
                 }
             )
@@ -448,6 +484,8 @@ class Ledger:
         cell = fact.status.value
         if fact.is_axiom:
             cell += " (axiom)"
+        if fact.is_heuristic:
+            cell += " (heuristic)"
         if fact.is_vacuous:
             cell += " (vacuous)"
         if support.under:
@@ -467,14 +505,16 @@ class Ledger:
 
         A vacuous fact's status carries the mark, as in ``proved (vacuous)``,
         and the summary line counts the vacuous facts after the statuses. An
-        axiom's reads ``assumed (axiom)``.
+        axiom's reads ``assumed (axiom)``, and a fact a heuristic settled reads
+        ``decided (heuristic)``.
 
         A fact established under assumptions (see :meth:`support`) says so
         after its status, as in ``proved under jump, compact``. When any fact
         is worth less than its own status, because it rests on something
         weaker, the table grows an ``EFFECTIVE`` column after the status with
-        what each fact is worth. A ledger in which nothing rests on anything
-        renders as it always did.
+        what each fact is worth; ``decided (heuristic)`` there is a fact
+        resting on one a heuristic decided. A ledger in which nothing rests on
+        anything renders as it always did.
         """
         facts = list(self)
         if not facts:
@@ -483,13 +523,13 @@ class Ledger:
         owners = Counter(fact.owner for fact in facts)
         supports = [self.support(fact) for fact in facts]
         weaker = any(
-            support.effective is not fact.status
+            support.effective is not fact.status or support.heuristic is not fact.is_heuristic
             for fact, support in zip(facts, supports, strict=True)
         )
         rows = [
             (
                 self._status_cell(fact, support, owners),
-                *((support.effective.value,) if weaker else ()),
+                *((support.text,) if weaker else ()),
                 fact.decided_by or "-",
                 locations[index] or "-",
                 fact.owner or "-",

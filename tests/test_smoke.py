@@ -19,6 +19,10 @@ def test_module_has_docstring() -> None:
 def test_the_package_re_exports_the_interface() -> None:
     for name in (
         "theorem",
+        "axiom",
+        "rewrite",
+        "Rewrite",
+        "RewriteTerm",
         "sum",
         "forall",
         "exists",
@@ -41,7 +45,7 @@ def test_the_package_re_exports_the_interface() -> None:
 
 
 def test_the_built_in_plugins_are_registered() -> None:
-    assert [theory.name for theory in lanky.registry.theories] == ["theorem"]
+    assert [theory.name for theory in lanky.registry.theories] == ["theorem", "rewrite"]
     assert {oracle.name for oracle in lanky.registry.oracles} >= {
         "lean",
         "property-test",
