@@ -15,7 +15,20 @@ proof, and the counterexample lives in the fact's provenance).
 One mark sits beside the status rather than in it. A fact whose hypotheses an
 oracle has shown inconsistent is *vacuous*: ``proved`` is still true of it, and
 it says nothing, so the table prints ``proved (vacuous)`` and the provenance
-says who showed it (see :func:`lanky.check.establish`).
+says who showed it (see :func:`lanky.check.establish`). An *axiom*, a fact of
+kind ``"axiom"``, is ``assumed`` on a citation rather than for want of an
+oracle, and the table prints ``assumed (axiom)``.
+
+Facts rest on facts. A fact's ``rests_on`` names the ids of the facts it was
+established from: the lemmas a theorem ``uses``, the axioms a derivation
+cites, the callee postcondition a plugin restates. A status says how strongly
+a fact is established *given* those, so a proof from an assumption is worth
+no more than the assumption. The ledger reads that off the graph
+(:meth:`Ledger.support`): a fact's effective strength is the weakest status
+over everything it rests on, directly or through other facts, and the
+assumptions among those are what it is established *under*. The table prints
+``proved under jump, compact``, and an ``EFFECTIVE`` column when some fact is
+weaker than its own status says.
 """
 
 from __future__ import annotations
@@ -23,10 +36,11 @@ from __future__ import annotations
 import enum
 import json
 import os
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-__all__ = ["Fact", "Ledger", "Status", "fact_id"]
+__all__ = ["Fact", "Ledger", "Status", "Support", "fact_id"]
 
 
 def fact_id(
@@ -115,6 +129,11 @@ class Fact:
             instances, oracle version, timings. Deliberately untyped.
         where: Source location as ``file:line``.
         owner: Qualified name of the decorated object the claim belongs to.
+        rests_on: The ids of the facts this one was established from, in the
+            order they were named. The status is the fact's own; what it is
+            worth once those are counted is the ledger's question (see
+            :meth:`Ledger.support`). A list is kept as a tuple, and a single
+            string is refused rather than read as one id per character.
     """
 
     id: str
@@ -126,11 +145,39 @@ class Fact:
     provenance: dict = field(default_factory=dict)
     where: str = ""
     owner: str = ""
+    rests_on: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Keep ``rests_on`` a tuple of ids, and refuse anything else in it."""
+        rests_on = self.rests_on
+        if isinstance(rests_on, str):
+            raise TypeError(
+                f"{self.id}: rests_on is a tuple of fact ids, and a single id is "
+                f"written ({rests_on!r},)"
+            )
+        rests_on = tuple(rests_on)
+        for entry in rests_on:
+            if not isinstance(entry, str):
+                raise TypeError(
+                    f"{self.id}: rests_on names facts by id, a string, and "
+                    f"{entry!r} is a {type(entry).__name__}"
+                )
+        object.__setattr__(self, "rests_on", rests_on)
 
     @property
     def is_vacuous(self) -> bool:
         """Whether an oracle has shown that nothing satisfies this fact's hypotheses."""
         return bool(self.provenance.get("vacuous"))
+
+    @property
+    def is_axiom(self) -> bool:
+        """Whether this fact is assumed on a citation (see :func:`lanky.theory.axiom`).
+
+        An axiom is not offered to the oracles: it is ``assumed`` because its
+        author takes it on the citation in ``provenance["cite"]``, not because
+        no oracle could establish it.
+        """
+        return self.kind == "axiom"
 
     def with_status(
         self,
@@ -147,7 +194,11 @@ class Fact:
         )
 
     def to_dict(self) -> dict:
-        """A JSON-ready dictionary; the term is rendered to text."""
+        """A JSON-ready dictionary; the term is rendered to text.
+
+        This is the fact on its own. What it is worth given what it rests on
+        needs the other facts, and :meth:`Ledger.to_dicts` adds it.
+        """
         from lanky.terms import render
 
         return {
@@ -160,7 +211,28 @@ class Fact:
             "provenance": self.provenance,
             "where": self.where,
             "owner": self.owner,
+            "rests_on": list(self.rests_on),
         }
+
+
+@dataclass(frozen=True)
+class Support:
+    """What one fact is worth in a ledger, once what it rests on is counted.
+
+    Attributes:
+        effective: The weakest status over the fact and every fact it rests on,
+            directly or through others, in the order of
+            :data:`STATUS_STRENGTH`. A fact that rests on nothing is worth its
+            own status. ``refuted`` here, on a fact that is not refuted itself,
+            means it rests on one that is.
+        under: The ids of the assumptions among the facts it rests on, in the
+            order they are reached: those ``assumed`` or ``refuted``, those the
+            ledger does not hold, and those that rest on themselves. Empty when
+            the fact is established from established facts alone.
+    """
+
+    effective: Status
+    under: tuple[str, ...]
 
 
 class Ledger:
@@ -211,9 +283,118 @@ class Ledger:
             out[fact.status.value] = out.get(fact.status.value, 0) + 1
         return out
 
+    # {{{ what a fact rests on
+
+    def _reached(self, rests_on: tuple[str, ...]) -> list[str]:
+        """Every id reachable from ``rests_on`` along ``rests_on``, each once, in order.
+
+        Depth first, in the order each fact names its own, so a theorem's
+        assumptions come out in the order its ``uses`` lists them. An id the
+        ledger does not hold is reached and goes no further; a cycle is walked
+        once.
+        """
+        reached: list[str] = []
+        seen: set[str] = set()
+        pending = list(reversed(rests_on))
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            reached.append(current)
+            fact = self._facts.get(current)
+            if fact is not None:
+                pending.extend(reversed(fact.rests_on))
+        return reached
+
+    def _circular(self, fact_id: str) -> bool:
+        """Whether the fact with this id rests, through some chain, on itself."""
+        fact = self._facts.get(fact_id)
+        return fact is not None and fact_id in self._reached(fact.rests_on)
+
+    def support(self, fact: Fact | str) -> Support:
+        """What a fact is worth here, given what it rests on (see :class:`Support`).
+
+        Four things make a fact an assumption of the facts that rest on it. It
+        is ``assumed``: an axiom, or an obligation nobody established. It is
+        ``refuted``, so whatever was derived from it was derived from something
+        false. The ledger does not hold it, which is the case of a claim in a
+        file this check did not collect: nothing here established it, and it
+        counts as ``assumed``. Or it rests on itself, through some chain: a
+        circular argument establishes nothing, so every fact on the circle, and
+        every fact that rests on one, is worth ``assumed`` at most, and a fact
+        on a circle is among its own assumptions.
+
+        ``fact`` is a fact or an id; a fact not in the ledger is read against
+        the ledger all the same.
+        """
+        if isinstance(fact, str):
+            fact = self._facts[fact]
+        reached = self._reached(fact.rests_on)
+        circular = {current for current in reached if self._circular(current)}
+        under: list[str] = []
+        weakest = fact.status
+        for current in reached:
+            held = self._facts.get(current)
+            status = Status.ASSUMED if held is None else held.status
+            if held is None or status in (Status.ASSUMED, Status.REFUTED) or current in circular:
+                under.append(current)
+            if STATUS_STRENGTH[status] < STATUS_STRENGTH[weakest]:
+                weakest = status
+        if circular and STATUS_STRENGTH[weakest] > STATUS_STRENGTH[Status.ASSUMED]:
+            weakest = Status.ASSUMED
+        return Support(effective=weakest, under=tuple(under))
+
+    def _label(self, fact_id: str, owners: Counter) -> str:
+        """How the table names a fact another one rests on.
+
+        By its owner when that names one fact in the ledger, which is the
+        readable case of a theorem or an axiom, and by its id otherwise: a
+        plugin's kernel owns many facts, and an id the ledger does not hold
+        has no owner to show.
+        """
+        fact = self._facts.get(fact_id)
+        if fact is not None and fact.owner and owners[fact.owner] == 1:
+            return fact.owner
+        return fact_id
+
+    # }}}
+
+    def to_dicts(self) -> list[dict]:
+        """Every fact as a JSON-ready dictionary, with what it is worth here.
+
+        :meth:`Fact.to_dict`, plus ``effective``, the status the fact is worth
+        once what it rests on is counted, and ``under``, the ids of the
+        assumptions it is established under (see :meth:`support`). Both are
+        there for every fact, a fact that rests on nothing carrying its own
+        status and an empty list.
+        """
+        out = []
+        for fact in self:
+            support = self.support(fact)
+            out.append(
+                {
+                    **fact.to_dict(),
+                    "effective": support.effective.value,
+                    "under": list(support.under),
+                }
+            )
+        return out
+
     def to_json(self, indent: int = 2) -> str:
-        """The ledger as JSON text."""
-        return json.dumps([fact.to_dict() for fact in self], indent=indent, default=str)
+        """The ledger as JSON text: :meth:`to_dicts`, dumped."""
+        return json.dumps(self.to_dicts(), indent=indent, default=str)
+
+    def _status_cell(self, fact: Fact, support: Support, owners: Counter) -> str:
+        """The status column of one row: the status, its marks, and what it is under."""
+        cell = fact.status.value
+        if fact.is_axiom:
+            cell += " (axiom)"
+        if fact.is_vacuous:
+            cell += " (vacuous)"
+        if support.under:
+            cell += " under " + ", ".join(self._label(entry, owners) for entry in support.under)
+        return cell
 
     def render(self, width: int = 72) -> str:
         """A fixed-width table: status, decider, location, and statement.
@@ -227,22 +408,45 @@ class Ledger:
         those, grow a parent directory; the full path stays in provenance.
 
         A vacuous fact's status carries the mark, as in ``proved (vacuous)``,
-        and the summary line counts the vacuous facts after the statuses.
+        and the summary line counts the vacuous facts after the statuses. An
+        axiom's reads ``assumed (axiom)``.
+
+        A fact established under assumptions (see :meth:`support`) says so
+        after its status, as in ``proved under jump, compact``. When any fact
+        is worth less than its own status, because it rests on something
+        weaker, the table grows an ``EFFECTIVE`` column after the status with
+        what each fact is worth. A ledger in which nothing rests on anything
+        renders as it always did.
         """
-        locations = _locations(list(self))
+        facts = list(self)
+        if not facts:
+            return "ledger is empty"
+        locations = _locations(facts)
+        owners = Counter(fact.owner for fact in facts)
+        supports = [self.support(fact) for fact in facts]
+        weaker = any(
+            support.effective is not fact.status
+            for fact, support in zip(facts, supports, strict=True)
+        )
         rows = [
             (
-                f"{fact.status.value} (vacuous)" if fact.is_vacuous else fact.status.value,
+                self._status_cell(fact, support, owners),
+                *((support.effective.value,) if weaker else ()),
                 fact.decided_by or "-",
                 locations[index] or "-",
                 fact.owner or "-",
                 _clip(fact.statement, width),
             )
-            for index, fact in enumerate(self)
+            for index, (fact, support) in enumerate(zip(facts, supports, strict=True))
         ]
-        headers = ("status", "by", "where", "owner", "statement")
-        if not rows:
-            return "ledger is empty"
+        headers = (
+            "status",
+            *(("effective",) if weaker else ()),
+            "by",
+            "where",
+            "owner",
+            "statement",
+        )
         widths = [
             max(len(headers[i]), max(len(row[i]) for row in rows))
             for i in range(len(headers))

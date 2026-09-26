@@ -17,6 +17,13 @@ explains it: its ``counterexample``, its ``witness`` and its ``reason``, three
 standard provenance keys read the same way whichever oracle or plugin refuted
 it, or a line saying that none was recorded (see :func:`refutation_lines`).
 
+A fact that rests on others is worth no more than they are, and the table says
+so after its status (see :meth:`lanky.ledger.Ledger.support`); ``--json``
+carries each fact's ``effective`` status and the ids it is ``under``. Neither
+changes the exit code: a fact resting on a refuted one fails the check through
+the refuted one, and a fact resting on an assumption is no more a failure than
+the assumption.
+
 Two more things are printed under the table and do not change the exit code. A
 statement whose sampled reading could not be run where a stronger oracle's
 could, or disagrees with it, is reported under ``SEMANTICS`` (a division by
@@ -114,7 +121,7 @@ class CheckVerb:
                 code = 1
                 continue
             checked += 1
-            facts.extend(fact.to_dict() for fact in ledger)
+            facts.extend(ledger.to_dicts())
             if self._report(ledger):
                 code = 1
         if args.json and checked:
