@@ -794,8 +794,16 @@ def _render_quotient(expr: prim.Quotient, outer: int, types: _Types) -> str:
 
 
 def _render_abs(expr: Abs, types: _Types) -> str:
-    """Print ``|x|``, or ``‖z‖`` for a complex ``z``, the modulus Python's ``abs`` gives."""
+    """Print ``|x|``, or ``‖z‖`` for a complex ``z``, the modulus Python's ``abs`` gives.
+
+    An operand of integer literals alone, which only a term built node by node
+    holds, is ascribed ``ℤ`` (see :func:`_closed_arithmetic`): ``abs`` takes
+    its type from its operand, so bare, ``|1 - 2| = 0`` is a truncated ``Nat``
+    subtraction Lean proves, while Python computes ``abs(-1) == 0``, false.
+    """
     inner = _render(expr.operand, _QUANT, types)
+    if _closed_arithmetic(expr.operand):
+        return f"|({inner} : ℤ)|"
     if _kind(expr.operand, types) == "Complex":
         return f"‖{inner}‖"
     if "|" in inner:
@@ -849,9 +857,10 @@ def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
     ``Fin[n]`` is ``Finset.Ico (0 : ℤ) n``, so the binder is an integer as a
     quantifier's is, and ``n`` below ``0`` gives the empty sum Python's
     ``range`` gives. The ascription is what makes the binder an integer when
-    the bound is a literal, and a body that is an integer numeral is ascribed
-    too, which makes the sum an integer: without them Lean reads both as
-    naturals, whose subtraction truncates (see the module docstring). A
+    the bound is a literal, and a body of integer literals alone, a numeral or
+    arithmetic on numerals (see :func:`_closed_arithmetic`), is ascribed too,
+    which makes the sum an integer: without them Lean reads both as naturals,
+    whose subtraction truncates (see the module docstring). A
     refinement of the domain, and the generator's guard on the last binder,
     filter it with ``with``. The body extends as far right as it can, so a sum
     that is an operand is bracketed.
@@ -869,9 +878,8 @@ def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
             )
         layers.append({**layers[-1], var.name: domain})
     inner = layers[-1]
-    body = _integral(expr.body)
-    if isinstance(body, int) and not isinstance(body, bool):
-        text = f"({body} : ℤ)"
+    if _closed_arithmetic(expr.body):
+        text = f"({_render(expr.body, _QUANT, inner)} : ℤ)"
     else:
         text = _render(expr.body, _ADD + 1, inner)
     guards = list(conjuncts(expr.guard))

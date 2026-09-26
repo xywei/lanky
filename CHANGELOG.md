@@ -81,7 +81,11 @@ prints a ledger naming who decided what.
     into real division of the cast `n`; the sum's lower bound is ascribed, and
     so is a body that is an integer numeral, since Lean reads an untyped
     numeral as a `Nat`, where `sum(i - 1 for i in Fin[3])` and
-    `sum(1 for i in Fin[n]) - 3` truncate. It declines a sum over `Nat`, a
+    `sum(1 for i in Fin[n]) - 3` truncate. A body, and the operand of `|x|`,
+    that is arithmetic on numerals alone, which only a term built node by node
+    holds, is ascribed `ℤ` the same way, as a comparison with no variable in it
+    is: `|1 - 2| = 0` and a sum of `1 - 2` equal to `0` were proved over `Nat`.
+    It declines a sum over `Nat`, a
     `Fin` with a real bound (which the tester truncates), a floor division or
     remainder of a real, an order between complex numbers, and a complex
     logarithm or square root (`cmath` picks a side of the branch cut by the

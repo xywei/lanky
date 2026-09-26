@@ -20,6 +20,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import NoReturn
 
+import pymbolic.primitives as prim
 import pytest
 
 from lanky import exp, log, sqrt, theorem
@@ -387,6 +388,37 @@ def test_a_sum_is_over_integers_whatever_types_its_bound_and_body() -> None:
     # a float body is ascribed already, and a body with a variable in it is typed by it
     assert mathlib(Sum(((i, FinType(n)),), 0.5) >= 0, n=Nat) == (
         "(∑ i ∈ Finset.Ico (0 : ℤ) n, (1 / 2 : ℝ)) ≥ 0"
+    )
+
+
+#: Two claims whose operand is arithmetic on numerals alone, which only a term
+#: built node by node holds: false in Python and true read over ``Nat``, where
+#: ``1 - 2`` is ``0``. ``abs(-1) == 0`` is false, and so is ``-n == 0`` at
+#: ``n = 1``.
+_CLOSED_ABS = prim.Comparison(Abs(prim.Sum((1, -2))), "==", 0)
+_CLOSED_BODY = Forall(
+    ((n, Nat),), prim.Comparison(Sum(((i, FinType(n)),), prim.Sum((1, -2))), "==", 0)
+)
+
+
+def test_arithmetic_on_numerals_alone_is_ascribed_where_nothing_types_it() -> None:
+    """``abs`` and ``∑`` take their type from the operand, which here has no type to give.
+
+    A comparison with no variable on either side is ascribed ``Int``, and so is
+    such a base of a power; an absolute value of one, and the body of a sum,
+    are ascribed the same way, or Lean reads ``1 - 2`` as a truncated ``Nat``
+    subtraction and proves both claims.
+    """
+    assert evaluate(_CLOSED_ABS, {}) is False
+    assert evaluate(_CLOSED_BODY.body, {"n": 1}) is False
+    assert print_lean(_CLOSED_ABS, mathlib=True) == "|(1 - 2 : ℤ)| = 0"
+    assert print_lean(_CLOSED_BODY, mathlib=True) == (
+        "∀ n : Int, 0 ≤ n → (∑ i ∈ Finset.Ico (0 : ℤ) n, (1 - 2 : ℤ)) = 0"
+    )
+    # an operand with a variable in it is typed by the variable, as before
+    assert mathlib(Abs(x - 1) >= 0, x=Real) == "|x - 1| ≥ 0"
+    assert mathlib(Sum(((i, FinType(n)),), i - 1) >= 0, n=Nat) == (
+        "(∑ i ∈ Finset.Ico (0 : ℤ) n, (i - 1)) ≥ 0"
     )
 
 
@@ -816,6 +848,8 @@ def test_every_printed_statement_elaborates(mathlib_oracle: LeanOracle) -> None:
         _LITERAL_BOUND,
         _NUMERAL_BODY,
         Forall(((n, Nat),), Sum(((i, FinType(n)),), -2) <= 0),
+        _CLOSED_ABS,
+        _CLOSED_BODY,
     ]
     for term in terms:
         source = f"example : Prop := {print_lean(term, mathlib=True)}\n"
@@ -843,8 +877,13 @@ def test_floor_division_next_to_a_real_is_integer_division(mathlib_oracle: LeanO
 
 
 def test_a_sum_python_refutes_is_not_proved(mathlib_oracle: LeanOracle) -> None:
-    """Read over ``Nat``, both were theorems: ``decide`` and ``omega`` proved them."""
-    for label, term in (("literal_bound", _LITERAL_BOUND), ("numeral_body", _NUMERAL_BODY)):
+    """Read over ``Nat``, all four were theorems: ``decide`` and ``omega`` proved the first two."""
+    for label, term in (
+        ("literal_bound", _LITERAL_BOUND),
+        ("numeral_body", _NUMERAL_BODY),
+        ("closed_abs", _CLOSED_ABS),
+        ("closed_body", _CLOSED_BODY),
+    ):
         fact = Fact(id=label, kind="theorem", statement=label, term=term)
         result = mathlib_oracle.establish(fact)
         assert result.status is Status.ASSUMED, (label, result.provenance.get("tactic"))
@@ -852,6 +891,8 @@ def test_a_sum_python_refutes_is_not_proved(mathlib_oracle: LeanOracle) -> None:
     for label, term in (
         ("literal_bound_true", Sum(((i, FinType(3)),), i - 1) == 0),
         ("numeral_body_true", Forall(((n, Nat),), Sum(((i, FinType(n)),), 1) == n)),
+        ("closed_abs_true", prim.Comparison(Abs(prim.Sum((1, -2))), "==", 1)),
+        ("closed_body_true", prim.Comparison(Sum(((i, FinType(3)),), prim.Sum((1, -2))), "==", -3)),
     ):
         fact = Fact(id=label, kind="theorem", statement=label, term=term)
         proved = mathlib_oracle.establish(fact)
