@@ -19,6 +19,11 @@ Nothing is sampled there, but everything else about it is this oracle's
 business: ``True`` is ``TESTED`` over the one draw there is and ``False`` is
 ``REFUTED``, which is what keeps a false closed claim out of the ledger's
 ``ASSUMED`` rows and makes ``lanky check`` exit 1 on it.
+
+A goal that is a universal is watched for one more thing: whether its
+quantifier got through to any point of its guarded domain at any draw. When it
+never did, a pass says nothing about the goal's body, and the provenance
+records ``goal_reached: 0`` for :func:`lanky.check.establish` to examine.
 """
 
 from __future__ import annotations
@@ -82,6 +87,10 @@ class TestOracle:
                 valid=report.valid,
                 reason=report.reason,
             )
+        # A goal whose quantifier got through to no point at any draw is
+        # recorded as such, whatever else the report says, so that the check
+        # can ask whether its guard is empty (see lanky.check.goal_guard_fact).
+        goal = {"goal_reached": 0} if report.goal_reached == 0 else {}
         if report.valid == 0:
             # A pass over no valid draw is not evidence, so the status must not
             # improve. Returning the fact with the reason rather than ``None``
@@ -99,6 +108,7 @@ class TestOracle:
                 undecided=report.undecided or None,
                 unsampleable=report.unsampleable or None,
                 skipped=report.skipped or None,
+                **goal,
             )
         extra = {"undecided": report.undecided} if report.undecided else {}
         return fact.with_status(
@@ -107,4 +117,5 @@ class TestOracle:
             samples=report.samples,
             valid=report.valid,
             **extra,
+            **goal,
         )

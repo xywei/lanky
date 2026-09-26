@@ -7,8 +7,9 @@ subcommand of ``lanky`` without lanky knowing what loopty is.
 
 ``check`` exits 1 when any fact is ``REFUTED`` or vacuous, so it works in CI:
 a refuted fact is a broken claim, and a vacuous one is a claim whose hypotheses
-an oracle has shown inconsistent, which is true and says nothing, while an
-assumed one is a claim nobody got to. Every oracle reads a statement the same
+an oracle has shown inconsistent, or whose goal's guard it has shown empty
+wherever the hypotheses hold, which is true and says nothing, while an assumed
+one is a claim nobody got to. Every oracle reads a statement the same
 way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
 refuted does not depend on whether Lean is installed. What Lean adds is proofs,
 and the proof that a claim is vacuous, which fails a check that without it only
@@ -33,20 +34,36 @@ zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
 status its oracle gave it. A statement whose hypotheses no draw satisfied, and
 that no oracle could show inconsistent, gets a ``WARNING`` line: the claim may
 be vacuous, or its hypotheses may hold only where the sampler does not look.
+So does a statement whose goal is a universal whose guard held at no valid
+draw, when no oracle could show the guard empty.
 And a fact that rests on an id no fact in the ledger has gets an
 ``UNRESOLVED`` line naming it: the id counts as an assumption, and it is either
 written wrong or names a fact of another file, which is in that file's ledger.
+
+Checking a file imports it, and a process imports a module of a given name
+once. So ``check`` gives each distinct source root of the files it is handed
+(see :func:`lanky.check.source_roots`) a child process of its own, and files
+with the same roots share one: two directories that each hold a ``helpers.py``
+are checked against their own. Files that all share their roots are checked in
+this process, as :func:`lanky.check.check_path` checks a file, and print what
+they always printed (see :meth:`CheckVerb.run`).
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, TextIO
 
-from lanky.check import check_path, oracle_lines
+from lanky.check import check_path, oracle_lines, source_roots
 from lanky.ledger import Fact, Ledger, Status
 from lanky.plugins import registry
 
@@ -100,6 +117,22 @@ class CheckVerb:
         writes the facts of every file that imported into one list. A
         namespace carrying a single ``file`` rather than ``files``, which is
         what ``loopty check`` builds, is read as a list of one.
+
+        Files are checked one process per distinct source root (see
+        :func:`lanky.check.source_roots`). When every file has the same
+        roots, which a single file always does, they are checked in this
+        process one after another, and a module one of them imports is there
+        for the next, as it always was. When the roots differ, each distinct
+        set of roots gets a child process of its own (see
+        :meth:`_check_in_children`), started with this interpreter, this
+        ``sys.path`` and the environment, so that no file is handed a module
+        another directory's file imported under the same name. The ledgers are
+        then printed root by root, in the order each root first appears among
+        the files and within a root in the order the files are listed, and
+        ``--json`` lists the facts in that order too. What each root's files
+        print is what ``lanky check`` of those files alone prints, headings
+        included (the oracles ``--verbose`` lists are listed once, above
+        them all), and the check fails when any root's does.
         """
         files = getattr(args, "files", None) or [args.file]
         missing = [file for file in files if not Path(file).is_file()]
@@ -111,16 +144,40 @@ class CheckVerb:
             for line in oracle_lines():
                 print(line)
             print()
+        groups = _by_source_roots(files)
+        if len(groups) == 1:
+            code, checked, facts = self._check_files(
+                files, verbose=args.verbose, headings=len(files) > 1
+            )
+        else:
+            code, checked, facts = self._check_in_children(
+                groups, verbose=args.verbose, facts_wanted=bool(args.json)
+            )
+        if args.json and checked:
+            Path(args.json).write_text(json.dumps(facts, indent=2, default=str), encoding="utf-8")
+        return code
+
+    @classmethod
+    def _check_files(
+        cls, files: list[str], *, verbose: bool, headings: bool
+    ) -> tuple[int, int, list[dict]]:
+        """Check files in this process, printing each ledger as it is done.
+
+        Returns the exit code, how many files imported, and the facts of
+        those that did. With ``headings`` each file's ledger is printed under
+        a ``==> FILE <==`` line, and a blank line separates one file from the
+        next.
+        """
         code = 0
         checked = 0
         facts: list[dict] = []
         for index, file in enumerate(files):
-            if len(files) > 1:
+            if headings:
                 if index:
                     print()
                 print(f"==> {file} <==")
             try:
-                ledger = check_path(file, verbose=args.verbose)
+                ledger = check_path(file, verbose=verbose)
             except Exception:  # noqa: BLE001 - the file is the user's, so show why
                 print(f"lanky check: {file} could not be imported")
                 print(traceback.format_exc().rstrip())
@@ -128,11 +185,85 @@ class CheckVerb:
                 continue
             checked += 1
             facts.extend(ledger.to_dicts())
-            if self._report(ledger):
+            if cls._report(ledger):
                 code = 1
-        if args.json and checked:
-            Path(args.json).write_text(json.dumps(facts, indent=2, default=str), encoding="utf-8")
-        return code
+        return code, checked, facts
+
+    @staticmethod
+    def _check_in_children(
+        groups: list[list[str]], *, verbose: bool, facts_wanted: bool
+    ) -> tuple[int, int, list[dict]]:
+        """Check each group of files in a child process of its own, one after another.
+
+        A child is this interpreter running :data:`_CHILD`, which takes this
+        process's ``sys.path`` and ``sys.argv`` before it imports lanky, so it
+        finds what this process would find, and then checks its files as
+        :meth:`_check_files` does, with headings. Its working directory and
+        environment are this process's. What it prints is copied to this
+        process's ``sys.stdout`` and ``sys.stderr`` line by line as it comes,
+        so the output reads as a check in one process would, and a blank line
+        separates one child's output from the next. What it reports (its
+        exit code, how many of its files imported, and their facts when
+        ``--json`` wants them) comes back through a file in a scratch
+        directory rather than through its output, which the checked files
+        write to as well.
+
+        A child that stops before it reports, because a checked file ended
+        the process (``sys.exit`` while it is imported, say) or it could not
+        be started, gets a line saying so, and the check fails; the other
+        groups are still checked.
+
+        A child finds its plugins the way the ``lanky`` command does, through
+        their entry points (see :meth:`lanky.plugins.Registry.load_entry_points`).
+        A theory or an oracle that a program registered by hand in this
+        process before calling the verb is not in a child, so such a program
+        checks files of several roots with :func:`lanky.check.check_path`, a
+        process per root.
+        """
+        code = 0
+        checked = 0
+        facts: list[dict] = []
+        with tempfile.TemporaryDirectory(prefix="lanky-check-") as scratch:
+            for index, files in enumerate(groups):
+                if index:
+                    print()
+                spec_path = Path(scratch) / f"root-{index}.json"
+                results = Path(scratch) / f"root-{index}-results.json"
+                spec = {
+                    "files": files,
+                    "verbose": verbose,
+                    "facts": facts_wanted,
+                    "results": str(results),
+                    "path": [os.fsdecode(entry) for entry in sys.path if _is_path(entry)],
+                    "argv": list(sys.argv),
+                }
+                spec_path.write_text(json.dumps(spec), encoding="utf-8")
+                named = ", ".join(files)
+                try:
+                    child = _start_child(spec_path)
+                except OSError as exc:
+                    print(f"lanky check: could not start a process to check {named}: {exc}")
+                    code = 1
+                    continue
+                returncode = _follow(child)
+                report = _read_report(results)
+                if report is None:
+                    print(
+                        f"lanky check: the process checking {named} stopped with "
+                        f"{_how_it_ended(returncode)} before it reported"
+                    )
+                    code = 1
+                    continue
+                checked += report["checked"]
+                facts.extend(report["facts"])
+                if report["code"] != returncode:
+                    print(
+                        f"lanky check: the process checking {named} ended with "
+                        f"{_how_it_ended(returncode)} after it reported"
+                    )
+                if report["code"] or returncode:
+                    code = 1
+        return code, checked, facts
 
     @staticmethod
     def _report(ledger: Ledger) -> bool:
@@ -197,24 +328,35 @@ class CheckVerb:
         A fact an oracle showed vacuous gets a ``VACUOUS`` block, and fails the
         check. One whose hypotheses no draw satisfied and no oracle could show
         inconsistent gets a ``WARNING`` line with the tester's reason under it,
-        and does not: the sampler may simply not reach where they hold.
+        and does not: the sampler may simply not reach where they hold. So
+        does one whose goal is a universal whose guard held at no valid draw,
+        when no oracle could show the guard empty: the guard may hold only
+        where the sampler does not look.
         """
         for fact in ledger:
-            unsatisfied = fact.provenance.get("unsatisfied")
-            if not unsatisfied or fact.is_vacuous:
+            if fact.is_vacuous:
                 continue
-            print()
-            print(f"WARNING {fact.owner} at {fact.where}: {unsatisfied}")
-            print("  no oracle could show them inconsistent, so the claim may be vacuous")
-            CheckVerb._print_detail(fact)
+            unsatisfied = fact.provenance.get("unsatisfied")
+            if unsatisfied:
+                print()
+                print(f"WARNING {fact.owner} at {fact.where}: {unsatisfied}")
+                print("  no oracle could show them inconsistent, so the claim may be vacuous")
+                CheckVerb._print_detail(fact)
+            unreached = fact.provenance.get("goal_unreached")
+            if unreached:
+                print()
+                print(f"WARNING {fact.owner} at {fact.where}: {unreached}")
+                print("  no oracle could show it empty, so the goal may be vacuous")
         vacuous = ledger.vacuous()
         for fact in vacuous:
             print()
             print(f"VACUOUS {fact.owner} at {fact.where}: {fact.statement}")
             print(f"  {fact.provenance['vacuous']}, so the goal is never at stake")
-            sampled = fact.provenance.get("unsatisfied") or fact.provenance.get("untestable")
-            if sampled:
-                print(f"  {sampled}")
+            for key in ("unsatisfied", "untestable", "goal_unreached"):
+                sampled = fact.provenance.get(key)
+                if sampled:
+                    print(f"  {sampled}")
+                    break
             CheckVerb._print_detail(fact)
         return bool(vacuous)
 
@@ -250,6 +392,173 @@ class CheckVerb:
         detail = fact.provenance.get("unsatisfied_detail")
         if detail:
             print(f"  {detail}")
+
+
+def _by_source_roots(files: list[str]) -> list[list[str]]:
+    """The files grouped by their source roots, in the order each group first appears.
+
+    Within a group the files keep the order they were listed in (see
+    :func:`lanky.check.source_roots`).
+    """
+    groups: dict[tuple[Path, ...], list[str]] = {}
+    for file in files:
+        groups.setdefault(source_roots(file), []).append(file)
+    return list(groups.values())
+
+
+def _is_path(entry: Any) -> bool:
+    """Whether a ``sys.path`` entry is a path a child can be handed.
+
+    ``sys.path`` should hold strings, but nothing stops a program from putting
+    a ``pathlib.Path`` or bytes there, or something the import system skips.
+    """
+    return isinstance(entry, str | bytes | os.PathLike)
+
+
+# The program a child process runs to check the files of one source root. It
+# reads what to do from the file named on its command line, and takes this
+# process's ``sys.path`` and ``sys.argv`` before it imports anything of
+# lanky's, so it finds lanky, the plugins and every module a checked file
+# imports where this process would, and a checked file that reads its command
+# line reads the same one. ``-P`` keeps the working directory off its path
+# until then, so that a ``json.py`` there is not what the first line imports.
+_CHILD = """\
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    spec = json.load(handle)
+sys.path[:] = spec["path"]
+sys.argv[:] = spec["argv"]
+from lanky.cli import _check_in_child
+raise SystemExit(_check_in_child(spec))
+"""
+
+
+def _check_in_child(spec: dict[str, Any]) -> int:
+    """Check the files of one source root, in a child process ``lanky check`` started.
+
+    The files are checked as :meth:`CheckVerb._check_files` checks them, each
+    under its heading, and what is printed goes to the parent, which copies it
+    line by line; so the output is UTF-8, whatever the locale says, and
+    flushed at every line. A character UTF-8 cannot carry, such as a lone
+    surrogate a checked file prints, is written as its escape rather than
+    failing the print. Then the exit code, how many files imported and,
+    when the parent asked for them, their facts are written to the file the
+    parent reads. The facts are serialized as ``--json`` serializes them, so
+    the parent writes what it would have written for a check of its own.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
+    code, checked, facts = CheckVerb._check_files(
+        spec["files"], verbose=spec["verbose"], headings=True
+    )
+    report = {"code": code, "checked": checked, "facts": facts if spec["facts"] else []}
+    Path(spec["results"]).write_text(json.dumps(report, default=str), encoding="utf-8")
+    return code
+
+
+def _start_child(spec_path: Path) -> subprocess.Popen:
+    """Start :data:`_CHILD` on a spec, with both its output streams piped here.
+
+    Raises:
+        OSError: If the child cannot be started.
+    """
+    return subprocess.Popen(
+        [sys.executable, "-P", "-c", _CHILD, str(spec_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _follow(child: subprocess.Popen) -> int:
+    """Copy a child's output here as it comes, wait for it, and return its exit code.
+
+    Its standard output is copied to ``sys.stdout`` and its standard error to
+    ``sys.stderr``, each line as the child prints it, so the ledgers appear
+    as they are checked and wherever this process's output goes, which need
+    not be the terminal the child would write to directly (a test capturing
+    ``sys.stdout``, say). Standard error is read by a thread of its own, so
+    that a child writing a lot to it never blocks on a full pipe, and that
+    thread keeps reading even when ``sys.stderr`` fails, for the same reason.
+
+    When copying fails here, because this process is interrupted (a
+    ``KeyboardInterrupt`` that reached this process and not the child) or its
+    own output is closed, the child is killed before the exception goes on.
+    It would otherwise keep checking for no one, and hold this process up
+    until it ended, since the pipe the thread is reading cannot be closed
+    under it.
+    """
+    with child:
+        assert child.stdout is not None and child.stderr is not None
+        pump = threading.Thread(
+            target=_copy_lines,
+            args=(child.stderr, sys.stderr),
+            kwargs={"keep_reading": True},
+            daemon=True,
+        )
+        pump.start()
+        try:
+            _copy_lines(child.stdout, sys.stdout)
+        except BaseException:
+            child.kill()
+            raise
+        pump.join()
+    return child.returncode
+
+
+def _copy_lines(source: BinaryIO, sink: TextIO | None, *, keep_reading: bool = False) -> None:
+    """Copy lines from a child's stream to one of this process's, as they arrive.
+
+    The child writes UTF-8 (see :func:`_check_in_child`). A byte that is not
+    UTF-8, which a checked file can still write to the stream underneath, is
+    copied as its escape (``\\xff``), and so is a character this process's
+    stream cannot encode (an accented letter where it writes ASCII), rather
+    than failing the write, which would end the check here and leave the
+    roots after this one unchecked. Line endings are passed on as they are, so a
+    ``\\r`` a checked file prints stays one. A sink of ``None``, which is
+    what ``sys.stderr`` is where a program runs with no console, drains the
+    stream without writing it anywhere.
+
+    With ``keep_reading``, a sink that fails for any other reason (a closed
+    pipe, say) is dropped and the stream is still read to its end: the
+    thread copying a child's standard error must not stop while the child
+    may still write to it, or the child blocks on a full pipe while this
+    process waits for its standard output to end.
+    """
+    text = io.TextIOWrapper(source, encoding="utf-8", errors="backslashreplace", newline="")
+    for line in text:
+        if sink is None:
+            continue
+        try:
+            _write_escaped(sink, line)
+        except Exception:
+            if not keep_reading:
+                raise
+            sink = None
+
+
+def _write_escaped(sink: TextIO, line: str) -> None:
+    """Write a line, escaping what the sink's encoding cannot carry (see :func:`_copy_lines`)."""
+    try:
+        sink.write(line)
+    except UnicodeEncodeError:
+        encoding = getattr(sink, "encoding", None) or "ascii"
+        sink.write(line.encode(encoding, "backslashreplace").decode(encoding))
+
+
+def _read_report(path: Path) -> dict[str, Any] | None:
+    """What a child reported, or ``None`` when it stopped before it wrote a report."""
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _how_it_ended(returncode: int) -> str:
+    """A child's exit status in words: its exit code, or the signal that ended it."""
+    if returncode < 0:
+        return f"signal {-returncode}"
+    return f"exit code {returncode}"
 
 
 def _recorded(value: Any) -> bool:

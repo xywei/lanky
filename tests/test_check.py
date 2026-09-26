@@ -705,38 +705,465 @@ def test_a_package_init_is_checked_in_its_own_package(tmp_path) -> None:
             sys.modules.pop(key, None)
 
 
-def test_a_package_of_the_same_name_from_another_tree_is_refused(
-    tmp_path, monkeypatch, capsys
-) -> None:
-    """``lanky check a/pkg/mod.py b/pkg/mod.py`` must not check b with a's modules.
+def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path) -> None:
+    """``check_path`` must not check ``b/pkg/mod.py`` with ``a/pkg/mod.py``'s modules.
 
     The first file's relative import leaves ``pkg`` and ``pkg.helpers`` in
     ``sys.modules``, and a relative import resolves through that cache before
     it looks at ``sys.path``, so the second file's ``from . import helpers``
-    was answered by the first tree. The second file is refused instead, with
-    the reason, and the first tree's package can still be checked again.
+    was answered by the first tree. In one process the second file is refused
+    instead, with the reason, and the first tree's package can still be
+    checked again.
     """
     import sys
 
-    # As above: the one ledger printed is found by its summary, which reads
-    # "1 proved" rather than "1 tested" where Lean is installed.
-    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     name = "lanky_test_twin"
     first, _deep = _package(tmp_path / "a", name)
     second, _deep = _package(tmp_path / "b", name)
     try:
         assert [fact.owner for fact in check_path(first)] == ["mod_claim"]
-        assert cli.main(["check", str(second), str(first)]) == 1
-        printed = capsys.readouterr().out
-        assert "could not be imported" in printed
-        assert (
-            f"ImportError: {second.resolve()} sits in the package {name!r}, but "
+        with pytest.raises(ImportError) as refusal:
+            check_path(second)
+        assert str(refusal.value).startswith(
+            f"{second.resolve()} sits in the package {name!r}, but "
             f"{name!r} is already imported from {first.parent.resolve()} in this process"
-        ) in printed
-        assert printed.count("1 facts: 1 tested") == 1
+        )
+        assert [fact.owner for fact in check_path(first)] == ["mod_claim"]
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] == name]:
             sys.modules.pop(key, None)
+
+
+def test_the_cli_checks_twin_packages_in_processes_of_their_own(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """``lanky check b/pkg/mod.py a/pkg/mod.py`` checks each file in its own tree.
+
+    The command used to check both in one process, where the second was
+    refused (see above) and the check failed on a file that is fine. The two
+    have different source roots, so each is now checked in a child process of
+    its own, and neither sees the other's package, nor the one this process
+    imported before the command ran.
+    """
+    import sys
+
+    # The two ledgers are found by their summaries, which read "1 proved"
+    # rather than "1 tested" where Lean is installed.
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    name = "lanky_test_twin_cli"
+    first, _deep = _package(tmp_path / "a", name)
+    second, _deep = _package(tmp_path / "b", name)
+    try:
+        assert [fact.owner for fact in check_path(first)] == ["mod_claim"]
+        assert cli.main(["check", str(second), str(first)]) == 0
+        printed = capsys.readouterr().out
+        assert "could not be imported" not in printed
+        assert printed.startswith(f"==> {second} <==\n")
+        assert f"\n\n==> {first} <==\n" in printed
+        assert printed.count("1 facts: 1 tested") == 2
+    finally:
+        for key in [key for key in sys.modules if key.split(".")[0] == name]:
+            sys.modules.pop(key, None)
+
+
+# {{{ files from several source roots
+
+ROOTS_HELPER = "lanky_test_roots_helpers"
+
+ROOTED = f'''
+"""A claim about the helper module in this file's directory."""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import {ROOTS_HELPER} as helpers
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+print("imported in process", os.getpid())
+print("a line on stderr", file=sys.stderr)
+
+
+@theorem
+def own_helper(n: Nat) -> n * helpers.VALUE == VALUE * n:
+    """True of the helper next to this file, and of no other."""
+'''
+
+
+def _rooted(directory, value: int, name: str = "claims"):
+    """``directory/<name>.py``, claiming that the helper beside it holds ``value``.
+
+    Every directory's helper has the one module name, so a file checked with
+    another directory's helper has its claim refuted at ``n = 1``.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{ROOTS_HELPER}.py").write_text(f"VALUE = {value}\n", encoding="utf-8")
+    path = directory / f"{name}.py"
+    path.write_text(ROOTED.replace("== VALUE * n", f"== {value} * n"), encoding="utf-8")
+    return path
+
+
+def _pids(printed: str) -> list[int]:
+    """The process ids the checked files printed, in the order they printed them."""
+    return [
+        int(line.rsplit(" ", 1)[1])
+        for line in printed.splitlines()
+        if line.startswith("imported in process ")
+    ]
+
+
+def test_source_roots_are_the_directories_a_check_puts_on_sys_path(tmp_path) -> None:
+    from lanky.check import source_roots
+
+    plain = _rooted(tmp_path / "plain", 1)
+    mod, deep = _package(tmp_path, "lanky_test_roots_pkg")
+    project = (tmp_path / "project").resolve()
+    assert source_roots(plain) == (plain.parent.resolve(),)
+    assert source_roots(mod) == (mod.parent.resolve(), project)
+    assert source_roots(deep) == (deep.parent.resolve(), project)
+    assert source_roots(mod.parent / "helpers.py") == source_roots(mod)
+
+
+def test_files_from_two_roots_are_checked_against_their_own_helpers(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The reproduction of #9: each directory's ``claims.py`` imports its own ``helpers``.
+
+    Checked one after another in one process, the second file's import found
+    the first directory's module in ``sys.modules``, and its claim was
+    refuted against code it does not contain, whichever order the files were
+    listed in. Each root is now checked in a process of its own, so both
+    claims are tested, and ``--json`` holds both files' facts, in the order
+    their ledgers were printed.
+    """
+    import sys
+    from pathlib import Path
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    first = _rooted(tmp_path / "a", 1)
+    second = _rooted(tmp_path / "b", 2)
+    out_json = tmp_path / "ledger.json"
+    try:
+        for files in ([first, second], [second, first]):
+            code = cli.main(["check", *map(str, files), "--json", str(out_json)])
+            captured = capsys.readouterr()
+            assert "REFUTED" not in captured.out
+            assert code == 0
+            assert captured.out.startswith(f"==> {files[0]} <==\n")
+            assert f"\n\n==> {files[1]} <==\n" in captured.out
+            assert captured.out.count("1 facts: 1 tested") == 2
+            assert captured.err.count("a line on stderr\n") == 2
+            data = json.loads(out_json.read_text(encoding="utf-8"))
+            assert [(entry["owner"], entry["status"]) for entry in data] == [
+                ("own_helper", "tested"),
+                ("own_helper", "tested"),
+            ]
+            assert [Path(entry["provenance"]["path"]) for entry in data] == [
+                files[0].resolve(),
+                files[1].resolve(),
+            ]
+        assert ROOTS_HELPER not in sys.modules
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def test_each_root_is_checked_in_one_process_of_its_own(tmp_path, monkeypatch, capsys) -> None:
+    """One child process per distinct source root, and the ledgers printed root by root.
+
+    ``a/x.py b/y.py a/z.py`` starts two processes, one for ``a`` and one for
+    ``b``, neither of them this one; ``a``'s files share theirs and are
+    printed first, in the order they were listed. The oracles are listed once,
+    by this process, and each child prints its facts as it collects them.
+    """
+    import os
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    x = _rooted(tmp_path / "a", 1, "x")
+    y = _rooted(tmp_path / "b", 2, "y")
+    z = _rooted(tmp_path / "a", 1, "z")
+    try:
+        assert cli.main(["check", str(x), str(y), str(z), "--verbose"]) == 0
+        printed = capsys.readouterr().out
+        headings = [line for line in printed.splitlines() if line.startswith("==> ")]
+        assert headings == [f"==> {x} <==", f"==> {z} <==", f"==> {y} <=="]
+        pids = _pids(printed)
+        assert len(pids) == 3
+        assert pids[0] == pids[1] != pids[2]
+        assert os.getpid() not in pids
+        assert printed.count("property-test (test): available") == 1
+        assert printed.count(" own_helper: n : Nat |- ") == 3
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def test_files_of_one_root_are_checked_in_this_process(tmp_path, monkeypatch, capsys) -> None:
+    """Files that share their roots are checked as they always were: here, one after another."""
+    import os
+    import sys
+
+    def refuse(_spec_path):
+        raise AssertionError("no child process is started for a single root")
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    monkeypatch.setattr(cli, "_start_child", refuse)
+    x = _rooted(tmp_path / "a", 1, "x")
+    z = _rooted(tmp_path / "a", 1, "z")
+    try:
+        assert cli.main(["check", str(x), str(z)]) == 0
+        printed = capsys.readouterr().out
+        assert _pids(printed) == [os.getpid(), os.getpid()]
+        assert printed.count("1 facts: 1 tested") == 2
+        assert sys.modules[ROOTS_HELPER].VALUE == 1  # imported here, and still imported
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def test_a_root_whose_process_stops_is_reported_and_the_others_checked(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A checked file that ends its process fails the check, with a line, and stops nothing else.
+
+    ``sys.exit`` while the file is imported used to end ``lanky check`` itself,
+    with the file's exit code and without the files after it. With several
+    roots it ends the child checking its root, before that child reports, and
+    the command says so and goes on to the next root.
+    """
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    stops = tmp_path / "a" / "stops.py"
+    stops.parent.mkdir()
+    stops.write_text("raise SystemExit(3)\n", encoding="utf-8")
+    good = _rooted(tmp_path / "b", 2)
+    try:
+        assert cli.main(["check", str(stops), str(good)]) == 1
+        printed = capsys.readouterr().out
+        assert (
+            f"lanky check: the process checking {stops} stopped with exit code 3 "
+            "before it reported\n"
+        ) in printed
+        assert printed.count("1 facts: 1 tested") == 1
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def test_a_root_whose_process_cannot_start_is_reported(tmp_path, monkeypatch, capsys) -> None:
+    """A child that cannot be started fails the check with a line, and the next root is tried."""
+    import sys
+
+    started = []
+    start = cli._start_child
+
+    def start_all_but_the_first(spec_path):
+        started.append(spec_path)
+        if len(started) == 1:
+            raise OSError("no processes left")
+        return start(spec_path)
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    monkeypatch.setattr(cli, "_start_child", start_all_but_the_first)
+    first = _rooted(tmp_path / "a", 1)
+    second = _rooted(tmp_path / "b", 2)
+    try:
+        assert cli.main(["check", str(first), str(second)]) == 1
+        printed = capsys.readouterr().out
+        assert printed.startswith(
+            f"lanky check: could not start a process to check {first}: no processes left\n\n"
+            f"==> {second} <==\n"
+        )
+        assert printed.count("1 facts: 1 tested") == 1
+        assert len(started) == 2
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def test_a_childs_output_is_copied_as_text_whatever_its_bytes() -> None:
+    """A byte that is not UTF-8 is copied as its escape, and line endings as they came."""
+    import io
+
+    sink = io.StringIO()
+    cli._copy_lines(io.BytesIO(b"caf\xc3\xa9\n\xff\r\nlast"), sink)
+    assert sink.getvalue() == "café\n\\xff\r\nlast"
+    cli._copy_lines(io.BytesIO(b"nowhere\n"), None)  # drained, not written
+
+    # A character the sink cannot encode is escaped too, rather than failing the write.
+    ascii_sink = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="")
+    cli._copy_lines(io.BytesIO(b"caf\xc3\xa9\nplain\n"), ascii_sink)
+    ascii_sink.flush()
+    assert ascii_sink.buffer.getvalue() == b"caf\\xe9\nplain\n"
+
+
+def test_exit_codes_and_json_merge_across_roots(tmp_path, monkeypatch, capsys) -> None:
+    """Each root's verdict and facts come back to the one command, in the order printed.
+
+    A refutation in one child fails the check as it would in one process, and
+    so does a file another child could not import; a root that passes changes
+    neither. ``--json`` holds the facts of the files that imported, and each
+    is what a check of that file alone writes.
+    """
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    good = _rooted(tmp_path / "good", 1)
+    bad = _rooted(tmp_path / "bad", 1)
+    (bad.parent / f"{ROOTS_HELPER}.py").write_text("VALUE = 3\n", encoding="utf-8")
+    broken = tmp_path / "broken" / "claims.py"
+    broken.parent.mkdir()
+    broken.write_text("def broken(:\n", encoding="utf-8")
+    out_json = tmp_path / "ledger.json"
+    alone = tmp_path / "alone.json"
+    try:
+        assert cli.main(["check", str(good), str(bad), str(broken), "--json", str(out_json)]) == 1
+        printed = capsys.readouterr().out
+        assert printed.count("1 facts: 1 tested") == 1
+        assert printed.count("1 facts: 1 refuted") == 1
+        assert "REFUTED own_helper at claims.py:" in printed
+        assert f"lanky check: {broken} could not be imported" in printed
+        assert "SyntaxError" in printed
+        data = json.loads(out_json.read_text(encoding="utf-8"))
+        assert [(entry["owner"], entry["status"]) for entry in data] == [
+            ("own_helper", "tested"),
+            ("own_helper", "refuted"),
+        ]
+        for file, entry in zip((good, bad), data, strict=True):
+            sys.modules.pop(ROOTS_HELPER, None)
+            cli.main(["check", str(file), "--json", str(alone)])
+            assert json.loads(alone.read_text(encoding="utf-8")) == [entry]
+
+        assert cli.main(["check", str(broken), str(good)]) == 1
+        other = _rooted(tmp_path / "other", 2)
+        assert cli.main(["check", str(good), str(other)]) == 0
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def test_a_child_may_print_what_this_process_cannot_encode(tmp_path, monkeypatch) -> None:
+    """A checked file that prints a character this process's output refuses stops nothing.
+
+    The child writes UTF-8 whatever the locale, and this process's output may
+    be ASCII (``PYTHONIOENCODING=ascii``, say). Writing the line as it came
+    raised ``UnicodeEncodeError`` here, which ended the whole command and left
+    the next root unchecked; the character is escaped instead.
+    """
+    import io
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    accented = tmp_path / "a" / "accented.py"
+    accented.parent.mkdir()
+    accented.write_text("print('caf\\u00e9')\n", encoding="utf-8")
+    good = _rooted(tmp_path / "b", 2)
+    out = io.TextIOWrapper(io.BytesIO(), encoding="ascii", newline="")
+    monkeypatch.setattr(sys, "stdout", out)
+    try:
+        assert cli.main(["check", str(accented), str(good)]) == 0
+        out.flush()
+        printed = out.buffer.getvalue().decode("ascii")
+        assert "caf\\xe9\n" in printed
+        assert printed.count("1 facts: 1 tested") == 1
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+def _sleeper(script: str):
+    """A Python child running ``script``, with both output streams piped here."""
+    import subprocess
+    import sys
+
+    return subprocess.Popen(
+        [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+
+
+def test_a_failing_stderr_does_not_stall_a_child(monkeypatch) -> None:
+    """The thread copying standard error keeps reading when ``sys.stderr`` fails.
+
+    It died at the first failed write, and a child writing more than a pipe
+    holds to its standard error then blocked for good, while this process
+    waited for its standard output to end.
+    """
+    import errno
+    import io
+    import sys
+    import threading
+
+    class Closed:
+        encoding = "utf-8"
+
+        def write(self, text):
+            raise OSError(errno.EPIPE, "Broken pipe")
+
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", Closed())
+    child = _sleeper(
+        "import sys\n"
+        "for i in range(20000):\n"
+        "    print('e' * 60, file=sys.stderr)\n"
+        "print('done')\n"
+    )
+    returned = []
+    follow = threading.Thread(target=lambda: returned.append(cli._follow(child)), daemon=True)
+    follow.start()
+    follow.join(timeout=30)
+    if follow.is_alive():
+        child.kill()
+        follow.join(timeout=10)
+        pytest.fail("the child blocked on its standard error")
+    assert returned == [0]
+    assert out.getvalue() == "done\n"
+
+
+def test_a_copy_that_fails_kills_the_child(monkeypatch) -> None:
+    """When this process cannot copy a child's output, the child is killed and reaped.
+
+    It used to be left checking for no one, with this process waiting on it at
+    the end of ``with``, whose closing of the standard error pipe blocks until
+    the thread reading it sees the child's last line.
+    """
+    import sys
+    import time
+
+    class Closed:
+        encoding = "utf-8"
+
+        def write(self, text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(sys, "stdout", Closed())
+    child = _sleeper("import time\nprint('ready', flush=True)\ntime.sleep(30)\n")
+    started = time.monotonic()
+    with pytest.raises(BrokenPipeError):
+        cli._follow(child)
+    assert time.monotonic() - started < 20
+    assert child.returncode is not None and child.returncode != 0
+
+
+def test_check_path_imports_into_the_calling_process(tmp_path, monkeypatch) -> None:
+    """The API keeps one process, as documented: the command is what keeps roots apart.
+
+    After ``check_path`` of the first directory's file, the second file's
+    ``import helpers`` finds the first directory's module, and its claim is
+    refuted against it.
+    """
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    first = _rooted(tmp_path / "a", 1)
+    second = _rooted(tmp_path / "b", 2)
+    try:
+        assert [fact.status for fact in check_path(first)] == [Status.TESTED]
+        assert [fact.status for fact in check_path(second)] == [Status.REFUTED]
+        assert sys.modules[ROOTS_HELPER].VALUE == 1
+    finally:
+        sys.modules.pop(ROOTS_HELPER, None)
+
+
+# }}}
 
 
 # {{{ what is printed under a REFUTED line

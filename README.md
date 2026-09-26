@@ -90,12 +90,14 @@ sharp.
 
 **Works.**
 
-- `lanky check FILE [--json OUT] [--verbose]`, exit code 1 on any refutation
-  or vacuous claim. Each refuted fact is repeated under the table with its
-  counterexample, its witness and its reason, the three standard provenance
-  keys, read the same way whichever oracle or plugin refuted it; or with
-  `no witness recorded` when it carries none of them. Each axiom is named
-  under the table in a `CITED` line with its citation.
+- `lanky check FILE... [--json OUT] [--verbose]`, exit code 1 on any
+  refutation or vacuous claim. Each refuted fact is repeated under the table
+  with its counterexample, its witness and its reason, the three standard
+  provenance keys, read the same way whichever oracle or plugin refuted it; or
+  with `no witness recorded` when it carries none of them. Each axiom is named
+  under the table in a `CITED` line with its citation. Files from different
+  source roots are checked in a process per root, so two directories that each
+  hold a `helpers.py` are each checked against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
@@ -138,8 +140,10 @@ sharp.
   provenance says `untested` and why.
 - Refusing the ways a statement can silently mean something other than what was
   written: a guard joined with Python's `or`, an `and` or `or` used as a value,
-  a `not` in a guard, and an `if` statement inside a function an annotation
-  calls. The connectives are `&`, `|` and `~`.
+  a `not` in a guard, an `if` statement inside a function an annotation
+  calls, and a symbolic guard over a concrete domain (`if n > 100` in a sum
+  over `Fin[3]`), which a walk of the domain would drop. The connectives are
+  `&`, `|` and `~`.
 - One reading of arithmetic for every oracle. `Nat` means an integer that is
   not negative, and the Lean printer says so: a natural is an `Int` with
   `0 ≤ n` as a hypothesis, and `//` and `%` are `Int.fdiv` and `Int.fmod`,
@@ -152,7 +156,12 @@ sharp.
   stronger oracles are asked whether the hypotheses alone prove `False`. If one
   does, the row reads `proved (vacuous)` and `lanky check` exits 1: the claim
   is true and says nothing, which is usually a mistake in the hypotheses. If
-  none can, a warning says the hypotheses were never satisfied.
+  none can, a warning says the hypotheses were never satisfied. A goal whose
+  own guard never holds, a flipped or off-by-one generator guard, is caught
+  the same way: when no draw gets through the goal quantifier's guard, the
+  stronger oracles are asked whether it is empty wherever the hypotheses hold,
+  and a guard empty only for some values, as `Fin[n]` is at `n = 0`, is never
+  flagged.
 - A statement the annotation already answered is a claim like any other:
   `-> 1 == 2` is `refuted`, `lanky check` prints why under the table, and it
   exits 1 on it.
@@ -177,7 +186,12 @@ sharp.
   oracle proves the hypotheses inconsistent; without one, a vacuous claim
   warns and does not fail the check. A statement over a sort the tester cannot
   draw, such as a family over `Nat`, gets no warning, because no draw reached
-  its hypotheses.
+  its hypotheses. A goal's guard is read the same way, and only the goal's
+  outermost quantifier is: a guard nested deeper in the goal is not examined.
+  A theorem with no parameters and no hypotheses is read one level down (#35):
+  its statement is its goal, and the oracles take that goal's quantifier for
+  the statement's, so its guard is examined as hypotheses are, and a
+  quantifier directly inside it as the goal's.
 - Python's `and` between two propositions in a generator's `if` clause happens
   to produce the conjunction that was written, because of how CPython compiles
   a comprehension filter, so it is not refused. It cannot be told apart from
@@ -203,10 +217,15 @@ sharp.
   so is a `forall` whose guard or refinement no draw passes, and a sum over
   draws of `Nat`. The tester declines such a draw and, when no draw decides the
   statement, the fact stays `ASSUMED` with the reason. Over `Fin` the domain is
-  enumerated and both answers hold. A quantifier over a refined domain `T & p`,
-  which a plugin building terms by hand can write, ranges over the points of
-  `T` where `p` holds, as the Lean printer reads it: enumerated when `T` is,
-  filtered draws when it is sampled.
+  enumerated and both answers hold. The connectives are three-valued: an
+  operand the draws leave open does not decide `&` or `|`, and a false
+  conjunct or a true disjunct settles it however the operands are ordered. A
+  refinement is read as the hypothesis it is, so one that quantifies over
+  `Nat` rejects a draw that breaks it and leaves one it held at undecided. A
+  quantifier over a refined domain `T & p`, which a plugin building terms by
+  hand can write, ranges over the points of `T` where `p` holds, as the Lean
+  printer reads it: enumerated when `T` is, filtered draws when it is
+  sampled.
 
 **Not yet.**
 
@@ -316,7 +335,12 @@ Decorators are inert and registering: `@theorem` returns a callable object that
 runs natively and puts itself in the registry. `lanky check FILE` imports the
 file and reads the registry, keeping the claims defined in that file and none
 from the modules it imports; `lanky check a.py b.py` checks both, each for its
-own. No environment variable changes what the code means.
+own. A process imports a module of one name once, so files whose source roots
+differ (the directories a check puts on `sys.path`: the file's own, and the one
+its package is found from) are checked in child processes, one per root, while
+files that share their roots share a process as they always did. `check_path`,
+the function underneath, imports into the process that calls it. No
+environment variable changes what the code means.
 
 ## Name
 

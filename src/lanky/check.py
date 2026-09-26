@@ -9,6 +9,13 @@ dropped. The result is a ledger that reads like the source file.
 
 A check collects the claims the file itself defines, and none from the modules
 it imports: ``lanky check a.py b.py`` is how two files are checked together.
+
+A check imports into the process that runs it. :func:`check_path` is the check
+of one file in this process, and the modules the file imports stay imported
+after it, so a second file that imports a module of the same name gets the one
+already in ``sys.modules``, wherever it came from. The ``lanky check`` command
+is what keeps files apart: files with different source roots (see
+:func:`source_roots`) are checked in processes of their own.
 """
 
 from __future__ import annotations
@@ -26,14 +33,17 @@ from lanky.ledger import STATUS_STRENGTH, Fact, Ledger, Status
 from lanky.plugins import TRUST_STRENGTH, oracle_availability, registry
 from lanky.prelude import FinType, FnType, Refined
 from lanky.terms import Forall
+from lanky.testing import goal_unreached_reason
 
 __all__ = [
     "check_path",
     "establish",
+    "goal_guard_fact",
     "has_hypotheses",
     "hypotheses_fact",
     "import_path",
     "oracle_lines",
+    "source_roots",
 ]
 
 
@@ -84,6 +94,30 @@ def _package_of(path: Path) -> tuple[str, Path] | None:
     return ".".join(reversed(parts)), directory
 
 
+def source_roots(path: str | Path) -> tuple[Path, ...]:
+    """The directories a check of the file puts on ``sys.path``, resolved.
+
+    They are the file's own directory and, for a file inside a package (see
+    :func:`_package_of`), the directory that package is found from:
+    ``root/pkg/sub/mod.py`` gives ``(root/pkg/sub, root)``, and ``main.py``
+    in ``project`` gives ``(project,)``. :func:`import_path` puts exactly
+    these on ``sys.path`` while the file executes, so they are what an
+    absolute import in the file can find that a check of a file with other
+    roots cannot.
+
+    ``lanky check`` reads them to keep files apart: files with the same roots
+    are checked in one process, and files with different ones each in a
+    process of their own, since a module the first imported would otherwise
+    answer the second's import of the same name.
+    """
+    path = Path(path).resolve()
+    roots = [path.parent]
+    package = _package_of(path)
+    if package is not None:
+        roots.append(package[1])
+    return tuple(dict.fromkeys(roots))
+
+
 def _refuse_a_package_imported_elsewhere(path: Path, package: str, root: Path) -> None:
     """Raise ``ImportError`` if this process holds another package of the same name.
 
@@ -91,8 +125,11 @@ def _refuse_a_package_imported_elsewhere(path: Path, package: str, root: Path) -
     ``sys.path``, so once ``pkg`` (or ``pkg.sub``) has been imported from one
     source tree, a file of another tree's ``pkg`` would have its ``from
     .helpers import ...`` answered by the first tree's modules, and its ledger
-    computed from code it does not contain. That happens in ``lanky check
-    a/pkg/mod.py b/pkg/mod.py``. Every level of the package that is already
+    computed from code it does not contain. That happens when
+    :func:`check_path` is called on ``a/pkg/mod.py`` and then on
+    ``b/pkg/mod.py`` in one process; ``lanky check`` checks the two in
+    processes of their own, since their source roots differ (see
+    :func:`source_roots`). Every level of the package that is already
     imported has to be the directory the file sits under; a package imported
     from that same directory, by an earlier check of the same tree, say, is
     the one the file would get anyway.
@@ -136,6 +173,10 @@ def import_path(path: str | Path) -> Any:
     ``__init__``, as before. A package of the same name already imported
     from another directory is refused with ``ImportError`` rather than
     lent to the file (see :func:`_refuse_a_package_imported_elsewhere`).
+
+    The directories that go on ``sys.path`` are the file's
+    :func:`source_roots`, which is how ``lanky check`` decides which files
+    share a process.
     """
     path = Path(path).resolve()
     if not path.is_file():
@@ -144,14 +185,13 @@ def import_path(path: str | Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot import {path}")
-    directories = [str(path.parent)]
     package = _package_of(path)
     if package is not None:
         _refuse_a_package_imported_elsewhere(path, *package)
         spec = _PackageSpec(spec, package[0])
-        directories.append(str(package[1]))
     module = importlib.util.module_from_spec(spec)
-    added = [entry for entry in dict.fromkeys(directories) if entry not in sys.path]
+    directories = [str(root) for root in source_roots(path)]
+    added = [entry for entry in directories if entry not in sys.path]
     for entry in reversed(added):
         sys.path.insert(0, entry)
     previous = sys.modules.get(name)
@@ -187,7 +227,11 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
 
     Last, a fact whose hypotheses no draw satisfied is examined for vacuity
     (:func:`_examine_vacuity`): a claim that nothing is ever at stake in says
-    nothing, however strongly it is established, and the ledger says so.
+    nothing, however strongly it is established, and the ledger says so. So
+    is a fact whose goal is a universal that got through to no point of its
+    guarded domain at any draw (:func:`_examine_goal_guard`): a goal whose
+    guard never holds says nothing either, whatever the hypotheses do. A fact
+    whose goal quantifies is cross-checked for that reason too.
 
     The oracle that settles a fact, establishing or refuting it, leaves its
     trust class in the provenance as ``trust_class``. A status says what kind
@@ -233,7 +277,7 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             fact = _cross_check(result, gaps, handed=fact, verbose=verbose)
             break
         fact = result
-    return _examine_vacuity(fact, verbose=verbose)
+    return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
 
 
 def _overruled(fact: Fact, sampled: Fact, tester: str) -> Fact:
@@ -279,9 +323,12 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
     likely as a goal copied down wrong: when a stronger oracle shows them
     inconsistent the axiom is ``vacuous`` and the check fails, and otherwise
     it gets the same warning. That asks the stronger oracles about the
-    hypotheses alone, never about the axiom.
+    hypotheses alone, never about the axiom. A goal whose guard no draw got
+    through is examined the same way (:func:`_examine_goal_guard`), and the
+    stronger oracles are asked about that guard alone.
     """
     marks: dict[str, Any] = {}
+    goal: dict[str, Any] = {}
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
@@ -302,6 +349,11 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
             if verbose:
                 print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
             return result.with_status(result.status, trust_class=oracle.trust_class())
+        # A test oracle that does not count the goal's points (a plugin's,
+        # say) records nothing about the guard, and says nothing against it,
+        # so a later one that does is still heard, as for the hypotheses.
+        if not goal:
+            goal = _goal_marks(result.provenance, fact.term)
         if not marks:
             unsatisfied = _never_satisfied(result.provenance)
             untestable = _never_drawn(result.provenance)
@@ -312,9 +364,10 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
                 }
             elif untestable:
                 marks = {"untestable": untestable}
+    marks.update(goal)
     if marks:
         fact = fact.with_status(fact.status, **marks)
-    return _examine_vacuity(fact, verbose=verbose)
+    return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
 
 
 def has_hypotheses(term: Any) -> bool:
@@ -402,19 +455,20 @@ def _cross_check(
     ``fact`` is what the stronger oracle made of ``handed``, the fact as it
     was offered to the oracles, and ``handed`` is what is sampled (``fact``
     itself when it is not given). Only for a fact that carries a semantics
-    note or has hypotheses (see :func:`has_hypotheses`), and only to record
-    what the sampled reading says. The status a stronger oracle gave stands.
+    note, has hypotheses (see :func:`has_hypotheses`) or has a goal that is a
+    universal, and only to record what the sampled reading says. The status a
+    stronger oracle gave stands.
 
     Except after a heuristic. Its answer is worth more than a sample's pass
     and is still not guaranteed, while a counterexample is definite, so a
-    fact a heuristic established is sampled whether or not it has hypotheses
-    or a semantics gap, and a refutation from any oracle of the ``test``
-    class stands in place of the answer (:func:`_overruled`). The fact is
-    sampled once, and what those draws say about its hypotheses is recorded
-    as for any other fact: drawn again to be recorded, a sample could come
-    out otherwise the second time, and a counterexample found only then
-    would only be recorded. Nothing is done for a heuristic's refutation,
-    which a sample cannot overturn.
+    fact a heuristic established is sampled whether or not it has hypotheses,
+    a goal quantifier or a semantics gap, and a refutation from any oracle of
+    the ``test`` class stands in place of the answer (:func:`_overruled`). The
+    fact is sampled once, and what those draws say about its hypotheses and
+    its goal is recorded as for any other fact: drawn again to be recorded, a
+    sample could come out otherwise the second time, and a counterexample
+    found only then would only be recorded. Nothing is done for a heuristic's
+    refutation, which a sample cannot overturn.
 
     Three things are worth recording. A counterexample is the loud one: the
     Python reading is false where a stronger oracle established the statement,
@@ -428,11 +482,22 @@ def _cross_check(
     hypotheses nothing satisfies is valid and says nothing. A test that could
     not draw at all is recorded as ``untestable``, so that the hypotheses are
     still examined.
+
+    A goal that is a universal whose quantifier got through to no point at any
+    draw is recorded alongside whatever else is (:func:`_goal_marks`): a proof
+    of a goal whose guard never holds is valid and says nothing, as a proof
+    from hypotheses nothing satisfies does, and :func:`_examine_goal_guard`
+    examines it.
     """
     if fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
         return fact
     heuristic = fact.is_heuristic
-    if not heuristic and not gaps and not has_hypotheses(fact.term):
+    if (
+        not heuristic
+        and not gaps
+        and not has_hypotheses(fact.term)
+        and _goal_quantifier(fact.term) is None
+    ):
         return fact
     sampled = fact if handed is None else handed
     recorded = None
@@ -485,6 +550,9 @@ def _record_sample(
             semantics_disagreement=f"{tester} refutes this statement under lanky's Python reading",
             semantics_counterexample=counterexample,
         )
+    goal = _goal_marks(result.provenance, fact.term)
+    if verbose and goal.get("goal_unreached"):
+        print(f"  {tester}: {goal['goal_unreached']}")
     unsatisfied = _never_satisfied(result.provenance)
     if unsatisfied:
         if verbose:
@@ -493,17 +561,20 @@ def _record_sample(
             fact.status,
             unsatisfied=unsatisfied,
             unsatisfied_detail=_skipped(result.provenance),
+            **goal,
         )
     untestable = _never_drawn(result.provenance)
     if untestable:
         if verbose:
             print(f"  {tester}: {untestable}")
-        return fact.with_status(fact.status, untestable=untestable)
+        return fact.with_status(fact.status, untestable=untestable, **goal)
     undecided = result.provenance.get("untested")
     if gaps and undecided and result.provenance.get("undecided"):
         if verbose:
             print(f"  {tester} could not run the sampled reading: {undecided}")
-        return fact.with_status(fact.status, semantics_undecided=undecided)
+        return fact.with_status(fact.status, semantics_undecided=undecided, **goal)
+    if goal:
+        return fact.with_status(fact.status, **goal)
     return None
 
 
@@ -546,16 +617,115 @@ def _examine_vacuity(fact: Fact, verbose: bool = False) -> Fact:
     name, result = found
     if verbose:
         print(f"  {name} shows the hypotheses of {fact.owner} inconsistent")
-    evidence = {
-        key: value for key, value in result.provenance.items() if key not in ("path", "line")
-    }
     marks = {} if unsatisfied else {"untestable": untestable}
     return fact.with_status(
         fact.status,
         vacuous=f"the hypotheses are inconsistent: {result.status.value} by {name}",
         vacuous_by=name,
-        vacuous_evidence=evidence,
+        vacuous_evidence=_evidence(result),
         **marks,
+    )
+
+
+def _evidence(result: Fact) -> dict:
+    """What a stronger oracle recorded in showing a fact vacuous, less where it is."""
+    return {
+        key: value for key, value in result.provenance.items() if key not in ("path", "line")
+    }
+
+
+def _goal_quantifier(term: Any) -> Forall | None:
+    """The universal a statement's goal is, or ``None`` when its goal is not one.
+
+    A statement is a :class:`~lanky.terms.Forall` whose binders are its
+    variables and whose guard is its hypotheses, and its goal is the body. When
+    the body is a universal too, as the scan postconditions are, that is the
+    goal's quantifier, and its guard is the one a goal can get wrong without
+    the hypotheses knowing: ``if (p < q) & (p > q)`` holds nowhere, and the
+    goal holds everywhere for that reason alone.
+
+    This reads the term as the oracles read it. A theorem with no parameters
+    and no hypotheses has its goal for its term
+    (:attr:`lanky.theory.Theorem.term`), and every oracle takes that goal's
+    quantifier for the statement's, so the quantifier examined here is the
+    one directly inside it, and the question put to the stronger oracles is
+    about the statement they established (#35).
+    """
+    if isinstance(term, Forall) and isinstance(term.body, Forall):
+        return term.body
+    return None
+
+
+def _goal_marks(provenance: dict, term: Any) -> dict[str, Any]:
+    """What a property test's record says about the goal's guard, if it held nowhere.
+
+    Empty unless the record has ``goal_reached: 0``, which the property-test
+    oracle leaves when the goal's quantifier got through to no point of its
+    guarded domain at any draw the hypotheses admitted. Then ``goal_reached``
+    is kept, and when there were valid draws ``goal_unreached`` says how many,
+    which is the warning ``lanky check`` prints. With no valid draw there is
+    nothing to warn about that the record does not already say, but the
+    question whether the guard is empty is still worth asking (see
+    :func:`_examine_goal_guard`).
+    """
+    if provenance.get("goal_reached") != 0:
+        return {}
+    marks: dict[str, Any] = {"goal_reached": 0}
+    valid = provenance.get("valid") or 0
+    goal = _goal_quantifier(term)
+    if valid and goal is not None:
+        marks["goal_unreached"] = goal_unreached_reason(goal, valid)
+    return marks
+
+
+def _examine_goal_guard(fact: Fact, verbose: bool = False) -> Fact:
+    """Ask whether a fact whose goal's guard no draw got through is vacuous.
+
+    The property tester counts, per draw the hypotheses admit, whether the
+    goal's quantifier got through to a point of its guarded domain. When it
+    never did, the goal held at every draw because its body was never at
+    stake, which is what a flipped or off-by-one guard does. That is evidence
+    and not proof, as it is for the hypotheses (:func:`_examine_vacuity`), so
+    the stronger oracles are asked the definite question: whether the guard is
+    empty for every assignment the hypotheses admit (:func:`goal_guard_fact`).
+    When one of them says yes, the fact is marked ``vacuous``, the ledger shows
+    it, and ``lanky check`` exits 1. When none can, the fact keeps
+    ``goal_unreached`` in its provenance, which ``lanky check`` prints as a
+    warning, when there were valid draws to count.
+
+    A guard that is empty for some assignments and not others is normal:
+    ``Fin[n]`` has no point at ``n = 0``. Only a guard that is empty wherever
+    the hypotheses hold is vacuous, which is why the question is asked for
+    every assignment at once.
+
+    A fact that is refuted or already vacuous, whose goal is not a universal,
+    or whose record says nothing about the goal (a tester that could not run)
+    is returned as it is.
+    """
+    if fact.status is Status.REFUTED or fact.is_vacuous:
+        return fact
+    goal = _goal_quantifier(fact.term)
+    if goal is None or fact.provenance.get("goal_reached") != 0:
+        return fact
+    if "goal_unreached" not in fact.provenance:
+        unreached = _goal_marks(fact.provenance, fact.term).get("goal_unreached")
+        if unreached:
+            fact = fact.with_status(fact.status, goal_unreached=unreached)
+    found = _stronger_than_a_heuristic(goal_guard_fact(fact), verbose=verbose)
+    if found is None:
+        return fact
+    name, result = found
+    if verbose:
+        print(f"  {name} shows the goal's guard of {fact.owner} empty")
+    part = "guard" if goal.guard is not None else "domain"
+    return fact.with_status(
+        fact.status,
+        vacuous=(
+            f"the goal's {part} is empty wherever the hypotheses hold: "
+            f"{result.status.value} by {name}"
+        ),
+        vacuous_by=name,
+        vacuous_evidence=_evidence(result),
     )
 
 
@@ -588,6 +758,42 @@ def hypotheses_fact(fact: Fact) -> Fact:
     )
 
 
+def goal_guard_fact(fact: Fact) -> Fact:
+    """The claim that a fact's goal quantifies over nothing, as a fact of its own.
+
+    The goal is a universal (see :func:`_goal_quantifier`), and the claim is
+    that its guard is empty for every assignment the hypotheses admit:
+    ``∀ outer, hypotheses → ∀ inner ∈ domain, guard → False``. Its term keeps
+    the fact's binders and guard, and the goal's binders and guard, and
+    replaces the goal's body by ``False``, so an oracle that establishes it
+    has shown that the goal's body is never at stake. A guard that is empty
+    only for some outer assignments (``Fin[n]`` at ``n = 0``) does not make
+    the claim true, so it is never flagged. Like :func:`hypotheses_fact`, it
+    has an id and a kind of its own.
+
+    Raises:
+        ValueError: If the fact's goal is not a universal.
+    """
+    goal = _goal_quantifier(fact.term)
+    if goal is None:
+        raise ValueError(f"{fact.id} has no goal quantifier: its goal is not a universal")
+    term = fact.term
+    return Fact(
+        id=f"{fact.id}:goal-guard",
+        kind="goal-guard",
+        statement=(
+            f"the guard of the goal of {fact.owner or fact.id} is empty wherever "
+            "its hypotheses hold"
+        ),
+        term=Forall(term.binders, Forall(goal.binders, False, goal.guard), term.guard),
+        provenance={
+            key: fact.provenance[key] for key in ("path", "line") if key in fact.provenance
+        },
+        where=fact.where,
+        owner=fact.owner,
+    )
+
+
 def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
     """The first decision procedure or kernel that proves the hypotheses inconsistent.
 
@@ -601,7 +807,18 @@ def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None
     hypotheses every attempt fails, so what Lean is asked is its short ladder,
     which for a goal of ``False`` is the five cheap tactics.
     """
-    question = hypotheses_fact(fact)
+    return _stronger_than_a_heuristic(hypotheses_fact(fact), verbose=verbose)
+
+
+def _stronger_than_a_heuristic(question: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
+    """The first decision procedure or kernel that establishes ``question``.
+
+    Returns the oracle's name and the fact it established, or ``None``. This
+    is how a claim of vacuity is settled (:func:`hypotheses_fact`,
+    :func:`goal_guard_fact`): a test is what raised the question, and cannot
+    answer it, and a heuristic's answer is not guaranteed, while a vacuous
+    fact fails the check (see :func:`_inconsistency`).
+    """
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["heuristic"]:
             continue
@@ -700,6 +917,19 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     Only the objects this import registers are considered, and they are
     released from the registry afterwards, so checking several files in one
     process keeps their ledgers apart and does not accumulate them.
+
+    What it does not keep apart is their imports. The file is imported into
+    the calling process, and every check that process runs shares one
+    ``sys.modules``: after ``check_path("a/main.py")`` has imported
+    ``a/helpers.py`` as ``helpers``, ``check_path("b/main.py")`` gets that
+    module for its own ``import helpers``, and its claims are built against
+    the other directory's code without a word. (A relative import is the
+    exception: a package of the same name imported from another directory is
+    refused, see :func:`import_path`.) This function keeps that behavior, as
+    any import in a long-lived process does. The ``lanky check`` command
+    checks files whose source roots differ (see :func:`source_roots`) in
+    processes of their own, and a caller of this function that checks files
+    from several roots needs to do the same.
     """
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
 
