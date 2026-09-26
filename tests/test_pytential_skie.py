@@ -165,6 +165,30 @@ def test_python_runs_the_demo_and_prints_the_five_verdicts() -> None:
     )
 
 
+def test_the_quickstart_shows_what_python_prints() -> None:
+    """The quickstart's run of the demonstration is a real one, line for line.
+
+    It was made where pytential does not import. Where it does, the lines
+    about pytential say something else, and they are left out on both sides.
+    """
+    lines = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
+    start = lines.index("$ uv run python examples/pytential_skie.py")
+    shown = []
+    for line in lines[start + 1 :]:
+        if line.startswith("```"):
+            break
+        shown.append(line)
+    run = subprocess.run(
+        [sys.executable, str(DEMO)], capture_output=True, text=True, cwd=ROOT, timeout=600
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    def without_pytential(block: list[str]) -> list[str]:
+        return [line.rstrip() for line in block if not line.startswith("pytential")]
+
+    assert without_pytential(run.stdout.splitlines()) == without_pytential(shown)
+
+
 def test_lanky_check_decides_each_verdict_under_the_axioms_it_applied() -> None:
     ledger = check_path(DEMO)
     facts = list(ledger)
