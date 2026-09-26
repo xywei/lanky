@@ -7,8 +7,9 @@ subcommand of ``lanky`` without lanky knowing what loopty is.
 
 ``check`` exits 1 when any fact is ``REFUTED`` or vacuous, so it works in CI:
 a refuted fact is a broken claim, and a vacuous one is a claim whose hypotheses
-an oracle has shown inconsistent, which is true and says nothing, while an
-assumed one is a claim nobody got to. Every oracle reads a statement the same
+an oracle has shown inconsistent, or whose goal's guard it has shown empty
+wherever the hypotheses hold, which is true and says nothing, while an assumed
+one is a claim nobody got to. Every oracle reads a statement the same
 way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
 refuted does not depend on whether Lean is installed. What Lean adds is proofs,
 and the proof that a claim is vacuous, which fails a check that without it only
@@ -31,6 +32,8 @@ zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
 status its oracle gave it. A statement whose hypotheses no draw satisfied, and
 that no oracle could show inconsistent, gets a ``WARNING`` line: the claim may
 be vacuous, or its hypotheses may hold only where the sampler does not look.
+So does a statement whose goal is a universal whose guard held at no valid
+draw, when no oracle could show the guard empty.
 And a fact that rests on an id no fact in the ledger has gets an
 ``UNRESOLVED`` line naming it: the id counts as an assumption, and it is either
 written wrong or names a fact of another file, which is in that file's ledger.
@@ -171,24 +174,35 @@ class CheckVerb:
         A fact an oracle showed vacuous gets a ``VACUOUS`` block, and fails the
         check. One whose hypotheses no draw satisfied and no oracle could show
         inconsistent gets a ``WARNING`` line with the tester's reason under it,
-        and does not: the sampler may simply not reach where they hold.
+        and does not: the sampler may simply not reach where they hold. So
+        does one whose goal is a universal whose guard held at no valid draw,
+        when no oracle could show the guard empty: the guard may hold only
+        where the sampler does not look.
         """
         for fact in ledger:
-            unsatisfied = fact.provenance.get("unsatisfied")
-            if not unsatisfied or fact.is_vacuous:
+            if fact.is_vacuous:
                 continue
-            print()
-            print(f"WARNING {fact.owner} at {fact.where}: {unsatisfied}")
-            print("  no oracle could show them inconsistent, so the claim may be vacuous")
-            CheckVerb._print_detail(fact)
+            unsatisfied = fact.provenance.get("unsatisfied")
+            if unsatisfied:
+                print()
+                print(f"WARNING {fact.owner} at {fact.where}: {unsatisfied}")
+                print("  no oracle could show them inconsistent, so the claim may be vacuous")
+                CheckVerb._print_detail(fact)
+            unreached = fact.provenance.get("goal_unreached")
+            if unreached:
+                print()
+                print(f"WARNING {fact.owner} at {fact.where}: {unreached}")
+                print("  no oracle could show it empty, so the goal may be vacuous")
         vacuous = ledger.vacuous()
         for fact in vacuous:
             print()
             print(f"VACUOUS {fact.owner} at {fact.where}: {fact.statement}")
             print(f"  {fact.provenance['vacuous']}, so the goal is never at stake")
-            sampled = fact.provenance.get("unsatisfied") or fact.provenance.get("untestable")
-            if sampled:
-                print(f"  {sampled}")
+            for key in ("unsatisfied", "untestable", "goal_unreached"):
+                sampled = fact.provenance.get(key)
+                if sampled:
+                    print(f"  {sampled}")
+                    break
             CheckVerb._print_detail(fact)
         return bool(vacuous)
 

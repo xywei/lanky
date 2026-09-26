@@ -109,3 +109,36 @@ def test_axioms_are_collected_and_sampled(pytester) -> None:
     result = pytester.runpytest("-v", "-rA")
     result.assert_outcomes(passed=1, failed=1)
     result.stdout.fnmatch_lines(["*test_axioms.py::nicomachus PASSED*", "*counterexample*"])
+
+
+GUARDED = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Fin, Nat
+
+
+@theorem
+def ordered(n: Nat) -> all(a <= b for a in Fin[n] for b in Fin[n] if a <= b):
+    """The guard holds at a = b, whenever n is positive."""
+
+
+@theorem
+def flipped(n: Nat) -> all(a <= b for a in Fin[n] for b in Fin[n] if (a < b) & (a > b)):
+    """The guard holds nowhere, so the goal holds at every draw for no reason."""
+'''
+
+
+def test_a_goal_whose_guard_never_held_is_skipped(pytester) -> None:
+    """A pass of a goal no draw got through the guard of is not evidence either.
+
+    Every draw is valid, and ``flipped`` held at each because its guard held
+    at no point; it is skipped with the guard in the reason, as a theorem
+    whose hypotheses no draw satisfied is.
+    """
+    pytester.makepyfile(test_guarded=GUARDED)
+    result = pytester.runpytest("-v", "-rs")
+    result.assert_outcomes(passed=1, skipped=1)
+    result.stdout.fnmatch_lines(
+        ["*the goal's guard a < b and a > b never held in 200 valid draws: flipped*"]
+    )

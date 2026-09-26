@@ -25,7 +25,15 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from lanky.terms import current_trace, evaluate, render, structurally_equal, truth_value
+from lanky.terms import (
+    Polarity,
+    conjoin,
+    current_trace,
+    evaluate,
+    render,
+    structurally_equal,
+    truth_value,
+)
 
 __all__ = [
     "Bool",
@@ -314,15 +322,34 @@ class Refined(LankyType):
         """Hash the base only; the propositions are terms."""
         return hash(("Refined", self.base, len(self.props)))
 
-    def holds(self, context: dict[str, Any]) -> bool:
+    def holds(self, context: dict[str, Any], sampler: Any = None) -> bool:
         """Whether every refining proposition holds at these values.
 
         A refining proposition is a proposition like any other, so what it
         evaluates to has to be a truth value (:func:`lanky.terms.truth_value`):
         ``Nat & (k + 1)`` refines by nothing, and truthiness used to read it as
         ``k != -1``.
+
+        A refinement restricts what it refines, so it is read as the
+        hypothesis it is, standing ``NEGATIVE`` (:class:`lanky.terms.Polarity`),
+        and a quantifier over a sampled domain in it is answered from
+        ``sampler``'s draws: a draw that breaks a universal makes the
+        refinement false, and a universal that held at every draw is
+        :class:`~lanky.terms.Undecided`, since that is not a certain ``True``.
+        Without a sampler such a quantifier cannot be answered at all, and
+        :exc:`ValueError` says so. The propositions are one conjunction, read
+        three-valued (:func:`lanky.terms.conjoin`).
+
+        Raises:
+            Undecided: If no proposition is false and one has no answer from
+                the draws.
+            ValueError: If a proposition quantifies over a domain that is not
+                enumerated and no sampler was given.
         """
-        return all(truth_value(evaluate(p, context), p) for p in self.props)
+        return conjoin(
+            lambda p=p: truth_value(evaluate(p, context, sampler, Polarity.NEGATIVE), p)
+            for p in self.props
+        )
 
 
 def exactness_of(obj: Any) -> str:
