@@ -1652,6 +1652,235 @@ def test_an_unnamed_draw_of_a_refined_sort_honours_the_refinement() -> None:
 # }}}
 
 
+# {{{ a guarded universal over a sampled domain
+
+
+GUARD_PROBE = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def never_reached(n: Nat) -> all(k < 0 for k in Nat if k > 100):\n"
+    '    """False at k = 101, and no draw of k gets past the guard."""\n'
+)
+
+
+def test_a_guard_no_draw_passes_leaves_the_fact_assumed(tmp_path, oracles, capsys) -> None:
+    """``never_reached`` is false at ``k = 101``, and no draw of ``k`` gets that far.
+
+    Every draw of ``k`` failed the guard, so the ``forall`` held at no point,
+    and the fact was reported ``tested`` over 200 valid draws of which not one
+    evaluated the body. It is ``assumed`` now, with the reason, and the check
+    exits 0, because nothing refuted it either.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, GUARD_PROBE, "guard_probe.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.ASSUMED
+    assert fact.decided_by is None
+    assert fact.provenance["valid"] == 0
+    assert "no draw of Nat passed the guard k > 100" in fact.provenance["untested"]
+    assert cli.main(["check", path]) == 0
+    assert "assumed" in capsys.readouterr().out
+
+
+def test_a_guarded_universal_over_an_index_type_is_unchanged() -> None:
+    """Over ``Fin`` the guarded domain is enumerated, so both answers stand.
+
+    A guard nothing passes leaves a domain that really is empty, and the
+    vacuous pass is a pass; a guard some point passes is a statement about
+    those points, and a false one is refuted at one of them.
+    """
+    n, k = Var("n"), Var("k")
+    empty = Forall(((n, Nat),), Forall(((k, Fin[n]),), k < 0, k > 100))
+    assert _establish("empty", empty).status is Status.TESTED
+    false = Forall(((n, Nat),), Forall(((k, Fin[n + 3]),), k < 2, k > 0))
+    fact = _establish("false", false)
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["k"] == 2
+
+
+def test_the_guard_and_the_refinement_spellings_agree() -> None:
+    """``k`` in ``Nat`` where ``p`` and ``k`` in ``Nat & p`` are one statement.
+
+    The Lean printer reads both as ``p →``, and the tester read the guard as
+    a pass where it declined the refinement. They agree now: undecided when
+    no draw gets through, tested when some do and the body holds, refuted at
+    a draw that gets through when it does not.
+    """
+    n, k = Var("n"), Var("k")
+
+    def both(guard, body):
+        return (
+            Forall(((n, Nat),), Forall(((k, Nat),), body, guard)),
+            Forall(((n, Nat),), Forall(((k, Nat & guard),), body)),
+        )
+
+    for claim in both(k > 100, k < 0):
+        fact = _establish("far", claim)
+        assert fact.status is Status.ASSUMED
+        assert fact.provenance["valid"] == 0
+    for claim in both(k == 3, k == 3):
+        assert _establish("three", claim).status is Status.TESTED
+    for claim in both(k == 3, k == 4):
+        fact = _establish("four", claim)
+        assert fact.status is Status.REFUTED
+        assert fact.provenance["counterexample"]["k"] == 3
+
+
+def test_a_hypothesis_whose_guard_no_draw_passes_admits_no_draw() -> None:
+    """``h: all(k < m for k in Nat if k > 100)`` is false for every ``m``.
+
+    So the statement is vacuously true, and it used to be refuted: the guard
+    rejected every draw of ``k``, the hypothesis read as ``True``, and the goal
+    ``m < 0`` failed at a draw the statement excludes.
+    """
+
+    @theorem
+    def beyond(m: Nat, h: all(k < m for k in Nat if k > 100)) -> m < 0:
+        """True vacuously: every natural above 100 bounds no natural m."""
+
+    fact = TestOracle().establish(beyond.fact())
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["valid"] == 0
+    assert "passed the guard" in fact.provenance["untested"]
+
+
+# }}}
+
+
+# {{{ where a sampled universal stands
+
+
+POLARITY = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def negated(n: Nat) -> ~all(k < 100 for k in Nat):\n"
+    '    """True: not every natural is below 100 (k = 100 is not)."""\n\n\n'
+    "@theorem\n"
+    "def assumed_bound(m: Nat, h: all(k < m for k in Nat)) -> m < 0:\n"
+    '    """True vacuously: no natural m bounds every natural."""\n\n\n'
+    "@theorem\n"
+    "def summed(n: Nat) -> sum(1 for k in Nat) < 3:\n"
+    '    """Not a statement about a finite sum at all."""\n'
+)
+
+
+def test_a_sampled_universal_that_is_not_asserted_is_never_refuted(
+    tmp_path, oracles, capsys
+) -> None:
+    """A pass over draws is evidence only where the statement asserts the universal.
+
+    Under a negation it turned into a refutation of a true statement, in a
+    hypothesis it admitted a draw the statement excludes, and a sum over
+    draws of ``Nat`` was read as a finite sum; all three were ``refuted``, at
+    counterexamples that do not replay. They are ``assumed`` now, each with
+    the reason, and the check exits 0.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, POLARITY, "polarity.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    for fact in facts.values():
+        assert fact.status is Status.ASSUMED, fact.owner
+        assert fact.provenance["valid"] == 0
+    assert "assumes or denies it" in facts["negated"].provenance["untested"]
+    assert "assumes or denies it" in facts["assumed_bound"].provenance["untested"]
+    assert "sum over draws is not the sum" in facts["summed"].provenance["untested"]
+    assert cli.main(["check", path]) == 0
+    assert "REFUTED" not in capsys.readouterr().out
+
+
+def test_a_sampled_universal_in_a_goal_is_still_refuted() -> None:
+    """A counterexample is real wherever it is drawn: ``k < 3`` fails at ``k = 3``."""
+
+    @theorem
+    def below_three(n: Nat) -> all(k < 3 for k in Nat):
+        """False: 3 is a natural."""
+
+    fact = TestOracle().establish(below_three.fact())
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["k"] >= 3
+
+    @theorem
+    def denied(n: Nat) -> ~~all(k < 3 for k in Nat):
+        """The same claim under two negations, which is where it started."""
+
+    assert TestOracle().establish(denied.fact()).status is Status.REFUTED
+
+
+def test_a_sampled_universal_used_as_a_value_is_undecided() -> None:
+    """Compared with a truth value, or counted by a sum, a pass over draws is a value.
+
+    ``all(k < 100 for k in Nat) == False`` is true, and it was refuted
+    because four draws made the universal ``True``; a sum counting the points
+    of ``Fin[n + 1]`` at which the same universal holds is ``0``, and it was
+    refuted at ``n + 1``. A guard that is the same universal is its
+    antecedent, and ``all(i < 0 for i in Fin[n + 1] if ...)`` is vacuously
+    true.
+    """
+
+    @theorem
+    def compared(n: Nat) -> all(k < 100 for k in Nat) == False:  # noqa: E712
+        """True: some natural is not below 100."""
+
+    @theorem
+    def counted(n: Nat) -> sum(1 for i in Fin[n + 1] if all(k < 100 for k in Nat)) == 0:
+        """True: the guard is false, so nothing is counted."""
+
+    @theorem
+    def guarded(n: Nat) -> all(i < 0 for i in Fin[n + 1] if all(k < 100 for k in Nat)):
+        """True vacuously: the guard is false."""
+
+    for claim in (compared, counted, guarded):
+        fact = TestOracle().establish(claim.fact())
+        assert fact.status is Status.ASSUMED, claim.__name__
+        assert fact.provenance["valid"] == 0
+
+
+def test_a_quantified_definition_over_a_sampled_domain_is_left_to_the_filter() -> None:
+    """``h: all(f(k) == 0 for k in Nat)`` has no points to assign at.
+
+    The assignment pass walked it without a sampler, which raised "cannot
+    enumerate the binder domain" and ended the test. It is a hypothesis the
+    filter reads now, and a pass of it over draws admits no draw.
+    """
+    from lanky.testing import check
+
+    f, k, n = Var("f"), Var("k"), Var("n")
+    definition = Forall(((k, Nat),), f(k) == 0)
+    report = check([("n", Nat), ("f", Fn[Fin[n], Nat])], [definition], f(0) == 0, samples=20)
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided > 0
+
+
+def test_an_existential_whose_enumerated_binders_are_empty_is_refuted() -> None:
+    """``any(k >= 0 for i in Fin[n] for k in Nat)`` is false at ``n = 0``.
+
+    No point of ``Fin[0]`` means no point of the domain, so the walk never
+    drew a ``k`` and its ``False`` is exact. It used to be undecided because a
+    binder domain was sampled, and the statement was ``tested`` on the draws
+    with ``n > 0``.
+    """
+
+    @theorem
+    def somewhere(n: Nat) -> any(k >= 0 for i in Fin[n] for k in Nat):
+        """False at n = 0, where there is no i."""
+
+    fact = TestOracle().establish(somewhere.fact())
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"] == {"n": 0}
+    assert fact.provenance["reason"].endswith(
+        "every point was tried, because the enumerated binders before the first "
+        "sampled one have no point"
+    )
+
+
+# }}}
+
+
 # {{{ a later binder's domain names an earlier binder
 
 

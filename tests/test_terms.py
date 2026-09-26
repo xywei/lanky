@@ -13,6 +13,7 @@ from lanky.terms import (
     Exists,
     Forall,
     LankyEvaluationMapper,
+    Polarity,
     Scope,
     Sum,
     SymbolicBoolError,
@@ -456,6 +457,121 @@ def test_free_variables_read_a_later_domain_with_the_earlier_binders_bound() -> 
     # a binder's own domain is evaluated before the binder is bound
     assert free_variables(Forall(((i, Fin[i]),), i > 0)) == {"i"}
     assert free_variables(Forall(((i, Fin[n]), (j, Fin[j])), j < n)) == {"n", "j"}
+
+
+# }}}
+
+
+# {{{ where a sampled quantifier stands
+
+
+def _sampler(seed: int = 0):
+    """A sampler of the tester's own, drawing naturals up to five."""
+    return sort_sampler(random.Random(seed), {})
+
+
+def test_a_sampled_forall_is_confirmed_only_where_it_is_asserted() -> None:
+    """``all(k < 100 for k in Nat)`` holds at every draw, and is false.
+
+    Standing where the statement asserts it, that is evidence, the ``TESTED``
+    kind; standing anywhere else the ``True`` would be used as a certainty,
+    and evaluation declines. A draw that breaks it is a counterexample
+    wherever it stands, so ``k < 3`` is ``False`` in every position.
+    """
+    k = Var("k")
+    held = Forall(((k, Nat),), k < 100)
+    broken = Forall(((k, Nat),), k < 3)
+    assert evaluate(held, {}, _sampler()) is True
+    assert evaluate(held, {}, _sampler(), Polarity.POSITIVE) is True
+    for polarity in (Polarity.NEGATIVE, Polarity.MIXED):
+        with pytest.raises(Undecided, match="evidence that it holds and not proof"):
+            evaluate(held, {}, _sampler(), polarity)
+        assert evaluate(broken, {}, _sampler(), polarity) is False
+    # under a negation, and on either side of a comparison between propositions
+    with pytest.raises(Undecided, match="assumes or denies it"):
+        evaluate(~held, {}, _sampler())
+    with pytest.raises(Undecided, match="used as a value"):
+        evaluate(held == True, {}, _sampler())  # noqa: E712 - a proposition, not a bool
+    assert evaluate(~broken, {}, _sampler()) is True
+    # two negations put it back where it is asserted
+    assert evaluate(~~held, {}, _sampler()) is True
+    assert evaluate(~~broken, {}, _sampler()) is False
+
+
+def test_a_universal_reads_its_guard_and_refinements_as_its_antecedent() -> None:
+    """A universal's guard and refinements stand opposite to it; an existential's with it.
+
+    ``all(i < 0 for i in Fin[3] if all(k < 100 for k in Nat))`` is true,
+    because the guard is false, and it used to be refuted at ``i = 0`` on the
+    strength of four draws of ``k``. As a refinement of the binder domain the
+    same guard reads the same way. An existential's guard is a conjunct of
+    what it claims, so where the existential is asserted a pass is evidence
+    for it.
+    """
+    i, k = Var("i"), Var("k")
+    held = Forall(((k, Nat),), k < 100)
+    guarded = Forall(((i, Fin[3]),), i < 0, held)
+    refined = Forall(((i, Fin[3] & held),), i < 0)
+    for claim in (guarded, refined):
+        with pytest.raises(Undecided, match="assumes or denies it"):
+            evaluate(claim, {}, _sampler())
+    assert evaluate(Exists(((i, Fin[3]),), i == 0, held), {}, _sampler()) is True
+    assert evaluate(Exists(((i, Fin[3] & held),), i == 0), {}, _sampler()) is True
+    # a guard a draw refutes is false for certain, and the universal is vacuous
+    broken = Forall(((k, Nat),), k < 3)
+    assert evaluate(Forall(((i, Fin[3]),), i < 0, broken), {}, _sampler()) is True
+
+
+def test_a_sum_over_a_sampled_domain_is_undecided() -> None:
+    """Four draws of ``Nat`` are not ``Nat``, and their sum is not the sum.
+
+    A sampled universal inside a sum is used as a value, so it declines too,
+    and a sum over an enumerated domain is still added up.
+    """
+    i, k = Var("i"), Var("k")
+    with pytest.raises(Undecided, match="sum over draws is not the sum"):
+        evaluate(Sum(((k, Nat),), 1), {}, _sampler())
+    with pytest.raises(Undecided, match="sum over draws is not the sum"):
+        evaluate(Sum(((i, Fin[3]), (k, Nat)), k), {}, _sampler())
+    with pytest.raises(Undecided, match="used as a value"):
+        evaluate(Sum(((i, Fin[3]),), 1, Forall(((k, Nat),), k < 100)), {}, _sampler())
+    assert evaluate(Sum(((i, Fin[3]),), 1, Forall(((k, Nat),), k < 3)), {}, _sampler()) == 0
+    assert evaluate(Sum(((i, Fin[4]),), i), {}, _sampler()) == 6
+
+
+def test_a_guard_that_rejects_every_draw_leaves_a_universal_undecided() -> None:
+    """``all(k < 0 for k in Nat if k > 100)`` held at no draw, because none passed the guard.
+
+    It used to answer ``True``, a vacuous pass over draws that says nothing
+    about the guarded domain; the refinement spelling of the same statement
+    was already declined. Over an enumerated domain the guarded domain really
+    is empty, and the vacuous ``True`` stands.
+    """
+    k, n = Var("k"), Var("n")
+    with pytest.raises(Undecided, match="no draw of Nat passed the guard k > 100"):
+        evaluate(Forall(((k, Nat),), k < 0, k > 100), {}, _sampler())
+    with pytest.raises(Undecided, match="satisfied its refinement"):
+        evaluate(Forall(((k, Nat & (k > 100)),), k < 0), {}, _sampler())
+    assert evaluate(Forall(((k, Fin[n]),), k < 0, k > 100), {"n": 5}, _sampler()) is True
+
+
+def test_a_walk_that_never_draws_is_exhaustive() -> None:
+    """Over ``i in Fin[n], k in Nat`` at ``n = 0`` nothing is drawn, and the answer is exact.
+
+    The first binder has no point, so the domain is empty whatever ``Nat``
+    would have given: the universal is vacuously true, the existential false,
+    and the sum zero. A walk that drew from ``Nat`` is still the sampled kind.
+    """
+    i, k, n = Var("i"), Var("k"), Var("n")
+    binders_ = ((i, Fin[n]), (k, Nat & (k > 100)))
+    assert evaluate(Forall(binders_, k < 0), {"n": 0}, _sampler()) is True
+    assert evaluate(~Forall(((i, Fin[n]), (k, Nat)), k < 100), {"n": 0}, _sampler()) is False
+    assert evaluate(Exists(((i, Fin[n]), (k, Nat)), k >= 0), {"n": 0}, _sampler()) is False
+    assert evaluate(Sum(((i, Fin[n]), (k, Nat)), k), {"n": 0}, _sampler()) == 0
+    with pytest.raises(Undecided, match="satisfied its refinement"):
+        evaluate(Forall(binders_, k < 0), {"n": 2}, _sampler())
+    with pytest.raises(Undecided, match="no witness"):
+        evaluate(Exists(((i, Fin[n]), (k, Nat)), k > 100), {"n": 2}, _sampler())
 
 
 # }}}

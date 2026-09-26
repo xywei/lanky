@@ -247,9 +247,11 @@ def _never_satisfied(provenance: dict) -> str | None:
     """What a property test's record says about the hypotheses, if it is that none held.
 
     The record is the one :class:`~lanky.oracles.test.TestOracle` leaves when
-    no draw was valid. A draw the goal could not be decided at (an existential
-    no draw witnessed, a division by zero) got past the hypotheses, so a record
-    with any such draw says nothing against them. Neither does a draw of a sort
+    no draw was valid. A draw the statement could not be decided at (an
+    existential no draw witnessed, a division by zero, a hypothesis whose
+    sampled universal held at every draw, which admits no draw for certain)
+    did not find the hypotheses false, so a record with any such draw says
+    nothing against them. Neither does a draw of a sort
     the tester has no sampler for, which never reached them (see
     :func:`_never_drawn`).
     """

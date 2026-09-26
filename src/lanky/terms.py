@@ -36,6 +36,7 @@ from __future__ import annotations
 import builtins
 import dataclasses
 import dis
+import enum
 import functools
 import inspect
 import itertools
@@ -60,6 +61,7 @@ __all__ = [
     "LogicalAnd",
     "LogicalNot",
     "LogicalOr",
+    "Polarity",
     "Scope",
     "Subscript",
     "Sum",
@@ -69,7 +71,6 @@ __all__ = [
     "binder_assignments",
     "binders",
     "conjuncts",
-    "decline_empty_walk",
     "evaluate",
     "evaluate_annotations",
     "exists",
@@ -102,7 +103,48 @@ class Undecided(Exception):
     about whether one exists. Answering ``False`` there would turn a true
     statement into a counterexample, so evaluation declines instead, and the
     property tester drops the draw rather than counting it as evidence.
+
+    A universal over a sampled domain is the mirror image. A draw that breaks
+    it is a real counterexample, but a pass over a handful of draws is only
+    evidence that it holds. That is what ``TESTED`` means where the statement
+    asserts the universal, and nothing anywhere else: under a negation, in a
+    hypothesis or a guard, or inside a sum, a ``True`` would be used as a
+    certainty, so evaluation declines there (see :class:`Polarity`), and it
+    declines as well when no draw reached the universal's guarded domain at
+    all. A sum over a sampled domain declines wherever it stands, because the
+    draws are not the domain.
     """
+
+
+class Polarity(enum.Enum):
+    """Where a proposition stands in the statement being evaluated.
+
+    What a sampled answer is worth depends on where it is read. A universal
+    over a sampled domain that breaks at a draw is false, wherever it stands;
+    one that holds at every draw has only been seen to hold, and that is
+    evidence, which is what ``TESTED`` means, only where the statement asserts
+    it.
+
+    ``POSITIVE`` is where the statement asserts the proposition: the goal, an
+    operand of a conjunction or a disjunction that stands there, the body of a
+    quantifier that does, and the guard and the refinements of an existential
+    that does, which are conjuncts of what it claims. ``NEGATIVE`` is where
+    the statement assumes or denies it: a hypothesis, the operand of a
+    negation, and the guard and the refinements of a universal, which are the
+    antecedent of what it claims. A ``True`` there counts against the
+    statement, or lets a draw into the test, so it has to be certain.
+    ``MIXED`` is both at once: a proposition whose truth value is used as a
+    value, as an operand of a comparison (``p == q`` between propositions
+    reads both ways), an arithmetic operation, a call or a sum.
+    """
+
+    POSITIVE = 1
+    NEGATIVE = -1
+    MIXED = 0
+
+    def flipped(self) -> Polarity:
+        """Where the operand of a negation that stands here stands."""
+        return Polarity(-self.value)
 
 
 # {{{ operator-overloading mixins
@@ -809,14 +851,39 @@ def _base_domain(domain: Any) -> Any:
     return domain
 
 
-def _sampled_refinements(binder_list: Sequence[tuple[Var, Any]]) -> list[Any]:
-    """The binder domains that refine a domain the evaluator samples."""
-    return [
-        domain
-        for _var, domain in binder_list
-        if isinstance(domain, _refined_type())
-        and not LankyEvaluationMapper.is_exhaustive(domain)
-    ]
+class _Walk:
+    """What one walk over a quantifier's binders met.
+
+    ``sampled`` lists the domains the walk drew points from rather than
+    enumerating them, each once, in the order they were met. ``visited``
+    counts the assignments the refinements admitted, and ``reached`` the ones
+    the guard admitted as well.
+
+    Whether a domain was drawn from is recorded as the walk goes rather than
+    read off the binders, because a walk can end before it gets to a sampled
+    binder: over ``i in Fin[n], k in Nat`` at ``n = 0`` the first binder has
+    no point, ``Nat`` is never drawn from, and the domain is empty rather than
+    unexplored, so the quantifier is decided over it.
+    """
+
+    def __init__(self) -> None:
+        self.sampled: list[Any] = []
+        self.visited = 0
+        self.reached = 0
+
+    def drew(self, domain: Any) -> None:
+        """Record that points were drawn from ``domain``."""
+        if not any(seen is domain for seen in self.sampled):
+            self.sampled.append(domain)
+
+    def names(self) -> str:
+        """The sampled domains, as a reason names them."""
+        return ", ".join(str(domain) for domain in self.sampled)
+
+
+#: The nodes that say where their operands stand (see :class:`Polarity`). Every
+#: other node uses the values below it as values.
+_POLAR = (prim.LogicalAnd, prim.LogicalOr, prim.LogicalNot, Forall, Exists)
 
 
 class LankyEvaluationMapper(_PymbolicEvaluationMapper):
@@ -834,6 +901,19 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     survives that: a ``forall`` that fails at a drawn point really is false
     there, but an ``exists`` that finds no witness among four draws has learned
     nothing, so it declines rather than answering ``False``.
+
+    The other answer of a ``forall``, ``True`` because every draw held, is
+    evidence and not proof, and what evidence is worth depends on where it is
+    read. The mapper carries the :class:`Polarity` of the node it evaluates:
+    the connectives and the quantifiers say where their operands stand, and
+    any other node uses the values below it as values, so a proposition under
+    it stands both ways. A sampled ``forall`` answers ``True`` only where it
+    stands ``POSITIVE``, where the statement asserts it and a pass is what
+    ``TESTED`` means; anywhere else the ``True`` would be used as a certainty,
+    and it declines. It declines as well when no draw reached its guarded
+    domain, because a ``forall`` that held at no point was not seen to hold.
+    A sum over a sampled domain declines wherever it stands: draws are not the
+    domain, and their sum is not the sum.
 
     A refined domain ``T & p`` (:class:`lanky.prelude.Refined`) has the points
     of ``T`` at which ``p`` holds. ``p`` talks about the binder (``k > 0`` for
@@ -855,10 +935,39 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         self,
         context: dict[str, Any],
         sampler: Callable[[Any], Iterable[Any]] | None = None,
+        polarity: Polarity = Polarity.POSITIVE,
     ) -> None:
         super().__init__(context)
         self.context: dict[str, Any] = context
         self.sampler = sampler
+        #: Where the node being evaluated stands in the statement.
+        self.polarity = polarity
+
+    def rec(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
+        """Evaluate ``expr``, where the node that asked for it puts it.
+
+        A connective or a quantifier keeps the polarity it is given and says
+        where its own operands stand. Any other node, a comparison, an
+        arithmetic operation, a call or a sum, uses the values below it as they
+        are, so what is below it is evaluated standing ``MIXED``.
+        """
+        if (
+            self.polarity is Polarity.MIXED
+            or isinstance(expr, _POLAR)
+            or not isinstance(expr, prim.ExpressionNode)
+        ):
+            return super().rec(expr, *args, **kwargs)
+        return self._at(Polarity.MIXED, expr)
+
+    __call__ = rec
+
+    def _at(self, polarity: Polarity, expr: Any) -> Any:
+        """Evaluate ``expr`` standing at ``polarity``."""
+        saved, self.polarity = self.polarity, polarity
+        try:
+            return self.rec(expr)
+        finally:
+            self.polarity = saved
 
     @staticmethod
     def is_exhaustive(domain: Any) -> bool:
@@ -888,20 +997,27 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
             return self.sampler(base)
         raise ValueError(f"cannot enumerate the binder domain {domain!r}")
 
-    def _admits(self, domain: Any) -> bool:
+    def _admits(self, domain: Any, polarity: Polarity) -> bool:
         """Whether the point just bound is a point of ``domain``.
 
         Only a refinement can say no. Its propositions are read under the
         current assignment, the binder included, the innermost refinement
-        first, so ``Nat & (k > 0) & (10 // k > 1)`` never divides by zero. A
-        proposition that cannot be answered raises, as a guard does, and the
-        caller decides what that means (the property tester drops the draw).
+        first, so ``Nat & (k > 0) & (10 // k > 1)`` never divides by zero, and
+        standing at ``polarity``. A proposition that cannot be answered
+        raises, as a guard does, and the caller decides what that means (the
+        property tester drops the draw).
         """
         if not isinstance(domain, _refined_type()):
             return True
-        return self._admits(domain.base) and all(self._truth(p) for p in domain.props)
+        return self._admits(domain.base, polarity) and all(
+            self._truth_at(polarity, p) for p in domain.props
+        )
 
-    def assignments(self, binder_list: Sequence[tuple[Var, Any]]) -> Iterator[None]:
+    def assignments(
+        self,
+        binder_list: Sequence[tuple[Var, Any]],
+        refinements: Polarity | None = None,
+    ) -> Iterator[None]:
         """Bind every binder in turn, yielding once per assignment.
 
         The restoration is in a ``finally`` because every consumer here
@@ -916,32 +1032,97 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
 
         A point a refined domain does not admit (:meth:`_admits`) is bound,
         judged and skipped, so no assignment yielded here is outside the
-        domain its binder declares.
+        domain its binder declares. The refinements stand at ``refinements``,
+        by default where a universal standing here puts them, opposite to it.
         """
+        if refinements is None:
+            refinements = self.polarity.flipped()
+        return self._walk(list(binder_list), refinements, _Walk())
+
+    def _walk(
+        self,
+        binder_list: Sequence[tuple[Var, Any]],
+        refinements: Polarity,
+        walk: _Walk,
+    ) -> Iterator[None]:
+        """The walk :meth:`assignments` describes, recording what it drew in ``walk``."""
         if not binder_list:
             yield None
             return
         (var, domain), rest = binder_list[0], binder_list[1:]
         saved = self.context.get(var.name, _UNSET)
         try:
-            for point in self._points(domain):
+            points = self._points(domain)
+            if not self.is_exhaustive(domain):
+                walk.drew(domain)
+            for point in points:
                 self.context[var.name] = point
-                if not self._admits(domain):
+                if not self._admits(domain, refinements):
                     continue
-                yield from self.assignments(rest)
+                yield from self._walk(rest, refinements, walk)
         finally:
             if saved is _UNSET:
                 self.context.pop(var.name, None)
             else:
                 self.context[var.name] = saved
 
-    def _holds(self, expr: Any) -> bool:
-        """Whether a guard holds under the current assignment."""
-        return expr is None or self._truth(expr)
+    def guarded_assignments(self, expr: Forall | Exists) -> Iterator[None]:
+        """Bind a quantifier's binders at each point of its guarded domain.
+
+        The points are the assignments :meth:`assignments` yields at which the
+        guard holds too. A universal's refinements and guard are the
+        antecedent of what it claims, and stand opposite to it; an
+        existential's are conjuncts of it, and stand where it does. The caller
+        evaluates the body at each point and stops at the answer it is looking
+        for, a counterexample to a universal or a witness to an existential,
+        which closes the walk.
+
+        A walk that runs to its end is where sampling can leave the answer
+        open, and that is settled here, after the last point. When the walk
+        drew from no sampled domain it was exhaustive, and the caller's answer
+        stands: no counterexample, or no witness, anywhere in the domain.
+
+        Raises:
+            Undecided: If the walk drew from a sampled domain and the answer
+                the caller would give is not one: an existential that found
+                no witness among draws; a universal that reached no point of
+                its guarded domain, because the guard or a refinement rejected
+                every draw; and a universal that held at every point it
+                reached but does not stand ``POSITIVE``, so that its ``True``
+                would be used as a certainty (see :class:`Polarity`).
+        """
+        universal = isinstance(expr, Forall)
+        antecedent = self.polarity.flipped() if universal else self.polarity
+        walk = _Walk()
+        with closing(self._walk(list(expr.binders), antecedent, walk)) as points:
+            for _ in points:
+                walk.visited += 1
+                if not self._holds(expr.guard, antecedent):
+                    continue
+                walk.reached += 1
+                yield None
+        if not walk.sampled:
+            return
+        if universal:
+            _decline_sampled_pass(expr, walk, self.polarity)
+            return
+        raise Undecided(
+            f"no witness was drawn for {render(expr)}, and {walk.names()} is "
+            "sampled rather than enumerated, so the statement is undecided "
+            "here rather than false"
+        )
+
+    def _holds(self, expr: Any, polarity: Polarity) -> bool:
+        """Whether a guard holds under the current assignment, standing at ``polarity``."""
+        return expr is None or self._truth_at(polarity, expr)
 
     def _truth(self, expr: Any) -> bool:
         """Evaluate a proposition, refusing a value that is not a truth value."""
         return truth_value(self.rec(expr), expr)
+
+    def _truth_at(self, polarity: Polarity, expr: Any) -> bool:
+        """Evaluate a proposition standing at ``polarity``, as :meth:`_truth` does."""
+        return truth_value(self._at(polarity, expr), expr)
 
     def map_logical_and(self, expr: prim.LogicalAnd) -> bool:
         """Every operand, left to right, stopping at the first false one."""
@@ -952,15 +1133,17 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         return any(self._truth(child) for child in expr.children)
 
     def map_logical_not(self, expr: prim.LogicalNot) -> bool:
-        """The negation of the operand."""
-        return not self._truth(expr.child)
+        """The negation of the operand, which stands opposite to it."""
+        return not self._truth_at(self.polarity.flipped(), expr.child)
 
     def map_forall(self, expr: Forall) -> Any:
         """True when the body holds at every point of the guarded domain.
 
-        Over a sampled domain a ``True`` is evidence rather than proof, which is
-        exactly what the ``TESTED`` status means; a ``False`` is a real
-        counterexample either way, so nothing here has to be held back.
+        A ``False`` is a real counterexample over any domain. Over a sampled
+        domain a ``True`` is evidence rather than proof, which is exactly what
+        the ``TESTED`` status means where the statement asserts the ``forall``
+        and nothing anywhere else (:meth:`guarded_assignments` declines it
+        there).
 
         The walk is closed explicitly on the way out. Leaving it to the
         collector would work in CPython and rest on refcounting for something
@@ -968,41 +1151,27 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         and the binding this quantifier replaced is still the inner point.
 
         Raises:
-            Undecided: If the walk reached no point because a refinement of a
-                sampled domain rejected every draw (:func:`decline_empty_walk`).
+            Undecided: If a sampled walk met no counterexample and that is not
+                an answer here (:meth:`guarded_assignments`).
         """
-        visited = 0
-        with closing(self.assignments(expr.binders)) as walk:
-            for _ in walk:
-                visited += 1
-                if self._holds(expr.guard) and not self._truth(expr.body):
+        with closing(self.guarded_assignments(expr)) as points:
+            for _ in points:
+                if not self._truth(expr.body):
                     return False
-        if not visited:
-            decline_empty_walk(expr)
         return True
 
     def map_exists(self, expr: Exists) -> Any:
         """True when the body holds somewhere in the guarded domain.
 
         Raises:
-            Undecided: If no witness turned up and at least one binder domain
-                was sampled rather than enumerated, so "no witness among these
-                points" is not "no witness".
+            Undecided: If no witness turned up and a binder domain was sampled
+                rather than enumerated, so "no witness among these points" is
+                not "no witness" (:meth:`guarded_assignments`).
         """
-        with closing(self.assignments(expr.binders)) as walk:
-            for _ in walk:
-                if self._holds(expr.guard) and self._truth(expr.body):
+        with closing(self.guarded_assignments(expr)) as points:
+            for _ in points:
+                if self._truth(expr.body):
                     return True
-        sampled = [
-            domain for _var, domain in expr.binders if not self.is_exhaustive(domain)
-        ]
-        if sampled:
-            names = ", ".join(str(domain) for domain in sampled)
-            raise Undecided(
-                f"no witness was drawn for {render(expr)}, and {names} is "
-                "sampled rather than enumerated, so the statement is undecided "
-                "here rather than false"
-            )
         return False
 
     def map_lanky_sum(self, expr: Sum) -> Any:
@@ -1010,13 +1179,22 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
 
         A reduction visits every point, so nothing short-circuits here; the
         walk is still closed explicitly, because an exception raised in the
-        body leaves the loop the same way a witness does.
+        body leaves the loop the same way a witness does. Everything in a sum
+        is used as a value and stands ``MIXED``.
+
+        Raises:
+            Undecided: If the walk draws from a sampled domain. The sum of a
+                handful of draws is not the sum over the domain, and it is
+                declined before the body is evaluated at a draw.
         """
         total: Any = 0
-        with closing(self.assignments(expr.binders)) as walk:
-            for _ in walk:
-                if self._holds(expr.guard):
+        walk = _Walk()
+        with closing(self._walk(list(expr.binders), self.polarity, walk)) as points:
+            for _ in points:
+                _decline_sampled_sum(expr, walk)
+                if self._holds(expr.guard, self.polarity):
                     total = total + self.rec(expr.body)
+        _decline_sampled_sum(expr, walk)
         return total
 
     def map_abs(self, expr: Abs) -> Any:
@@ -1031,31 +1209,71 @@ class _Unset:
 _UNSET = _Unset()
 
 
-def decline_empty_walk(expr: Forall) -> None:
-    """Decline a ``forall`` whose walk reached no point, where that says nothing.
+def _decline_sampled_pass(expr: Forall, walk: _Walk, polarity: Polarity) -> None:
+    """Decline a universal that met no counterexample among draws, where that is no answer.
 
-    An enumerated domain with no point makes a ``forall`` vacuously true, and
-    it is. A refinement of a sampled domain is different: its walk is a
-    handful of draws of the base, and a refinement that rejects all of them
-    (``Nat & (k == 1000)``, say) leaves a ``forall`` that holds at every point
-    it looked at because it looked at none. That is a vacuous pass, which the
-    property tester exists not to report as evidence, so it is undecided
-    instead, the way an unwitnessed existential over a sampled domain is.
+    ``walk`` drew from a sampled domain, so the pass is a handful of draws
+    that held. Two things make that worth nothing, and either one declines.
 
-    The walk is declined whenever a sampled refinement is among the binders,
-    including when an enumerated binder before it was the empty one. Telling
-    the two apart would take bookkeeping in the walk, and declining costs a
-    draw and claims nothing.
+    No draw reached the guarded domain. A guard or a refinement that rejects
+    every draw (``k > 100``, or ``Nat & (k == 1000)``, over naturals drawn up
+    to five) leaves a ``forall`` that held at every point it looked at because
+    it looked at none. Over an enumerated domain that is the vacuous truth it
+    looks like; over draws it says nothing about whether the guarded domain is
+    empty, and the guard and the refinement spellings of one statement are
+    declined alike.
+
+    The universal does not stand ``POSITIVE``. Held at every draw is evidence
+    that it holds, which the statement may use where it asserts the universal
+    and nowhere else: under a negation, in a hypothesis or a guard, the
+    ``True`` would count against the statement or let a draw into the test,
+    and inside a sum or a comparison it would be used as a value.
 
     Raises:
-        Undecided: If a binder domain of ``expr`` refines a sampled domain.
+        Undecided: In either case.
     """
-    sampled = _sampled_refinements(expr.binders)
-    if sampled:
-        names = ", ".join(str(domain) for domain in sampled)
+    names = walk.names()
+    if not walk.reached:
+        if walk.visited:
+            missed = f"passed the guard {render(expr.guard)}"
+        elif any(isinstance(domain, _refined_type()) for domain in walk.sampled):
+            missed = "satisfied its refinement"
+        else:
+            missed = "reached a point of its domain"
         raise Undecided(
-            f"no draw of {names} satisfied its refinement, so {render(expr)} "
-            "was evaluated at no point, which is not evidence that it holds"
+            f"no draw of {names} {missed}, so {render(expr)} was evaluated at "
+            "no point, which is not evidence that it holds"
+        )
+    if polarity is Polarity.POSITIVE:
+        return
+    if polarity is Polarity.NEGATIVE:
+        where = (
+            "the statement assumes or denies it (a hypothesis, a guard or a "
+            "refinement, or under a negation)"
+        )
+    else:
+        where = (
+            "its truth value is used as a value (inside a sum, a comparison or "
+            "an arithmetic operation)"
+        )
+    raise Undecided(
+        f"{render(expr)} held at every draw of {names}, which is evidence that "
+        f"it holds and not proof, and it stands where {where}, which needs a "
+        "certain answer, so the statement is undecided here"
+    )
+
+
+def _decline_sampled_sum(expr: Sum, walk: _Walk) -> None:
+    """Decline a sum whose walk drew from a sampled domain.
+
+    Raises:
+        Undecided: If ``walk`` drew from one.
+    """
+    if walk.sampled:
+        raise Undecided(
+            f"{render(expr)} adds up over {walk.names()}, which is sampled "
+            "rather than enumerated, and a sum over draws is not the sum over "
+            "the domain, so the statement is undecided here"
         )
 
 
@@ -1072,7 +1290,8 @@ def binder_assignments(
     of the loop should close it (``contextlib.closing``) rather than leave that
     to the collector. This is what a sampler uses to walk a quantified
     hypothesis point by point. A refined domain yields only the points its
-    refinement admits (see :class:`LankyEvaluationMapper`).
+    refinement admits (see :class:`LankyEvaluationMapper`), read as the
+    antecedent of a universal the statement asserts, so standing ``NEGATIVE``.
     """
     yield from LankyEvaluationMapper(context, sampler).assignments(list(binder_list))
 
@@ -1081,23 +1300,30 @@ def evaluate(
     expr: Any,
     context: dict[str, Any] | None = None,
     sampler: Callable[[Any], Iterable[Any]] | None = None,
+    polarity: Polarity = Polarity.POSITIVE,
 ) -> Any:
     """Evaluate ``expr`` at the values in ``context``.
 
     A proposition evaluates to a ``bool``, which is what makes an annotation
-    double as a property test.
+    double as a property test. ``polarity`` is where ``expr`` stands in the
+    statement (:class:`Polarity`): a goal stands ``POSITIVE``, and a
+    hypothesis ``NEGATIVE``. It matters only for what ``sampler`` draws.
 
     Raises:
-        Undecided: If an existential over a domain ``sampler`` supplied found no
-            witness. Sampled points are not the domain, so there is no ``False``
-            to return, and the caller drops the draw instead.
+        Undecided: If a quantifier or a sum over a domain ``sampler`` supplied
+            has no answer from the draws (see
+            :meth:`LankyEvaluationMapper.guarded_assignments`): an existential
+            that found no witness, a universal that reached no point of its
+            guarded domain or that held at every draw where it does not stand
+            ``POSITIVE``, or a sum. Sampled points are not the domain, so there
+            is no answer to return, and the caller drops the draw instead.
         TypeError: If an operand of a connective, a guard or the body of a
             quantifier is not a truth value (:func:`truth_value`). What the
             whole of ``expr`` evaluates to is the caller's to judge.
     """
     if not isinstance(expr, prim.ExpressionNode):
         return expr
-    return LankyEvaluationMapper(dict(context or {}), sampler)(expr)
+    return LankyEvaluationMapper(dict(context or {}), sampler, polarity)(expr)
 
 
 # }}}

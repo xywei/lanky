@@ -32,17 +32,30 @@ the ones ``p`` rejects (:class:`~lanky.terms.LankyEvaluationMapper`), so a
 counterexample never names a point outside the domain and ``Fin[n] & p`` is
 still enumerated, which is what lets an existential over it be refuted.
 
-A draw that the statement cannot be answered at is dropped the same way. Four
-things do that, and all four raise or are read as
+A draw that the statement cannot be answered at is dropped the same way. Six
+things do that, and all six raise or are read as
 :class:`~lanky.terms.Undecided` rather than as a counterexample, because none of
 them is one:
 
 *An existential over a sampled domain that no draw witnesses.* Four points out
 of ``Nat`` finding no witness is not a refutation.
 
-*A universal over a refinement of a sampled domain that no draw satisfies.*
-``Nat & (k == 1000)`` rejects every draw of ``Nat``, and a ``forall`` that held
-at no point is not evidence that it holds.
+*A universal over a sampled domain whose guard or refinement no draw
+satisfies.* ``all(k < 0 for k in Nat if k > 100)`` rejects every draw of
+``Nat``, and so does ``Nat & (k == 1000)`` as a binder domain; a ``forall``
+that held at no point is not evidence that it holds.
+
+*A universal over a sampled domain that held at every draw, where the
+statement does not assert it.* A sampled quantifier can be refuted, because a
+counterexample is real, but never confirmed. A pass is evidence, which is what
+``TESTED`` means for a goal; under a negation, in a hypothesis or a guard, and
+inside a sum or a comparison, the ``True`` would be used as a certainty, so it
+is undecided instead (:class:`~lanky.terms.Polarity`). The hypotheses are read
+standing there: ``all(k < m for k in Nat)`` held at four draws does not admit a
+draw of ``m`` to the test.
+
+*A sum over a sampled domain.* The draws of ``Nat`` are not ``Nat``, and
+adding them up is not ``sum(... for k in Nat)``.
 
 *A division or remainder by zero.* Python raises ``ZeroDivisionError`` where
 Lean's integer division is total (``Int.fdiv x 0`` is ``0``, ``Int.fmod x 0``
@@ -76,9 +89,10 @@ from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import (
     Exists,
     Forall,
+    LankyEvaluationMapper,
+    Polarity,
     Undecided,
     binder_assignments,
-    decline_empty_walk,
     evaluate,
     free_variables,
     render,
@@ -499,6 +513,12 @@ def satisfy_hypotheses(
     and a refinement that is not a proposition stops the test, as it does
     wherever a proposition is read.
 
+    A quantified definition over a sampled domain, ``all(f(k) == 0 for k in
+    Nat)``, has no points to assign at, and is left to the filter as well. It
+    used to be walked without a sampler, which raised and ended the test; the
+    filter reads it as a hypothesis, where a draw that breaks it rejects the
+    draw and a pass over draws decides nothing (see the module docstring).
+
     Raises:
         SkipSample: If a definition demands a value the codomain does not have.
     """
@@ -511,6 +531,10 @@ def satisfy_hypotheses(
         if isinstance(prop, Forall) and prop.guard is None:
             definition = _definition(prop.body)
             if definition is None:
+                continue
+            if not all(
+                LankyEvaluationMapper.is_exhaustive(domain) for _var, domain in prop.binders
+            ):
                 continue
             try:
                 for _ in binder_assignments(prop.binders, context):
@@ -548,11 +572,12 @@ class TestReport:
 
     ``undecided`` counts the draws that were dropped because the statement
     could not be answered at them: an existential over a sampled domain that no
-    draw witnessed, a universal over a refinement of a sampled domain that no
-    draw satisfied, a division by zero, a family applied outside its domain
-    (see the module docstring), or a refinement that cannot be evaluated
-    (:class:`Unevaluable`). Such a draw is neither evidence nor a
-    counterexample, so it is not counted as valid.
+    draw witnessed, a universal over a sampled domain whose guard or refinement
+    no draw satisfied, a sampled universal that held where the statement does
+    not assert it, a sum over a sampled domain, a division by zero, a family
+    applied outside its domain (see the module docstring), or a refinement that
+    cannot be evaluated (:class:`Unevaluable`). Such a draw is neither evidence
+    nor a counterexample, so it is not counted as valid.
 
     ``unsampleable`` counts the draws that could not be completed because a
     sort has no sampler (:class:`Unsampleable`). Such a draw never reached the
@@ -583,17 +608,20 @@ def check(
     They are drawn in that order unless a sort names another variable, in which
     case that one is drawn first (see :func:`sampling_order`): a size has to
     exist before the family it sizes can be tabulated. ``hypotheses`` is a
-    sequence of propositions.
+    sequence of propositions, each evaluated standing ``NEGATIVE`` (see
+    :class:`~lanky.terms.Polarity`): a draw a hypothesis admits has to be one
+    it certainly admits.
 
     A draw is dropped rather than counted when it cannot be completed
     (:class:`SkipSample`, including a definitional hypothesis that would put a
     value outside its codomain) and when the statement cannot be answered at it
     (:class:`~lanky.terms.Undecided` or a ``ZeroDivisionError``: an existential
     over a sampled domain that found no witness, a universal over a sampled
-    refinement that admitted no draw, a division by zero, a family applied
-    outside its domain, and a refinement that raises one of them,
-    :class:`Unevaluable`). Neither is a counterexample, and neither is
-    evidence.
+    domain whose guard or refinement admitted no draw, a sampled universal
+    that held where the statement does not assert it, a sum over a sampled
+    domain, a division by zero, a family applied outside its domain, and a
+    refinement that raises one of them, :class:`Unevaluable`). Neither is a
+    counterexample, and neither is evidence.
 
     A counterexample names the drawn variables and, when the goal is a
     universal statement, the quantified point at which it fails (see
@@ -640,7 +668,10 @@ def check(
             continue
         sampler = sort_sampler(rng, context)
         try:
-            if not all(truth_value(evaluate(h, context, sampler), h) for h in hypotheses):
+            if not all(
+                truth_value(evaluate(h, context, sampler, Polarity.NEGATIVE), h)
+                for h in hypotheses
+            ):
                 continue
             satisfied, witness, failing = _falsify(goal, context, sampler)
         except (Undecided, ZeroDivisionError) as exc:
@@ -695,27 +726,25 @@ def _falsify(
 
     The third value is the part of the goal that is false at that assignment,
     the innermost one this walk reached, or ``None`` when the goal holds; it is
-    what :func:`_refutation_reason` explains. The walk declines a ``forall``
-    that reached no point of a sampled refinement, as the evaluator does
-    (:func:`~lanky.terms.decline_empty_walk`).
+    what :func:`_refutation_reason` explains.
+
+    The goal stands ``POSITIVE``, and so does everything this walk reaches; a
+    universal's guard and refinements are its antecedent and are read
+    standing ``NEGATIVE``. The walk is the evaluator's own
+    (:meth:`~lanky.terms.LankyEvaluationMapper.guarded_assignments`), so it
+    declines where the evaluator does: a ``forall`` over a sampled domain
+    whose guard or refinement no draw satisfied.
     """
     if isinstance(goal, Forall):
         scope = dict(context)
-        visited = 0
-        with closing(binder_assignments(goal.binders, scope, sampler)) as walk:
+        mapper = LankyEvaluationMapper(scope, sampler, Polarity.POSITIVE)
+        with closing(mapper.guarded_assignments(goal)) as walk:
             for _ in walk:
-                visited += 1
-                if goal.guard is not None and not truth_value(
-                    evaluate(goal.guard, scope, sampler), goal.guard
-                ):
-                    continue
                 holds, witness, failing = _falsify(goal.body, scope, sampler)
                 if not holds:
                     point = {var.name: scope[var.name] for var, _ in goal.binders}
                     point.update((k, v) for k, v in witness.items() if k not in point)
                     return False, point, failing
-        if not visited:
-            decline_empty_walk(goal)
         return True, {}, None
     if isinstance(goal, prim.LogicalAnd):
         for child in goal.children:
@@ -732,17 +761,24 @@ def _refutation_reason(failing: Any) -> str:
 
     Usually the assignment says it all. An existential needs one more clause:
     it is false at an assignment because no point of its domain is a witness,
-    and it can only have come back ``False`` over domains that were enumerated
-    (over a sampled one it is undecided), so every point was tried. Saying so
-    tells a reader that the refutation is not a handful of draws that missed.
+    and it can only have come back ``False`` from a walk that drew nothing
+    (one that drew from a sampled domain is undecided), so every point was
+    tried. Saying so tells a reader that the refutation is not a handful of
+    draws that missed. Usually the domain is enumerated; when a binder of it
+    is sampled, the walk never got to that binder, because the enumerated
+    binders before it had no point.
     """
     if isinstance(failing, Exists) and failing.binders:
         domains = ", ".join(f"{var.name} in {domain}" for var, domain in failing.binders)
         guard = "" if failing.guard is None else f" where {render(failing.guard)}"
+        if all(LankyEvaluationMapper.is_exhaustive(domain) for _, domain in failing.binders):
+            why = "because the domain is enumerated"
+        else:
+            why = "because the enumerated binders before the first sampled one have no point"
         return (
             f"the goal is false at this assignment: no point of {domains}{guard} "
             f"is a witness to {render(failing.body)}, and every point was tried, "
-            "because the domain is enumerated"
+            f"{why}"
         )
     return "the goal is false at this assignment"
 
