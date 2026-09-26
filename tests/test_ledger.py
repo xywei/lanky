@@ -218,7 +218,7 @@ def test_resting_on_a_refuted_fact_is_worth_a_refutation() -> None:
 
 
 def test_an_id_the_ledger_does_not_hold_counts_as_an_assumption() -> None:
-    """A claim in a file this check did not collect: nothing here established it."""
+    """A claim of another file, or an id written wrong: nothing here established it."""
     ledger = Ledger([make_fact("t", Status.DECIDED, rests_on=("theorem:helpers.lemma@12",))])
     assert ledger.support("t") == Support(
         effective=Status.ASSUMED, under=("theorem:helpers.lemma@12",)
@@ -239,6 +239,49 @@ def test_a_circular_argument_establishes_nothing() -> None:
     assert ledger.support("b") == Support(effective=Status.ASSUMED, under=("a", "b"))
     assert ledger.support("c") == Support(effective=Status.ASSUMED, under=("a", "b"))
     assert ledger.support("self") == Support(effective=Status.ASSUMED, under=("self",))
+
+
+def test_a_fact_added_later_can_close_a_circle() -> None:
+    """What is circular is read again once the ledger changes."""
+    ledger = Ledger([make_fact("a", Status.PROVED, rests_on=("b",))])
+    assert ledger.support("a") == Support(effective=Status.ASSUMED, under=("b",))
+    ledger.add(make_fact("b", Status.PROVED))
+    assert ledger.support("a") == Support(effective=Status.PROVED, under=())
+    ledger.add(make_fact("b", Status.PROVED, rests_on=("a",)))
+    assert ledger.support("a") == Support(effective=Status.ASSUMED, under=("b", "a"))
+
+
+def test_a_long_chain_and_a_long_circle_are_read_quickly() -> None:
+    """1200 facts, each resting on the next: every row, in a second or two.
+
+    Whether a fact is on a circle used to be asked by walking the graph from
+    it, once per fact per fact, and ``to_dicts`` over a chain of 1500 took
+    minutes. It is now found once for the ledger. The walk keeps its own
+    stack, so a chain longer than Python's recursion limit is no trouble
+    either. The bound is loose, for a slow machine; the old reading took
+    minutes here.
+    """
+    import time
+
+    length = 1200
+    chain = [
+        make_fact(f"f{i}", Status.PROVED, rests_on=(f"f{i + 1}",)) for i in range(length - 1)
+    ]
+    chain.append(make_fact(f"f{length - 1}", Status.TESTED))
+    circle = [
+        make_fact(f"c{i}", Status.PROVED, rests_on=(f"c{(i + 1) % 500}",)) for i in range(500)
+    ]
+    start = time.perf_counter()
+    chained = Ledger(chain)
+    rows = chained.to_dicts()
+    chained.render()
+    circled = Ledger(circle).to_dicts()
+    assert time.perf_counter() - start < 30
+    assert {row["effective"] for row in rows} == {"tested"}
+    assert all(row["under"] == [] for row in rows)
+    assert {row["effective"] for row in circled} == {"assumed"}
+    assert circled[0]["under"][:2] == ["c1", "c2"]
+    assert len(circled[0]["under"]) == 500
 
 
 def test_the_table_says_what_a_fact_is_under_and_what_it_is_worth() -> None:

@@ -244,12 +244,14 @@ class Ledger:
 
     def __init__(self, facts: Any = ()) -> None:
         self._facts: dict[str, Fact] = {}
+        self._circles: frozenset[str] | None = None
         for fact in facts:
             self.add(fact)
 
     def add(self, fact: Fact) -> Fact:
         """Add a fact, or replace the one with the same id, keeping its place."""
         self._facts[fact.id] = fact
+        self._circles = None
         return fact
 
     def __iter__(self) -> Any:
@@ -307,10 +309,63 @@ class Ledger:
                 pending.extend(reversed(fact.rests_on))
         return reached
 
-    def _circular(self, fact_id: str) -> bool:
-        """Whether the fact with this id rests, through some chain, on itself."""
-        fact = self._facts.get(fact_id)
-        return fact is not None and fact_id in self._reached(fact.rests_on)
+    def _on_circles(self) -> frozenset[str]:
+        """The ids of the facts that rest, through some chain, on themselves.
+
+        Those are the facts that name themselves, and the facts of every
+        strongly connected component of more than one fact in the graph of
+        ``rests_on``, found once for the whole ledger (Tarjan's algorithm) and
+        kept until a fact is added. Asking each fact whether it reaches itself
+        would walk the graph once per fact per fact, which on a long chain
+        costs minutes. The walk keeps its own stack rather than recursing, so
+        that a long chain does not reach Python's recursion limit either.
+        """
+        if self._circles is not None:
+            return self._circles
+        graph = {
+            fact_id: tuple(entry for entry in fact.rests_on if entry in self._facts)
+            for fact_id, fact in self._facts.items()
+        }
+        index: dict[str, int] = {}
+        low: dict[str, int] = {}
+        stack: list[str] = []
+        on_stack: set[str] = set()
+        circles = {fact_id for fact_id, entries in graph.items() if fact_id in entries}
+        for root in graph:
+            if root in index:
+                continue
+            index[root] = low[root] = len(index)
+            stack.append(root)
+            on_stack.add(root)
+            work = [(root, iter(graph[root]))]
+            while work:
+                node, entries = work[-1]
+                for entry in entries:
+                    if entry not in index:
+                        index[entry] = low[entry] = len(index)
+                        stack.append(entry)
+                        on_stack.add(entry)
+                        work.append((entry, iter(graph[entry])))
+                        break
+                    if entry in on_stack:
+                        low[node] = min(low[node], index[entry])
+                else:
+                    work.pop()
+                    if work:
+                        parent = work[-1][0]
+                        low[parent] = min(low[parent], low[node])
+                    if low[node] == index[node]:
+                        component = []
+                        while True:
+                            member = stack.pop()
+                            on_stack.discard(member)
+                            component.append(member)
+                            if member == node:
+                                break
+                        if len(component) > 1:
+                            circles.update(component)
+        self._circles = frozenset(circles)
+        return self._circles
 
     def support(self, fact: Fact | str) -> Support:
         """What a fact is worth here, given what it rests on (see :class:`Support`).
@@ -318,12 +373,14 @@ class Ledger:
         Four things make a fact an assumption of the facts that rest on it. It
         is ``assumed``: an axiom, or an obligation nobody established. It is
         ``refuted``, so whatever was derived from it was derived from something
-        false. The ledger does not hold it, which is the case of a claim in a
-        file this check did not collect: nothing here established it, and it
-        counts as ``assumed``. Or it rests on itself, through some chain: a
-        circular argument establishes nothing, so every fact on the circle, and
-        every fact that rests on one, is worth ``assumed`` at most, and a fact
-        on a circle is among its own assumptions.
+        false. The ledger does not hold it, which is the case of a claim in
+        another file, since each file checked has a ledger of its own, and of
+        an id written wrong: nothing here established it, and it counts as
+        ``assumed`` (``lanky check`` names such an id under the table). Or it
+        rests on itself, through some chain: a circular argument establishes
+        nothing, so every fact on the circle, and every fact that rests on
+        one, is worth ``assumed`` at most, and a fact on a circle is among its
+        own assumptions.
 
         ``fact`` is a fact or an id; a fact not in the ledger is read against
         the ledger all the same.
@@ -331,7 +388,8 @@ class Ledger:
         if isinstance(fact, str):
             fact = self._facts[fact]
         reached = self._reached(fact.rests_on)
-        circular = {current for current in reached if self._circular(current)}
+        circles = self._on_circles()
+        circular = {current for current in reached if current in circles}
         under: list[str] = []
         weakest = fact.status
         for current in reached:
