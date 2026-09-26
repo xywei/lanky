@@ -2024,6 +2024,83 @@ def test_an_inner_binder_named_like_a_parameter_does_not_order_the_draws() -> No
 # }}}
 
 
+# {{{ the order of the operands of a connective
+
+
+ORDER = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def left(n: Nat) -> ~all(k < 100 for k in Nat) | (n >= 0):\n"
+    '    """True: the right disjunct holds at every n."""\n\n\n'
+    "@theorem\n"
+    "def right(n: Nat) -> (n >= 0) | ~all(k < 100 for k in Nat):\n"
+    '    """The same statement with the disjuncts swapped."""\n'
+)
+
+
+def test_the_order_of_two_disjuncts_does_not_change_the_status(tmp_path, oracles) -> None:
+    """#25: ``left`` was ``assumed`` and ``right`` was ``tested``; both are ``tested``.
+
+    The first disjunct of ``left`` is undecided at every draw, and the walk
+    stopped there, though the second holds at every draw and settles it.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, ORDER, "order_probe.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    assert facts["left"].status is Status.TESTED
+    assert facts["right"].status is Status.TESTED
+
+
+def test_an_undecided_conjunct_does_not_hide_a_refuted_one() -> None:
+    """#25: a conjunction whose first conjunct is undecided and whose second is false is false.
+
+    As the whole goal, and in the body of the goal's quantifier, where the
+    tester walks the conjunction one conjunct at a time to find the point.
+    """
+
+    @theorem
+    def hidden(n: Nat) -> ~all(k < 100 for k in Nat) & (n < 0):
+        """False at every n: the second conjunct is."""
+
+    fact = TestOracle().establish(hidden.fact())
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["counterexample"]["n"] >= 0
+
+    @theorem
+    def pointwise(n: Nat) -> all(~all(k < 100 for k in Nat) & (i < n) for i in Fin[n + 1]):
+        """False at i = n, where the second conjunct is."""
+
+    fact = TestOracle().establish(pointwise.fact())
+    assert fact.status is Status.REFUTED
+    point = fact.provenance["counterexample"]
+    assert point["i"] == point["n"]
+
+
+def test_a_hypothesis_a_draw_breaks_rejects_it_whatever_came_before() -> None:
+    """The hypotheses are one conjunction too, so ``h2`` rejects what ``h1`` cannot judge.
+
+    ``h1`` is undecided at every draw: the universal held at the draws of
+    ``k``, and a hypothesis has to hold for certain. Every draw used to be
+    counted as undecided, which says nothing against the hypotheses; ``h2``
+    holds at no draw, so no draw satisfies them, and the report says so.
+    """
+
+    @theorem
+    def split(n: Nat, h1: all(k < 100 for k in Nat), h2: n < 0) -> n == n + 1:
+        """True vacuously: neither hypothesis holds anywhere."""
+
+    report = split.report()
+    assert report.ok
+    assert report.valid == 0
+    assert report.undecided == 0
+    assert report.reason == "no draw satisfied the hypotheses, so nothing was tested"
+
+
+# }}}
+
+
 # {{{ a guard the annotation would drop
 
 

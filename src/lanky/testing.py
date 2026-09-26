@@ -69,6 +69,13 @@ there, so the table has no value for it and the draw decides nothing. The Lean
 printer refuses such an application outright (see :mod:`lanky.lean`), and this
 is the same reading on the Python side.
 
+A draw that one part of a statement cannot answer can still be settled by
+another. The connectives, and the list of hypotheses, are read three-valued
+(:func:`~lanky.terms.conjoin`, :func:`~lanky.terms.disjoin`): a false conjunct
+settles a conjunction and a true disjunct a disjunction, whatever an operand
+before it could not answer, so the order the operands are written in does not
+change what a draw decides.
+
 A statement that is already a concrete ``True`` or ``False``, because it binds
 no variable and assumes nothing, is not sampled at all: there is nothing to
 draw, so it is reported once, as a pass or as a refutation with an empty
@@ -93,6 +100,7 @@ from lanky.terms import (
     Polarity,
     Undecided,
     binder_assignments,
+    conjoin,
     evaluate,
     free_variables,
     render,
@@ -630,6 +638,10 @@ def check(
     for an existential that no point of an enumerated domain witnesses it says
     that (:func:`_refutation_reason`).
 
+    The hypotheses are one conjunction, read three-valued
+    (:func:`~lanky.terms.conjoin`): a hypothesis a draw breaks rejects it,
+    whatever an earlier hypothesis could not answer there.
+
     A goal that is already a concrete value is not sampled. A theorem with no
     binders and no hypotheses whose return annotation evaluated to a ``bool``
     has nothing to draw, so it is answered once. A ``goal`` of ``None``
@@ -668,10 +680,7 @@ def check(
             continue
         sampler = sort_sampler(rng, context)
         try:
-            if not all(
-                truth_value(evaluate(h, context, sampler, Polarity.NEGATIVE), h)
-                for h in hypotheses
-            ):
+            if not _hypotheses_hold(hypotheses, context, sampler):
                 continue
             satisfied, witness, failing = _falsify(goal, context, sampler)
         except (Undecided, ZeroDivisionError) as exc:
@@ -704,6 +713,25 @@ def check(
     return report
 
 
+def _hypotheses_hold(hypotheses: Any, context: dict[str, Any], sampler: Any) -> bool:
+    """Whether a draw satisfies the hypotheses, for certain.
+
+    Each is read standing ``NEGATIVE`` (:class:`~lanky.terms.Polarity`), and
+    together they are one conjunction, read three-valued
+    (:func:`~lanky.terms.conjoin`): a hypothesis the draw breaks rejects it,
+    whatever an earlier one could not answer, so ``h: p & q`` and ``h: q & p``
+    reject the same draws.
+
+    Raises:
+        Undecided: If no hypothesis is false and one has no answer here, or
+            ``ZeroDivisionError`` if that one divided by zero.
+    """
+    return conjoin(
+        lambda h=h: truth_value(evaluate(h, context, sampler, Polarity.NEGATIVE), h)
+        for h in hypotheses
+    )
+
+
 def _falsify(
     goal: Any,
     context: dict[str, Any],
@@ -734,6 +762,10 @@ def _falsify(
     (:meth:`~lanky.terms.LankyEvaluationMapper.guarded_assignments`), so it
     declines where the evaluator does: a ``forall`` over a sampled domain
     whose guard or refinement no draw satisfied.
+
+    A conjunction is read three-valued, as the evaluator reads it
+    (:func:`~lanky.terms.conjoin`): a conjunct that cannot be answered at this
+    draw does not hide a counterexample in a later one.
     """
     if isinstance(goal, Forall):
         scope = dict(context)
@@ -747,10 +779,18 @@ def _falsify(
                     return False, point, failing
         return True, {}, None
     if isinstance(goal, prim.LogicalAnd):
+        pending: Exception | None = None
         for child in goal.children:
-            holds, witness, failing = _falsify(child, context, sampler)
+            try:
+                holds, witness, failing = _falsify(child, context, sampler)
+            except (Undecided, ZeroDivisionError) as exc:
+                if pending is None:
+                    pending = exc
+                continue
             if not holds:
                 return False, witness, failing
+        if pending is not None:
+            raise pending
         return True, {}, None
     holds = truth_value(evaluate(goal, context, sampler), goal)
     return holds, {}, None if holds else goal

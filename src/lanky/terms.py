@@ -72,7 +72,9 @@ __all__ = [
     "Var",
     "binder_assignments",
     "binders",
+    "conjoin",
     "conjuncts",
+    "disjoin",
     "evaluate",
     "evaluate_annotations",
     "exists",
@@ -147,6 +149,77 @@ class Polarity(enum.Enum):
     def flipped(self) -> Polarity:
         """Where the operand of a negation that stands here stands."""
         return Polarity(-self.value)
+
+
+#: What an operand with no answer at the values in hand raises: a quantifier the
+#: draws leave open (:class:`Undecided`), and a division by zero, which Python
+#: raises where Lean's integer division is total. Neither is a truth value, and
+#: neither is an error in the statement.
+_OPEN = (Undecided, ZeroDivisionError)
+
+
+def conjoin(operands: Iterable[Callable[[], bool]]) -> bool:
+    """The conjunction of ``operands``, read three-valued, as Kleene's strong ``and``.
+
+    Each operand is a thunk that answers a truth value, and they are asked in
+    order. The first ``False`` answers the conjunction, whatever an operand
+    before it could not answer: a conjunction with a false conjunct is false
+    however the others come out. An operand with no answer here (see
+    :data:`_OPEN`) is passed over and the walk goes on, and when nothing
+    settles the conjunction the first such answer is raised again at the end.
+    So ``p & q`` and ``q & p`` agree, where a walk that stopped at its first
+    undecided operand gave up on a conjunction a later operand refutes.
+
+    That is sound wherever the conjunction stands. One operand's certain
+    ``False`` settles it, whatever the undecided operand would have been, and
+    a ``True`` counts for as much as it did before.
+
+    The walk still stops at the first ``False``, so an operand after it is
+    never asked: ``(k > 0) & (10 // k > 1)`` does not divide by zero at
+    ``k = 0``. An operand after an undecided one is asked now, and anything it
+    raises that is not an open answer (a ``TypeError`` for a value that is not
+    a truth value, say) is raised; the undecided operand used to keep it from
+    being asked at all.
+
+    Raises:
+        Undecided: If no operand is ``False`` and one of them was undecided,
+            or ``ZeroDivisionError`` if that one divided by zero.
+    """
+    pending: Exception | None = None
+    for operand in operands:
+        try:
+            if not operand():
+                return False
+        except _OPEN as exc:
+            if pending is None:
+                pending = exc
+    if pending is not None:
+        raise pending
+    return True
+
+
+def disjoin(operands: Iterable[Callable[[], bool]]) -> bool:
+    """The disjunction of ``operands``, read three-valued; the mirror of :func:`conjoin`.
+
+    The first ``True`` answers the disjunction, whatever an operand before it
+    could not answer, and when no operand is ``True`` the first open answer is
+    raised again.
+
+    Raises:
+        Undecided: If no operand is ``True`` and one of them was undecided,
+            or ``ZeroDivisionError`` if that one divided by zero.
+    """
+    pending: Exception | None = None
+    for operand in operands:
+        try:
+            if operand():
+                return True
+        except _OPEN as exc:
+            if pending is None:
+                pending = exc
+    if pending is not None:
+        raise pending
+    return False
 
 
 # {{{ operator-overloading mixins
@@ -1004,6 +1077,12 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     printer gives the same binder (``T`` plus the guard ``p``), so the two
     readings of the statement agree.
 
+    A connective reads its operands three-valued (:func:`conjoin`,
+    :func:`disjoin`). An operand the values in hand cannot answer does not
+    stop it, and a later operand that settles it, a ``False`` in a
+    conjunction or a ``True`` in a disjunction, answers it all the same, so
+    the order the operands are written in does not change the answer.
+
     Wherever a proposition's truth is read, in a connective, a guard, a
     refinement or the body of a quantifier, the value has to be a truth value
     (:func:`truth_value`). pymbolic's own connectives apply Python's
@@ -1083,13 +1162,19 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         current assignment, the binder included, the innermost refinement
         first, so ``Nat & (k > 0) & (10 // k > 1)`` never divides by zero, and
         standing at ``polarity``. A proposition that cannot be answered
-        raises, as a guard does, and the caller decides what that means (the
-        property tester drops the draw).
+        raises, as a guard does, unless a later one rejects the point, and
+        the caller decides what that means (the property tester drops the
+        draw).
         """
         if not isinstance(domain, _refined_type()):
             return True
-        return self._admits(domain.base, polarity) and all(
-            self._truth_at(polarity, p) for p in domain.props
+        # One conjunction, read three-valued (conjoin): a proposition that
+        # rejects the point settles it, whatever an earlier one could not answer.
+        return conjoin(
+            [
+                lambda: self._admits(domain.base, polarity),
+                *(lambda p=p: self._truth_at(polarity, p) for p in domain.props),
+            ]
         )
 
     def assignments(
@@ -1204,12 +1289,20 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         return truth_value(self._at(polarity, expr), expr)
 
     def map_logical_and(self, expr: prim.LogicalAnd) -> bool:
-        """Every operand, left to right, stopping at the first false one."""
-        return all(self._truth(child) for child in expr.children)
+        """Every operand, left to right, stopping at the first false one.
+
+        An operand the values in hand cannot answer does not stop the walk: a
+        later false one still settles the conjunction (:func:`conjoin`).
+        """
+        return conjoin(lambda child=child: self._truth(child) for child in expr.children)
 
     def map_logical_or(self, expr: prim.LogicalOr) -> bool:
-        """Some operand, left to right, stopping at the first true one."""
-        return any(self._truth(child) for child in expr.children)
+        """Some operand, left to right, stopping at the first true one.
+
+        An operand the values in hand cannot answer does not stop the walk: a
+        later true one still settles the disjunction (:func:`disjoin`).
+        """
+        return disjoin(lambda child=child: self._truth(child) for child in expr.children)
 
     def map_logical_not(self, expr: prim.LogicalNot) -> bool:
         """The negation of the operand, which stands opposite to it."""

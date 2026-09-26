@@ -301,6 +301,108 @@ def test_the_ways_the_refusal_names_keep_the_condition() -> None:
 # }}}
 
 
+# {{{ three-valued connectives
+
+
+def _undecided() -> bool:
+    raise Undecided("open")
+
+
+def test_conjoin_and_disjoin_are_kleenes_strong_connectives() -> None:
+    """The settling answer wins wherever it stands, and the walk stops there.
+
+    A false operand settles a conjunction and a true one a disjunction,
+    whatever an operand before it could not answer; with nothing to settle
+    it, the first open answer is raised again. An operand after the settling
+    one is never asked.
+    """
+    from lanky.terms import conjoin, disjoin
+
+    asked: list[bool] = []
+
+    def ask(value: bool):
+        def operand() -> bool:
+            asked.append(value)
+            return value
+
+        return operand
+
+    assert conjoin([_undecided, ask(False), ask(False)]) is False
+    assert asked == [False]
+    assert disjoin([_undecided, ask(True), ask(True)]) is True
+    assert conjoin([ask(True), ask(True)]) is True
+    assert disjoin([ask(False), ask(False)]) is False
+    with pytest.raises(Undecided, match="open"):
+        conjoin([_undecided, ask(True)])
+    with pytest.raises(Undecided, match="open"):
+        disjoin([ask(False), _undecided])
+    with pytest.raises(ZeroDivisionError):
+        conjoin([lambda: 1 // 0 > 0, _undecided, ask(True)])
+    assert conjoin([]) is True
+    assert disjoin([]) is False
+
+
+def test_a_connective_goes_on_past_an_undecided_operand() -> None:
+    """``p | q`` and ``q | p`` agree, and so do ``p & q`` and ``q & p`` (#25).
+
+    ``~all(k < 100 for k in Nat)`` is undecided: the universal held at every
+    draw, and under ``~`` that would be used as a certainty. A disjunction
+    with a true operand is true, and a conjunction with a false one false,
+    whatever that operand is, and the walk used to stop at the undecided
+    operand and give the answer up when it came first.
+    """
+    k, n = Var("k"), Var("n")
+    undecided = ~Forall(((k, Nat),), k < 100)
+    for claim in (undecided | (n >= 0), (n >= 0) | undecided):
+        assert evaluate(claim, {"n": 3}, _sampler()) is True
+    for claim in (undecided & (n < 0), (n < 0) & undecided):
+        assert evaluate(claim, {"n": 3}, _sampler()) is False
+    for claim in (
+        undecided | (n < 0),
+        (n < 0) | undecided,
+        undecided & (n >= 0),
+        (n >= 0) & undecided,
+    ):
+        with pytest.raises(Undecided, match="assumes or denies it"):
+            evaluate(claim, {"n": 3}, _sampler())
+    # an operand after an undecided one is asked now, and one that is not a
+    # proposition is refused, where the undecided operand used to hide it
+    with pytest.raises(TypeError, match="not a proposition"):
+        evaluate(undecided | (n + 1), {"n": 3}, _sampler())
+
+
+def test_a_division_by_zero_is_an_operand_with_no_answer() -> None:
+    """Python raises where Lean's division is total, and another operand can still settle it.
+
+    ``(10 // n > 1) | (n == 0)`` is true at ``n = 0`` under every reading of
+    the division, and it raised ``ZeroDivisionError``; a false operand before
+    the division still keeps it from being evaluated at all.
+    """
+    n = Var("n")
+    assert evaluate((10 // n > 1) | (n == 0), {"n": 0}) is True
+    assert evaluate((10 // n > 1) & (n != 0), {"n": 0}) is False
+    assert evaluate((n > 0) & (10 // n > 1), {"n": 0}) is False
+    with pytest.raises(ZeroDivisionError):
+        evaluate((10 // n > 1) | (n > 0), {"n": 0})
+
+
+def test_a_refinement_is_one_conjunction_read_three_valued() -> None:
+    """``T & p & q`` rejects a point ``q`` rejects, whatever ``p`` could not answer there.
+
+    As a parameter's sort and as a binder's domain alike: at ``i = 0`` the
+    first proposition divides by zero, and the second rejects the point.
+    """
+    i, n = Var("i"), Var("n")
+    assert (Nat & (10 // n > 1) & (n > 5)).holds({"n": 0}) is False
+    claim = Forall(((i, Fin[3] & (10 // i > 1) & (i > 5)),), i < 0)
+    assert evaluate(claim, {}) is True
+    with pytest.raises(ZeroDivisionError):
+        (Nat & (10 // n > 1) & (n < 5)).holds({"n": 0})
+
+
+# }}}
+
+
 def test_a_nested_quantifier_keeps_its_binder_names() -> None:
     """A target a nested comprehension closes over is a cell, not a local.
 

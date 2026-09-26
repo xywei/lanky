@@ -25,7 +25,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from lanky.terms import current_trace, evaluate, render, structurally_equal, truth_value
+from lanky.terms import (
+    conjoin,
+    current_trace,
+    evaluate,
+    render,
+    structurally_equal,
+    truth_value,
+)
 
 __all__ = [
     "Bool",
@@ -321,8 +328,15 @@ class Refined(LankyType):
         evaluates to has to be a truth value (:func:`lanky.terms.truth_value`):
         ``Nat & (k + 1)`` refines by nothing, and truthiness used to read it as
         ``k != -1``.
+
+        The propositions are one conjunction, read three-valued
+        (:func:`lanky.terms.conjoin`): one that is false settles it, whatever
+        an earlier one could not answer.
         """
-        return all(truth_value(evaluate(p, context), p) for p in self.props)
+        return conjoin(
+            lambda p=p: truth_value(evaluate(p, context), p)
+            for p in self.props
+        )
 
 
 def exactness_of(obj: Any) -> str:
