@@ -617,7 +617,9 @@ listed because it changes behaviour a reader could already have depended on.
   hold, with bare numerals, and Lean read those as `Nat`: `1 - 2 >= 0` was a
   truncated subtraction Lean proved and Python refuted, and `-1 != 0` did not
   elaborate. Its left side is now ascribed, `(1 - 2 : Int) ≥ 0`, as a literal
-  base of a power already was. The demonstration's coefficient facts are such
+  base of a power already was, and so is a base of a power with no variable
+  in it: `(1 - 2) ** n >= 0` printed as `(1 - 2) ^ n.toNat ≥ 0`, which Lean
+  read over `Nat` and proved. The demonstration's coefficient facts are such
   comparisons.
 
 ### Notes

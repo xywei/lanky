@@ -861,6 +861,30 @@ def test_a_comparison_with_no_name_in_it_is_integer_arithmetic() -> None:
     )
 
 
+#: ``(1 - 2) ** n >= 0`` over ``Nat``, built node by node: Python would compute
+#: ``1 - 2`` in an annotation. False at ``n = 1``.
+_CLOSED_BASE = Forall(((n, Nat),), prim.Comparison(prim.Power(prim.Sum((1, -2)), n), ">=", 0))
+
+
+def test_a_base_with_no_name_in_it_is_an_integer() -> None:
+    """A base of literals alone is ascribed ``Int``, as a literal base is.
+
+    ``n`` is only in the exponent, as ``n.toNat``, a ``Nat``, and the base has
+    no name in it either, so nothing typed its numerals: ``(1 - 2) ^ n.toNat
+    ≥ 0`` was ``0 ^ n.toNat ≥ 0`` over ``Nat``, which Lean proves and Python
+    refutes at ``n = 1``, the closed comparison's gap again one level down.
+    """
+    assert print_lean(_CLOSED_BASE) == "∀ n : Int, 0 ≤ n → (1 - 2 : Int) ^ n.toNat ≥ 0"
+    product = prim.Comparison(prim.Power(prim.Product((2, 3)), n), ">=", 1)
+    assert print_lean(Forall(((n, Nat),), product)) == (
+        "∀ n : Int, 0 ≤ n → (2 * 3 : Int) ^ n.toNat ≥ 1"
+    )
+    # a base with a name in it is typed by the name, as before
+    assert print_lean(Forall(((n, Nat),), (n - 2) ** n >= 0)) == (
+        "∀ n : Int, 0 ≤ n → (n - 2) ^ n.toNat ≥ 0"
+    )
+
+
 # }}}
 
 
@@ -1485,6 +1509,23 @@ def test_lean_does_not_prove_an_integral_fraction_base_by_truncation(
         id="fraction_base", kind="theorem", statement="1 - 2**n >= 0", term=_FRACTION_BASE
     )
     closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_FRACTION_BASE)}\n")
+    assert closed, detail
+    assert lean_oracle.establish(fact).status is not Status.PROVED
+    checked = establish(fact)
+    assert checked.status is Status.REFUTED
+    assert checked.decided_by == "property-test"
+
+
+def test_lean_does_not_prove_a_closed_base_by_truncation(lean_oracle: LeanOracle) -> None:
+    """``(1 - 2) ** n >= 0`` is false at ``n = 1``, and Lean must not prove it.
+
+    Printed without the ``Int`` ascription its base was a truncated ``Nat``
+    subtraction, and Lean proved the statement; the tester refutes it.
+    """
+    from lanky.check import establish
+
+    fact = Fact(id="closed_base", kind="theorem", statement="(1 - 2)**n >= 0", term=_CLOSED_BASE)
+    closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_CLOSED_BASE)}\n")
     assert closed, detail
     assert lean_oracle.establish(fact).status is not Status.PROVED
     checked = establish(fact)
