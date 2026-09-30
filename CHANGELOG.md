@@ -874,6 +874,37 @@ listed because it changes behaviour a reader could already have depended on.
   there is no child, and such a process holds whatever reads the command's
   own output, as it would for any program.) No verdict and no ledger
   changes.
+- **The property tester reads the reals exactly** (#33). It computed `Real`
+  and `Complex` in floating point, so `exp(x + y) == exp(x) * exp(y)` and
+  `(x + 0.1) - 0.1 == x` were refuted by rounding, and `lanky check` exited 1
+  on claims Lean proves over `ℝ`; `exp(x - 1000) > 0` was refuted because the
+  float underflows to `0.0`; and a proof of `x / y * y == x` got a
+  `SEMANTICS` block whose counterexample was a rounding error. `Real` and
+  `Complex` are now drawn as fractions (a `Complex` as the new
+  `lanky.intervals.ComplexValue`, two fractions), whatever their exactness
+  class, which still says how a kernel computes and no longer what a
+  statement means. The tester evaluates in the new exact reading
+  (`lanky.terms.exact_reading`): a float literal is the rational it holds,
+  as the Lean printer reads it, `n / 2` and `2 ** -1` of integers are
+  fractions, and `exp`, `log`, `sqrt` and the complex `exp` are exact where
+  the value is rational (`exp(0)`, `log(1)`, `sqrt(9/4)`) and enclosed in a
+  `lanky.intervals.Interval` where it is not: rational endpoints, rounded
+  outward to 128 bits, summed from their series with every rounding bounded,
+  and no dependency. A comparison is true where the enclosures prove it,
+  false where they exclude it, which keeps a refutation as definite as a
+  proof, and undecided where they straddle it. An equality between
+  transcendental numbers is never proved that way, so one that stands
+  `POSITIVE`, where the statement asserts it, holds when its sides agree to
+  64 bits, which is evidence as a sampled universal's pass is; anywhere else
+  it is undecided, as is an order whose enclosures overlap. One enclosure is
+  one number and equal to itself, and one exponential of one argument is one
+  enclosure. A complex `log` or `sqrt`, an `exp` past `2**14` and a negative
+  number to a power that is not an integer are undecided rather than
+  guessed. `lanky.exp(0.5)` at a number, `evaluate` outside the exact
+  reading and `Theorem.__call__` are Python's, as before. So the claims
+  above are `tested`, `x + 1e-20 == x`, which every float draw passed, is
+  refuted, and the claims in the Mathlib tests that were private because the
+  tester refuted them are public and collected.
 
 ### Notes
 
@@ -887,11 +918,12 @@ listed because it changes behaviour a reader could already have depended on.
   tests skip and the facts Lean would prove are tested instead, and with Lean
   v4.29.1, where they run. The ledger says which happened. A third, optional
   job runs the Mathlib tests against the pinned Mathlib.
-- Over `Real` and `Complex` the tester's reading is floating point (fractions
-  for `Real.exact`) and Mathlib's is exact, so an identity that holds up to
-  rounding is refuted without Mathlib and proved with it. That is what the
-  exactness class says, and it is not noted as a gap; #33 asks which reading
-  should decide.
+- Over `Real` and `Complex` the tester and Mathlib read one statement, over
+  `ℝ` and `ℂ` (#33), but the tester's enclosures decide less than a proof: an
+  equality of transcendental numbers holds on evidence where it is asserted,
+  and is undecided under a negation or in a hypothesis, and an order whose
+  enclosures overlap is undecided. Such a draw is not noted as a gap, since
+  both readings have an answer there.
 - Python's `and` between two propositions in a generator's `if` clause is *not*
   refused: CPython compiles a conjunction in a comprehension filter into two
   successive tests, so both halves are captured and the guard is the one that
