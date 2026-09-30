@@ -25,6 +25,7 @@ import pytest
 
 from lanky import exp, log, sqrt, theorem
 from lanky import mathlib as mathlib_mode
+from lanky.intervals import ComplexValue, exp_value
 from lanky.lean import (
     UnsupportedTerm,
     domain_guards,
@@ -90,8 +91,10 @@ def mathlib(expr: object, **sorts: object) -> str:
 # {{{ the claims used below
 
 # A theorem under a public name is also collected as a property test (see
-# lanky.pytest_plugin). The ones under a private name are not: an identity the
-# tester would refute by float rounding, a false one, and two it cannot draw.
+# lanky.pytest_plugin). The ones under a private name are not: a false one, and
+# two it cannot draw. The exponential identities and the division undone were
+# private while the tester read the reals in floating point and refuted them by
+# rounding (#33); drawn exactly, they are tested like the rest.
 
 
 @theorem
@@ -105,7 +108,7 @@ def squares(n: Nat) -> 6 * sum(i**2 for i in Fin[n + 1]) == n * (n + 1) * (2 * n
 
 
 @theorem
-def _exp_add(x: Real, y: Real) -> exp(x + y) == exp(x) * exp(y):
+def exp_add(x: Real, y: Real) -> exp(x + y) == exp(x) * exp(y):
     """The exponential turns sums into products."""
 
 
@@ -115,7 +118,7 @@ def exp_positive(x: Real) -> exp(x) > 0:
 
 
 @theorem
-def _complex_exp_add(z: Complex, w: Complex) -> exp(z + w) == exp(z) * exp(w):
+def complex_exp_add(z: Complex, w: Complex) -> exp(z + w) == exp(z) * exp(w):
     """And so does the complex exponential."""
 
 
@@ -125,7 +128,7 @@ def binomial(x: Real.exact, y: Real.exact) -> (x + y) ** 2 == x**2 + 2 * x * y +
 
 
 @theorem
-def _divided_back(x: Real, y: Real, hy: y != 0) -> x / y * y == x:
+def divided_back(x: Real, y: Real, hy: y != 0) -> x / y * y == x:
     """True division, undone, away from zero."""
 
 
@@ -174,7 +177,7 @@ def test_core_lean_still_declines_what_only_mathlib_prints() -> None:
         lean_type(Complex)
     for term in (
         gauss.term,
-        _exp_add.term,
+        exp_add.term,
         Forall(((x, Real),), Abs(x) >= 0),
         Forall(((n, Nat),), n / 2 >= 0),
         Forall(((n, Nat),), n + 0.5 >= 0),
@@ -441,7 +444,7 @@ def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
     assert statement.hypotheses == (("h0", "0 ≤ n"),)
     assert statement.goal == "2 * (∑ i ∈ Finset.Ico (0 : ℤ) (n + 1), i) = n * (n + 1)"
     assert gauss.lean(mathlib=True) == print_lean(gauss.term, mathlib=True)
-    divided = statement_of(_divided_back.term, "_divided_back", mathlib=True)
+    divided = statement_of(divided_back.term, "divided_back", mathlib=True)
     assert divided.binders == (("x", "ℝ"), ("y", "ℝ"))
     assert divided.hypotheses == (("h0", "y ≠ 0"),)
     assert divided.goal == "((x : ℝ) / y) * y = x"
@@ -547,10 +550,10 @@ def test_the_oracle_follows_the_variable_when_it_is_asked(monkeypatch, tmp_path)
 def test_mathlib_mode_takes_what_core_lean_declines(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LANKY_LEAN_MATHLIB", str(tmp_path))
     oracle = LeanOracle()
-    for claim in (gauss, _exp_add, _complex_exp_add, _divided_back, _sqrt_of_negative):
+    for claim in (gauss, exp_add, complex_exp_add, divided_back, _sqrt_of_negative):
         assert oracle.can_establish(claim.fact()), claim.__name__
     monkeypatch.delenv("LANKY_LEAN_MATHLIB")
-    for claim in (gauss, _exp_add, _complex_exp_add, _divided_back, _sqrt_of_negative):
+    for claim in (gauss, exp_add, complex_exp_add, divided_back, _sqrt_of_negative):
         assert not oracle.can_establish(claim.fact()), claim.__name__
     assert oracle.can_establish(commutes.fact())
 
@@ -636,18 +639,127 @@ def test_an_elementary_function_of_a_term_is_a_node() -> None:
 
 
 def test_complex_is_a_sort_that_draws_complex_numbers() -> None:
+    """A draw of ``Complex`` has two fractions for parts, whatever its exactness class (#33)."""
     assert Complex.exactness == "approx"
     assert str(Complex) == "Complex"
     assert str(Complex.exact) == "Complex[exact]"
     rng = random.Random(0)
-    drawn = [sample_value(Complex, rng, {}) for _ in range(20)]
-    assert all(isinstance(value, complex) for value in drawn)
-    exact = [sample_value(Complex.exact, rng, {}) for _ in range(20)]
-    assert all((4 * v.real).is_integer() and (4 * v.imag).is_integer() for v in exact)
+    for sort in (Complex, Complex.exact, Complex.reassoc):
+        drawn = [sample_value(sort, rng, {}) for _ in range(20)]
+        assert all(isinstance(value, ComplexValue) for value in drawn)
+        assert all(
+            isinstance(v.real, Fraction) and isinstance(v.imag, Fraction) for v in drawn
+        )
     assert in_sort(1 + 2j, Complex, {})
     assert in_sort(0.5, Complex, {})
+    assert in_sort(ComplexValue(Fraction(1), Fraction(2)), Complex, {})
     assert not in_sort(True, Complex, {})
     assert not in_sort("1j", Complex, {})
+
+
+def test_real_is_drawn_exactly_whatever_its_exactness_class() -> None:
+    """The exactness class says how a kernel computes, not what a statement means (#33)."""
+    rng = random.Random(0)
+    for sort in (Real, Real.exact, Real.reassoc, Real.approx):
+        drawn = [sample_value(sort, rng, {}) for _ in range(50)]
+        assert all(type(value) is Fraction for value in drawn)
+        assert any(value == 0 for value in drawn)
+        assert any(value.denominator > 1 for value in drawn)
+    assert in_sort(exp_value(Fraction(1)), Real, {})
+
+
+def test_identities_rounding_broke_are_tested(tmp_path) -> None:
+    """#33: the float reading refuted these, and Lean proves them over ``ℝ``.
+
+    Drawn as fractions, with ``exp`` enclosed, they hold at every draw: the
+    ring identities exactly, and the exponential ones to within enclosures
+    that agree to far more bits than a float has. ``lanky check`` exits 0 on
+    them, where it exited 1. (``(x + 1) - 1 == x`` happened to hold at the
+    floats the old draws made, which were multiples of ``2**-52``; a tenth
+    is not one, and ``0.1`` is the rational the float holds.)
+    """
+
+    @theorem
+    def add_one_back(x: Real) -> (x + 1) - 1 == x:
+        """Exact in ``ℝ``."""
+
+    @theorem
+    def add_a_tenth_back(x: Real) -> (x + 0.1) - 0.1 == x:
+        """Exact in ``ℝ``, and false at most floats."""
+
+    for claim in (exp_add, add_one_back, add_a_tenth_back, divided_back, complex_exp_add):
+        report = claim.report(100)
+        assert report.ok, (claim.__name__, report.counterexample)
+        assert report.valid == 100, claim.__name__
+    source = (
+        "from __future__ import annotations\n"
+        "from lanky import exp, theorem\n"
+        "from lanky.prelude import Real\n\n\n"
+        "@theorem\n"
+        "def exp_add(x: Real, y: Real) -> exp(x + y) == exp(x) * exp(y):\n"
+        '    """The exponential turns sums into products."""\n\n\n'
+        "@theorem\n"
+        "def add_back(x: Real) -> (x + 0.1) - 0.1 == x:\n"
+        '    """Adding a tenth and taking it away."""\n'
+    )
+    path = tmp_path / "reals.py"
+    path.write_text(source, encoding="utf-8")
+    from lanky import cli
+    from lanky.check import check_path
+
+    assert [fact.status for fact in check_path(str(path))] == [Status.TESTED, Status.TESTED]
+    assert cli.main(["check", str(path)]) == 0
+
+
+def test_a_false_real_identity_is_still_refuted() -> None:
+    """A refutation is where the enclosures exclude the claim, so it is as definite as a proof."""
+    cases = [
+        ([("x", Real), ("y", Real)], exp(x + y) == exp(x) + exp(y)),
+        ([("x", Real)], sqrt(x**2) == x),
+        ([("x", Real)], log(exp(x) + 1) <= x),
+        ([("z", Complex), ("w", Complex)], exp(z + w) == exp(z) + exp(w)),
+    ]
+    for variables, goal in cases:
+        report = check(variables, [], goal)
+        assert not report.ok, render(goal)
+        assert report.reason == "the goal is false at this assignment"
+    report = _not_a_theorem.report()
+    assert not report.ok
+    x_value, y_value = report.counterexample["x"], report.counterexample["y"]
+    assert x_value * y_value > x_value**3 + y_value**2
+
+
+def test_a_claim_rounding_hid_is_refuted() -> None:
+    """``x + 1e-20 == x`` holds at every float the old draws reached, and at no rational."""
+    report = check([("x", Real)], [], x + 1e-20 == x)
+    assert not report.ok
+    assert set(report.counterexample) == {"x"}
+
+
+def test_an_exponential_that_underflows_a_float_is_no_counterexample() -> None:
+    """``math.exp(x - 1000)`` is ``0.0``, and ``exp(x - 1000) > 0`` was refuted; it holds."""
+    report = check([("x", Real)], [], exp(x - 1000) > 0)
+    assert report.ok and report.valid == 200
+
+
+def test_an_equality_is_evidence_only_where_it_is_asserted() -> None:
+    """The negation of a true identity is refuted where it is decided, and only there.
+
+    At every draw but one the two sides of ``exp(x + y) == exp(x) * exp(y)``
+    agree to within their enclosures, which is no certain ``True`` under a
+    negation, so those draws decide nothing. At ``x = y = 0`` both sides are
+    ``1`` exactly, and there the negation is false.
+    """
+    report = check([("x", Real), ("y", Real)], [], ~(exp(x + y) == exp(x) * exp(y)))
+    assert not report.ok
+    assert report.counterexample == {"x": 0, "y": 0}
+    assert report.undecided > 0
+    # an order the enclosures straddle is decided at x = 0 only, where it is exact
+    report = check([("x", Real)], [], exp(x) * exp(-x) <= 1)
+    assert report.ok and report.undecided > report.valid > 0
+    # one enclosure is one number: exp(x) == exp(y) holds for certain where x is y
+    report = check([("x", Real), ("y", Real)], [exp(x) == exp(y)], x == y)
+    assert report.ok and report.valid > 0 and report.undecided == 0
 
 
 def test_an_exact_complex_identity_is_tested_exactly() -> None:
@@ -697,14 +809,14 @@ def test_a_function_outside_its_python_domain_is_an_operand_with_no_answer() -> 
 
 
 def test_the_readings_gaps_over_the_reals_are_noted_in_mathlib_mode() -> None:
-    assert TRUE_DIVISION_BY_ZERO in notes(_divided_back.term, mathlib=True)
+    assert TRUE_DIVISION_BY_ZERO in notes(divided_back.term, mathlib=True)
     assert notes(Forall(((x, Real),), x / 2 == x * 0.5), mathlib=True) == ()
     assert notes(_sqrt_of_negative.term, mathlib=True) == (OUTSIDE_THE_DOMAIN,)
     assert OUTSIDE_THE_DOMAIN in notes(
         Forall(((x, Real),), log(x * x) == 2 * log(x)), mathlib=True
     )
     assert notes(Forall(((x, Real),), Elementary("log", 2) > 0), mathlib=True) == ()
-    assert notes(_exp_add.term, mathlib=True) == ()
+    assert notes(exp_add.term, mathlib=True) == ()
     # the integer note is the integer one, and the two can stand together
     both = Forall(((n, Nat), (x, Real)), n // n + x / x == 2)
     assert notes(both, mathlib=True) == (DIVISION_BY_ZERO, TRUE_DIVISION_BY_ZERO)
@@ -719,7 +831,7 @@ def test_core_mode_notes_what_it_always_noted(monkeypatch) -> None:
     """
     both = Forall(((n, Nat), (x, Real)), n // n + x / x == 2)
     monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
-    assert notes(_divided_back.term) == ()
+    assert notes(divided_back.term) == ()
     assert notes(_sqrt_of_negative.term) == ()
     assert notes(both) == (DIVISION_BY_ZERO,)
     assert notes(both, mathlib=False) == (DIVISION_BY_ZERO,)
@@ -783,7 +895,7 @@ def test_mathlib_proves_gauss_by_induction_on_its_bound(mathlib_oracle: LeanOrac
 
 @pytest.mark.parametrize(
     "claim",
-    [_exp_add, exp_positive, _complex_exp_add, binomial, _divided_back, _sqrt_of_negative],
+    [exp_add, exp_positive, complex_exp_add, binomial, divided_back, _sqrt_of_negative],
     ids=lambda claim: claim.__name__,
 )
 def test_mathlib_proves_real_and_complex_claims(mathlib_oracle: LeanOracle, claim) -> None:
@@ -878,9 +990,9 @@ def test_every_printed_statement_elaborates(mathlib_oracle: LeanOracle) -> None:
     terms = [
         gauss.term,
         squares.term,
-        _exp_add.term,
-        _complex_exp_add.term,
-        _divided_back.term,
+        exp_add.term,
+        complex_exp_add.term,
+        divided_back.term,
         _sqrt_of_negative.term,
         Forall(((x, Real), (n, Nat)), x + n // 2 <= x + n),
         Forall(((z, Complex),), Abs(z * complex(1.5, -2)) >= 0),
