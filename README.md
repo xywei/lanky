@@ -112,8 +112,13 @@ sharp.
   weakest status over everything a fact rests on whenever that is weaker than
   its own. `--json` carries `rests_on`, `effective`, `effective_heuristic`
   and `under`. An id no fact in the ledger has counts as an assumption, and
-  `lanky check` names it under the table. `examples/nicomachus.py` is the
-  worked case.
+  `lanky check` names it under the table. An id names a definition by the
+  module its file's path gives it under its source root,
+  `theorem:helpers.lemma@12`, and not by the name the module was imported
+  under, so a theorem has the same id in its own file's ledger and in the
+  `rests_on` of a file that imports it. A plugin keys its facts the same way,
+  with `lanky.ledger.fact_id` and `lanky.check.module_name`.
+  `examples/nicomachus.py` is the worked case.
 - `@rewrite`: a transformation as a claim. A function of no arguments returns
   `(source, target)`, `obligation=` names what has to hold between them, and
   the fact reads `source ~> target (obligation)`, with a `RewriteTerm` for an

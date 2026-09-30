@@ -4,6 +4,38 @@ All notable changes to lanky are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [PEP 440](https://peps.python.org/pep-0440/).
 
+## [0.1.0.dev1] - 2026-09-30
+
+A fact id changed, and loopty builds its ids with the same function, so the
+version moves: lanky goes to the next `0.1.0.devN` whenever an interface
+loopty uses changes, and loopty's floor follows it.
+
+### Added
+
+- `lanky.check.module_name(path)`: the module name a file's path gives it
+  under its source root (the last of `source_roots`), dotted.
+  `root/pkg/sub/mod.py` is `pkg.sub.mod`, a package's `__init__.py` is the
+  package, and a file outside any package is its stem. `None` for a path that
+  names no file, such as the `<string>` of a function compiled from a string.
+
+### Changed
+
+- **A fact id names its definition by the path of the file that defines it**
+  (#22). The id is `kind:module.owner@line`, and `module` was the name the
+  module was imported under. `lanky check helpers.py` imports the file under a
+  name of its own, so a lemma was `theorem:lanky_checked_helpers.lemma@12` in
+  its own ledger and `theorem:helpers.lemma@12` in the `rests_on` of a file
+  that does `from helpers import lemma`; a relative import in a package gave a
+  third name. The module is now `lanky.check.module_name` of the file the
+  function's code was compiled from, for a theorem, an axiom and a rewrite,
+  and `lanky.ledger.fact_id` documents it as what a plugin passes, so one
+  definition has one id whether its file is checked directly or imported, and
+  an `UNRESOLVED` line under a file's table names the id the other file's
+  ledger holds. A function with no file behind it keeps its `__module__`.
+  Ledgers are still one per file, and two files at the same place under
+  different roots (`a/helpers.py`, `b/helpers.py`) share a module name; their
+  facts are told apart by `where` and the `path` in the provenance.
+
 ## [0.1.0.dev0] - 2026-09-18
 
 The first release in which something works. `lanky check FILE` imports a file,
