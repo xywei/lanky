@@ -242,6 +242,14 @@ prints a ledger naming who decided what.
   `DirichletOperator` pairs, through `layer_potentials.from_pytential`;
   pytential is never a lanky dependency and `import lanky` does not import
   it.
+- **Sums of index types** (`lanky.prelude.SumType`). `Fin[n] + Fin[m]` is
+  the disjoint union of the two, a point of which is a point of one piece
+  together with the position of that piece. The pieces keep their order, and
+  a sum of sums is flat. A piece may be an index type a plugin defines, which
+  builds the sum with `SumType.of` from its own `__add__` and `__radd__`, as
+  loopty's polyhedral domains do for its array arguments over a union of
+  pieces (loopty #12). lanky only carries a sum: it is not a binder domain,
+  and iterating one says so.
 - **Documentation.** A README that leads with what works, and
   `docs/quickstart.md`, which walks the worked file end to end with the output
   the commands print, and then the axiom example, whose table the suite

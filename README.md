@@ -130,9 +130,10 @@ sharp.
   The oracle that settles a fact leaves its trust class in the provenance.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Complex`, `Bool`, `Prop`, `Fin[n]`,
-  `Fn[A, B]`, refinement by `T & prop`, exactness classes; and `lanky.exp`,
-  `lanky.log` and `lanky.sqrt`, which build a term from a term and are
-  `math`'s (or `cmath`'s) functions at a number.
+  `Fn[A, B]`, refinement by `T & prop`, the sum `Fin[n] + Fin[m]` of index
+  types (carried for plugins, not yet a binder domain), exactness classes;
+  and `lanky.exp`, `lanky.log` and `lanky.sqrt`, which build a term from a
+  term and are `math`'s (or `cmath`'s) functions at a number.
 - Property testing, including satisfying a definitional hypothesis by
   construction rather than rejection sampling, so a theorem about a scan is
   genuinely tested and not vacuously passed. A synthesized value has to land
