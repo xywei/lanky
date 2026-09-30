@@ -85,8 +85,10 @@ says how much the claim is worth, and nothing else changes.
 
 ## Status
 
-This is `0.1.0.dev0`, a development release. The core works; the edges are
-sharp.
+This is `0.1.0.dev1`, a development release. The core works; the edges are
+sharp. The version moves to the next `0.1.0.devN` whenever an interface loopty
+uses changes, and loopty raises its floor to match; in between, loopty follows
+lanky's `main`.
 
 **Works.**
 

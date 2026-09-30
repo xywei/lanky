@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lanky"
-version = "0.1.0.dev0"
+version = "0.1.0.dev1"
 description = "Python for math you can check. A Lean-hosted proof language, shaped like mypy."
 readme = "README.md"
 license = "MIT"
