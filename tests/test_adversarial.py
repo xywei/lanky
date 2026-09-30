@@ -2230,6 +2230,34 @@ def test_a_proof_of_a_universal_goal_is_sampled_for_a_disagreement(
     ) in printed
 
 
+def test_a_proof_over_the_reals_is_not_contradicted_by_rounding(
+    tmp_path, oracles, capsys
+) -> None:
+    """#33: the cross-check of a real claim samples it exactly, so rounding is no disagreement.
+
+    ``x / y * y == x`` away from zero is what Mathlib proves. Sampled in
+    floating point it was refuted at most draws, and the check printed a
+    ``SEMANTICS`` block whose counterexample was a rounding error. Drawn as
+    fractions it holds at every draw, and there is nothing to report.
+    """
+    source = (
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Real\n\n\n"
+        "@theorem\n"
+        "def divided_back(x: Real, y: Real, hy: y != 0) -> x / y * y == x:\n"
+        '    """True division, undone, away from zero."""\n'
+    )
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(tmp_path, source, "reals.py")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.PROVED
+    assert "semantics_disagreement" not in fact.provenance
+    assert "semantics_counterexample" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    assert "SEMANTICS" not in capsys.readouterr().out
+
+
 def test_a_goal_whose_domain_is_always_empty_is_vacuous_too(tmp_path, oracles, capsys) -> None:
     """With no guard, the goal's domain is what never has a point: ``Fin[n - n]``."""
     source = VACUOUS.replace(

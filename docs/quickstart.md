@@ -575,13 +575,20 @@ account):
   Lean casts every leaf of an arithmetic tree to the widest type in it, and
   without the ascription `n / 2` would divide the cast `n` in `ℝ`.
 
-The readings of a real statement are not one reading. The property tester
-computes `Real` in floating point, with fractions for `Real.exact`, and Lean
-over `ℝ`: `exp(x + y) == exp(x) * exp(y)` is refuted by rounding without
-Mathlib and proved with it. Where Lean's functions are total and Python's
-raise, the fact carries a note in Mathlib mode, as `div_zero` does above: a
-true division by something that may be zero, and a logarithm or square root of
-something that may leave its Python domain.
+The property tester reads a real statement as Lean does, over `ℝ`. It draws
+`Real` and `Complex` as fractions, whatever their exactness class, and
+encloses `exp`, `log` and `sqrt` in intervals with rational endpoints where
+their values are not rational, so `(x + 1) - 1 == x` holds exactly and
+`exp(x + y) == exp(x) * exp(y)` holds to within enclosures that agree to far
+more bits than a float has. Both are `tested` without Mathlib and `proved`
+with it, and a real claim is `refuted` only at a draw where the enclosures
+exclude it. An equality whose sides agree counts as holding only where the
+statement asserts it; under a negation or in a hypothesis the agreement
+decides nothing, and neither does an order the enclosures straddle. Where
+Lean's functions are total and Python's raise, the fact carries a note in
+Mathlib mode, as `div_zero` does above: a true division by something that may
+be zero, and a logarithm or square root of something that may leave its Python
+domain.
 `def neg(x: Real & (x < 0)) -> sqrt(x) == 0` is proved with Mathlib, whose
 square root of a negative number is `0`, and no draw can evaluate it in Python.
 

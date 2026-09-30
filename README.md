@@ -140,7 +140,11 @@ sharp.
   inside the family's codomain, so an unsatisfiable definition drops the draw
   rather than putting a point outside its sort into it. A pass over zero valid
   draws is never reported as `TESTED`: the fact stays `ASSUMED` and its
-  provenance says `untested` and why.
+  provenance says `untested` and why. The reals are read exactly, as Lean
+  reads them: `Real` and `Complex` are drawn as fractions whatever their
+  exactness class, and `exp`, `log` and `sqrt` are enclosed in intervals
+  where their values are not rational (`src/lanky/intervals.py`), so a claim
+  is refuted only where the enclosures exclude it.
 - Refusing the ways a statement can silently mean something other than what was
   written: a guard joined with Python's `or`, an `and` or `or` used as a value,
   a `not` in a guard, an `if` statement inside a function an annotation
@@ -225,13 +229,19 @@ sharp.
   a remainder of a real, an order between complex numbers and a complex
   logarithm or square root: each would be printed with a meaning Python does
   not give it.
-- Over `Real` and `Complex` the readings are not one. The tester computes in
-  floating point (with fractions for `Real.exact`) and Lean over `ℝ` and `ℂ`,
-  so an identity that holds only up to rounding, such as
-  `exp(x + y) == exp(x) * exp(y)`, is refuted without Mathlib and proved with
-  it. Where Lean is total and Python raises (a division by zero, the logarithm
-  of zero, the square root of a negative number), the fact carries a note in
-  Mathlib mode, as an integer division by zero does in either mode.
+- Over `Real` and `Complex` the tester's enclosures decide less than Lean
+  does. Two enclosures can never show two transcendental numbers equal, so an
+  equality counts as holding where the statement asserts it and its two sides
+  agree to 64 bits: `exp(x + y) == exp(x) * exp(y)` is `tested`, as a
+  sampled universal is, on evidence. Under a negation, in a hypothesis, or as
+  a value, the same agreement decides nothing, and neither does an order whose
+  enclosures overlap, such as `exp(x) * exp(-x) <= 1` at any `x` but `0`
+  (#33). A complex `log` or `sqrt`, an `exp` of an argument past `2**14`, and
+  a negative number to a power that is not an integer are not enclosed, and
+  leave the draw undecided. Where Lean is total and Python raises (a division
+  by zero, the logarithm of zero, the square root of a negative number), the
+  fact carries a note in Mathlib mode, as an integer division by zero does in
+  either mode.
 - A family prints as a total function, so every application of one has to be
   shown in bounds before the statement can go to Lean. The check is affine
   arithmetic over the enclosing binders, not a solver, so an argument it cannot
@@ -362,7 +372,10 @@ Four ideas, and everything else is one of them.
 **Terms.** pymbolic is the expression language, the same one loopy uses, so a
 statement and a generated kernel cannot drift apart in translation. lanky adds
 `Forall`, `Exists`, `Sum`, `Abs` and `Elementary` (`exp`, `log`, `sqrt`) as
-pymbolic subclasses, and comparison operators on them build propositions.
+pymbolic subclasses, and comparison operators on them build propositions. The
+property tester evaluates them in an exact reading of the reals, rationals and
+interval enclosures (`lanky.intervals`), and the file run as a program
+evaluates them as Python does.
 
 **Facts and the ledger.** A `Fact` is a statement, a term, a status, a decider,
 a provenance, a source location, and the ids of the facts it rests on. `Status`

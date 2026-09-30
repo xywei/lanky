@@ -46,9 +46,11 @@ import inspect
 import itertools
 import math
 import numbers
+import operator
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from fractions import Fraction
 from typing import Any, ClassVar
 
@@ -85,6 +87,7 @@ __all__ = [
     "elementary_value",
     "evaluate",
     "evaluate_annotations",
+    "exact_reading",
     "exists",
     "exp",
     "forall",
@@ -141,7 +144,9 @@ class UndefinedValue(ArithmeticError):
     as a division by zero: the sampled reading has no answer at the draw where
     the Lean reading has one. The property tester drops such a draw rather
     than count it as a counterexample, and :mod:`lanky.semantics` notes the
-    gap on the fact.
+    gap on the fact. The tester's exact reading (:func:`exact_reading`) raises
+    it for a logarithm or a square root outside its domain; its exponential
+    never overflows.
     """
 
 
@@ -182,6 +187,46 @@ class Polarity(enum.Enum):
 #: outside its Python domain (:class:`UndefinedValue`), where Mathlib's is
 #: total. None of them is a truth value, and none is an error in the statement.
 _OPEN = (Undecided, ZeroDivisionError, UndefinedValue)
+
+
+#: Whether evaluation reads numbers exactly, as the property tester does (see
+#: :func:`exact_reading`).
+_EXACT: ContextVar[bool] = ContextVar("lanky_exact_reading", default=False)
+
+
+@contextmanager
+def exact_reading() -> Iterator[None]:
+    """Evaluate with exact numbers while the block runs: the property tester's reading.
+
+    Python computes a real number in floating point, and a statement read that
+    way is refuted by rounding: ``(x + 0.1) - 0.1 == x`` is false at most
+    floats ``x``, and Lean proves it (#33). Inside this block every evaluation
+    reads the reals exactly (see :mod:`lanky.intervals`): a float literal is
+    the rational number it holds, a complex literal is a
+    :class:`~lanky.intervals.ComplexValue` of its parts, ``n / 2`` and ``2 **
+    -1`` of integers are fractions, ``exp``, ``log`` and ``sqrt`` are exact
+    where the value is rational and enclosed where it is not, and a comparison
+    the enclosures cannot settle is :class:`Undecided`, unless it is an
+    equality the statement asserts and the enclosures agree to
+    (:meth:`LankyEvaluationMapper.map_comparison`). The values the evaluation
+    is given are whatever they are: the tester draws fractions for ``Real``.
+
+    Outside it evaluation is Python's, which is what running the file computes,
+    and what :meth:`lanky.theory.Theorem.__call__` reports.
+    """
+    token = _EXACT.set(True)
+    try:
+        yield
+    finally:
+        _EXACT.reset(token)
+
+
+@functools.cache
+def _intervals() -> Any:
+    """:mod:`lanky.intervals`, imported when first asked for, since it imports this module."""
+    from lanky import intervals
+
+    return intervals
 
 
 def conjoin(operands: Iterable[Callable[[], bool]]) -> bool:
@@ -946,7 +991,9 @@ def elementary_value(function: str, value: Any) -> Any:
     goes to :mod:`math` and a complex one to :mod:`cmath`, so ``exp(x)`` for a
     real ``x`` is a ``float``, as it is in the file run as a program. A point
     where Python has no value is refused with :exc:`UndefinedValue`, which is a
-    gap between the readings and not a counterexample.
+    gap between the readings and not a counterexample. The property tester
+    does not use it: in its exact reading (:func:`exact_reading`) the value is
+    :func:`lanky.intervals.elementary`'s.
 
     Raises:
         UndefinedValue: If Python's function raises at ``value``: the logarithm
@@ -1145,6 +1192,29 @@ class _Walk:
 #: other node uses the values below it as values.
 _POLAR = (prim.LogicalAnd, prim.LogicalOr, prim.LogicalNot, Forall, Exists)
 
+#: A comparison's operator, as the function Python applies for it.
+_COMPARISONS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
+
+
+def _where(polarity: Polarity) -> str:
+    """Where a proposition that does not stand ``POSITIVE`` stands, for a reason."""
+    if polarity is Polarity.NEGATIVE:
+        return (
+            "the statement assumes or denies it (a hypothesis, a guard or a "
+            "refinement, or under a negation)"
+        )
+    return (
+        "its truth value is used as a value (inside a sum, a comparison or "
+        "an arithmetic operation)"
+    )
+
 
 class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     """Evaluate a lanky term at concrete values.
@@ -1195,6 +1265,11 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     refinement or the body of a quantifier, the value has to be a truth value
     (:func:`truth_value`). pymbolic's own connectives apply Python's
     truthiness, which reads a number as a proposition.
+
+    A mapper made inside :func:`exact_reading` reads numbers exactly, as the
+    property tester does: its constants, true divisions, powers, elementary
+    functions and comparisons are :mod:`lanky.intervals`'s (``exact``). One
+    made outside it reads them as Python does.
     """
 
     def __init__(
@@ -1208,18 +1283,24 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         self.sampler = sampler
         #: Where the node being evaluated stands in the statement.
         self.polarity = polarity
+        #: Whether numbers are read exactly (see :func:`exact_reading`).
+        self.exact = _EXACT.get()
 
     def rec(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
         """Evaluate ``expr``, where the node that asked for it puts it.
 
         A connective or a quantifier keeps the polarity it is given and says
-        where its own operands stand. Any other node, a comparison, an
-        arithmetic operation, a call or a sum, uses the values below it as they
-        are, so what is below it is evaluated standing ``MIXED``.
+        where its own operands stand. So does a comparison, because what an
+        equality of two enclosures is worth depends on where it stands
+        (:meth:`map_comparison`); its two sides are values, and stand
+        ``MIXED``. Any other node, an arithmetic operation, a call or a sum,
+        uses the values below it as they are, so what is below it is evaluated
+        standing ``MIXED``.
         """
         if (
             self.polarity is Polarity.MIXED
             or isinstance(expr, _POLAR)
+            or isinstance(expr, prim.Comparison)
             or not isinstance(expr, prim.ExpressionNode)
         ):
             return super().rec(expr, *args, **kwargs)
@@ -1482,8 +1563,105 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         return builtins.abs(self.rec(expr.operand))
 
     def map_elementary(self, expr: Elementary) -> Any:
-        """The function at the value of its argument, as :func:`elementary_value` has it."""
-        return elementary_value(expr.function, self.rec(expr.argument))
+        """The function at the value of its argument, as :func:`elementary_value` has it.
+
+        In the exact reading it is :func:`lanky.intervals.elementary`'s: exact
+        where the value is rational, and enclosed where it is not.
+        """
+        value = self.rec(expr.argument)
+        if self.exact:
+            return _intervals().elementary(expr.function, value)
+        return elementary_value(expr.function, value)
+
+    def map_constant(self, expr: Any) -> Any:
+        """A number is its own value; in the exact reading a float is the rational it holds.
+
+        So is a complex number's pair of parts (:func:`lanky.intervals.exact`),
+        which is how the Lean printer reads both literals.
+        """
+        if self.exact:
+            return _intervals().exact(expr)
+        return expr
+
+    def map_quotient(self, expr: prim.Quotient) -> Any:
+        """True division; in the exact reading, two integers divide to a fraction."""
+        numerator, denominator = self.rec(expr.numerator), self.rec(expr.denominator)
+        if self.exact:
+            return _intervals().quotient(numerator, denominator)
+        return numerator / denominator
+
+    def map_power(self, expr: prim.Power) -> Any:
+        """A power; in the exact reading, as :func:`lanky.intervals.power` takes it."""
+        base, exponent = self.rec(expr.base), self.rec(expr.exponent)
+        if self.exact:
+            return _intervals().power(base, exponent)
+        return base**exponent
+
+    def map_comparison(self, expr: prim.Comparison) -> Any:
+        """Compare the two sides, which are values and stand ``MIXED``.
+
+        In the exact reading a side can be an enclosure (see
+        :mod:`lanky.intervals`), and a comparison with one is answered by
+        :func:`lanky.intervals.compare`: true where the enclosures prove it,
+        false where they exclude it, and a false answer is as definite as a
+        proof. Where they straddle it, it is undecided, with one exception. An
+        equality between two transcendental numbers is never proved by
+        enclosures, so an equality the statement asserts, one standing
+        ``POSITIVE``, holds where the enclosures agree to within
+        :data:`lanky.intervals.AGREEMENT` bits (:func:`lanky.intervals.agree`).
+        That is evidence and not proof, which is what ``TESTED`` means, and it
+        is the reading a sampled universal that held at every draw gets: under
+        a negation, in a hypothesis or a guard, or used as a value, the
+        ``True`` would be used as a certainty, and the comparison is undecided
+        there. So is an order whose enclosures overlap, wherever it stands.
+
+        Raises:
+            Undecided: Where the enclosures straddle the comparison, but for
+                an asserted equality they agree to.
+        """
+        left = self._at(Polarity.MIXED, expr.left)
+        right = self._at(Polarity.MIXED, expr.right)
+        if self.exact:
+            intervals = _intervals()
+            if isinstance(left, intervals.NUMBER_TYPES) or isinstance(
+                right, intervals.NUMBER_TYPES
+            ):
+                answer = intervals.compare(expr.operator, left, right)
+                if answer is not NotImplemented:
+                    return self._settle(expr, answer, left, right)
+        return _COMPARISONS[expr.operator](left, right)
+
+    def _settle(self, expr: prim.Comparison, answer: bool | None, left: Any, right: Any) -> bool:
+        """What a comparison of enclosures answers, given what the enclosures said.
+
+        Raises:
+            Undecided: Where they straddle it (see :meth:`map_comparison`).
+        """
+        if answer is not None:
+            return answer
+        intervals = _intervals()
+        sides = f"{intervals.describe(left)} and {intervals.describe(right)}"
+        if expr.operator != "==":
+            raise Undecided(
+                f"the two sides of {render(expr)} are enclosed at this draw in {sides}, "
+                "which overlap, so the enclosures neither prove it nor refute it, and "
+                "the statement is undecided here"
+            )
+        if self.polarity is not Polarity.POSITIVE:
+            raise Undecided(
+                f"the two sides of {render(expr)} agree to within their enclosures at "
+                f"this draw, {sides}, which is evidence that they are equal and not "
+                f"proof, and the equality stands where {_where(self.polarity)}, which "
+                "needs a certain answer, so the statement is undecided here"
+            )
+        if not intervals.agree(left, right):
+            raise Undecided(
+                f"the two sides of {render(expr)} are enclosed at this draw in {sides}, "
+                f"which overlap but are wider than {intervals.AGREEMENT} bits of their "
+                "size, too wide for the agreement to be evidence, so the statement is "
+                "undecided here"
+            )
+        return True
 
     def map_foreign(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
         """A constant pymbolic has no class for, a ``Fraction``, is its own value.
@@ -1544,20 +1722,10 @@ def _decline_sampled_pass(expr: Forall, walk: _Walk, polarity: Polarity) -> None
         )
     if polarity is Polarity.POSITIVE:
         return
-    if polarity is Polarity.NEGATIVE:
-        where = (
-            "the statement assumes or denies it (a hypothesis, a guard or a "
-            "refinement, or under a negation)"
-        )
-    else:
-        where = (
-            "its truth value is used as a value (inside a sum, a comparison or "
-            "an arithmetic operation)"
-        )
     raise Undecided(
         f"{render(expr)} held at every draw of {names}, which is evidence that "
-        f"it holds and not proof, and it stands where {where}, which needs a "
-        "certain answer, so the statement is undecided here"
+        f"it holds and not proof, and it stands where {_where(polarity)}, which "
+        "needs a certain answer, so the statement is undecided here"
     )
 
 
@@ -1620,7 +1788,9 @@ def evaluate(
             whole of ``expr`` evaluates to is the caller's to judge.
     """
     if not isinstance(expr, prim.ExpressionNode):
-        return expr
+        # A constant is read as the mapper reads one, so that a float a
+        # definition assigns is the rational it holds in the exact reading.
+        return _intervals().exact(expr) if _EXACT.get() else expr
     return LankyEvaluationMapper(dict(context or {}), sampler, polarity)(expr)
 
 
