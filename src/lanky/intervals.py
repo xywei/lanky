@@ -49,9 +49,10 @@ hypothesis. An enclosure less itself is ``0``, and over itself ``1``, and
 ``exp(x) - exp(x)``, which pymbolic evaluates as ``exp(x) + (-1) * exp(x)``,
 is ``0`` as well.
 
-An infinity or a NaN is a float and no real number. An enclosure is below
-``inf`` for certain, and a NaN equals nothing, as Python compares them, but
-arithmetic with either, or a function of either, leaves the draw undecided.
+An infinity or a NaN is a float and no real number, and a complex number with
+one for a part is no complex number either. An enclosure is below ``inf`` for
+certain, and a NaN equals nothing, as Python compares them, but arithmetic
+with either, or a function of either, leaves the draw undecided.
 
 What is not enclosed is left undecided, never guessed: a complex logarithm or
 square root (the printer declines both, see :mod:`lanky.lean`), an exponential,
@@ -217,7 +218,9 @@ def _bounds(value: Any) -> tuple[Fraction, Fraction] | None:
 
 
 def _nonfinite(value: Any) -> bool:
-    """Whether ``value`` is a float infinity or NaN, which is a number and not a real one."""
+    """Whether ``value`` is a float infinity or NaN, or a complex number with one for a part."""
+    if isinstance(value, complex):
+        return not (math.isfinite(value.real) and math.isfinite(value.imag))
     return (
         isinstance(value, numbers.Real)
         and not isinstance(value, numbers.Rational | Interval)
@@ -225,11 +228,17 @@ def _nonfinite(value: Any) -> bool:
     )
 
 
+def _is_nan(value: Any) -> bool:
+    """Whether ``value`` is a real float NaN."""
+    return isinstance(value, numbers.Real) and _nonfinite(value) and math.isnan(float(value))
+
+
 def _no_infinity(value: Any) -> Undecided:
     """What an infinity or a NaN in the exact reading's arithmetic raises."""
     return Undecided(
-        f"{value!r} is a float and no real number, and the exact reading does not "
-        "compute with it, so this draw decides nothing"
+        f"{value!r} is an infinity or a NaN, or has one for a part, which is no "
+        "real number, and the exact reading does not compute with it, so this draw "
+        "decides nothing"
     )
 
 
@@ -261,6 +270,18 @@ def _real(value: Any) -> Fraction | Interval:
             raise _no_infinity(value)
         raise TypeError(f"{value!r} is not a finite real number")
     return q
+
+
+def _complex_operand(value: Any) -> tuple[Any, Any] | None:
+    """The other operand of a complex number's arithmetic as its parts, ``None`` if no number.
+
+    Raises:
+        Undecided: For a number with an infinity or a NaN in it (:func:`_nonfinite`).
+    """
+    parts = _parts(value)
+    if parts is None and _nonfinite(value):
+        raise _no_infinity(value)
+    return parts
 
 
 def _parts(value: Any) -> tuple[Any, Any] | None:
@@ -678,7 +699,7 @@ class ComplexValue:
 
     def __add__(self, other: Any) -> Any:
         """``self + other``."""
-        b = _parts(other)
+        b = _complex_operand(other)
         if b is None:
             return NotImplemented
         return ComplexValue(self.real + b[0], self.imag + b[1])
@@ -687,21 +708,21 @@ class ComplexValue:
 
     def __sub__(self, other: Any) -> Any:
         """``self - other``."""
-        b = _parts(other)
+        b = _complex_operand(other)
         if b is None:
             return NotImplemented
         return ComplexValue(self.real - b[0], self.imag - b[1])
 
     def __rsub__(self, other: Any) -> Any:
         """``other - self``."""
-        b = _parts(other)
+        b = _complex_operand(other)
         if b is None:
             return NotImplemented
         return ComplexValue(b[0] - self.real, b[1] - self.imag)
 
     def __mul__(self, other: Any) -> Any:
         """``self * other``."""
-        b = _parts(other)
+        b = _complex_operand(other)
         if b is None:
             return NotImplemented
         return _complex_product((self.real, self.imag), b)
@@ -710,14 +731,14 @@ class ComplexValue:
 
     def __truediv__(self, other: Any) -> Any:
         """``self / other``, raising ``ZeroDivisionError`` at zero, as Python does."""
-        b = _parts(other)
+        b = _complex_operand(other)
         if b is None:
             return NotImplemented
         return _complex_quotient((self.real, self.imag), b)
 
     def __rtruediv__(self, other: Any) -> Any:
         """``other / self``."""
-        b = _parts(other)
+        b = _complex_operand(other)
         if b is None:
             return NotImplemented
         return _complex_quotient(b, (self.real, self.imag))
@@ -803,8 +824,9 @@ NUMBER_TYPES = (Interval, ComplexValue)
 def _comparable(value: Any) -> tuple[Any, Any] | None:
     """A number as the bounds a comparison reads: an infinity is its own, as Python has it."""
     bounds = _bounds(value)
-    if bounds is None and _nonfinite(value) and not math.isnan(float(value)):
-        return float(value), float(value)
+    if bounds is None and isinstance(value, numbers.Real) and _nonfinite(value):
+        if not _is_nan(value):
+            return float(value), float(value)
     return bounds
 
 
@@ -815,7 +837,7 @@ def _order(op: str, left: Any, right: Any) -> bool | None:
     ``-inf`` for certain, and a NaN is equal to nothing and in no order, as
     Python compares one.
     """
-    if any(_nonfinite(side) and math.isnan(float(side)) for side in (left, right)):
+    if _is_nan(left) or _is_nan(right):
         return op == "!="
     if left is right:
         return op in ("==", "<=", ">=")
@@ -863,6 +885,9 @@ def compare(op: str, left: Any, right: Any) -> bool | None:
         if left is right:
             return op == "=="
         a, b = _parts(left), _parts(right)
+        if (a is None) != (b is None) and _nonfinite(left if a is None else right):
+            # a number with finite parts is no number with an infinity or a NaN in it
+            return op == "!="
         if a is None or b is None:
             return NotImplemented  # type: ignore[return-value]
         real, imag = _order("==", a[0], b[0]), _order("==", a[1], b[1])
@@ -1025,9 +1050,9 @@ def elementary(function: str, value: Any) -> Any:
     if isinstance(value, bool) or not isinstance(value, numbers.Complex | Interval | ComplexValue):
         raise TypeError(f"{function} takes a number, not {value!r}")
     if isinstance(value, ComplexValue | complex):
-        parts = _parts(value)
+        parts = _complex_operand(value)
         if parts is None:
-            raise TypeError(f"{value!r} is not a finite complex number")
+            raise TypeError(f"{value!r} is not a complex number")
         if function == "exp":
             return _complex_exp(*parts)
         raise Undecided(

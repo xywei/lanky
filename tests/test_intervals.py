@@ -403,6 +403,18 @@ def test_an_infinity_is_compared_as_python_does_and_computed_with_not_at_all() -
     ):
         with pytest.raises(Undecided, match="no real number"):
             operation()
+    # a complex number with finite parts is no complex infinity, and adds to none
+    c = ComplexValue(Fraction(1), Fraction(2))
+    assert compare("==", c, complex(math.inf, 0)) is False
+    assert compare("!=", c, complex(0, math.nan)) is True
+    for operation in (
+        lambda: c + complex(math.inf, 0),
+        lambda: c * math.nan,
+        lambda: e + complex(0, math.inf),
+        lambda: elementary("exp", complex(math.inf, 1)),
+    ):
+        with pytest.raises(Undecided, match="no real number"):
+            operation()
     report = check([("x", Real)], [], exp(x) < math.inf)
     assert report.ok and report.valid == 200
     # a rational plus an infinity is Python's, and exp(0) is the rational 1
