@@ -768,7 +768,7 @@ def test_an_exact_complex_identity_is_tested_exactly() -> None:
     def difference_of_squares(z: Complex.exact, w: Complex.exact) -> (z + w) * (z - w) == (
         z * z - w * w
     ):
-        """A ring identity, which dyadic parts keep exact in floating point."""
+        """A ring identity, exact at the fractions a draw has for parts."""
 
     report = difference_of_squares.report(50)
     assert report.ok and report.valid == 50
