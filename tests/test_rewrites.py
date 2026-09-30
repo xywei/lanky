@@ -243,4 +243,31 @@ def test_lanky_check_offers_each_rewrite_to_the_oracles(tmp_path, monkeypatch, c
     assert rows[0]["term"] == "abc ~> cba (reversed)"
 
 
+def test_a_rewrite_has_the_id_its_file_gives_it_however_it_is_imported(
+    tmp_path, monkeypatch
+) -> None:
+    """Checked, a rewrite's id is the one a file that imports it names it by.
+
+    ``lanky check`` imports the file under a name of its own, which the id
+    used to carry; it is now the module name the file's path gives it.
+    """
+    import importlib
+    import sys
+
+    name = "lanky_test_rewrite_ids"
+    path = tmp_path / f"{name}.py"
+    path.write_text(REWRITES, encoding="utf-8")
+    line = REWRITES.splitlines().index('@rewrite(obligation="reversed")') + 1
+    expected = f"rewrite:{name}.reversal@{line}"
+    reversal, _mistaken, _unknown = check_path(path)
+    assert reversal.id == expected
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        with registry.collecting():
+            imported = importlib.import_module(name)
+        assert imported.reversal.fact_id == expected
+    finally:
+        sys.modules.pop(name, None)
+
+
 # }}}
