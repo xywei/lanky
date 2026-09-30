@@ -32,11 +32,15 @@ from lanky.intervals import (
     quotient,
     sqrt_value,
 )
-from lanky.terms import Undecided, UndefinedValue, Var, evaluate, exact_reading
+from lanky.prelude import Fin, Fn, Nat, Real
+from lanky.terms import Forall, Undecided, UndefinedValue, Var, evaluate, exact_reading
+from lanky.testing import check
 
 x = Var("x")
 n = Var("n")
 z = Var("z")
+f = Var("f")
+i = Var("i")
 
 #: Digits of the reference values, far more than an enclosure resolves.
 _DIGITS = 60
@@ -306,3 +310,102 @@ def test_an_equality_of_enclosures_counts_only_where_it_is_asserted() -> None:
         # an exclusion is a definite answer wherever it stands
         assert evaluate(~(exp(x + y) == exp(x) + exp(y)), at) is True
         assert evaluate(exp(x) * exp(-x) <= Fraction(1, 2), at) is False
+
+
+def test_one_operation_on_the_same_numbers_is_one_number() -> None:
+    """An enclosure is one number, and so is an operation on the same ones.
+
+    ``2 * exp(x)`` computed twice is one object, and equal to itself for
+    certain, where two objects with the same endpoints would decide nothing.
+    """
+    e, h = exp_value(Fraction(1, 3)), exp_value(Fraction(1, 2))
+    assert 2 * e is e * 2
+    assert e * h is h * e
+    assert e + h is h + e
+    assert e - h is e - h and 1 - e is 1 - e and e / h is e / h and 1 / e is 1 / e
+    assert -e is -e and e**3 is e**3 and abs(e - 2) is abs(e - 2)
+    assert exp_value(e) is exp_value(e) and log_value(e) is log_value(e)
+    assert sqrt_value(e) is sqrt_value(e)
+    assert compare("==", 2 * e, 2 * e) is True
+    # an enclosure less itself is 0, and over itself 1, where it excludes zero
+    assert e - e == 0 and type(e - e) is Fraction
+    assert e / e == 1 and type(e / e) is Fraction
+    # 0, 1 and -1 keep the object: pymbolic sums from 0, multiplies from 1, and
+    # reads e - e as e + (-1) * e, which is e plus its own negation
+    assert 0 + e is e and e - 0 is e and 1 * e is e and e / 1 is e and e**1 is e
+    negated = -e
+    assert -1 * e is negated and e / -1 is negated and 0 - e is negated and -negated is e
+    assert e + (-e) == 0 and type(-e + e) is Fraction
+    around_zero = sqrt_value(Fraction(2)) * sqrt_value(Fraction(2)) - 2
+    with pytest.raises(Undecided, match="contains zero"):
+        around_zero / around_zero
+    # the same endpoints computed apart are two objects, and say nothing
+    apart = Interval(e.lo, e.hi)
+    assert compare("==", apart, e) is None
+    with exact_reading():
+        at = {"x": Fraction(1, 3)}
+        assert evaluate(exp(x) - exp(x) >= 0, at) is True
+        assert evaluate(2 * exp(x) == 2 * exp(x), at) is True
+
+
+def test_a_table_defined_from_an_enclosure_satisfies_its_definition() -> None:
+    """A definition read back as a hypothesis holds for certain at the table it filled.
+
+    The tester fills ``f`` from ``f(i) == 2 * exp(x)`` and then reads the
+    definition as a hypothesis, standing where a ``True`` has to be certain.
+    Two enclosures of ``2 * exp(x)`` computed apart decide nothing, and every
+    draw with ``n > 0`` and ``x != 0`` was undecided; one object for one
+    number is equal to itself.
+    """
+    table = [("x", Real), ("n", Nat), ("f", Fn[Fin[n], Real])]
+    for definition, goal in (
+        (f(i) == 2 * exp(x), f(i) > 0),
+        (f(i) == exp(x) * i, f(i) >= 0),
+        (f(i) == sqrt(exp(x) + i), f(i) * f(i) == exp(x) + i),
+    ):
+        report = check(table, [Forall(((i, Fin[n]),), definition)], Forall(((i, Fin[n]),), goal))
+        assert report.ok and report.valid == 200 and report.undecided == 0, definition
+    # a recurrence reads the entries it set
+    geometric = [("x", Real), ("n", Nat), ("f", Fn[Fin[n + 1], Real])]
+    hypotheses = [f(0) == 1, Forall(((i, Fin[n]),), f(i + 1) == f(i) * exp(x))]
+    report = check(geometric, hypotheses, Forall(((i, Fin[n + 1]),), f(i) > 0))
+    assert report.ok and report.valid == 200 and report.undecided == 0
+    # and a false claim about such a table is refuted, at a draw that fills it
+    report = check(
+        table,
+        [Forall(((i, Fin[n]),), f(i) == 2 * exp(x))],
+        Forall(((i, Fin[n]),), f(i) > 2 * exp(x)),
+    )
+    assert not report.ok and len(report.counterexample["f"]) > 0
+
+
+def test_an_infinity_is_compared_as_python_does_and_computed_with_not_at_all() -> None:
+    """``exp(x) < math.inf`` holds, and ``exp(x) + math.inf`` decides nothing.
+
+    An infinity and a NaN are floats and no real numbers. A comparison with
+    one is Python's, which is certain for every real number; arithmetic or a
+    function of one has no exact reading, and is undecided rather than a
+    ``TypeError`` that stops the test.
+    """
+    e = exp_value(Fraction(1))
+    assert compare("<", e, math.inf) is True
+    assert compare(">", e, -math.inf) is True
+    assert compare("==", e, math.inf) is False
+    assert compare("==", e, math.nan) is False
+    assert compare("!=", e, math.nan) is True
+    assert compare("<", e, math.nan) is False
+    for operation in (
+        lambda: e + math.inf,
+        lambda: math.inf - e,
+        lambda: e * math.nan,
+        lambda: elementary("exp", math.inf),
+        lambda: power(math.inf, Fraction(1, 2)),
+    ):
+        with pytest.raises(Undecided, match="no real number"):
+            operation()
+    report = check([("x", Real)], [], exp(x) < math.inf)
+    assert report.ok and report.valid == 200
+    # a rational plus an infinity is Python's, and exp(0) is the rational 1
+    report = check([("x", Real)], [], exp(x) + math.inf > 0)
+    assert report.ok and report.undecided > 0
+    assert any("no real number" in reason for reason in report.skipped)

@@ -897,11 +897,16 @@ listed because it changes behaviour a reader could already have depended on.
   `POSITIVE`, where the statement asserts it, holds when its sides agree to
   64 bits, which is evidence as a sampled universal's pass is; anywhere else
   it is undecided, as is an order whose enclosures overlap. One enclosure is
-  one number and equal to itself, and one exponential of one argument is one
-  enclosure. A complex `log` or `sqrt`, an `exp` past `2**14` and a negative
-  number to a power that is not an integer are undecided rather than
-  guessed. `lanky.exp(0.5)` at a number, `evaluate` outside the exact
-  reading and `Theorem.__call__` are Python's, as before. So the claims
+  one number and equal to itself, and one operation on the same numbers, the
+  exponential of one argument or `2 * exp(x)` at one draw, is one enclosure,
+  so a table the tester fills from a definition such as
+  `f(i) == 2 * exp(x)` satisfies that definition when it is read back as a
+  hypothesis, and `exp(x) - exp(x)` is `0`. A complex `log` or `sqrt`, an
+  `exp` past `2**14`, a negative number to a power that is not an integer,
+  and arithmetic with a float infinity or NaN are undecided rather than
+  guessed; a comparison with an infinity or a NaN is Python's.
+  `lanky.exp(0.5)` at a number, `evaluate` outside the exact reading and
+  `Theorem.__call__` are Python's, as before. So the claims
   above are `tested`, `x + 1e-20 == x`, which every float draw passed, is
   refuted, and the claims in the Mathlib tests that were private because the
   tester refuted them are public and collected.

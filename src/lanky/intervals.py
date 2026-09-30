@@ -41,7 +41,17 @@ enclosures straddle is undecided wherever it stands.
 One enclosure is one real number. The exponential of an argument is computed
 once and cached, so ``exp(x) == exp(y)`` at a draw where ``x`` and ``y`` are
 the same fraction compares one enclosure with itself, and that is equal for
-certain, which Python's containers take for granted as well.
+certain, which Python's containers take for granted as well. So is an
+operation on enclosures: ``2 * exp(x)`` computed twice at one draw is one
+object, which is what lets a table the tester fills from the definition
+``f(i) == 2 * exp(x)`` satisfy that definition when it is read back as a
+hypothesis. An enclosure less itself is ``0``, and over itself ``1``, and
+``exp(x) - exp(x)``, which pymbolic evaluates as ``exp(x) + (-1) * exp(x)``,
+is ``0`` as well.
+
+An infinity or a NaN is a float and no real number. An enclosure is below
+``inf`` for certain, and a NaN equals nothing, as Python compares them, but
+arithmetic with either, or a function of either, leaves the draw undecided.
 
 What is not enclosed is left undecided, never guessed: a complex logarithm or
 square root (the printer declines both, see :mod:`lanky.lean`), an exponential,
@@ -64,6 +74,8 @@ from __future__ import annotations
 import functools
 import math
 import numbers
+from collections import OrderedDict
+from collections.abc import Callable
 from fractions import Fraction
 from typing import Any
 
@@ -204,16 +216,49 @@ def _bounds(value: Any) -> tuple[Fraction, Fraction] | None:
     return None if q is None else (q, q)
 
 
+def _nonfinite(value: Any) -> bool:
+    """Whether ``value`` is a float infinity or NaN, which is a number and not a real one."""
+    return (
+        isinstance(value, numbers.Real)
+        and not isinstance(value, numbers.Rational | Interval)
+        and not math.isfinite(float(value))
+    )
+
+
+def _no_infinity(value: Any) -> Undecided:
+    """What an infinity or a NaN in the exact reading's arithmetic raises."""
+    return Undecided(
+        f"{value!r} is a float and no real number, and the exact reading does not "
+        "compute with it, so this draw decides nothing"
+    )
+
+
+def _operand(value: Any) -> tuple[Fraction, Fraction] | None:
+    """The other operand of an enclosure's arithmetic as its bounds, ``None`` if no number.
+
+    Raises:
+        Undecided: For an infinity or a NaN (:func:`_nonfinite`), which Python
+            would compute with and the exact reading does not.
+    """
+    bounds = _bounds(value)
+    if bounds is None and _nonfinite(value):
+        raise _no_infinity(value)
+    return bounds
+
+
 def _real(value: Any) -> Fraction | Interval:
     """A real number as a rational or an enclosure.
 
     Raises:
-        TypeError: If ``value`` is not a finite real number.
+        Undecided: If ``value`` is an infinity or a NaN (:func:`_nonfinite`).
+        TypeError: If ``value`` is not a real number.
     """
     if isinstance(value, Interval):
         return value
     q = _rational(value)
     if q is None:
+        if _nonfinite(value):
+            raise _no_infinity(value)
         raise TypeError(f"{value!r} is not a finite real number")
     return q
 
@@ -274,6 +319,73 @@ def _enclosure(lo: Fraction, hi: Fraction, bits: int = PRECISION) -> Fraction | 
     if lo == hi:
         return lo
     return Interval(_round(lo, False, bits), _round(hi, True, bits))
+
+
+#: The results of the arithmetic and the functions of enclosures, by operation
+#: and operands, so that one operation on the same numbers gives one object
+#: (see the module docstring). The operands are kept with the result, so that
+#: no ``id`` in a key is taken by another object while the key is here.
+_RESULTS: OrderedDict[tuple[Any, ...], tuple[Any, tuple[Any, ...]]] = OrderedDict()
+
+#: How many results :data:`_RESULTS` keeps, the least recently used going first.
+#: A result it has let go is computed again as another object, which only
+#: decides less: two objects compare by their endpoints.
+_RESULTS_KEPT = 1 << 14
+
+#: The operations whose operands can be taken in either order.
+_COMMUTATIVE = frozenset(("+", "*"))
+
+#: The bounds of ``0``, ``1`` and ``-1``: adding the first or multiplying by the
+#: second gives an enclosure's own object back, and multiplying by the third its
+#: negation's.
+_ZERO = (Fraction(0), Fraction(0))
+_ONE = (Fraction(1), Fraction(1))
+_MINUS_ONE = (Fraction(-1), Fraction(-1))
+
+
+def _identity(value: Any) -> tuple[str, Any]:
+    """An operand as part of a key: an enclosure by the object, a rational by its value."""
+    if isinstance(value, Interval):
+        return ("enclosure", id(value))
+    return ("rational", _rational(value))
+
+
+def _once(operation: str, operands: tuple[Any, ...], compute: Callable[[], Any]) -> Any:
+    """``compute()``, as the one object an operation on these operands gives.
+
+    An enclosure is one number, and an operation on the same numbers is one
+    number too, so it is given as one object. Without that, a table the tester
+    fills from a definition such as ``f(i) == 2 * exp(x)`` holds one enclosure
+    and the definition, read again as a hypothesis, computes another with the
+    same endpoints, which is no certain equality, and every draw that sets
+    ``f`` from ``exp`` is left undecided.
+    """
+    keys = tuple(_identity(operand) for operand in operands)
+    if operation in _COMMUTATIVE:
+        keys = tuple(sorted(keys))
+    key = (operation, *keys)
+    found = _RESULTS.get(key)
+    if found is not None:
+        _RESULTS.move_to_end(key)
+        return found[0]
+    result = compute()
+    _RESULTS[key] = (result, operands)
+    while len(_RESULTS) > _RESULTS_KEPT:
+        _RESULTS.popitem(last=False)
+    return result
+
+
+def _negation(value: Interval) -> Interval:
+    """``-value``, recorded both ways, so that ``-(-value)`` is ``value`` (:func:`_negates`)."""
+    negated = Interval(-value.hi, -value.lo)
+    _RESULTS[("neg", _identity(negated))] = (value, (negated,))
+    return negated
+
+
+def _negates(a: Interval, b: Interval) -> bool:
+    """Whether ``b`` is the object ``-a`` gave, or ``a`` the one ``-b`` gave."""
+    found = _RESULTS.get(("neg", _identity(a)))
+    return found is not None and found[0] is b
 
 
 def _product(
@@ -376,75 +488,105 @@ class Interval:
 
     # {{{ arithmetic
 
+    # Each operation is computed once for the same operands (:func:`_once`). An
+    # infinity or a NaN as the other operand is undecided (:func:`_operand`).
+    # The identities an operation with 0, 1 or -1 has keep the object, since
+    # pymbolic evaluates a sum from 0 and a product from 1, and a difference as
+    # a sum with -1 times the subtrahend: exp(x) - exp(x) is exp(x) + (-1) *
+    # exp(x), which is exp(x) plus its own negation, 0.
+
     def __add__(self, other: Any) -> Any:
-        """Enclose ``self + other``."""
-        b = _bounds(other)
+        """Enclose ``self + other``: ``self`` plus ``0`` is itself, and plus ``-self`` is ``0``."""
+        b = _operand(other)
         if b is None:
             return NotImplemented
-        return _enclosure(self.lo + b[0], self.hi + b[1])
+        if b == _ZERO:
+            return self
+        if isinstance(other, Interval) and _negates(self, other):
+            return Fraction(0)
+        return _once("+", (self, other), lambda: _enclosure(self.lo + b[0], self.hi + b[1]))
 
     __radd__ = __add__
 
     def __sub__(self, other: Any) -> Any:
-        """Enclose ``self - other``."""
-        b = _bounds(other)
+        """Enclose ``self - other``; an enclosure less itself is ``0``, as one number is."""
+        if other is self:
+            return Fraction(0)
+        b = _operand(other)
         if b is None:
             return NotImplemented
-        return _enclosure(self.lo - b[1], self.hi - b[0])
+        if b == _ZERO:
+            return self
+        return _once("-", (self, other), lambda: _enclosure(self.lo - b[1], self.hi - b[0]))
 
     def __rsub__(self, other: Any) -> Any:
         """Enclose ``other - self``."""
-        b = _bounds(other)
+        b = _operand(other)
         if b is None:
             return NotImplemented
-        return _enclosure(b[0] - self.hi, b[1] - self.lo)
+        if b == _ZERO:
+            return -self
+        return _once("r-", (self, other), lambda: _enclosure(b[0] - self.hi, b[1] - self.lo))
 
     def __mul__(self, other: Any) -> Any:
-        """Enclose ``self * other``."""
-        b = _bounds(other)
+        """Enclose ``self * other``: ``self`` times ``1`` is itself, times ``-1`` is ``-self``."""
+        b = _operand(other)
         if b is None:
             return NotImplemented
-        return _enclosure(*_product((self.lo, self.hi), b))
+        if b == _ONE:
+            return self
+        if b == _MINUS_ONE:
+            return -self
+        return _once("*", (self, other), lambda: _enclosure(*_product((self.lo, self.hi), b)))
 
     __rmul__ = __mul__
 
     def __truediv__(self, other: Any) -> Any:
-        """Enclose ``self / other`` (see :func:`_quotient` for a divisor near zero)."""
-        b = _bounds(other)
+        """Enclose ``self / other`` (see :func:`_quotient` for a divisor near zero).
+
+        An enclosure over itself is ``1`` where the enclosure excludes zero.
+        """
+        if other is self and not self.lo <= 0 <= self.hi:
+            return Fraction(1)
+        b = _operand(other)
         if b is None:
             return NotImplemented
-        return _enclosure(*_quotient((self.lo, self.hi), b))
+        if b == _ONE:
+            return self
+        if b == _MINUS_ONE:
+            return -self
+        return _once("/", (self, other), lambda: _enclosure(*_quotient((self.lo, self.hi), b)))
 
     def __rtruediv__(self, other: Any) -> Any:
         """Enclose ``other / self``."""
-        b = _bounds(other)
+        b = _operand(other)
         if b is None:
             return NotImplemented
-        return _enclosure(*_quotient(b, (self.lo, self.hi)))
+        return _once("r/", (self, other), lambda: _enclosure(*_quotient(b, (self.lo, self.hi))))
 
     def __floordiv__(self, other: Any) -> Any:
         """``floor(self / other)``, where the enclosure settles it."""
-        b = _bounds(other)
+        b = _operand(other)
         if b is None:
             return NotImplemented
         return _floor(_enclosure(*_quotient((self.lo, self.hi), b)))
 
     def __rfloordiv__(self, other: Any) -> Any:
         """``floor(other / self)``, where the enclosure settles it."""
-        b = _bounds(other)
+        b = _operand(other)
         if b is None:
             return NotImplemented
         return _floor(_enclosure(*_quotient(b, (self.lo, self.hi))))
 
     def __mod__(self, other: Any) -> Any:
         """``self - other * floor(self / other)``, Python's remainder."""
-        if _bounds(other) is None:
+        if _operand(other) is None:
             return NotImplemented
         return self - other * (self // other)
 
     def __rmod__(self, other: Any) -> Any:
         """``other - self * floor(other / self)``."""
-        if _bounds(other) is None:
+        if _operand(other) is None:
             return NotImplemented
         return other - self * (other // self)
 
@@ -453,11 +595,13 @@ class Interval:
         k = _integer(exponent)
         if k is None:
             return NotImplemented
-        return _integer_power((self.lo, self.hi), k)
+        if k == 1:
+            return self
+        return _once("**", (self, k), lambda: _integer_power((self.lo, self.hi), k))
 
     def __neg__(self) -> Interval:
-        """Enclose ``-self``."""
-        return Interval(-self.hi, -self.lo)
+        """Enclose ``-self``; the negation of the negation is ``self``, the same object."""
+        return _once("neg", (self,), lambda: _negation(self))
 
     def __pos__(self) -> Interval:
         """``self``."""
@@ -469,7 +613,7 @@ class Interval:
             return self
         if self.hi <= 0:
             return -self
-        return Interval(Fraction(0), max(-self.lo, self.hi))
+        return _once("abs", (self,), lambda: Interval(Fraction(0), max(-self.lo, self.hi)))
 
     # }}}
 
@@ -656,11 +800,26 @@ NUMBER_TYPES = (Interval, ComplexValue)
 # {{{ comparisons
 
 
+def _comparable(value: Any) -> tuple[Any, Any] | None:
+    """A number as the bounds a comparison reads: an infinity is its own, as Python has it."""
+    bounds = _bounds(value)
+    if bounds is None and _nonfinite(value) and not math.isnan(float(value)):
+        return float(value), float(value)
+    return bounds
+
+
 def _order(op: str, left: Any, right: Any) -> bool | None:
-    """``left <op> right`` for two real numbers, or ``None`` where their enclosures overlap."""
+    """``left <op> right`` for two real numbers, or ``None`` where their enclosures overlap.
+
+    An enclosure is of a real number, so it is below ``inf`` and above
+    ``-inf`` for certain, and a NaN is equal to nothing and in no order, as
+    Python compares one.
+    """
+    if any(_nonfinite(side) and math.isnan(float(side)) for side in (left, right)):
+        return op == "!="
     if left is right:
         return op in ("==", "<=", ">=")
-    a, b = _bounds(left), _bounds(right)
+    a, b = _comparable(left), _comparable(right)
     if a is None or b is None:
         return NotImplemented  # type: ignore[return-value]
     (alo, ahi), (blo, bhi) = a, b
@@ -735,7 +894,12 @@ def _settled(op: str, left: Any, right: Any) -> Any:
 
 
 def _narrow(left: Any, right: Any) -> bool:
-    """Whether two real numbers are enclosed to :data:`AGREEMENT` bits of their size."""
+    """Whether two real numbers are enclosed to :data:`AGREEMENT` bits of their size.
+
+    The size is at least ``1``, so below one the bits are absolute: the
+    difference of two sides that cancel, ``exp(x) * exp(-x) - 1``, is enclosed
+    around zero to the width the product had, and agrees with ``0``.
+    """
     a, b = _bounds(left), _bounds(right)
     if a is None or b is None:
         return False
@@ -894,7 +1058,7 @@ def exp_value(x: Fraction | Interval) -> Fraction | Interval:
         Undecided: For an argument beyond :data:`EXP_LIMIT`.
     """
     if isinstance(x, Interval):
-        return _enclosure(_exp_bounds(x.lo)[0], _exp_bounds(x.hi)[1])
+        return _once("exp", (x,), lambda: _enclosure(_exp_bounds(x.lo)[0], _exp_bounds(x.hi)[1]))
     if x == 0:
         return Fraction(1)
     return _exp_enclosure(Fraction(x))
@@ -915,7 +1079,7 @@ def log_value(x: Fraction | Interval) -> Fraction | Interval:
                 f"log({x!r}) is of an enclosure that reaches zero, so whether it has a "
                 "value in Python is not known at this draw"
             )
-        return _enclosure(_log_bounds(x.lo)[0], _log_bounds(x.hi)[1])
+        return _once("log", (x,), lambda: _enclosure(_log_bounds(x.lo)[0], _log_bounds(x.hi)[1]))
     if x <= 0:
         raise _undefined("log", x, "its argument is not positive")
     if x == 1:
@@ -938,7 +1102,7 @@ def sqrt_value(x: Fraction | Interval) -> Fraction | Interval:
                 f"sqrt({x!r}) is of an enclosure that reaches below zero, so whether "
                 "it has a value in Python is not known at this draw"
             )
-        return _enclosure(_sqrt_bounds(x.lo)[0], _sqrt_bounds(x.hi)[1])
+        return _once("sqrt", (x,), lambda: _enclosure(_sqrt_bounds(x.lo)[0], _sqrt_bounds(x.hi)[1]))
     if x < 0:
         raise _undefined("sqrt", x, "its argument is negative")
     return _sqrt_exact(Fraction(x))
@@ -1098,7 +1262,9 @@ def _cos_sin(x: Fraction | Interval) -> tuple[Any, Any]:
     """
     if isinstance(x, Interval):
         middle, radius = (x.lo + x.hi) / 2, (x.hi - x.lo) / 2
-        return tuple(_widen(value, radius) for value in _cos_sin(middle))
+        return _once(
+            "cos sin", (x,), lambda: tuple(_widen(value, radius) for value in _cos_sin(middle))
+        )
     if x == 0:
         return Fraction(1), Fraction(0)
     return _cos_sin_enclosure(Fraction(x))

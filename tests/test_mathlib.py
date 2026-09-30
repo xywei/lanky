@@ -745,14 +745,15 @@ def test_an_exponential_that_underflows_a_float_is_no_counterexample() -> None:
 def test_an_equality_is_evidence_only_where_it_is_asserted() -> None:
     """The negation of a true identity is refuted where it is decided, and only there.
 
-    At every draw but one the two sides of ``exp(x + y) == exp(x) * exp(y)``
-    agree to within their enclosures, which is no certain ``True`` under a
-    negation, so those draws decide nothing. At ``x = y = 0`` both sides are
-    ``1`` exactly, and there the negation is false.
+    At most draws the two sides of ``exp(x + y) == exp(x) * exp(y)`` agree to
+    within their enclosures, which is no certain ``True`` under a negation, so
+    those draws decide nothing. Where ``x`` or ``y`` is ``0``, both sides are
+    one enclosure, of the exponential of the other, since ``exp(0)`` is ``1``
+    exactly and ``x + 0`` is ``x``, and there the negation is false.
     """
     report = check([("x", Real), ("y", Real)], [], ~(exp(x + y) == exp(x) * exp(y)))
     assert not report.ok
-    assert report.counterexample == {"x": 0, "y": 0}
+    assert 0 in report.counterexample.values()
     assert report.undecided > 0
     # an order the enclosures straddle is decided at x = 0 only, where it is exact
     report = check([("x", Real)], [], exp(x) * exp(-x) <= 1)
