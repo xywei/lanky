@@ -126,12 +126,13 @@ class CheckVerb:
         ledger holds, and this file's ledger names it in an ``UNRESOLVED``
         line. Ids are unique within one file's ledger. Two files at the same
         place under different roots, ``a/helpers.py`` and ``b/helpers.py``,
-        have one module name, and ``where`` and the ``path`` in the
-        provenance tell their facts apart. A file that does not import does
-        not stop the others, and ``--json`` writes the facts of every file
-        that imported into one list. A
-        namespace carrying a single ``file`` rather than ``files``, which is
-        what ``loopty check`` builds, is read as a list of one.
+        have one module name, as a file of a namespace package has with a
+        file of its name beside the package, and ``where`` and the ``path``
+        in the provenance tell their facts apart. A file that does not import
+        does not stop the others, and ``--json`` writes the facts of every
+        file that imported into one list. A namespace carrying a single
+        ``file`` rather than ``files``, which is what ``loopty check`` builds,
+        is read as a list of one.
 
         Files are checked one process per distinct source root (see
         :func:`lanky.check.source_roots`). When every file has the same

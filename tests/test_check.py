@@ -1980,6 +1980,36 @@ def test_module_name_reads_the_path_under_its_source_root(tmp_path, monkeypatch)
     assert module_name("<string>") is None
     assert module_name(tmp_path / "missing.py") is None
     assert module_name(tmp_path) is None
+    # nor does a link that leads back to itself, which Python 3.12 reports as a
+    # RuntimeError rather than an OSError
+    loop = tmp_path / "loop.py"
+    loop.symlink_to(loop)
+    assert module_name(loop) is None
+
+
+def test_module_name_is_read_under_the_files_own_root_and_nothing_more(tmp_path) -> None:
+    """The stated limit: two files at one place under two roots share a name.
+
+    A namespace package, a directory with no ``__init__.py``, is not a package
+    to a check, so its file is named by its stem, like a file beside it of the
+    same name; and two trees with a package of one name give their modules one
+    name. Their facts are told apart by ``where`` and the provenance's ``path``,
+    which the id does not carry.
+    """
+    from lanky.check import module_name
+
+    project = tmp_path / "project"
+    (project / "nspkg").mkdir(parents=True)
+    (project / "helpers.py").write_text("", encoding="utf-8")
+    (project / "nspkg" / "helpers.py").write_text("", encoding="utf-8")
+    assert module_name(project / "nspkg" / "helpers.py") == "helpers"
+    assert module_name(project / "helpers.py") == "helpers"
+    for tree in ("a", "b"):
+        (tmp_path / tree / "pkg").mkdir(parents=True)
+        (tmp_path / tree / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / tree / "pkg" / "helpers.py").write_text("", encoding="utf-8")
+    assert module_name(tmp_path / "a" / "pkg" / "helpers.py") == "pkg.helpers"
+    assert module_name(tmp_path / "b" / "pkg" / "helpers.py") == "pkg.helpers"
 
 
 def test_a_theorem_has_one_id_whether_its_file_is_checked_or_imported(
@@ -2010,6 +2040,10 @@ def test_a_theorem_has_one_id_whether_its_file_is_checked_or_imported(
         (using,) = check_path(user)
         assert own.id == expected
         assert using.rests_on == (expected,)
+        # and it is read off the path, not off where the check was run from
+        for directory, relative in ((tmp_path, f"project/{name}.py"), (project, f"{name}.py")):
+            monkeypatch.chdir(directory)
+            assert [fact.id for fact in check_path(relative)] == [expected]
 
         assert cli.main(["check", str(user), str(helper), "--json", str(out)]) == 0
         printed = capsys.readouterr().out.splitlines()

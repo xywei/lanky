@@ -16,7 +16,8 @@ loopty uses changes, and loopty's floor follows it.
   under its source root (the last of `source_roots`), dotted.
   `root/pkg/sub/mod.py` is `pkg.sub.mod`, a package's `__init__.py` is the
   package, and a file outside any package is its stem. `None` for a path that
-  names no file, such as the `<string>` of a function compiled from a string.
+  names no file, such as the `<string>` of a function compiled from a string
+  or a symbolic link that leads back to itself.
 
 ### Changed
 
@@ -32,9 +33,15 @@ loopty uses changes, and loopty's floor follows it.
   definition has one id whether its file is checked directly or imported, and
   an `UNRESOLVED` line under a file's table names the id the other file's
   ledger holds. A function with no file behind it keeps its `__module__`.
+  Every id a check of a file prints and writes with `--json` changes with
+  it: `examples/nicomachus.py`'s `theorem:lanky_checked_nicomachus.gauss@33`
+  is now `theorem:nicomachus.gauss@33`, and a file in a package is named by
+  its dotted path, `theorem:pkg.helpers.lemma@12`.
   Ledgers are still one per file, and two files at the same place under
-  different roots (`a/helpers.py`, `b/helpers.py`) share a module name; their
-  facts are told apart by `where` and the `path` in the provenance.
+  different roots (`a/helpers.py`, `b/helpers.py`) share a module name, as a
+  file of a namespace package (a directory with no `__init__.py`) shares its
+  stem with a file of that name beside the package; their facts are told
+  apart by `where` and the `path` in the provenance.
 
 ## [0.1.0.dev0] - 2026-09-18
 

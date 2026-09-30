@@ -144,16 +144,26 @@ def module_name(path: str | Path) -> str | None:
     its own definitions the same way, from the file their code was compiled
     from (``fn.__code__.co_filename``).
 
+    A directory without an ``__init__.py`` is not a package here, as it is
+    not for :func:`source_roots`, so a file of a namespace package is named
+    by its stem too: ``nspkg/helpers.py`` is ``helpers``, as a
+    ``helpers.py`` beside ``nspkg`` is. Two files at the same place under
+    different roots share a name that way, and a definition on the same line
+    of each shares an id; ``where`` and the ``path`` in the provenance tell
+    them apart.
+
     ``None`` for a path that names no file, such as the ``<string>`` a
-    function compiled from a string records, or a module read from a zip
-    archive. The caller then falls back on the function's ``__module__``,
-    which is all there is to go on.
+    function compiled from a string records, a module read from a zip
+    archive, or a symbolic link that leads back to itself. The caller then
+    falls back on the function's ``__module__``, which is all there is to go
+    on.
     """
     try:
         path = Path(path).resolve()
         if not path.is_file():
             return None
-    except (OSError, ValueError):
+    except (OSError, RuntimeError, ValueError):
+        # RuntimeError is how Python 3.12 reports a symbolic link loop
         return None
     package = _package_of(path)
     if package is None:
