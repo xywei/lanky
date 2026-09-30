@@ -40,11 +40,14 @@ field and a ``ZeroDivisionError`` in Python, whatever the sort.
 number is ``0``; ``math.log`` and ``math.sqrt`` raise. An argument that is a
 positive literal is the one that can be ruled out by looking.
 
-A real statement has a third difference that is no gap in this sense and is not
-noted: the tester computes ``Real`` and ``Complex`` in floating point (or with
-fractions, for ``exact``), and Lean over ``ℝ`` and ``ℂ``. A claim that holds
-only up to rounding is refuted by the one and can be proved by the other, which
-is what the exactness class of a sort is there to say.
+Rounding is not a difference between the readings. The tester reads ``Real``
+and ``Complex`` exactly, whatever their exactness class (#33): it draws
+fractions, and encloses ``exp``, ``log`` and ``sqrt`` in intervals where their
+values are not rational (:mod:`lanky.intervals`), so a claim that holds over
+``ℝ`` is not refuted by a rounding error. A comparison the enclosures cannot
+settle leaves the draw undecided, as a gap does, but it is no gap: both
+readings have an answer there, and the enclosures are not narrow enough to
+tell which. It is not noted.
 
 This module only *detects* the gap, and records what it found; it does not
 change how anything is evaluated. Making the tester total instead would give
@@ -218,8 +221,8 @@ def leaves_the_domain(term: Any) -> bool:
     Syntactic, like the division checks: ``log(2)`` carries no note, and
     ``log(x)``, ``log(x * x)`` and ``sqrt(x - 1)`` do, a hypothesis that keeps
     the argument positive included. ``exp`` is total on both sides and is never
-    noted; a float it overflows is rare at the points the tester draws, and the
-    draw is dropped when it happens.
+    noted: the tester encloses it rather than computing a float, which neither
+    overflows nor underflows.
     """
     return any(
         isinstance(node, Elementary)

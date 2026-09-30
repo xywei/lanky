@@ -7,13 +7,19 @@ No separate test has to be written and none can drift from the statement.
 
 Sampling follows the sort. Discrete sorts draw small integers, because the
 interesting failures of an index argument are near zero and the quantifiers are
-enumerated. ``Real`` draws :class:`~fractions.Fraction` when its exactness class
-is ``exact``, so that an exact claim is tested exactly and not defeated by
-rounding, and floats otherwise. ``Complex`` draws complex floats; when it is
-``exact`` their parts are small dyadic rationals, which a float holds exactly
-and whose sums and products stay exact at the sizes a test reaches, since
-Python has no exact complex type. ``Fn[Fin[n], B]`` draws a table over the domain,
-which is how a theorem talks about data a kernel produced.
+enumerated. ``Real`` draws :class:`~fractions.Fraction`, and ``Complex`` a
+:class:`~lanky.intervals.ComplexValue` with two fractions for parts, whatever
+their exactness class, and a statement is evaluated in the exact reading
+(:func:`~lanky.terms.exact_reading`): ``exp``, ``log`` and ``sqrt`` are
+enclosed in intervals where their values are not rational, and a comparison is
+refuted only where the enclosures exclude it (see :mod:`lanky.intervals`). A
+claim over the reals is tested as Lean reads it, over ``ℝ``, and not defeated
+by rounding: ``(x + 1) - 1 == x`` holds at every draw, and so does
+``exp(x + y) == exp(x) * exp(y)``, to within enclosures that agree to far more
+bits than a float has. The exactness class says how a kernel may compute a
+value; it does not change what a statement about the value means (#33).
+``Fn[Fin[n], B]`` draws a table over the domain, which is how a theorem talks
+about data a kernel produced.
 
 Hypotheses are filters, but a random table almost never satisfies a recurrence,
 so before filtering the sampler tries to *satisfy* the definitional ones: a
@@ -35,8 +41,8 @@ the ones ``p`` rejects (:class:`~lanky.terms.LankyEvaluationMapper`), so a
 counterexample never names a point outside the domain and ``Fin[n] & p`` is
 still enumerated, which is what lets an existential over it be refuted.
 
-A draw that the statement cannot be answered at is dropped the same way. Seven
-things do that, and all seven raise or are read as
+A draw that the statement cannot be answered at is dropped the same way. Eight
+things do that, and all eight raise or are read as
 :class:`~lanky.terms.Undecided` rather than as a counterexample, because none of
 them is one:
 
@@ -66,10 +72,21 @@ is ``x``), so the sampled reading has no answer at that draw while the Lean
 reading does. That is a gap between the two readings (:mod:`lanky.semantics`
 records it in the fact's provenance), not evidence against the statement.
 
-*An elementary function where Python gives it no value.* ``log(0)``,
-``sqrt(-1)`` and an ``exp`` that overflows a float raise
-:class:`~lanky.terms.UndefinedValue`, where Mathlib's functions are total. It is
-the same kind of gap as a division by zero, and is dropped the same way.
+*An elementary function where Python gives it no value.* ``log(0)`` and
+``sqrt(-1)`` raise :class:`~lanky.terms.UndefinedValue`, where Mathlib's
+functions are total. It is the same kind of gap as a division by zero, and is
+dropped the same way. The exponential has a value everywhere in the exact
+reading, and ``exp(x - 1000)``, which a float underflows to ``0.0``, is
+enclosed above zero.
+
+*A comparison its enclosures cannot settle.* An order between two numbers whose
+enclosures overlap is neither proved nor refuted there, and nor is an equality
+anywhere but where the statement asserts it (see
+:meth:`~lanky.terms.LankyEvaluationMapper.map_comparison`). So is a value the
+exact reading does not enclose: a complex logarithm or square root, an
+argument of ``exp`` beyond :data:`lanky.intervals.EXP_LIMIT`, a negative
+number to a power that is not an integer, and an enclosure computed with a
+float infinity or NaN, which is no real number.
 
 *A family applied outside the domain it declares.* ``f(n)`` for an
 ``f : Fn[Fin[n], Nat]`` names a point the statement's own types say is not
@@ -111,6 +128,7 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.intervals import ComplexValue, Interval
 from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import (
     Exists,
@@ -122,6 +140,7 @@ from lanky.terms import (
     binder_assignments,
     conjoin,
     evaluate,
+    exact_reading,
     free_variables,
     render,
     truth_value,
@@ -298,14 +317,12 @@ def sample_value(
             return rng.randrange(-MAX_NAT, MAX_NAT + 1)
         if sort.name in ("Bool", "Prop"):
             return rng.random() < 0.5
+        # Whatever the exactness class: it says how a kernel computes, and a
+        # statement over the reals means what Lean reads it to mean (#33).
         if sort.name == "Real":
-            if sort.exactness == "exact":
-                return Fraction(rng.randrange(-8, 9), rng.randrange(1, 5))
-            return rng.uniform(-1.0, 1.0)
+            return _fraction(rng)
         if sort.name == "Complex":
-            if sort.exactness == "exact":
-                return complex(rng.randrange(-8, 9) / 4, rng.randrange(-8, 9) / 4)
-            return complex(rng.uniform(-1.0, 1.0), rng.uniform(-1.0, 1.0))
+            return ComplexValue(_fraction(rng), _fraction(rng))
     if sort is int:
         return rng.randrange(-MAX_NAT, MAX_NAT + 1)
     if sort is float:
@@ -313,6 +330,16 @@ def sample_value(
     if sort is bool:
         return rng.random() < 0.5
     raise Unsampleable(f"no sampler for {sort!r}")
+
+
+def _fraction(rng: random.Random) -> Fraction:
+    """A small rational number, as a draw of ``Real`` or a part of a draw of ``Complex``.
+
+    The numerators run over ``-8 .. 8`` and the denominators over ``1 .. 4``, so
+    zero, the integers and the simple fractions all turn up, and zero often
+    enough that the rational values ``exp(0)`` and ``log(1)`` are met.
+    """
+    return Fraction(rng.randrange(-8, 9), rng.randrange(1, 5))
 
 
 def _entry_sort(codomain: Any, context: dict[str, Any], rng: random.Random) -> Any:
@@ -417,13 +444,13 @@ def in_sort(value: Any, sort: Any, context: dict[str, Any]) -> bool:
         if sort.name in ("Bool", "Prop"):
             return isinstance(value, bool)
         if sort.name == "Real":
-            return isinstance(value, int | float | Fraction) and not isinstance(
+            return isinstance(value, int | float | Fraction | Interval) and not isinstance(
                 value, bool
             )
         if sort.name == "Complex":
-            return isinstance(value, int | float | Fraction | complex) and not isinstance(
-                value, bool
-            )
+            return isinstance(
+                value, int | float | Fraction | complex | Interval | ComplexValue
+            ) and not isinstance(value, bool)
     if sort is int:
         return isinstance(value, int) and not isinstance(value, bool)
     if sort is float:
@@ -632,10 +659,11 @@ class TestReport:
     draw witnessed, a universal over a sampled domain whose guard or refinement
     no draw satisfied, a sampled universal that held where the statement does
     not assert it, a sum over a sampled domain, a division by zero, an
-    elementary function outside its Python domain, a family applied outside
-    its domain (see the module docstring), or a refinement that cannot be
-    evaluated (:class:`Unevaluable`). Such a draw is neither evidence
-    nor a counterexample, so it is not counted as valid.
+    elementary function outside its Python domain, a comparison its enclosures
+    cannot settle, a family applied outside its domain (see the module
+    docstring), or a refinement that cannot be evaluated (:class:`Unevaluable`).
+    Such a draw is neither evidence nor a counterexample, so it is not counted
+    as valid.
 
     ``unsampleable`` counts the draws that could not be completed because a
     sort has no sampler (:class:`Unsampleable`). Such a draw never reached the
@@ -696,9 +724,9 @@ def check(
     that found no witness, a universal over a sampled domain whose guard or
     refinement admitted no draw, a sampled universal that held where the
     statement does not assert it, a sum over a sampled domain, a division by
-    zero, an elementary function outside its Python domain, a family applied
-    outside its domain, and a refinement that raises one of them,
-    :class:`Unevaluable`). Neither is a
+    zero, an elementary function outside its Python domain, a comparison its
+    enclosures cannot settle, a family applied outside its domain, and a
+    refinement that raises one of them, :class:`Unevaluable`). Neither is a
     counterexample, and neither is evidence.
 
     A counterexample names the drawn variables and, when the goal is a
@@ -723,11 +751,24 @@ def check(
     claims nothing and is read as ``True``; only a direct caller can pass
     one, because :class:`lanky.theory.Theorem` refuses a function with no
     return annotation.
+
+    Every draw is evaluated in the exact reading
+    (:func:`~lanky.terms.exact_reading`), so the reals are the rationals and
+    their enclosures of :mod:`lanky.intervals`, and a comparison is refuted
+    only where the enclosures exclude it.
     """
     if goal is None:
         goal = True
     if not variables and not hypotheses and not isinstance(goal, prim.ExpressionNode):
         return _constant_report(goal)
+    with exact_reading():
+        return _sample(variables, hypotheses, goal, samples, seed)
+
+
+def _sample(
+    variables: Any, hypotheses: Any, goal: Any, samples: int, seed: int
+) -> TestReport:
+    """The draws :func:`check` describes, made and evaluated one by one."""
     rng = random.Random(seed)
     variables = sampling_order(variables)
     sorts = dict(variables)
