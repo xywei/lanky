@@ -9,6 +9,10 @@ dropped. The result is a ledger that reads like the source file.
 
 A check collects the claims the file itself defines, and none from the modules
 it imports: ``lanky check a.py b.py`` is how two files are checked together.
+Each file gets a ledger of its own, and a claim has one id in all of them: the
+id names its definition by the module name the file's path gives it
+(:func:`module_name`), not by the name the check imported the file under, so a
+theorem of ``helpers.py`` that ``main.py`` uses is the same id in both.
 
 A check imports into the process that runs it. :func:`check_path` is the check
 of one file in this process, and the modules the file imports stay imported
@@ -42,6 +46,7 @@ __all__ = [
     "has_hypotheses",
     "hypotheses_fact",
     "import_path",
+    "module_name",
     "oracle_lines",
     "source_roots",
 ]
@@ -118,6 +123,55 @@ def source_roots(path: str | Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(roots))
 
 
+def module_name(path: str | Path) -> str | None:
+    """The module name a file's path gives it under its source root, which fact ids use.
+
+    The name is the file's path relative to the last of its
+    :func:`source_roots`, dotted: ``root/pkg/sub/mod.py`` is
+    ``pkg.sub.mod``, a package's ``__init__.py`` is the package,
+    ``pkg.sub``, and ``helpers.py`` in a directory that is not a package is
+    ``helpers``. It is read off the path alone, so it is the same however
+    the file was imported. The name a module is imported under is not:
+    ``lanky check helpers.py`` imports the file under a name of its own (see
+    :func:`import_path`), a file that does ``from helpers import lemma``
+    imports it as ``helpers``, and a relative import in a package imports it
+    as ``pkg.helpers``. A fact id keyed by that name would give one
+    definition an id per way of reaching it, and a fact that rests on it
+    would name an id its own file's ledger does not hold.
+
+    :func:`lanky.ledger.fact_id` takes the name as its ``module``. A theorem,
+    an axiom and a rewrite are keyed by it, and a plugin keys the facts of
+    its own definitions the same way, from the file their code was compiled
+    from (``fn.__code__.co_filename``).
+
+    A directory without an ``__init__.py`` is not a package here, as it is
+    not for :func:`source_roots`, so a file of a namespace package is named
+    by its stem too: ``nspkg/helpers.py`` is ``helpers``, as a
+    ``helpers.py`` beside ``nspkg`` is. Two files at the same place under
+    different roots share a name that way, and a definition on the same line
+    of each shares an id; ``where`` and the ``path`` in the provenance tell
+    them apart.
+
+    ``None`` for a path that names no file, such as the ``<string>`` a
+    function compiled from a string records, a module read from a zip
+    archive, or a symbolic link that leads back to itself. The caller then
+    falls back on the function's ``__module__``, which is all there is to go
+    on.
+    """
+    try:
+        path = Path(path).resolve()
+        if not path.is_file():
+            return None
+    except (OSError, RuntimeError, ValueError):
+        # RuntimeError is how Python 3.12 reports a symbolic link loop
+        return None
+    package = _package_of(path)
+    if package is None:
+        return path.stem
+    name = package[0]
+    return name if path.stem == "__init__" else f"{name}.{path.stem}"
+
+
 def _refuse_a_package_imported_elsewhere(path: Path, package: str, root: Path) -> None:
     """Raise ``ImportError`` if this process holds another package of the same name.
 
@@ -160,7 +214,9 @@ def import_path(path: str | Path) -> Any:
     not fire while it is being checked. That name is registered in
     ``sys.modules`` only while the file executes and then withdrawn, so two
     files with the same basename do not share one entry; the module object
-    returned here stays usable either way.
+    returned here stays usable either way. Fact ids do not use that name:
+    they are keyed by :func:`module_name`, which the file's path gives it,
+    so a claim checked here has the id it has when another file imports it.
 
     A file inside a package keeps that name as well, and is given the package
     it sits in (see :func:`_package_of`), so that a relative import in it

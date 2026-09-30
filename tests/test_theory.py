@@ -90,8 +90,9 @@ def test_hypotheses_filter_the_draws() -> None:
 def test_a_theorem_becomes_an_assumed_fact_until_an_oracle_speaks() -> None:
     fact = gauss.fact()
     # the id names the definition, not only the qualified name: module, name
-    # and line, which is what keeps two same-named theorems apart in one ledger
-    assert fact.id == f"theorem:{gauss.__module__}.gauss@{gauss.line}"
+    # and line, which is what keeps two same-named theorems apart in one ledger;
+    # the module is the one this file's path gives it, tests/ being no package
+    assert fact.id == f"theorem:test_theory.gauss@{gauss.line}"
     assert fact.id == gauss.fact_id
     assert fact.kind == "theorem"
     assert fact.status is Status.ASSUMED

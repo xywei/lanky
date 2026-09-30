@@ -32,6 +32,7 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
 from lanky.plugins import registry
 from lanky.prelude import FnType
@@ -76,6 +77,19 @@ class Verdict:
         return self.holds
 
 
+def _module_of(fn: Any) -> str:
+    """The module a definition's fact id names: the one its file's path gives it.
+
+    That is :func:`lanky.check.module_name` of the file the function's code
+    was compiled from, which is the same whether the file was checked
+    directly or imported by another, and ``__module__`` only for a function
+    with no file behind it, such as one compiled from a string.
+    """
+    code = getattr(fn, "__code__", None)
+    derived = module_name(code.co_filename) if code is not None else None
+    return derived or getattr(fn, "__module__", "") or ""
+
+
 def fact_ids(uses: Any) -> tuple[str, ...]:
     """The fact ids a ``uses=`` argument names, in order and without repeats.
 
@@ -83,7 +97,9 @@ def fact_ids(uses: Any) -> tuple[str, ...]:
     names one fact through a string ``fact_id``, as a :class:`Theorem` and an
     :class:`Axiom` do. A single entry need not be wrapped in a list, and an
     empty list names nothing. An id is a string, so a plugin's fact is named
-    the same way: loopty's scan postcondition is ``"scan:postcondition"``.
+    the same way: the postcondition of loopty's ``scan`` in ``spmv.py`` is
+    ``"postcondition:spmv.scan@69"``, keyed as a theorem's is (see
+    :func:`lanky.ledger.fact_id`).
 
     Raises:
         TypeError: For anything else, such as a plugin's decorated object that
@@ -181,7 +197,7 @@ class Theorem:
         self.line = code.co_firstlineno
         self.where = f"{os.path.basename(code.co_filename)}:{code.co_firstlineno}"
         self.qualname = getattr(fn, "__qualname__", fn.__name__)
-        self.module = getattr(fn, "__module__", "") or ""
+        self.module = _module_of(fn)
 
     # {{{ the statement
 
@@ -293,6 +309,13 @@ class Theorem:
         one of them and drop the other. The module and the definition's line
         settle it; :func:`lanky.ledger.fact_id` is the shared builder, so a
         plugin theory can key its own facts the same way.
+
+        The module is the one the file's path gives it
+        (:func:`lanky.check.module_name`), not the name it was imported
+        under, so the id is the same in the ledger of the theorem's own file,
+        which ``lanky check`` imports under a name of its own, and in the
+        ``uses=`` of a theorem in another file that imports it:
+        ``theorem:helpers.lemma@12`` either way.
         """
         return fact_id(self.noun, self.qualname, module=self.module, line=self.line)
 

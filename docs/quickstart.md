@@ -358,6 +358,20 @@ that nothing satisfies them, once Lean shows them inconsistent: it reads
 A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
 it builds, naming other facts by id.
 
+An id names a definition: `theorem:nicomachus.gauss@33` is the kind, the
+module, the qualified name and the line. The module is the name the file's
+path gives it under its source root, `nicomachus` for `examples/nicomachus.py`
+and `pkg.helpers` for `root/pkg/helpers.py`, and not the name it was imported
+under. So a theorem that `main.py` imports with `from helpers import lemma`
+and names in `uses=` has the id there that it has in `helpers.py`'s own
+ledger, `theorem:helpers.lemma@12` in both. `lanky check main.py helpers.py`
+still gives each file its own ledger, so `main.py`'s names the id in an
+`UNRESOLVED` line, and it is the id of the row in `helpers.py`'s ledger and in
+the `--json` list. A plugin builds its ids with `lanky.ledger.fact_id(kind,
+owner, module, line)`, and `lanky.check.module_name(path)` gives it the module
+of the file a definition's code was compiled from; loopty keys every fact of a
+kernel that way.
+
 ## Check a derivation against what it rests on
 
 Much of what a consumer of lanky wants checked is a transformation rather than

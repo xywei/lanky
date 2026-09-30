@@ -69,6 +69,19 @@ def fact_id(
     The shape is ``kind:module.owner@line:detail``, with any part that is not
     known left out. ``detail`` is for a theory that claims several facts about
     one object, such as one obligation per array access.
+
+    ``module`` is the name the definition's file has under its source root,
+    which :func:`lanky.check.module_name` reads off the file's path:
+    ``pkg.helpers`` for ``root/pkg/helpers.py``, and ``helpers`` for a
+    ``helpers.py`` outside any package. The name a module was imported under
+    would not do. ``lanky check helpers.py`` imports the file under a name of
+    its own, and a file that does ``from helpers import lemma`` imports it as
+    ``helpers``, so one definition would have one id in its own file's ledger
+    and another in the ``rests_on`` of every fact that names it. Keyed by the
+    path, ``theorem:helpers.lemma@12`` is the same id wherever it is written,
+    and a plugin that keys its facts the same way (loopty keys a kernel's
+    facts by the kernel's definition) names a fact of another file by the id
+    that file's ledger holds.
     """
     name = f"{module}.{owner}" if module else owner
     at = f"@{line}" if line is not None else ""

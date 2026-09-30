@@ -41,7 +41,7 @@ from typing import Any
 from lanky.ledger import Fact, Status, fact_id
 from lanky.plugins import registry
 from lanky.terms import render
-from lanky.theory import fact_ids
+from lanky.theory import _module_of, fact_ids
 
 __all__ = ["Rewrite", "RewriteTerm", "RewriteTheory", "rewrite", "rewrite_fact"]
 
@@ -98,9 +98,11 @@ def rewrite_fact(
 
     The fact's id is built by :func:`lanky.ledger.fact_id` with kind
     ``"rewrite"``, so ``detail`` tells apart several rewrites one object
-    claims, one per step of a schedule, say. ``path`` and ``line`` go into
-    the provenance, where :func:`lanky.check.check_path` reads which file a
-    fact belongs to when its object wraps no function. The status is
+    claims, one per step of a schedule, say. ``module`` is the name the
+    definition's file has under its source root, as for a theorem (see
+    :func:`lanky.check.module_name`). ``path`` and ``line`` go into the
+    provenance, where :func:`lanky.check.check_path` reads which file a fact
+    belongs to when its object wraps no function. The status is
     ``assumed``; a plugin that decided the obligation already returns the
     fact through :meth:`~lanky.ledger.Fact.with_status`.
 
@@ -161,7 +163,7 @@ class Rewrite:
         self.line = code.co_firstlineno
         self.where = f"{os.path.basename(code.co_filename)}:{code.co_firstlineno}"
         self.qualname = getattr(fn, "__qualname__", fn.__name__)
-        self.module = getattr(fn, "__module__", "") or ""
+        self.module = _module_of(fn)
         required = [
             name
             for name, parameter in inspect.signature(fn).parameters.items()

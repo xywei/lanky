@@ -473,8 +473,7 @@ def test_a_neighbour_imported_before_the_check_changes_nothing(tmp_path, monkeyp
 def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, monkeypatch, capsys) -> None:
     """``lanky check main.py helper.py`` is how two files are checked together.
 
-    Each file gets its own ledger under a heading, since a fact id is unique
-    within one file's ledger and not across files, and each claim is checked
+    Each file gets its own ledger under a heading, and each claim is checked
     once: the helper's theorem under the helper, whichever order the files
     are listed in. ``--json`` writes one list of both files' facts.
     """
@@ -1916,6 +1915,204 @@ def test_an_id_no_fact_in_the_ledger_has_is_named_under_the_table(tmp_path, caps
     # a file whose facts rest on facts it holds prints no such line
     assert cli.main(["check", write_file(tmp_path, CITED)]) == 0
     assert "UNRESOLVED" not in capsys.readouterr().out
+
+
+# {{{ fact ids are keyed by the path of the file that defines them
+
+LEMMA = '''
+"""A lemma that a theorem of another file uses."""
+
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def lemma(n: Nat) -> n + 0 == n:
+    """Named by id in the ledger of the file that uses it."""
+'''
+
+USES_LEMMA = '''
+"""A theorem that rests on a lemma of another file."""
+
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+{imports}
+
+
+@theorem(uses=[lemma])
+def user(n: Nat) -> n * 1 == n:
+    """Rests on the imported lemma."""
+'''
+
+
+def _decorated_at(text: str) -> int:
+    """The line of a file's first decorator, which is the line its theorem's id names."""
+    lines = text.splitlines()
+    return next(k for k, line in enumerate(lines, 1) if line.startswith("@theorem"))
+
+
+def test_module_name_reads_the_path_under_its_source_root(tmp_path, monkeypatch) -> None:
+    """A file outside a package is its stem, and one inside it the dotted path from the root."""
+    from lanky.check import module_name
+
+    plain = _rooted(tmp_path / "plain", 1)
+    mod, deep = _package(tmp_path, "lanky_test_names_pkg")
+    assert module_name(plain) == "claims"
+    assert module_name(mod) == "lanky_test_names_pkg.mod"
+    assert module_name(deep) == "lanky_test_names_pkg.sub.deep"
+    assert module_name(mod.parent / "__init__.py") == "lanky_test_names_pkg"
+    assert module_name(deep.parent / "__init__.py") == "lanky_test_names_pkg.sub"
+    # a directory whose name cannot be imported is not a package, whatever it holds
+    odd = tmp_path / "not-a-package"
+    odd.mkdir()
+    (odd / "__init__.py").write_text("", encoding="utf-8")
+    (odd / "claims.py").write_text("", encoding="utf-8")
+    assert module_name(odd / "claims.py") == "claims"
+    # a relative path is read from the working directory, as a check reads it
+    monkeypatch.chdir(tmp_path / "project")
+    assert module_name("lanky_test_names_pkg/sub/deep.py") == "lanky_test_names_pkg.sub.deep"
+    # a function compiled from a string records a file name that names no file
+    assert module_name("<string>") is None
+    assert module_name(tmp_path / "missing.py") is None
+    assert module_name(tmp_path) is None
+    # nor does a link that leads back to itself, which Python 3.12 reports as a
+    # RuntimeError rather than an OSError
+    loop = tmp_path / "loop.py"
+    loop.symlink_to(loop)
+    assert module_name(loop) is None
+
+
+def test_module_name_is_read_under_the_files_own_root_and_nothing_more(tmp_path) -> None:
+    """The stated limit: two files at one place under two roots share a name.
+
+    A namespace package, a directory with no ``__init__.py``, is not a package
+    to a check, so its file is named by its stem, like a file beside it of the
+    same name; and two trees with a package of one name give their modules one
+    name. Their facts are told apart by ``where`` and the provenance's ``path``,
+    which the id does not carry.
+    """
+    from lanky.check import module_name
+
+    project = tmp_path / "project"
+    (project / "nspkg").mkdir(parents=True)
+    (project / "helpers.py").write_text("", encoding="utf-8")
+    (project / "nspkg" / "helpers.py").write_text("", encoding="utf-8")
+    assert module_name(project / "nspkg" / "helpers.py") == "helpers"
+    assert module_name(project / "helpers.py") == "helpers"
+    for tree in ("a", "b"):
+        (tmp_path / tree / "pkg").mkdir(parents=True)
+        (tmp_path / tree / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / tree / "pkg" / "helpers.py").write_text("", encoding="utf-8")
+    assert module_name(tmp_path / "a" / "pkg" / "helpers.py") == "pkg.helpers"
+    assert module_name(tmp_path / "b" / "pkg" / "helpers.py") == "pkg.helpers"
+
+
+def test_a_theorem_has_one_id_whether_its_file_is_checked_or_imported(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#22: the id in a lemma's own ledger is the id a theorem of another file rests on.
+
+    ``lanky check helpers.py`` imported the file under a name of its own, and
+    the id was keyed by ``__module__``, so the lemma was
+    ``theorem:lanky_checked_<stem>.lemma@12`` in its own ledger and
+    ``theorem:<stem>.lemma@12`` in the ``rests_on`` of a file that imports it.
+    Both are now read off the file's path.
+    """
+    import sys
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    name = "lanky_test_ids_lemma"
+    project = tmp_path / "project"
+    project.mkdir()
+    helper = project / f"{name}.py"
+    helper.write_text(LEMMA, encoding="utf-8")
+    user = project / "user.py"
+    user.write_text(USES_LEMMA.format(imports=f"from {name} import lemma"), encoding="utf-8")
+    expected = f"theorem:{name}.lemma@{_decorated_at(LEMMA)}"
+    out = tmp_path / "out.json"
+    try:
+        (own,) = check_path(helper)
+        (using,) = check_path(user)
+        assert own.id == expected
+        assert using.rests_on == (expected,)
+        # and it is read off the path, not off where the check was run from
+        for directory, relative in ((tmp_path, f"project/{name}.py"), (project, f"{name}.py")):
+            monkeypatch.chdir(directory)
+            assert [fact.id for fact in check_path(relative)] == [expected]
+
+        assert cli.main(["check", str(user), str(helper), "--json", str(out)]) == 0
+        printed = capsys.readouterr().out.splitlines()
+        # each file has its own ledger, and the id named is the one the other holds
+        unresolved = (
+            f"UNRESOLVED user at user.py:{_decorated_at(USES_LEMMA)}: rests on "
+            f"{expected}, which this ledger does not hold"
+        )
+        assert unresolved in printed
+        rows = {row["owner"]: row for row in json.loads(out.read_text(encoding="utf-8"))}
+        assert rows["lemma"]["id"] == expected
+        assert rows["user"]["rests_on"] == [expected]
+    finally:
+        sys.modules.pop(name, None)
+
+
+def test_a_theorem_in_a_package_has_one_id_however_it_is_reached(tmp_path) -> None:
+    """Checked directly, imported relatively and imported absolutely: one id.
+
+    A check of a file in a package puts both its own directory and the
+    package's root on ``sys.path``, so ``from .helpers import lemma`` and
+    ``from helpers import lemma`` both work, and give the module the names
+    ``pkg.helpers`` and ``helpers``. The id names the path, ``pkg.helpers``,
+    whichever one the file that uses the lemma wrote.
+    """
+    import sys
+
+    package, helpers = "lanky_test_ids_pkg", "lanky_test_ids_helpers"
+    root = tmp_path / "project" / package
+    root.mkdir(parents=True)
+    (root / "__init__.py").write_text("", encoding="utf-8")
+    helper = root / f"{helpers}.py"
+    helper.write_text(LEMMA, encoding="utf-8")
+    relative = root / "relative.py"
+    relative.write_text(
+        USES_LEMMA.format(imports=f"from .{helpers} import lemma"), encoding="utf-8"
+    )
+    absolute = root / "absolute.py"
+    absolute.write_text(
+        USES_LEMMA.format(imports=f"from {helpers} import lemma"), encoding="utf-8"
+    )
+    expected = f"theorem:{package}.{helpers}.lemma@{_decorated_at(LEMMA)}"
+    try:
+        (own,) = check_path(helper)
+        (by_relative,) = check_path(relative)
+        (by_absolute,) = check_path(absolute)
+        assert sys.modules[f"{package}.{helpers}"] is not sys.modules[helpers]
+    finally:
+        for key in [key for key in sys.modules if key.split(".")[0] in (package, helpers)]:
+            sys.modules.pop(key, None)
+    assert own.id == expected
+    assert by_relative.rests_on == (expected,)
+    assert by_absolute.rests_on == (expected,)
+    assert by_relative.id == f"theorem:{package}.relative.user@{_decorated_at(USES_LEMMA)}"
+
+
+def test_a_theorem_with_no_file_behind_it_keeps_its_module() -> None:
+    """A function compiled from a string is keyed by ``__module__``, all there is."""
+    from lanky.plugins import registry
+
+    namespace: dict = {"__name__": "lanky_test_generated"}
+    with registry.collecting():
+        exec(compile(LEMMA, "<generated>", "exec"), namespace)
+    assert namespace["lemma"].fact_id == (
+        f"theorem:lanky_test_generated.lemma@{_decorated_at(LEMMA)}"
+    )
+
+
+# }}}
 
 
 def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:

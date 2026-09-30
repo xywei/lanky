@@ -119,12 +119,20 @@ class CheckVerb:
         Each file is checked for the claims it defines (see
         :func:`lanky.check.check_path`), so a claim imported from another
         module is checked by listing that module's file too. With several
-        files each gets its own ledger under a ``==> FILE <==`` heading, since
-        fact ids are unique within one file's ledger and not across files;
-        one that does not import does not stop the others, and ``--json``
-        writes the facts of every file that imported into one list. A
-        namespace carrying a single ``file`` rather than ``files``, which is
-        what ``loopty check`` builds, is read as a list of one.
+        files each gets its own ledger under a ``==> FILE <==`` heading, and
+        what one file's facts rest on in another is named, not resolved: an
+        id names its definition by the module name the file's path gives it
+        (:func:`lanky.check.module_name`), so it is the id the other file's
+        ledger holds, and this file's ledger names it in an ``UNRESOLVED``
+        line. Ids are unique within one file's ledger. Two files at the same
+        place under different roots, ``a/helpers.py`` and ``b/helpers.py``,
+        have one module name, as a file of a namespace package has with a
+        file of its name beside the package, and ``where`` and the ``path``
+        in the provenance tell their facts apart. A file that does not import
+        does not stop the others, and ``--json`` writes the facts of every
+        file that imported into one list. A namespace carrying a single
+        ``file`` rather than ``files``, which is what ``loopty check`` builds,
+        is read as a list of one.
 
         Files are checked one process per distinct source root (see
         :func:`lanky.check.source_roots`). When every file has the same
@@ -399,6 +407,10 @@ class CheckVerb:
         fact of another file, since each file checked has a ledger of its own;
         lanky cannot tell which, so it says which id it is and leaves the exit
         code alone, because naming a fact of another file is not a mistake.
+        The id printed is the one that file's ledger holds the fact under,
+        because an id is read off the path of the file that defines it and not
+        off the name that file was imported under (see
+        :func:`lanky.check.module_name`).
         """
         for fact in ledger:
             missing = [entry for entry in dict.fromkeys(fact.rests_on) if entry not in ledger]

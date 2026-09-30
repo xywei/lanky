@@ -54,7 +54,7 @@ from lanky.terms import (
 from lanky.terms import sum_ as sum  # noqa: A004 - lanky.sum is a reduction term
 from lanky.theory import Axiom, Theorem, axiom, theorem
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0.dev1"
 
 __all__ = [
     "Abs",
