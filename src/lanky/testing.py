@@ -83,7 +83,8 @@ enclosed above zero.
 enclosures overlap is neither proved nor refuted there, and nor is an equality
 anywhere but where the statement asserts it (see
 :meth:`~lanky.terms.LankyEvaluationMapper.map_comparison`). So is a value the
-exact reading does not enclose: a complex logarithm or square root, an
+exact reading does not enclose: a complex logarithm or square root on its
+branch cut, where Python picks a side by the sign of a zero, an
 argument of ``exp`` beyond :data:`lanky.intervals.EXP_LIMIT`, a negative
 number to a power that is not an integer, and an enclosure computed with a
 float infinity or NaN, which is no real number.
