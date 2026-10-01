@@ -104,6 +104,28 @@ loopty uses changes, and loopty's floor follows it.
   plugin's facts are collected the same way, so two loopty kernels one
   factory makes are refused too. An object registered twice is one object,
   and its claims are collected once.
+- **A pass on thin evidence says so** (#55). The tester drops a draw the
+  statement cannot be answered at and draws another, until it has enough
+  valid ones, so a pass counts only what it could decide, and that can be a
+  few points: `exp(x) * exp(-x) <= 1` is decided only at `x = 0`, where the
+  value is rational, and read `tested` on 200 valid draws, all at `x = 0`,
+  out of some 3100, with nothing but the `undecided` count in the JSON to
+  say so. A pass now gets a `reason` when the draws that decided nothing
+  outnumber the valid ones, or when the valid draws take fewer distinct
+  assignments than `lanky.testing.DISTINCT_FLOOR` (three) while the draws
+  that reached the statement took more, so that a domain with one or two
+  assignments, a `Bool` or a hypothesis `n == 0`, is not thin for having
+  few. The new `lanky.testing.thin_pass_reason` builds it, as
+  `goal_unreached_reason` builds the line for a goal whose guard no draw
+  passed; it says how many draws decided nothing, names the valid
+  assignments when there are at most three, and gives the reason one
+  undecided draw had on a line of its own. It covers every way a draw is
+  dropped, a comparison the enclosures cannot settle, a division by zero, an
+  undecided quantifier. The status stays `tested`; the property-test oracle
+  records the reason in the provenance, and `lanky check` prints it under
+  the table as a `WARNING`, with exit code 0. A fact a stronger oracle
+  established gets no such reason from its cross-check, since the pass is
+  not what it rests on.
 
 ## [0.1.0.dev0] - 2026-09-18
 

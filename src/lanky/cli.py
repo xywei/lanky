@@ -38,7 +38,10 @@ status its oracle gave it. A statement whose hypotheses no draw satisfied, and
 that no oracle could show inconsistent, gets a ``WARNING`` line: the claim may
 be vacuous, or its hypotheses may hold only where the sampler does not look.
 So does a statement whose goal is a universal whose guard held at no valid
-draw, when no oracle could show the guard empty.
+draw, when no oracle could show the guard empty, and a ``tested`` fact whose
+pass rests on thin evidence, with the ``reason`` the tester gave it: most of
+its draws decided nothing, or its valid draws are all at a few assignments
+(see :func:`lanky.testing.thin_pass_reason`).
 And a fact that rests on an id no fact in the ledger has gets an
 ``UNRESOLVED`` line naming it: the id counts as an assumption, and it is either
 written wrong or names a fact of another file, which is in that file's ledger.
@@ -111,8 +114,9 @@ class CheckVerb:
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
         nothing is checked. An axiom's citation, a semantics disagreement, a
-        warning about hypotheses no draw satisfied and an id a fact rests on
-        that the ledger does not hold are printed but do not fail the check.
+        warning about hypotheses no draw satisfied or a pass on thin evidence,
+        and an id a fact rests on that the ledger does not hold are printed
+        but do not fail the check.
 
         Whether a file exists is asked before anything is imported rather than
         read off a ``FileNotFoundError``, because the file can raise one of its
@@ -402,7 +406,11 @@ class CheckVerb:
         and does not: the sampler may simply not reach where they hold. So
         does one whose goal is a universal whose guard held at no valid draw,
         when no oracle could show the guard empty: the guard may hold only
-        where the sampler does not look.
+        where the sampler does not look. And so does a ``tested`` fact with a
+        ``reason``, which says that the pass rests on thin evidence (#55, see
+        :func:`lanky.testing.thin_pass_reason`): the status stands, and the
+        reason, which is the explanation in words wherever it is recorded,
+        says how far it goes.
         """
         for fact in ledger:
             if fact.is_vacuous:
@@ -418,6 +426,13 @@ class CheckVerb:
                 print()
                 print(f"WARNING {fact.owner} at {fact.where}: {unreached}")
                 print("  no oracle could show it empty, so the goal may be vacuous")
+            thin = fact.provenance.get("reason") if fact.status is Status.TESTED else None
+            if _recorded(thin):
+                first, *rest = str(thin).splitlines() or [""]
+                print()
+                print(f"WARNING {fact.owner} at {fact.where}: {first}")
+                for line in rest:
+                    print(f"  {line}")
         vacuous = ledger.vacuous()
         for fact in vacuous:
             print()

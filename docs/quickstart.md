@@ -598,11 +598,20 @@ more bits than a float has. Both are `tested` without Mathlib and `proved`
 with it, and a real claim is `refuted` only at a draw where the enclosures
 exclude it. An equality whose sides agree counts as holding only where the
 statement asserts it; under a negation or in a hypothesis the agreement
-decides nothing, and neither does an order the enclosures straddle. Where
-Lean's functions are total and Python's raise, the fact carries a note in
-Mathlib mode, as `div_zero` does above: a true division by something that may
-be zero, and a logarithm or square root of something that may leave its Python
-domain.
+decides nothing, and neither does an order the enclosures straddle. So
+`exp(x) * exp(-x) <= 1` is decided only at `x = 0`, where the value is
+rational, and the tester draws again in place of every draw it drops, so all
+200 valid draws are there, out of some three thousand. The row reads
+`tested`, and a `WARNING` under the table says that the pass rests on thin
+evidence: how many draws decided nothing, that the valid ones are all at
+`{'x': Fraction(0, 1)}`, and, on a line of its own, why one draw decided
+nothing. A pass gets that warning whenever the draws it dropped outnumber
+the ones it decided, or its decided draws take fewer than three distinct
+assignments when the draws, decided or not, took more; the JSON has it as
+the fact's `reason`. Where Lean's functions are total and Python's raise, the
+fact carries a note in Mathlib mode, as `div_zero` does above: a true
+division by something that may be zero, and a logarithm or square root of
+something that may leave its Python domain.
 `def neg(x: Real & (x < 0)) -> sqrt(x) == 0` is proved with Mathlib, whose
 square root of a negative number is `0`, and no draw can evaluate it in Python.
 

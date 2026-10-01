@@ -2749,3 +2749,128 @@ def test_the_other_refinements_the_tester_reads_have_a_sampler_too() -> None:
 
 
 # }}}
+
+
+# {{{ a pass on thin evidence
+
+
+THIN = (
+    "from __future__ import annotations\n\n"
+    "from lanky import exp, log, theorem\n"
+    "from lanky.prelude import Nat, Real\n\n\n"
+    "@theorem\n"
+    "def exp_neg(x: Real) -> exp(x) * exp(-x) <= 1:\n"
+    '    """Decided only at x = 0, where the value is rational."""\n\n\n'
+    "@theorem\n"
+    "def exp_log(x: Real, h: x > 0) -> exp(log(x)) <= x:\n"
+    '    """Decided only at x = 1."""\n\n\n'
+    "@theorem\n"
+    "def two_points(n: Nat, h: n < 3) -> 10 // n >= 0:\n"
+    '    """Undecided at n = 0, which Python divides by; decided at n = 1 and n = 2."""\n\n\n'
+    "@theorem\n"
+    "def one_gap(n: Nat) -> (10 // n) * n <= 10:\n"
+    '    """Undecided at n = 0 only, which leaves five of the six values."""\n'
+)
+
+
+def test_a_pass_on_thin_evidence_says_so_and_stays_tested(tmp_path, oracles, capsys) -> None:
+    """#55: a pass whose draws mostly decided nothing read like a pass over the reals.
+
+    ``exp(x) * exp(-x) <= 1`` holds as an identity, and its enclosures overlap
+    at every draw but ``x = 0``, where the value is rational; the tester drops
+    an undecided draw and draws again, so its 200 valid draws were all at
+    ``x = 0``, out of some 3000, and nothing but the ``undecided`` count in
+    the JSON said so. Such a pass keeps ``tested``, and gets a ``reason``, in
+    the provenance and under the table. So does one whose valid draws take
+    fewer distinct assignments than the floor while its undecided draws took
+    more; a pass with a few undecided draws among many decided ones does not.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, THIN, "thin.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    for owner, at in (("exp_neg", "{'x': Fraction(0, 1)}"), ("exp_log", "{'x': Fraction(1, 1)}")):
+        fact = facts[owner]
+        assert fact.status is Status.TESTED
+        first, second = fact.provenance["reason"].splitlines()
+        undecided = fact.provenance["undecided"]
+        assert first == (
+            f"the pass rests on thin evidence: {undecided} draws decided nothing, more "
+            f"than the 200 valid ones, which are all at {at}"
+        )
+        assert second.startswith("a draw that decided nothing: the two sides of ")
+    two = facts["two_points"]
+    assert two.status is Status.TESTED
+    first, second = two.provenance["reason"].splitlines()
+    assert first.startswith(
+        "the pass rests on thin evidence: its 200 valid draws take 2 of the 3 distinct "
+        "assignments the draws that reached the statement took, and are all at one of "
+    )
+    assert "{'n': 1}" in first and "{'n': 2}" in first
+    assert second.startswith("a draw that decided nothing: the statement divides by zero")
+    gap = facts["one_gap"]
+    assert gap.status is Status.TESTED
+    assert gap.provenance["undecided"] > 0
+    assert "reason" not in gap.provenance
+    out_json = tmp_path / "ledger.json"
+    assert cli.main(["check", path, "--json", str(out_json)]) == 0
+    printed = capsys.readouterr().out
+    assert (
+        "\nWARNING exp_neg at thin.py:7: the pass rests on thin evidence: "
+        f"{facts['exp_neg'].provenance['undecided']} draws decided nothing, more than the "
+        "200 valid ones, which are all at {'x': Fraction(0, 1)}\n"
+        "  a draw that decided nothing: the two sides of exp(x)*exp(-1*x) <= 1 are "
+    ) in printed
+    assert "WARNING two_points at thin.py:17: the pass rests on thin evidence" in printed
+    assert "WARNING one_gap" not in printed
+    entries = {entry["owner"]: entry for entry in json.loads(out_json.read_text("utf-8"))}
+    assert entries["exp_neg"]["status"] == "tested"
+    assert entries["exp_neg"]["provenance"]["reason"] == facts["exp_neg"].provenance["reason"]
+
+
+def test_a_proof_says_nothing_about_a_thin_sample(tmp_path, oracles, capsys) -> None:
+    """The reason is the tester's, about a pass it made: a stronger oracle's proof gets none.
+
+    ``exp_log`` has a hypothesis, so a proof of it is cross-checked by
+    sampling, and the sample is as thin as before; what it says about the
+    pass is not recorded on a fact that a proof established.
+    """
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(tmp_path, THIN, "thin.py")
+    for fact in check_path(path):
+        assert fact.status is Status.PROVED
+        assert "reason" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    assert "thin evidence" not in capsys.readouterr().out
+
+
+def test_thin_pass_reason_counts_draws_and_assignments() -> None:
+    """What makes a pass thin, and what a domain with few assignments does not."""
+    from lanky.testing import DISTINCT_FLOOR, thin_pass_reason
+
+    assert DISTINCT_FLOOR == 3
+    many = [{"n": k} for k in range(6)]
+    assert thin_pass_reason(200, 40, many, 6, "a gap") == ""
+    # a domain with two assignments, both decided, is no thinner than it is
+    assert thin_pass_reason(200, 10, [{"b": True}, {"b": False}], 2, "a gap") == ""
+    assert thin_pass_reason(200, 0, [{"n": 0}], 1) == ""
+    assert thin_pass_reason(200, 10, [{"b": True}], 2, "a gap") == (
+        "the pass rests on thin evidence: its 200 valid draws take 1 of the 2 distinct "
+        "assignments the draws that reached the statement took, and are all at "
+        "{'b': True}\n"
+        "a draw that decided nothing: a gap"
+    )
+    # undecided draws that outnumber the valid ones, at many assignments
+    assert thin_pass_reason(200, 300, many, 40, "a gap") == (
+        "the pass rests on thin evidence: 300 draws decided nothing, more than the "
+        "200 valid ones\n"
+        "a draw that decided nothing: a gap"
+    )
+    # a statement with no variables has one assignment, which is not named
+    assert thin_pass_reason(10, 30, [{}], 1, "a gap") == (
+        "the pass rests on thin evidence: 30 draws decided nothing, more than the "
+        "10 valid ones\n"
+        "a draw that decided nothing: a gap"
+    )
+
+
+# }}}

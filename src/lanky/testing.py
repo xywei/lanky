@@ -161,6 +161,7 @@ __all__ = [
     "in_sort",
     "sample_value",
     "sampling_order",
+    "thin_pass_reason",
     "truth_value",
 ]
 
@@ -172,6 +173,14 @@ SORT_SAMPLE_POINTS = 4
 
 #: How many draws per requested sample before giving up on the hypotheses.
 REJECTION_FACTOR = 20
+
+#: The fewest distinct assignments the valid draws of a pass may take before the
+#: pass is called thin, unless the draws that reached the statement took fewer
+#: (see :func:`thin_pass_reason`).
+DISTINCT_FLOOR = 3
+
+#: How many of a thin pass's distinct valid assignments its reason names.
+_NAMED_ASSIGNMENTS = 3
 
 #: What evaluation raises where the sampled reading has no answer and Lean's
 #: total one does: a division by zero, and an elementary function outside its
@@ -685,6 +694,11 @@ class TestReport:
     zero, the guard held nowhere the tester looked, and the goal may say
     nothing (see :func:`lanky.check.goal_guard_fact`); a pass over valid draws
     then carries a ``reason`` that says so (:func:`goal_unreached_reason`).
+
+    Any other pass carries a ``reason`` when it rests on thin evidence, many
+    undecided draws or valid ones at a few assignments (#55): ``ok`` is still
+    ``True``, and the reason says how far the pass goes
+    (:func:`thin_pass_reason`).
     """
 
     ok: bool
@@ -781,6 +795,10 @@ def _sample(
     report = TestReport(ok=True, goal_reached=0 if isinstance(goal, Forall) else None)
     undecided_reason = ""
     unsampleable_reason = ""
+    # The distinct assignments of the valid draws, and of every draw the
+    # statement was evaluated at, valid or undecided, for thin_pass_reason.
+    decided: dict[str, dict[str, Any]] = {}
+    reached: set[str] = set()
     for _ in range(samples * REJECTION_FACTOR):
         if report.valid >= samples:
             break
@@ -804,6 +822,8 @@ def _sample(
                 report.skipped.append(str(exc))
             continue
         reach = _Reach()
+        assignment = {name: _describe(context[name]) for name, _ in variables}
+        key = repr(assignment)
         try:
             if not _hypotheses_hold(hypotheses, context, sampler):
                 continue
@@ -811,12 +831,15 @@ def _sample(
         except (Undecided, *_GAPS) as exc:
             _count_reach(report, reach)
             report.undecided += 1
+            reached.add(key)
             undecided_reason = undecided_reason or _undecided_reason(exc)
             if len(report.skipped) < 3:
                 report.skipped.append(_undecided_reason(exc))
             continue
         _count_reach(report, reach)
         report.valid += 1
+        reached.add(key)
+        decided.setdefault(key, assignment)
         if not satisfied:
             report.ok = False
             # The drawn variables come first and win a clash of names: they are
@@ -839,7 +862,71 @@ def _sample(
             )
     elif report.goal_reached == 0:
         report.reason = goal_unreached_reason(goal, report.valid)
+    else:
+        report.reason = thin_pass_reason(
+            report.valid,
+            report.undecided,
+            list(decided.values()),
+            len(reached),
+            undecided_reason,
+        )
     return report
+
+
+def thin_pass_reason(
+    valid: int,
+    undecided: int,
+    decided: list[dict[str, Any]],
+    reached: int,
+    undecided_reason: str = "",
+) -> str:
+    """Why a pass rests on thin evidence, or ``""`` when it does not (#55).
+
+    A draw the statement cannot be answered at is dropped and another is
+    drawn in its place, until there are enough valid ones, so a pass counts
+    only the draws it could decide, and those can be a few points of the
+    domain: ``exp(x) * exp(-x) <= 1`` is decided only at ``x = 0``, where the
+    value is rational, and its 200 valid draws were all there, out of some
+    3000. Two things make a pass thin, and either one is said.
+
+    The draws that decided nothing outnumber the valid ones (``undecided`` and
+    ``valid``), so the pass rests on a minority of what was drawn. Or the
+    valid draws take fewer distinct assignments, ``decided``, than
+    :data:`DISTINCT_FLOOR`, while the draws the statement was evaluated at,
+    valid or not, took more (``reached`` counts them): a domain that has one
+    or two assignments, a single ``Bool``, a hypothesis ``n == 0``, is not
+    thin for having few.
+
+    This is the dropped-draw counterpart of :func:`goal_unreached_reason`, for
+    every way a draw is dropped: a comparison its enclosures cannot settle, a
+    division by zero, an undecided quantifier. The pass is still a pass, and
+    the reason says how far it goes. It names the valid assignments when
+    there are at most three, and ends with the reason one undecided draw
+    gave, ``undecided_reason``, on a line of its own.
+    """
+    few = len(decided) < min(DISTINCT_FLOOR, reached)
+    if undecided <= valid and not few:
+        return ""
+    named = [assignment for assignment in decided if assignment]
+    where = ""
+    if named and len(named) <= _NAMED_ASSIGNMENTS:
+        where = ", ".join(repr(assignment) for assignment in named)
+        where = where if len(named) == 1 else f"one of {where}"
+    if undecided > valid:
+        head = f"{undecided} draws decided nothing, more than the {valid} valid ones"
+        if where:
+            head += f", which are all at {where}"
+    else:
+        head = (
+            f"its {valid} valid draws take {len(decided)} of the {reached} distinct "
+            "assignments the draws that reached the statement took"
+        )
+        if where:
+            head += f", and are all at {where}"
+    lines = [f"the pass rests on thin evidence: {head}"]
+    if undecided and undecided_reason:
+        lines.append(f"a draw that decided nothing: {undecided_reason}")
+    return "\n".join(lines)
 
 
 def goal_unreached_reason(goal: Forall, valid: int) -> str:

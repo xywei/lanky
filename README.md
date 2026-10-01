@@ -245,7 +245,9 @@ lanky's `main`.
   sampled universal is, on evidence. Under a negation, in a hypothesis, or as
   a value, the same agreement decides nothing, and neither does an order whose
   enclosures overlap, such as `exp(x) * exp(-x) <= 1` at any `x` but `0`
-  (#33). A complex `log` or `sqrt`, an `exp` of an argument past `2**14`, and
+  (#33). Its pass rests on the draws at `x = 0` alone, and says so: the row
+  reads `tested`, and a `WARNING` under the table says that the pass rests on
+  thin evidence. A complex `log` or `sqrt`, an `exp` of an argument past `2**14`, and
   a negative number to a power that is not an integer are not enclosed, and
   leave the draw undecided. Where Lean is total and Python raises (a division
   by zero, the logarithm of zero, the square root of a negative number), the
@@ -265,8 +267,12 @@ lanky's `main`.
   the guard of an `all`, and inside a sum or a comparison it is undecided, and
   so is a `forall` whose guard or refinement no draw passes, and a sum over
   draws of `Nat`. The tester declines such a draw and, when no draw decides the
-  statement, the fact stays `ASSUMED` with the reason. Over `Fin` the domain is
-  enumerated and both answers hold. The connectives are three-valued: an
+  statement, the fact stays `ASSUMED` with the reason. A declined draw is
+  replaced by another, so a pass counts only the draws it could decide; when
+  those are outnumbered by the declined ones, or take fewer than three
+  distinct assignments when the draws, decided or not, took more, the pass
+  stays `tested` and gets a `reason`, printed under the table as a
+  `WARNING`. Over `Fin` the domain is enumerated and both answers hold. The connectives are three-valued: an
   operand the draws leave open does not decide `&` or `|`, and a false
   conjunct or a true disjunct settles it however the operands are ordered. So
   are the quantifiers, an `all` being the conjunction of its points and an
