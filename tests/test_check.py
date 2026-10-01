@@ -2183,6 +2183,42 @@ def test_two_claims_with_one_id_are_refused_and_fail_the_check(
     assert "DUPLICATE make.<locals>.claim at factory.py:10" in capsys.readouterr().out
 
 
+def test_a_definition_with_several_duplicated_facts_gets_one_block(capsys) -> None:
+    """A plugin's kernel owns a fact per obligation, and a factory duplicates each of them.
+
+    The definition is named once, with every id under it and the claims of
+    each, rather than once per obligation.
+    """
+    facts = [
+        Fact(
+            id=f"in-bounds:kernels.make.<locals>.double@8:S0:{access}",
+            kind="in-bounds",
+            statement=f"{access} is in bounds",
+            status=Status.DECIDED,
+            where="kernels.py:11",
+            owner="make.<locals>.double",
+            provenance={"duplicate_claims": [f"{access} is in bounds"]},
+        )
+        for access in ("read:x[i]", "write:y[i]")
+    ]
+    ledger = Ledger([*facts, Fact(id="theorem:t", kind="theorem", statement="t", owner="t")])
+    assert cli.CheckVerb._report_duplicates(ledger) is True
+    assert capsys.readouterr().out == (
+        "\n"
+        "DUPLICATE make.<locals>.double at kernels.py:11: several claims have each of the "
+        "2 ids below\n"
+        "  in-bounds:kernels.make.<locals>.double@8:S0:read:x[i]\n"
+        "    checked, in the table: read:x[i] is in bounds\n"
+        "    not checked: read:x[i] is in bounds\n"
+        "  in-bounds:kernels.make.<locals>.double@8:S0:write:y[i]\n"
+        "    checked, in the table: write:y[i] is in bounds\n"
+        "    not checked: write:y[i] is in bounds\n"
+        "  each claim needs an id of its own: a definition of its own, or a "
+        "__qualname__ of its own before it is decorated\n"
+    )
+    assert cli.CheckVerb._report_duplicates(Ledger(facts[:0])) is False
+
+
 NAMED_APART = """\
 from __future__ import annotations
 

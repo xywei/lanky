@@ -98,8 +98,10 @@ loopty uses changes, and loopty's floor follows it.
   each later one on it, by its statement, as `duplicate_claims` in its
   provenance, and does not check it. The new `Ledger.duplicated()` returns
   the facts so marked, and `lanky check` prints a `DUPLICATE` block for each
-  under the table, naming the definition, the id, the claim that was
-  checked and those that were not, and exits 1, whatever the claims say:
+  definition under the table, naming it and, for each of its ids, the claim
+  that was checked and those that were not (a loopty kernel owns a fact per
+  obligation, and gets one block for all of them), and exits 1, whatever the
+  claims say:
   each claim needs an id of its own, a definition of its own or a
   `__qualname__` of its own given to the function before it is decorated.
   `Ledger.add` still replaces, which is how an oracle upgrades a fact. A

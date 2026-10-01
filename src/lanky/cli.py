@@ -354,20 +354,38 @@ class CheckVerb:
         and records the others on it, unchecked (#52). Each such definition
         gets a ``DUPLICATE`` block: the id, the claim in the table, and the
         claims that were not checked, by their statements, and then what to
-        do about it. It fails the check, since a claim nobody checked could be
-        false, and a refuted one used to be dropped this way without a word.
+        do about it. A definition that owns several facts, as a plugin's
+        kernel owns one per obligation, gets one block, with the id and the
+        claims of each fact under it. It fails the check, since a claim nobody
+        checked could be false, and a refuted one used to be dropped this way
+        without a word.
         """
         duplicated = ledger.duplicated()
+        by_owner: dict[str, list[Fact]] = {}
         for fact in duplicated:
-            claims = fact.provenance["duplicate_claims"]
+            by_owner.setdefault(fact.owner, []).append(fact)
+        for owner, facts in by_owner.items():
+            first = facts[0]
             print()
-            print(
-                f"DUPLICATE {fact.owner} at {fact.where}: {len(claims) + 1} claims "
-                f"have the id {fact.id}"
-            )
-            print(f"  checked, in the table: {fact.statement}")
-            for statement in claims:
-                print(f"  not checked: {statement}")
+            if len(facts) == 1:
+                claims = len(first.provenance["duplicate_claims"]) + 1
+                print(
+                    f"DUPLICATE {owner} at {first.where}: {claims} claims have the id "
+                    f"{first.id}"
+                )
+                indent = "  "
+            else:
+                print(
+                    f"DUPLICATE {owner} at {first.where}: several claims have each of "
+                    f"the {len(facts)} ids below"
+                )
+                indent = "    "
+            for fact in facts:
+                if len(facts) > 1:
+                    print(f"  {fact.id}")
+                print(f"{indent}checked, in the table: {fact.statement}")
+                for statement in fact.provenance["duplicate_claims"]:
+                    print(f"{indent}not checked: {statement}")
             print(
                 "  each claim needs an id of its own: a definition of its own, or a "
                 "__qualname__ of its own before it is decorated"
