@@ -1,5 +1,10 @@
 """Test configuration: pytest's test-runner fixture, and core Lean unless asked.
 
+A run of pytest inside a test (``pytester``) loads lanky's plugin through its
+``pytest11`` entry point, which only an installed distribution registers, so
+with the source tree on ``PYTHONPATH`` and no lanky installed it collected no
+theorem (#40). :func:`plugin_arguments` gives the arguments that load it either way.
+
 ``LANKY_LEAN_MATHLIB`` switches the Lean oracle to Mathlib mode (see
 :mod:`lanky.mathlib`), and the suite is written for core Lean: the documented
 ledgers read ``tested`` for Gauss's sum, which Mathlib proves. So the variable
@@ -11,6 +16,7 @@ Mathlib mode, and skip when there is none.
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import time
 
@@ -26,6 +32,26 @@ MATHLIB_PROJECT = os.environ.pop("LANKY_LEAN_MATHLIB", None) or None
 def mathlib_project() -> str | None:
     """The Lake project with Mathlib that ``LANKY_LEAN_MATHLIB`` named, or ``None``."""
     return MATHLIB_PROJECT
+
+
+def plugin_arguments() -> list[str]:
+    """``["-p", "lanky.pytest_plugin"]`` when pytest would not load lanky's plugin itself.
+
+    It loads it through the ``pytest11`` entry point, which is there when lanky
+    is installed (``uv sync`` installs it in editable mode), and not when the
+    source tree is only importable, from ``PYTHONPATH``, or when
+    ``PYTEST_DISABLE_PLUGIN_AUTOLOAD`` turns entry-point plugins off. Naming
+    the plugin where the entry point loads it as well would register it twice,
+    which pytest refuses.
+    """
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"):
+        return ["-p", "lanky.pytest_plugin"]
+    registered = {
+        entry.value
+        for entry in importlib.metadata.entry_points(group="pytest11")
+        if entry.name == "lanky"
+    }
+    return [] if "lanky.pytest_plugin" in registered else ["-p", "lanky.pytest_plugin"]
 
 
 #: Whether this system has ``/proc``, where a process's start time is read.

@@ -10,7 +10,6 @@ dependency.
 from __future__ import annotations
 
 import importlib
-import importlib.metadata
 import re
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from pathlib import Path
 import pymbolic.primitives as prim
 import pytest
 
+from conftest import plugin_arguments
 from lanky import cli
 from lanky.check import check_path, import_path
 from lanky.ledger import Status
@@ -636,10 +636,8 @@ def test_pytential_and_sympy_are_never_lanky_dependencies() -> None:
 
 def test_pytest_collects_the_axioms_and_skips_them(pytester) -> None:
     """They quantify over boundaries, which the property tester cannot draw."""
-    plugins = {entry.name for entry in importlib.metadata.entry_points(group="pytest11")}
-    arguments = [] if "lanky" in plugins else ["-p", "lanky.pytest_plugin"]
     with registry.collecting():
-        result = pytester.runpytest(str(DEMO), *arguments)
+        result = pytester.runpytest(str(DEMO), *plugin_arguments())
     result.assert_outcomes(skipped=8)
 
 

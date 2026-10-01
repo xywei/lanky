@@ -1,6 +1,28 @@
-"""The pytest plugin: theorems in a test module are collected and run."""
+"""The pytest plugin: theorems in a test module are collected and run.
+
+Each test runs twice: as pytest finds the plugin where lanky is installed,
+through its entry point, and with entry-point plugins turned off, where the
+plugin is named on the command line, as it is with the source tree on
+``PYTHONPATH`` and no lanky installed (#40; see ``conftest.plugin_arguments``).
+"""
 
 from __future__ import annotations
+
+import pytest
+
+from conftest import plugin_arguments
+
+
+@pytest.fixture(params=["entry point", "named"], autouse=True)
+def _how_the_plugin_is_found(request, monkeypatch) -> None:
+    """Find the plugin through its entry point, or with entry-point plugins turned off."""
+    if request.param == "named":
+        monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+
+
+def run(pytester, *arguments: str):
+    """``pytester.runpytest``, with what it needs to load lanky's plugin."""
+    return pytester.runpytest(*plugin_arguments(), *arguments)
 
 MODULE = '''
 from __future__ import annotations
@@ -29,7 +51,7 @@ def test_theorems_are_collected_as_items(pytester) -> None:
     """A true theorem passes, a false one fails with its counterexample, a
     theorem no draw could satisfy is skipped rather than reported as passing."""
     pytester.makepyfile(test_claims=MODULE)
-    result = pytester.runpytest("-v")
+    result = run(pytester, "-v")
     result.assert_outcomes(passed=1, failed=1, skipped=1)
     result.stdout.fnmatch_lines(["*counterexample*"])
 
@@ -54,7 +76,7 @@ def test_the_statement_is_still_readable() -> None:
 def test_a_private_theorem_is_not_collected(pytester) -> None:
     """A module may keep a theorem it does not want run: underscore it."""
     pytester.makepyfile(test_private=PRIVATE)
-    result = pytester.runpytest("-v")
+    result = run(pytester, "-v")
     result.assert_outcomes(passed=1)
 
 
@@ -80,7 +102,7 @@ def test_theorems_do_not_leak_between_modules(pytester) -> None:
     worth asking: collection has to follow the module, not the registry.
     """
     pytester.makepyfile(test_one=ONE, test_two=TWO)
-    result = pytester.runpytest("-v")
+    result = run(pytester, "-v")
     result.assert_outcomes(passed=2)
     result.stdout.fnmatch_lines(["*test_one.py::claim*", "*test_two.py::claim*"])
 
@@ -106,7 +128,7 @@ def miscopied(n: Nat) -> sum(i**2 for i in Fin[n + 1]) == sum(i for i in Fin[n +
 def test_axioms_are_collected_and_sampled(pytester) -> None:
     """An axiom is a statement, and a test run is where a miscopied one shows up."""
     pytester.makepyfile(test_axioms=AXIOMS)
-    result = pytester.runpytest("-v", "-rA")
+    result = run(pytester, "-v", "-rA")
     result.assert_outcomes(passed=1, failed=1)
     result.stdout.fnmatch_lines(["*test_axioms.py::nicomachus PASSED*", "*counterexample*"])
 
@@ -137,7 +159,7 @@ def test_a_goal_whose_guard_never_held_is_skipped(pytester) -> None:
     whose hypotheses no draw satisfied is.
     """
     pytester.makepyfile(test_guarded=GUARDED)
-    result = pytester.runpytest("-v", "-rs")
+    result = run(pytester, "-v", "-rs")
     result.assert_outcomes(passed=1, skipped=1)
     result.stdout.fnmatch_lines(
         ["*the goal's guard a < b and a > b never held in 200 valid draws: flipped*"]
