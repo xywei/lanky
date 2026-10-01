@@ -9,14 +9,18 @@ subcommand of ``lanky`` without lanky knowing what loopty is.
 a refuted fact is a broken claim, and a vacuous one is a claim whose hypotheses
 an oracle has shown inconsistent, or whose goal's guard it has shown empty
 wherever the hypotheses hold, which is true and says nothing, while an assumed
-one is a claim nobody got to. Every oracle reads a statement the same
-way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
-refuted does not depend on whether Lean is installed. What Lean adds is proofs,
-and the proof that a claim is vacuous, which fails a check that without it only
-warns (see below). Each refuted fact is repeated under the table with what
-explains it: its ``counterexample``, its ``witness`` and its ``reason``, three
-standard provenance keys read the same way whichever oracle or plugin refuted
-it, or a line saying that none was recorded (see :func:`refutation_lines`).
+one is a claim nobody got to. It exits 1 as well when two claims of a file have
+one fact id, which a definition that makes several claims gives them: a ledger
+holds one fact per id, so the later claims are named in a ``DUPLICATE`` block
+and not checked (see :func:`lanky.check.check_path`). Every oracle reads a
+statement the same way, as integer arithmetic (see :mod:`lanky.lean`), so
+whether a claim is refuted does not depend on whether Lean is installed. What
+Lean adds is proofs, and the proof that a claim is vacuous, which fails a check
+that without it only warns (see below). Each refuted fact is repeated under the
+table with what explains it: its ``counterexample``, its ``witness`` and its
+``reason``, three standard provenance keys read the same way whichever oracle
+or plugin refuted it, or a line saying that none was recorded (see
+:func:`refutation_lines`).
 
 A fact that rests on others is worth no more than they are, and the table says
 so after its status (see :meth:`lanky.ledger.Ledger.support`); ``--json``
@@ -35,7 +39,10 @@ status its oracle gave it. A statement whose hypotheses no draw satisfied, and
 that no oracle could show inconsistent, gets a ``WARNING`` line: the claim may
 be vacuous, or its hypotheses may hold only where the sampler does not look.
 So does a statement whose goal is a universal whose guard held at no valid
-draw, when no oracle could show the guard empty.
+draw, when no oracle could show the guard empty, and a ``tested`` fact whose
+pass rests on thin evidence, with the ``reason`` the tester gave it: most of
+its draws decided nothing, or its valid draws are all at a few assignments
+(see :func:`lanky.testing.thin_pass_reason`).
 And a fact that rests on an id no fact in the ledger has gets an
 ``UNRESOLVED`` line naming it: the id counts as an assumption, and it is either
 written wrong or names a fact of another file, which is in that file's ledger.
@@ -102,13 +109,15 @@ class CheckVerb:
     def run(self, args: argparse.Namespace, /) -> int:
         """Check each file, print its ledger, and report refutations.
 
-        Exit code 1 on any refutation or vacuous fact, and 1 with the traceback
+        Exit code 1 on any refutation or vacuous fact, and on two claims of
+        one id, which leaves one of them unchecked; and 1 with the traceback
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
         nothing is checked. An axiom's citation, a semantics disagreement, a
-        warning about hypotheses no draw satisfied and an id a fact rests on
-        that the ledger does not hold are printed but do not fail the check.
+        warning about hypotheses no draw satisfied or a pass on thin evidence,
+        and an id a fact rests on that the ledger does not hold are printed
+        but do not fail the check.
 
         Whether a file exists is asked before anything is imported rather than
         read off a ``FileNotFoundError``, because the file can raise one of its
@@ -305,7 +314,8 @@ class CheckVerb:
     def _report(ledger: Ledger) -> bool:
         """Print one ledger and what follows it; whether anything failed.
 
-        A fact fails when it is refuted or vacuous.
+        A fact fails when it is refuted or vacuous, or when another claim had
+        its id (see :meth:`_report_duplicates`).
         """
         print(ledger.render())
         CheckVerb._report_citations(ledger)
@@ -324,15 +334,63 @@ class CheckVerb:
                 print(f"  {note}")
         vacuous = CheckVerb._report_hypotheses(ledger)
         CheckVerb._report_unresolved(ledger)
+        duplicated = CheckVerb._report_duplicates(ledger)
         refuted = ledger.by_status(Status.REFUTED)
         if not refuted:
-            return vacuous
+            return vacuous or duplicated
         print()
         for fact in refuted:
             print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
             for line in refutation_lines(fact):
                 print(f"  {line}")
         return True
+
+    @staticmethod
+    def _report_duplicates(ledger: Ledger) -> bool:
+        """Name each definition that made several claims with one id; whether there was one.
+
+        The claims a definition makes all have its id, and a ledger holds one
+        fact per id, so :func:`lanky.check.check_path` checks the first claim
+        and records the others on it, unchecked (#52). Each such definition
+        gets a ``DUPLICATE`` block: the id, the claim in the table, and the
+        claims that were not checked, by their statements, and then what to
+        do about it. A definition that owns several facts, as a plugin's
+        kernel owns one per obligation, gets one block, with the id and the
+        claims of each fact under it. It fails the check, since a claim nobody
+        checked could be false, and a refuted one used to be dropped this way
+        without a word.
+        """
+        duplicated = ledger.duplicated()
+        by_owner: dict[str, list[Fact]] = {}
+        for fact in duplicated:
+            by_owner.setdefault(fact.owner, []).append(fact)
+        for owner, facts in by_owner.items():
+            first = facts[0]
+            print()
+            if len(facts) == 1:
+                claims = len(first.provenance["duplicate_claims"]) + 1
+                print(
+                    f"DUPLICATE {owner} at {first.where}: {claims} claims have the id "
+                    f"{first.id}"
+                )
+                indent = "  "
+            else:
+                print(
+                    f"DUPLICATE {owner} at {first.where}: several claims have each of "
+                    f"the {len(facts)} ids below"
+                )
+                indent = "    "
+            for fact in facts:
+                if len(facts) > 1:
+                    print(f"  {fact.id}")
+                print(f"{indent}checked, in the table: {fact.statement}")
+                for statement in fact.provenance["duplicate_claims"]:
+                    print(f"{indent}not checked: {statement}")
+            print(
+                "  each claim needs an id of its own: a definition of its own, or a "
+                "__qualname__ of its own before it is decorated"
+            )
+        return bool(duplicated)
 
     @staticmethod
     def _report_citations(ledger: Ledger) -> None:
@@ -367,7 +425,11 @@ class CheckVerb:
         and does not: the sampler may simply not reach where they hold. So
         does one whose goal is a universal whose guard held at no valid draw,
         when no oracle could show the guard empty: the guard may hold only
-        where the sampler does not look.
+        where the sampler does not look. And so does a ``tested`` fact with a
+        ``reason``, which says that the pass rests on thin evidence (#55, see
+        :func:`lanky.testing.thin_pass_reason`): the status stands, and the
+        reason, which is the explanation in words wherever it is recorded,
+        says how far it goes.
         """
         for fact in ledger:
             if fact.is_vacuous:
@@ -383,6 +445,13 @@ class CheckVerb:
                 print()
                 print(f"WARNING {fact.owner} at {fact.where}: {unreached}")
                 print("  no oracle could show it empty, so the goal may be vacuous")
+            thin = fact.provenance.get("reason") if fact.status is Status.TESTED else None
+            if _recorded(thin):
+                first, *rest = str(thin).splitlines() or [""]
+                print()
+                print(f"WARNING {fact.owner} at {fact.where}: {first}")
+                for line in rest:
+                    print(f"  {line}")
         vacuous = ledger.vacuous()
         for fact in vacuous:
             print()

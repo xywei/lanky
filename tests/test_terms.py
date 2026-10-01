@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from contextlib import closing
 
+import pymbolic.primitives as prim
 import pytest
 
 from lanky.prelude import Fin, Fn, Nat, Refined
@@ -13,11 +14,13 @@ from lanky.terms import (
     Exists,
     Forall,
     LankyEvaluationMapper,
+    OpenPoint,
     Polarity,
     Scope,
     Sum,
     SymbolicBoolError,
     Undecided,
+    UndefinedValue,
     Var,
     abs_,
     binder_assignments,
@@ -31,7 +34,7 @@ from lanky.terms import (
     structurally_equal,
     sum_,
 )
-from lanky.testing import check, sort_sampler
+from lanky.testing import Table, check, sort_sampler
 
 
 def test_scope_invents_variables() -> None:
@@ -405,6 +408,325 @@ def test_a_refinement_is_one_conjunction_read_three_valued() -> None:
         (Nat & (10 // n > 1) & (n < 5)).holds({"n": 0})
 
 
+def _drawn(*points: int):
+    """A sampler that draws ``points``, in that order, from whatever it is asked for."""
+    return lambda domain: list(points)
+
+
+def test_a_quantifier_goes_on_past_a_point_with_no_answer() -> None:
+    """A universal is the conjunction of its points, and an existential their disjunction (#29).
+
+    Each quantifier used to stop at the first point its body had no answer
+    at, though a later point settles it: the body fails there, for a
+    universal, or holds there, for an existential. Spelled out point by
+    point, the same claim was settled, since the connectives are read
+    three-valued (#25), so the two spellings disagreed. Now they agree.
+    """
+    i, k = Var("i"), Var("k")
+    undecided = ~Forall(((k, Nat),), k < 100)
+    pointwise = Forall(((i, Fin[2]),), undecided & (i < 1))
+    spelled = (undecided & True) & (undecided & False)
+    assert evaluate(pointwise, {}, _sampler()) is False
+    assert evaluate(spelled, {}, _sampler()) is False
+    witnessed = Exists(((i, Fin[2]),), undecided | (i == 1))
+    assert evaluate(witnessed, {}, _sampler()) is True
+    # a division by zero is a point with no answer too
+    assert evaluate(Forall(((i, Fin[3]),), 10 // i > 100), {}) is False
+    assert evaluate(Exists(((i, Fin[3]),), 10 // i == 5), {}) is True
+    # and so is a draw of a sampled domain: a later draw still refutes it
+    assert evaluate(Forall(((k, Nat),), (10 // k >= 0) & (k < 3)), {}, _drawn(0, 4)) is False
+    # with nothing to settle it, the first open answer is raised again
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(((i, Fin[3]),), 10 // i >= 0), {})
+    with pytest.raises(Undecided, match="assumes or denies it"):
+        evaluate(Forall(((i, Fin[2]),), undecided | (i > 5)), {}, _sampler())
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Exists(((i, Fin[3]),), 10 // i == 7), {})
+    # a point after one with no answer is evaluated now, and a body that is not
+    # a proposition there is refused, where the point before used to hide it
+    g = Var("g")
+    with pytest.raises(TypeError, match="not a truth value"):
+        evaluate(Forall(((i, Fin[2]),), g(1 - i)), {"g": Table([5], name="g")})
+
+
+def test_a_point_whose_guard_has_no_answer_is_settled_by_its_body() -> None:
+    """``i in Fin[3] if 10 // i > 4``: the guard divides by zero at ``i = 0``.
+
+    The point is neither in the guarded domain nor out of it. A universal's
+    point is an implication, which holds when its body does, whatever the
+    guard; an existential's is a conjunction, which fails when its body does.
+    Otherwise the point is open, and the quantifier is settled by another
+    point or not at all. The guard used to end the walk at ``i = 0``.
+    """
+    i = Var("i")
+    guard = 10 // i > 4
+    # the body holds at i = 0, and i = 2 is a counterexample
+    assert evaluate(Forall(((i, Fin[3]),), i < 2, guard), {}) is False
+    # the body holds at every point, the open one included
+    assert evaluate(Forall(((i, Fin[3]),), i >= 0, guard), {}) is True
+    # the body fails at the open point and nowhere else: no counterexample
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(((i, Fin[3]),), i > 0, guard), {})
+    # a witness at i = 2, after the open point
+    assert evaluate(Exists(((i, Fin[3]),), i == 2, guard), {}) is True
+    # the body fails at the open point, which is then no witness either way
+    assert evaluate(Exists(((i, Fin[3]),), i == 5, guard), {}) is False
+    # the body holds at the open point and nowhere else: no certain witness
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Exists(((i, Fin[3]),), i == 0, guard), {})
+
+
+def test_a_point_whose_refinement_or_domain_has_no_answer_does_not_end_the_walk() -> None:
+    """A refinement is read as a guard is, and a domain with no answer stands for its points.
+
+    ``Fin[3] & (10 // i > 4)`` cannot place ``i = 0``. ``j in Fin[10 // i]``
+    has no points to walk at ``i = 0``, so that part of the domain is open as
+    a whole, and the body is not read there; ``i = 1`` still settles the
+    quantifier. Both used to end the walk with the division by zero.
+    """
+    i, j = Var("i"), Var("j")
+    refined = Fin[3] & (10 // i > 4)
+    assert evaluate(Forall(((i, refined),), i < 2), {}) is False
+    assert evaluate(Exists(((i, refined),), i == 2), {}) is True
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Exists(((i, refined),), i == 0), {})
+    nested = ((i, Fin[2]), (j, Fin[10 // i]))
+    assert evaluate(Forall(nested, j < 3), {}) is False
+    assert evaluate(Exists(nested, j == 4), {}) is True
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(nested, j < 10), {})
+    # a reduction has no such reading: a sum over an open part has no value
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Sum(nested, j), {})
+
+
+def test_a_point_with_no_answer_is_not_reached_and_keeps_the_sampled_rules() -> None:
+    """The sampled rules stand: a point with no answer is not evidence that a universal holds.
+
+    A sampled universal whose guard has no answer at any draw reached no
+    point, so its pass is undecided wherever it stands; and one that held at
+    every draw it could answer is undecided under a negation, raising the
+    draw it could not answer, rather than saying that it held at every draw.
+    """
+    k = Var("k")
+    with pytest.raises(Undecided, match="passed the guard 10 // k > 100 for certain, so"):
+        evaluate(Forall(((k, Nat),), k >= 0, 10 // k > 100), {}, _drawn(0, 0))
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(((k, Nat),), k < 0, 10 // k > 100), {}, _drawn(0, 0))
+    with pytest.raises(ZeroDivisionError):
+        evaluate(~Forall(((k, Nat),), 10 // k >= 0), {}, _drawn(0, 1))
+    mapper = LankyEvaluationMapper({}, _drawn(0, 4))
+    with closing(mapper.guarded_assignments(Forall(((k, Nat),), k >= 0, 10 // k > 1))) as walk:
+        points = [(mapper.context["k"], point) for point in walk]
+    assert [k for k, _ in points] == [0, 4]
+    assert isinstance(points[0][1], OpenPoint) and points[0][1].bound
+    assert isinstance(points[0][1].reason, ZeroDivisionError)
+    assert points[1][1] is None
+
+
+# }}}
+
+
+# {{{ three-valued quantifiers, against every completion of the gaps
+
+
+#: What an open point raises, as the evaluator and the tester read it.
+_NO_ANSWER = (Undecided, ZeroDivisionError, UndefinedValue)
+
+#: Ways to complete ``x // 0`` and ``x % 0``, Lean's first (``Int.fdiv x 0 =
+#: 0``, ``Int.fmod x 0 = x``). A statement read three-valued is settled only
+#: where every completion settles it the same way.
+_COMPLETIONS = (
+    (lambda x: 0, lambda x: x),
+    (lambda x: 1, lambda x: 0),
+    (lambda x: -1, lambda x: 1),
+    (lambda x: 3, lambda x: -x),
+    (lambda x: x, lambda x: 2),
+)
+
+#: The universe a ``Nat`` binder is drawn from, and that the completed reading
+#: quantifies over: what is certain over draws from it is true of all of it.
+_UNIVERSE = range(5)
+
+
+class _Completed(LankyEvaluationMapper):
+    """The evaluator with every gap filled: no point of any walk is open.
+
+    A division or a remainder by zero takes the completion's value, and a
+    ``Nat`` binder ranges over all of :data:`_UNIVERSE`, enumerated.
+    """
+
+    def __init__(self, context, completion) -> None:
+        super().__init__(context)
+        self.div, self.mod = completion
+
+    def map_floor_div(self, expr):
+        numerator, denominator = self.rec(expr.numerator), self.rec(expr.denominator)
+        return self.div(numerator) if denominator == 0 else numerator // denominator
+
+    def map_remainder(self, expr):
+        numerator, denominator = self.rec(expr.numerator), self.rec(expr.denominator)
+        return self.mod(numerator) if denominator == 0 else numerator % denominator
+
+    def is_exhaustive(self, domain) -> bool:
+        return True
+
+    def _points(self, domain):
+        while isinstance(domain, Refined):
+            domain = domain.base
+        if domain is Nat:
+            return _UNIVERSE
+        return domain.points(self.rec)
+
+
+class _Statements:
+    """Random statements over small domains, with divisions by zero in them."""
+
+    def __init__(self, rng: random.Random, sampled: bool) -> None:
+        self.rng = rng
+        self.sampled = sampled
+        self.names = 0
+
+    def value(self, scope, depth):
+        rng = self.rng
+        kinds = ["constant", "variable", "variable"]
+        if depth > 0:
+            kinds += ["sum", "product", "quotient", "quotient", "remainder"]
+        kind = rng.choice(kinds)
+        if kind == "constant":
+            return rng.randint(-1, 5)
+        if kind == "variable":
+            return Var(rng.choice(scope))
+        a, b = self.value(scope, depth - 1), self.value(scope, depth - 1)
+        if kind == "sum":
+            return prim.Sum((a, b))
+        if kind == "product":
+            return prim.Product((a, b))
+        if kind == "quotient":
+            return prim.FloorDiv(a, b)
+        return prim.Remainder(a, b)
+
+    def comparison(self, scope):
+        operator = self.rng.choice(["<", "<=", "==", "!=", ">", ">="])
+        return prim.Comparison(self.value(scope, 1), operator, self.value(scope, 1))
+
+    def domain(self, scope, name):
+        rng = self.rng
+        if self.sampled and rng.random() < 0.4:
+            domain = Nat
+        else:
+            v = Var(rng.choice(scope))
+            bound = rng.choice(
+                [rng.randint(0, 3), prim.Sum((v, 1)), prim.FloorDiv(6, v), prim.Remainder(5, v)]
+            )
+            domain = Fin[bound]
+        if rng.random() < 0.3:
+            domain = domain & self.comparison([*scope, name])
+        return domain
+
+    def quantifier(self, scope, depth, kind=None):
+        binders = []
+        inner = list(scope)
+        for _ in range(self.rng.choice([1, 1, 2])):
+            self.names += 1
+            name = f"v{self.names}"
+            binders.append((Var(name), self.domain(inner, name)))
+            inner.append(name)
+        guard = self.comparison(inner) if self.rng.random() < 0.5 else None
+        kind = kind or self.rng.choice([Forall, Exists])
+        return kind(tuple(binders), self.proposition(inner, depth - 1), guard)
+
+    def proposition(self, scope, depth):
+        kinds = ["comparison", "comparison"]
+        if depth > 0:
+            kinds += ["and", "or", "not", "quantifier", "quantifier", "quantifier"]
+        kind = self.rng.choice(kinds)
+        if kind == "comparison":
+            return self.comparison(scope)
+        if kind == "quantifier":
+            return self.quantifier(scope, depth)
+        if kind == "not":
+            return prim.LogicalNot(self.proposition(scope, depth - 1))
+        children = (self.proposition(scope, depth - 1), self.proposition(scope, depth - 1))
+        return prim.LogicalAnd(children) if kind == "and" else prim.LogicalOr(children)
+
+
+def _sampler_of(rng: random.Random):
+    """A sampler that draws four points of :data:`_UNIVERSE` from whatever it is asked for."""
+    return lambda domain: [rng.choice(_UNIVERSE) for _ in range(4)]
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_what_the_evaluator_settles_every_completion_settles_alike(sampled) -> None:
+    """A quantifier read three-valued answers only what every reading of its gaps answers.
+
+    The points are a conjunction or a disjunction (#29), so a point with no
+    answer, a body, guard, refinement or domain bound that divides by zero,
+    is passed over and another point may settle the quantifier. That is
+    sound only if each completion of the gaps, Lean's included, settles it
+    the same way, and here it is checked on random statements. Over an
+    enumerated domain both answers are certain. Over draws a ``False``
+    standing ``POSITIVE`` is, and so is a ``True`` standing ``NEGATIVE``; the
+    other answer is evidence, and is not checked.
+    """
+    rng = random.Random(29)
+    statements = _Statements(rng, sampled)
+    settled = 0
+    for _ in range(3000):
+        context = {"n": rng.randint(0, 4)}
+        statement = statements.proposition(["n"], 3)
+        polarity = rng.choice([Polarity.POSITIVE, Polarity.NEGATIVE])
+        sampler = _sampler_of(random.Random(rng.random())) if sampled else None
+        try:
+            answer = evaluate(statement, dict(context), sampler, polarity)
+        except _NO_ANSWER:
+            continue
+        if sampled and answer is not (polarity is Polarity.NEGATIVE):
+            continue
+        settled += 1
+        for completion in _COMPLETIONS:
+            completed = _Completed(dict(context), completion)(statement)
+            assert completed is answer, (render(statement), context, polarity)
+    assert settled > 500
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_a_counterexample_the_tester_names_is_one_in_every_completion(sampled) -> None:
+    """The tester's walk of a universal goal refutes it only where every completion does.
+
+    And the point it names is in the guarded domain, with the body false
+    there, whatever the gaps are filled with.
+    """
+    from lanky.testing import _falsify
+
+    rng = random.Random(55)
+    statements = _Statements(rng, sampled)
+    refuted = 0
+    for _ in range(3000):
+        context = {"n": rng.randint(0, 4)}
+        goal = statements.quantifier(["n"], 3, kind=Forall)
+        sampler = _sampler_of(random.Random(rng.random())) if sampled else None
+        try:
+            holds, point, _failing = _falsify(goal, dict(context), sampler)
+        except _NO_ANSWER:
+            continue
+        if holds:
+            if not sampled:
+                for completion in _COMPLETIONS:
+                    assert _Completed(dict(context), completion)(goal) is True
+            continue
+        refuted += 1
+        at = {**context, **{var.name: point[var.name] for var, _ in goal.binders}}
+        for completion in _COMPLETIONS:
+            assert _Completed(dict(context), completion)(goal) is False, render(goal)
+            reading = _Completed(dict(at), completion)
+            for _var, domain in goal.binders:
+                assert all(reading(p) for p in getattr(domain, "props", ())), render(goal)
+            assert goal.guard is None or reading(goal.guard), render(goal)
+            assert reading(goal.body) is False, (render(goal), at)
+    assert refuted > 100
+
+
 # }}}
 
 
@@ -563,10 +885,17 @@ def test_a_forall_no_draw_of_a_refinement_reaches_is_undecided() -> None:
 
 
 def test_a_refinement_that_cannot_be_answered_raises_as_a_guard_does() -> None:
-    """``Fin[3] & (6 // k > 1)`` has no answer at ``k = 0``, and says so."""
+    """``Fin[3] & (6 // k > 1)`` has no answer at ``k = 0``, and says so.
+
+    It says so when nothing else settles the quantifier (#29): the body fails
+    at ``k = 0`` alone, which is a counterexample only if the point is in the
+    domain. A body that holds at ``k = 0`` settles the point whatever the
+    refinement says there.
+    """
     k = Var("k")
     with pytest.raises(ZeroDivisionError):
-        evaluate(Forall(((k, Fin[3] & (6 // k > 1)),), k >= 0), {})
+        evaluate(Forall(((k, Fin[3] & (6 // k > 1)),), k > 0), {})
+    assert evaluate(Forall(((k, Fin[3] & (6 // k > 1)),), k >= 0), {}) is True
     with pytest.raises(TypeError, match="not a truth value"):
         evaluate(Forall(((k, Fin[3] & (k + 1)),), k >= 0), {})
 

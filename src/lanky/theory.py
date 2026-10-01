@@ -228,10 +228,23 @@ class Theorem:
         hypotheses are what make an implication with a false antecedent valid,
         and without them such a theorem is refuted by its own hypothesis.
 
-        With neither binders nor a guard the term is the goal itself, and for a
-        closed statement such as ``-> 1 == 2`` the goal is a concrete ``bool``
-        rather than a term. That is a fact like any other: the property-test
-        oracle takes a ``bool`` and answers ``TESTED`` or ``REFUTED``.
+        With neither binders nor a guard the binder tuple is empty too, and
+        the term is still a :class:`~lanky.terms.Forall`, whose body is the
+        goal (#35). Every reader of a term takes a ``Forall`` apart into
+        variables, hypotheses and goal, so the goal itself handed over as the
+        term was taken apart in its place when it was a universal:
+        ``-> all(k >= 0 for k in Nat if k > 100)`` had ``k`` read as the
+        statement's variable and its guard as the statement's hypotheses, so
+        the ledger warned about hypotheses the theorem does not have, while
+        :meth:`report`, which hands the oracle the goal as a goal, read the
+        same theorem as a goal whose guard no draw passed. The empty binders
+        print as nothing, in the ledger and in Lean, so a statement reads as
+        it always did.
+
+        A closed statement such as ``-> 1 == 2`` is the exception: its goal
+        is a concrete ``bool`` rather than a term, and the term is that
+        ``bool``. That is a fact like any other: the property-test oracle
+        takes a ``bool`` and answers ``TESTED`` or ``REFUTED``.
         """
         binders = tuple((Var(name), sort) for name, sort in self.variables)
         guard: Any = None
@@ -240,7 +253,7 @@ class Theorem:
             guard = props[0]
         elif props:
             guard = LogicalAnd(tuple(props))
-        if not binders and guard is None:
+        if not binders and guard is None and not isinstance(self.goal, prim.ExpressionNode):
             return self.goal
         return Forall(binders, self.goal, guard)
 

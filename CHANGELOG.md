@@ -42,6 +42,94 @@ loopty uses changes, and loopty's floor follows it.
   file of a namespace package (a directory with no `__init__.py`) shares its
   stem with a file of that name beside the package; their facts are told
   apart by `where` and the `path` in the provenance.
+- **The quantifiers are three-valued** (#29). A quantifier evaluated its body
+  point by point and gave up at the first point it had no answer at, an
+  undecided operand or a division by zero, though a later point settles it:
+  `all(~all(k < 100 for k in Nat) & (i < 1) for i in Fin[n + 2])` read
+  `assumed`, and the same claim spelled out at `i = 0` and `i = 1` was
+  refuted, since #25 made the connectives three-valued. A universal is now
+  read as the conjunction of its points and an existential as their
+  disjunction, as `lanky.terms.conjoin` and `disjoin` read operands: a point
+  with no answer is passed over, a later point where the body fails refutes
+  the universal (and one where it holds witnesses the existential), and when
+  nothing settles the quantifier the first open answer is raised again. A
+  point whose guard or refinement has no answer is yielded by
+  `LankyEvaluationMapper.guarded_assignments` as the new
+  `lanky.terms.OpenPoint` rather than ending the walk; a universal's such
+  point is settled when the body holds there, an existential's when it fails
+  there, and it is open otherwise. So is a binder whose domain cannot be
+  enumerated (`j in Fin[10 // i]` at `i = 0`), which stands for its points
+  as a whole and has no body to read. The evaluator, the tester's walk of a
+  universal goal and the hypotheses read the points this way, so the claim
+  above is refuted at `i = 1` with Lean and without. A sampled walk keeps its
+  rules: a universal's pass is undecided where it does not stand `POSITIVE`,
+  a walk that reached no point is undecided, and a point whose guard has no
+  answer is not one it reached. A sum is unchanged: a point it cannot place
+  leaves it with no value. A point after one with no answer is evaluated
+  now, so a body that is not a proposition there is refused where the
+  earlier point used to hide it, as #25 has it for an operand.
+- **A parameterless theorem's goal is read as its goal** (#35). With no
+  parameters and no hypotheses, `Theorem.term` was the goal itself, and every
+  reader of a term takes a `Forall` apart into variables, hypotheses and
+  goal: `def closed() -> all(k >= 0 for k in Nat if k > 100)` had `k` read as
+  the statement's variable and its guard as the statement's hypotheses, so
+  `lanky check` warned "hypotheses never satisfied in 4000 draws" about a
+  theorem with none, and with Lean a flipped guard was vacuous because "the
+  hypotheses are inconsistent", while `pytest`, which hands the oracle the
+  goal as a goal, said that no draw could decide the statement. The goal's
+  guard was examined one level down as well, at a universal inside the goal,
+  against the rule that only the goal's outermost quantifier is. The term is
+  now a `Forall` with no binders and no guard around the goal, so every
+  reader sees the goal as the goal: such a theorem reads `assumed` with the
+  reason `pytest` gives, a flipped guard is vacuous because "the goal's guard
+  is empty wherever the hypotheses hold", and only the goal's outermost
+  quantifier is examined. The empty binders print as nothing, in the ledger
+  and in Lean, where the theorem is stated with no parameters and a
+  quantified goal. A closed statement whose goal Python already answered,
+  `-> 1 == 2`, keeps the `bool` for its term.
+- **Two claims with one fact id fail the check** (#52). An id names a
+  definition by its module, qualified name and line, so a function that
+  decorates a nested definition each time it is called gives every claim it
+  makes one id, and `check_path` added each to the ledger with `Ledger.add`,
+  which replaces a fact of the same id: the ledger kept the last claim and
+  dropped the others without a word, a refuted one included, and `lanky
+  check` exited 0 on a factory whose first claim, `n + 1 == n`, is false.
+  `check_path` now checks the first claim of an id and keeps it, records
+  each later one on it, by its statement, as `duplicate_claims` in its
+  provenance, and does not check it. The new `Ledger.duplicated()` returns
+  the facts so marked, and `lanky check` prints a `DUPLICATE` block for each
+  definition under the table, naming it and, for each of its ids, the claim
+  that was checked and those that were not (a loopty kernel owns a fact per
+  obligation, and gets one block for all of them), and exits 1, whatever the
+  claims say:
+  each claim needs an id of its own, a definition of its own or a
+  `__qualname__` of its own given to the function before it is decorated.
+  `Ledger.add` still replaces, which is how an oracle upgrades a fact. A
+  plugin's facts are collected the same way, so two loopty kernels one
+  factory makes are refused too. An object registered twice is one object,
+  and its claims are collected once.
+- **A pass on thin evidence says so** (#55). The tester drops a draw the
+  statement cannot be answered at and draws another, until it has enough
+  valid ones, so a pass counts only what it could decide, and that can be a
+  few points: `exp(x) * exp(-x) <= 1` is decided only at `x = 0`, where the
+  value is rational, and read `tested` on 200 valid draws, all at `x = 0`,
+  out of some 3100, with nothing but the `undecided` count in the JSON to
+  say so. A pass now gets a `reason` when the draws that decided nothing
+  outnumber the valid ones, or when the valid draws take fewer distinct
+  assignments than `lanky.testing.DISTINCT_FLOOR` (three) while the draws
+  that reached the statement took more, so that a domain with one or two
+  assignments, a `Bool` or a hypothesis `n == 0`, is not thin for having
+  few. The new `lanky.testing.thin_pass_reason` builds it, as
+  `goal_unreached_reason` builds the line for a goal whose guard no draw
+  passed; it says how many draws decided nothing, names the valid
+  assignments when there are at most three, and gives the reason one
+  undecided draw had on a line of its own. It covers every way a draw is
+  dropped, a comparison the enclosures cannot settle, a division by zero, an
+  undecided quantifier. The status stays `tested`; the property-test oracle
+  records the reason in the provenance, and `lanky check` prints it under
+  the table as a `WARNING`, with exit code 0. A fact a stronger oracle
+  established gets no such reason from its cross-check, since the pass is
+  not what it rests on.
 
 ## [0.1.0.dev0] - 2026-09-18
 
