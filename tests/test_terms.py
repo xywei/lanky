@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 from contextlib import closing
 
+import pymbolic.primitives as prim
 import pytest
 
 from lanky.prelude import Fin, Fn, Nat, Refined
@@ -19,6 +20,7 @@ from lanky.terms import (
     Sum,
     SymbolicBoolError,
     Undecided,
+    UndefinedValue,
     Var,
     abs_,
     binder_assignments,
@@ -520,6 +522,209 @@ def test_a_point_with_no_answer_is_not_reached_and_keeps_the_sampled_rules() -> 
     assert isinstance(points[0][1], OpenPoint) and points[0][1].bound
     assert isinstance(points[0][1].reason, ZeroDivisionError)
     assert points[1][1] is None
+
+
+# }}}
+
+
+# {{{ three-valued quantifiers, against every completion of the gaps
+
+
+#: What an open point raises, as the evaluator and the tester read it.
+_NO_ANSWER = (Undecided, ZeroDivisionError, UndefinedValue)
+
+#: Ways to complete ``x // 0`` and ``x % 0``, Lean's first (``Int.fdiv x 0 =
+#: 0``, ``Int.fmod x 0 = x``). A statement read three-valued is settled only
+#: where every completion settles it the same way.
+_COMPLETIONS = (
+    (lambda x: 0, lambda x: x),
+    (lambda x: 1, lambda x: 0),
+    (lambda x: -1, lambda x: 1),
+    (lambda x: 3, lambda x: -x),
+    (lambda x: x, lambda x: 2),
+)
+
+#: The universe a ``Nat`` binder is drawn from, and that the completed reading
+#: quantifies over: what is certain over draws from it is true of all of it.
+_UNIVERSE = range(5)
+
+
+class _Completed(LankyEvaluationMapper):
+    """The evaluator with every gap filled: no point of any walk is open.
+
+    A division or a remainder by zero takes the completion's value, and a
+    ``Nat`` binder ranges over all of :data:`_UNIVERSE`, enumerated.
+    """
+
+    def __init__(self, context, completion) -> None:
+        super().__init__(context)
+        self.div, self.mod = completion
+
+    def map_floor_div(self, expr):
+        numerator, denominator = self.rec(expr.numerator), self.rec(expr.denominator)
+        return self.div(numerator) if denominator == 0 else numerator // denominator
+
+    def map_remainder(self, expr):
+        numerator, denominator = self.rec(expr.numerator), self.rec(expr.denominator)
+        return self.mod(numerator) if denominator == 0 else numerator % denominator
+
+    def is_exhaustive(self, domain) -> bool:
+        return True
+
+    def _points(self, domain):
+        while isinstance(domain, Refined):
+            domain = domain.base
+        if domain is Nat:
+            return _UNIVERSE
+        return domain.points(self.rec)
+
+
+class _Statements:
+    """Random statements over small domains, with divisions by zero in them."""
+
+    def __init__(self, rng: random.Random, sampled: bool) -> None:
+        self.rng = rng
+        self.sampled = sampled
+        self.names = 0
+
+    def value(self, scope, depth):
+        rng = self.rng
+        kinds = ["constant", "variable", "variable"]
+        if depth > 0:
+            kinds += ["sum", "product", "quotient", "quotient", "remainder"]
+        kind = rng.choice(kinds)
+        if kind == "constant":
+            return rng.randint(-1, 5)
+        if kind == "variable":
+            return Var(rng.choice(scope))
+        a, b = self.value(scope, depth - 1), self.value(scope, depth - 1)
+        if kind == "sum":
+            return prim.Sum((a, b))
+        if kind == "product":
+            return prim.Product((a, b))
+        if kind == "quotient":
+            return prim.FloorDiv(a, b)
+        return prim.Remainder(a, b)
+
+    def comparison(self, scope):
+        operator = self.rng.choice(["<", "<=", "==", "!=", ">", ">="])
+        return prim.Comparison(self.value(scope, 1), operator, self.value(scope, 1))
+
+    def domain(self, scope, name):
+        rng = self.rng
+        if self.sampled and rng.random() < 0.4:
+            domain = Nat
+        else:
+            v = Var(rng.choice(scope))
+            bound = rng.choice(
+                [rng.randint(0, 3), prim.Sum((v, 1)), prim.FloorDiv(6, v), prim.Remainder(5, v)]
+            )
+            domain = Fin[bound]
+        if rng.random() < 0.3:
+            domain = domain & self.comparison([*scope, name])
+        return domain
+
+    def quantifier(self, scope, depth, kind=None):
+        binders = []
+        inner = list(scope)
+        for _ in range(self.rng.choice([1, 1, 2])):
+            self.names += 1
+            name = f"v{self.names}"
+            binders.append((Var(name), self.domain(inner, name)))
+            inner.append(name)
+        guard = self.comparison(inner) if self.rng.random() < 0.5 else None
+        kind = kind or self.rng.choice([Forall, Exists])
+        return kind(tuple(binders), self.proposition(inner, depth - 1), guard)
+
+    def proposition(self, scope, depth):
+        kinds = ["comparison", "comparison"]
+        if depth > 0:
+            kinds += ["and", "or", "not", "quantifier", "quantifier", "quantifier"]
+        kind = self.rng.choice(kinds)
+        if kind == "comparison":
+            return self.comparison(scope)
+        if kind == "quantifier":
+            return self.quantifier(scope, depth)
+        if kind == "not":
+            return prim.LogicalNot(self.proposition(scope, depth - 1))
+        children = (self.proposition(scope, depth - 1), self.proposition(scope, depth - 1))
+        return prim.LogicalAnd(children) if kind == "and" else prim.LogicalOr(children)
+
+
+def _sampler_of(rng: random.Random):
+    """A sampler that draws four points of :data:`_UNIVERSE` from whatever it is asked for."""
+    return lambda domain: [rng.choice(_UNIVERSE) for _ in range(4)]
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_what_the_evaluator_settles_every_completion_settles_alike(sampled) -> None:
+    """A quantifier read three-valued answers only what every reading of its gaps answers.
+
+    The points are a conjunction or a disjunction (#29), so a point with no
+    answer, a body, guard, refinement or domain bound that divides by zero,
+    is passed over and another point may settle the quantifier. That is
+    sound only if each completion of the gaps, Lean's included, settles it
+    the same way, and here it is checked on random statements. Over an
+    enumerated domain both answers are certain. Over draws a ``False``
+    standing ``POSITIVE`` is, and so is a ``True`` standing ``NEGATIVE``; the
+    other answer is evidence, and is not checked.
+    """
+    rng = random.Random(29)
+    statements = _Statements(rng, sampled)
+    settled = 0
+    for _ in range(3000):
+        context = {"n": rng.randint(0, 4)}
+        statement = statements.proposition(["n"], 3)
+        polarity = rng.choice([Polarity.POSITIVE, Polarity.NEGATIVE])
+        sampler = _sampler_of(random.Random(rng.random())) if sampled else None
+        try:
+            answer = evaluate(statement, dict(context), sampler, polarity)
+        except _NO_ANSWER:
+            continue
+        if sampled and answer is not (polarity is Polarity.NEGATIVE):
+            continue
+        settled += 1
+        for completion in _COMPLETIONS:
+            completed = _Completed(dict(context), completion)(statement)
+            assert completed is answer, (render(statement), context, polarity)
+    assert settled > 500
+
+
+@pytest.mark.parametrize("sampled", [False, True])
+def test_a_counterexample_the_tester_names_is_one_in_every_completion(sampled) -> None:
+    """The tester's walk of a universal goal refutes it only where every completion does.
+
+    And the point it names is in the guarded domain, with the body false
+    there, whatever the gaps are filled with.
+    """
+    from lanky.testing import _falsify
+
+    rng = random.Random(55)
+    statements = _Statements(rng, sampled)
+    refuted = 0
+    for _ in range(3000):
+        context = {"n": rng.randint(0, 4)}
+        goal = statements.quantifier(["n"], 3, kind=Forall)
+        sampler = _sampler_of(random.Random(rng.random())) if sampled else None
+        try:
+            holds, point, _failing = _falsify(goal, dict(context), sampler)
+        except _NO_ANSWER:
+            continue
+        if holds:
+            if not sampled:
+                for completion in _COMPLETIONS:
+                    assert _Completed(dict(context), completion)(goal) is True
+            continue
+        refuted += 1
+        at = {**context, **{var.name: point[var.name] for var, _ in goal.binders}}
+        for completion in _COMPLETIONS:
+            assert _Completed(dict(context), completion)(goal) is False, render(goal)
+            reading = _Completed(dict(at), completion)
+            for _var, domain in goal.binders:
+                assert all(reading(p) for p in getattr(domain, "props", ())), render(goal)
+            assert goal.guard is None or reading(goal.guard), render(goal)
+            assert reading(goal.body) is False, (render(goal), at)
+    assert refuted > 100
 
 
 # }}}

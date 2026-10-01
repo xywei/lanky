@@ -2871,6 +2871,54 @@ def test_thin_pass_reason_counts_draws_and_assignments() -> None:
         "10 valid ones\n"
         "a draw that decided nothing: a gap"
     )
+    # the edges: as many undecided draws as valid ones do not outnumber them,
+    # one more does; three distinct assignments are the floor, two are below it
+    # once the draws took a third
+    assert thin_pass_reason(200, 200, many, 6) == ""
+    assert thin_pass_reason(200, 201, many, 6).startswith(
+        "the pass rests on thin evidence: 201 draws decided nothing"
+    )
+    assert thin_pass_reason(200, 10, many[:3], 6) == ""
+    assert thin_pass_reason(200, 10, many[:2], 2) == ""
+    assert thin_pass_reason(200, 10, many[:2], 3).startswith(
+        "the pass rests on thin evidence: its 200 valid draws take 2 of the 3"
+    )
+
+
+ORDINARY = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Bool, Fin, Nat, Real\n\n\n"
+    "@theorem\n"
+    "def plain(n: Nat) -> n + 0 == n:\n"
+    '    """Every draw decides it."""\n\n\n'
+    "@theorem\n"
+    "def bools(a: Bool, b: Bool) -> (a & b) | ~a | ~b:\n"
+    '    """Four assignments in all."""\n\n\n'
+    "@theorem\n"
+    "def one_point(n: Nat, h: n == 0) -> n * n == 0:\n"
+    '    """One assignment in all, which is not thin for being one."""\n\n\n'
+    "@theorem\n"
+    "def enumerated(n: Nat) -> all(i < n + 1 for i in Fin[n + 1]):\n"
+    '    """A goal quantifier over an enumerated domain."""\n\n\n'
+    "@theorem\n"
+    "def exact(x: Real, y: Real) -> (x + y) - y == x:\n"
+    '    """Rationals, read exactly."""\n\n\n'
+    "@theorem\n"
+    "def sampled() -> all(k + 1 > k for k in Nat):\n"
+    '    """A sampled goal quantifier, and no parameters."""\n'
+)
+
+
+def test_an_ordinary_pass_says_nothing_about_thin_evidence(tmp_path, oracles, capsys) -> None:
+    """#55's reason is for a thin pass only: these decide every draw, or have few assignments."""
+    oracles(TestOracle())
+    path = _write(tmp_path, ORDINARY, "ordinary.py")
+    for fact in check_path(path):
+        assert fact.status is Status.TESTED, fact.owner
+        assert "reason" not in fact.provenance, fact.owner
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
 
 
 # }}}
