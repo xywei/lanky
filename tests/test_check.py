@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from conftest import ProcessWatch
 from lanky import cli
 from lanky.check import check_path, oracle_lines
 from lanky.ledger import Fact, Ledger, Status
@@ -1262,27 +1263,20 @@ def test_a_second_sigterm_does_not_end_the_child_before_its_repls(tmp_path) -> N
     import signal
     import subprocess
     import sys
-    import time
 
     child = subprocess.Popen(
         [sys.executable, "-c", TERMINATED.format(extra=AGAIN)], stdout=subprocess.PIPE
     )
-    repl = int(child.stdout.readline())
+    repl = ProcessWatch(int(child.stdout.readline()))
     try:
         child.send_signal(signal.SIGTERM)
-        assert child.wait(timeout=10) == -signal.SIGTERM
-        deadline = time.monotonic() + 10
-        while not _gone(repl) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert _gone(repl), "the REPL outlived the child"
+        assert child.wait(timeout=60) == -signal.SIGTERM
+        assert repl.wait(60), "the REPL outlived the child"
     finally:
         if child.poll() is None:
             child.kill()
             child.wait()
-        if not _gone(repl):
-            import os
-
-            os.kill(repl, signal.SIGKILL)
+        repl.kill()
 
 
 @pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
@@ -1369,31 +1363,23 @@ def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
     ]
 
 
+#: A checked file that writes its process's pid and sleeps. The pid is written
+#: whole or not at all, by a rename, since the test reads the file while it is
+#: written.
 SLOW = '''\
 import os
 import time
 
-with open({pidfile!r}, "w", encoding="utf-8") as handle:
+with open({pidfile!r} + ".part", "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))
-time.sleep(60)
+os.replace({pidfile!r} + ".part", {pidfile!r})
+time.sleep(120)
 '''
 
 
 def _gone(pid: int) -> bool:
     """Whether process ``pid`` has ended; one ended and not yet reaped counts."""
-    import os
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:  # pragma: no cover - a pid taken by another user's process
-        return True
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except (OSError, IndexError):  # no /proc: alive, as far as can be told
-        return False
+    return ProcessWatch(pid).gone()
 
 
 @pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
@@ -1403,7 +1389,14 @@ def test_a_child_ends_when_the_command_is_ended_alone(tmp_path, name) -> None:
 
     Such a signal ends the command at once, with nothing run on the way out,
     and the child used to keep checking for no one: here, sleeping out the
-    minute its file sleeps. It now gets ``SIGTERM`` when its parent ends.
+    two minutes its file sleeps. It now gets ``SIGTERM`` when its parent ends.
+
+    The test failed now and then under load (#53), after three seconds: its
+    wait for the child had seen it a zombie and stopped, and the assertion
+    after it asked again while the child was reaped, when ``kill`` still finds
+    a process whose ``/proc`` entry is gone, and read it as running. The child
+    is watched by ``ProcessWatch`` now, which answers once, and given a
+    minute, which a passing run never waits for.
     """
     import signal
     import subprocess
@@ -1419,27 +1412,22 @@ def test_a_child_ends_when_the_command_is_ended_alone(tmp_path, name) -> None:
     )
     child = None
     try:
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 120
         while child is None:
             assert command.poll() is None, "the command ended before its child began"
             assert time.monotonic() < deadline, "the child never began"
-            text = pidfile.read_text(encoding="utf-8") if pidfile.exists() else ""
-            child = int(text) if text else None
+            if pidfile.exists():
+                child = ProcessWatch(int(pidfile.read_text(encoding="utf-8")))
             time.sleep(0.05)
         command.send_signal(getattr(signal, name))
-        command.wait(timeout=30)
-        deadline = time.monotonic() + 20
-        while not _gone(child) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert _gone(child), "the child outlived the command"
+        command.wait(timeout=60)
+        assert child.wait(60), "the child outlived the command"
     finally:
         if command.poll() is None:
             command.kill()
             command.wait()
-        if child is not None and not _gone(child):
-            import os
-
-            os.kill(child, signal.SIGKILL)
+        if child is not None:
+            child.kill()
 
 
 LEAVES_ONE_RUNNING = '''\

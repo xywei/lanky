@@ -19,6 +19,7 @@ from typing import NoReturn
 import pymbolic.primitives as prim
 import pytest
 
+from conftest import ProcessWatch
 from lanky import theorem
 from lanky.check import import_path
 from lanky.lean import (
@@ -1445,7 +1446,6 @@ def test_kill_servers_kills_each_repl_and_what_it_started(own_session) -> None:
     """
     import subprocess
     import sys
-    import time
     from types import SimpleNamespace
 
     from lanky.oracles.lean import _OPENED
@@ -1453,7 +1453,7 @@ def test_kill_servers_kills_each_repl_and_what_it_started(own_session) -> None:
     lake = subprocess.Popen(
         [sys.executable, "-c", _LAKE], stdout=subprocess.PIPE, start_new_session=own_session
     )
-    repl = int(lake.stdout.readline())
+    repl = ProcessWatch(int(lake.stdout.readline()))
     reaped = subprocess.Popen([sys.executable, "-c", "pass"])
     reaped.wait()
     sessions = [LeanSession(), LeanSession(), LeanSession()]
@@ -1463,32 +1463,21 @@ def test_kill_servers_kills_each_repl_and_what_it_started(own_session) -> None:
         for session in sessions:
             _OPENED.add(session)
         kill_servers()
-        assert lake.wait(timeout=10) == -9
+        assert lake.wait(timeout=60) == -9
         if own_session:
-            deadline = time.monotonic() + 10
-            while not _gone(repl) and time.monotonic() < deadline:
-                time.sleep(0.05)
-            assert _gone(repl), "the REPL lake started outlived it"
+            assert repl.wait(60), "the REPL lake started outlived it"
     finally:
         for session in sessions:
             _OPENED.discard(session)
         lake.kill()
         lake.wait()
-        if not _gone(repl):
-            os.kill(repl, 9)
+        repl.kill()
 
 
 def _gone(pid: int) -> bool:
     """Whether process ``pid`` has ended; one ended and not yet reaped counts."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except (OSError, IndexError):  # no /proc: alive, as far as can be told
-        return False
+    return ProcessWatch(pid).gone()
+
 
 
 def test_an_unavailable_oracle_is_named_in_the_check_report(monkeypatch) -> None:
