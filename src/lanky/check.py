@@ -332,8 +332,37 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             result = result.with_status(result.status, trust_class=oracle.trust_class())
             fact = _cross_check(result, gaps, handed=fact, verbose=verbose)
             break
-        fact = result
+        fact = _keep_declines(fact, result)
     return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
+
+
+def _declines(value: Any) -> list[Any]:
+    """A ``declined`` entry as a list of reasons, one per oracle; empty for none."""
+    if value is None:
+        return []
+    return list(value) if isinstance(value, list | tuple) else [value]
+
+
+def _keep_declines(handed: Fact, result: Fact) -> Fact:
+    """``result``, with the reasons the oracles before it declined ``handed`` for kept.
+
+    ``declined`` holds one reason per oracle that declined (see
+    :func:`lanky.cli.decline_lines`), and an oracle records its own as any
+    provenance is recorded, over what the fact carried: with two that decline,
+    the second one's reason took the first one's place, and ``lanky check``
+    printed only the last. The earlier reasons come first, in the order the
+    oracles were asked. A result that kept the entry as it was handed, or
+    added to it, is left as it is; the reasons are compared by identity, since
+    a plugin's could be a lanky term.
+    """
+    before = _declines(handed.provenance.get("declined"))
+    after = _declines(result.provenance.get("declined"))
+    if not before or (
+        len(after) >= len(before) and all(a is b for a, b in zip(after, before, strict=False))
+    ):
+        return result
+    reasons = before + after
+    return result.with_status(result.status, declined=reasons)
 
 
 def _overruled(fact: Fact, sampled: Fact, tester: str) -> Fact:

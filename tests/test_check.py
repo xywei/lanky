@@ -1794,18 +1794,30 @@ def opaque(f: Fn[Nat, Nat]) -> f(0) == f(0):
 
 
 class _DecliningOracle:
-    """An oracle that is willing to try every fact and declines each, saying why."""
+    """An oracle that is willing to try every fact and declines each, saying why.
 
-    name = "stand-in"
+    With no reason it hands the fact back as it was given, as an oracle that
+    declines without saying why does.
+    """
+
+    def __init__(
+        self,
+        name: str = "stand-in",
+        trust: str = "decision-procedure",
+        reason: str | None = "outside its fragment",
+    ) -> None:
+        self.name, self._trust, self._reason = name, trust, reason
 
     def trust_class(self) -> str:
-        return "decision-procedure"
+        return self._trust
 
     def can_establish(self, fact, /) -> bool:
         return fact.term is not None
 
     def establish(self, fact, /):
-        return fact.with_status(fact.status, declined=f"{self.name}: outside its fragment")
+        if self._reason is None:
+            return fact
+        return fact.with_status(fact.status, declined=f"{self.name}: {self._reason}")
 
 
 def test_lanky_check_prints_a_decline_and_exits_zero(tmp_path, monkeypatch, capsys) -> None:
@@ -1819,6 +1831,34 @@ def test_lanky_check_prints_a_decline_and_exits_zero(tmp_path, monkeypatch, caps
     printed = capsys.readouterr().out
     assert "DECLINED opaque at claims.py:" in printed
     assert "\n  stand-in: outside its fragment\n" in printed
+
+
+def test_each_oracle_that_declined_is_named_under_the_table(tmp_path, monkeypatch, capsys) -> None:
+    """Two oracles that decline one fact each say why, in the order they were asked.
+
+    An oracle records its reason as ``declined`` over what the fact carried,
+    so the second one's took the first one's place, and the line under the
+    table named only the last oracle that looked. One that declines without
+    a reason adds nothing, and leaves the others' in place.
+    """
+    from lanky.plugins import registry
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    oracles = [
+        _DecliningOracle("rules", "heuristic", "no rule applies"),
+        _DecliningOracle("quiet", "decision-procedure", None),
+        _DecliningOracle("solver", "decision-procedure", "outside its fragment"),
+    ]
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, *oracles])
+    path = write_file(tmp_path, DECLINES)
+    (fact,) = check_path(path)
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["declined"] == ["solver: outside its fragment", "rules: no rule applies"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    block = printed.split("DECLINED opaque at claims.py:", 1)[1].splitlines()
+    assert block[1:3] == ["  solver: outside its fragment", "  rules: no rule applies"]
+    assert printed.count("DECLINED ") == 1
 
 
 # }}}
