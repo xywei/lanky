@@ -25,9 +25,14 @@ changes the exit code: a fact resting on a refuted one fails the check through
 the refuted one, and a fact resting on an assumption is no more a failure than
 the assumption.
 
-Four more things are printed under the table and do not change the exit code.
+Five more things are printed under the table and do not change the exit code.
 Each axiom is named in a ``CITED`` line with the citation it is taken on,
-which is the one thing that stands behind an ``assumed (axiom)`` row. A
+which is the one thing that stands behind an ``assumed (axiom)`` row. A fact
+left ``assumed`` that an oracle looked at and declined, saying why, gets a
+``DECLINED`` line with that reason, the standard provenance key ``declined``
+(see :func:`decline_lines`): an ``assumed`` row is otherwise read as "no oracle
+knows this kind of claim", where the one that knows it may have found it
+outside what it decides. A
 statement whose sampled reading could not be run where a stronger oracle's
 could, or disagrees with it, is reported under ``SEMANTICS`` (a division by
 zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
@@ -75,7 +80,7 @@ from lanky.check import check_path, oracle_lines, source_roots
 from lanky.ledger import Fact, Ledger, Status
 from lanky.plugins import registry
 
-__all__ = ["CheckVerb", "build_parser", "main", "refutation_lines"]
+__all__ = ["CheckVerb", "build_parser", "decline_lines", "main", "refutation_lines"]
 
 
 class CheckVerb:
@@ -106,9 +111,10 @@ class CheckVerb:
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
-        nothing is checked. An axiom's citation, a semantics disagreement, a
-        warning about hypotheses no draw satisfied and an id a fact rests on
-        that the ledger does not hold are printed but do not fail the check.
+        nothing is checked. An axiom's citation, the reason an oracle declined
+        a fact left assumed, a semantics disagreement, a warning about
+        hypotheses no draw satisfied and an id a fact rests on that the ledger
+        does not hold are printed but do not fail the check.
 
         Whether a file exists is asked before anything is imported rather than
         read off a ``FileNotFoundError``, because the file can raise one of its
@@ -309,6 +315,7 @@ class CheckVerb:
         """
         print(ledger.render())
         CheckVerb._report_citations(ledger)
+        CheckVerb._report_declines(ledger)
         for fact in ledger:
             disagreement = fact.provenance.get(
                 "semantics_disagreement"
@@ -355,6 +362,32 @@ class CheckVerb:
             first, *rest = str(fact.provenance["cite"]).splitlines() or [""]
             print(f"CITED {fact.owner} at {fact.where}: {first}")
             for line in rest:
+                print(f"  {line}")
+
+    @staticmethod
+    def _report_declines(ledger: Ledger) -> None:
+        """Say why an oracle declined each fact left ``assumed``, when it said.
+
+        A ``DECLINED`` line names the fact, and the reason the oracle recorded
+        as ``declined`` is indented under it (see :func:`decline_lines`).
+        Only a fact that ends ``assumed`` gets one: a fact a weaker oracle
+        went on to establish or refute has its status to explain it, and an
+        axiom is ``assumed`` on its citation, which its ``CITED`` line gives.
+        The lines come right after those, in the table's order, since they
+        explain ``assumed`` rows too. Nothing here fails the check: an
+        assumed fact is a claim nobody established, not a broken one.
+        """
+        declined = [
+            fact
+            for fact in ledger
+            if fact.status is Status.ASSUMED and not fact.is_axiom and decline_lines(fact)
+        ]
+        if not declined:
+            return
+        print()
+        for fact in declined:
+            print(f"DECLINED {fact.owner} at {fact.where}: {fact.statement}")
+            for line in decline_lines(fact):
                 print(f"  {line}")
 
     @staticmethod
@@ -959,6 +992,29 @@ def refutation_lines(fact: Fact) -> list[str]:
     if not lines:
         lines.append("no witness recorded")
     return lines
+
+
+def decline_lines(fact: Fact) -> list[str]:
+    """The lines ``lanky check`` prints under a fact's ``DECLINED`` line; empty for none.
+
+    ``declined`` is the standard provenance key for a decline, read the same
+    way whichever oracle or plugin recorded it, as ``reason`` is for a
+    refutation (see :func:`refutation_lines`). An oracle that looks at a
+    fact it was willing to try (its ``can_establish`` said yes) and finds it
+    outside what it decides returns it with its status unchanged and the
+    reason as ``declined``, best prefixed by its own name: the pytential
+    demonstration's rule engine records ``layer-rules: the identity
+    coefficient -1/2*eta mentions eta, so the verdict depends on its value``.
+    An oracle that is not willing to try a kind of claim says no in
+    ``can_establish`` and records nothing. A reason of several lines comes
+    back as several, and a list or tuple of reasons, one per oracle, as one
+    line each; an empty one is not printed.
+    """
+    declined = fact.provenance.get("declined")
+    if not _recorded(declined):
+        return []
+    reasons = declined if isinstance(declined, list | tuple) else [declined]
+    return [line for reason in reasons for line in str(reason).splitlines() if line.strip()]
 
 
 def build_parser() -> tuple[argparse.ArgumentParser, dict[str, Any]]:

@@ -1288,6 +1288,10 @@ def test_a_disabled_oracle_is_a_clean_no_op(monkeypatch) -> None:
     assert result.status is Status.ASSUMED
     assert result.decided_by is None
     assert reason in result.provenance["lean_declined"]
+    # and as the standard key for a decline, which lanky check prints (#37)
+    assert result.provenance["declined"] == f"lean: {reason}"
+    printed = oracle.establish(gauss.fact())
+    assert printed.provenance["declined"].startswith("lean: a reduction needs Finset.sum")
 
 
 def test_without_lean_on_the_path_the_oracle_explains_itself(monkeypatch) -> None:

@@ -1723,6 +1723,119 @@ def test_an_empty_witness_is_not_printed(capsys) -> None:
 # }}}
 
 
+# {{{ what is printed under a DECLINED line
+
+
+def _left(status: Status = Status.ASSUMED, kind: str = "theorem", **provenance) -> Fact:
+    """A fact an oracle left at ``status``, carrying exactly this provenance."""
+    return Fact(
+        id="theorem:claim",
+        kind=kind,
+        statement="verdict(eta*I + D)",
+        status=status,
+        where="claims.py:9",
+        owner="claim",
+        provenance=provenance,
+    )
+
+
+def _declined_block(capsys, fact: Fact) -> list[str] | None:
+    """The lines under the fact's ``DECLINED`` line, or ``None`` when there is no such line."""
+    assert cli.CheckVerb._report(Ledger([fact])) is (fact.status is Status.REFUTED)
+    printed = capsys.readouterr().out
+    head = "DECLINED claim at claims.py:9: verdict(eta*I + D)"
+    if head not in printed:
+        assert "DECLINED" not in printed
+        return None
+    return printed.split(head, 1)[1].split("\n\n", 1)[0].splitlines()[1:]
+
+
+def test_a_fact_an_oracle_declined_says_why_under_the_table(capsys) -> None:
+    """#37: an assumed row said nothing of the oracle that looked at it and declined.
+
+    The pytential demonstration's rule engine declines a verdict that depends
+    on a parameter's value, and records why as ``declined``; the row read
+    ``assumed``, as for a claim no oracle knows, and the reason was in the
+    JSON alone. It is printed under the table now, and does not fail the check.
+    """
+    reason = (
+        "layer-rules: the identity coefficient -1/2*eta mentions eta, so the "
+        "verdict depends on its value"
+    )
+    fact = _left(declined=reason)
+    assert _declined_block(capsys, fact) == [f"  {reason}"]
+    assert cli.decline_lines(fact) == [reason]
+    # a reason of several lines is indented line by line, and so is one per oracle
+    fact = _left(declined="layer-rules: two kernels\nLaplace(2) and Helmholtz(2, k=k)")
+    assert _declined_block(capsys, fact) == [
+        "  layer-rules: two kernels",
+        "  Laplace(2) and Helmholtz(2, k=k)",
+    ]
+    fact = _left(declined=["first: outside its fragment", "second: no rule applies"])
+    assert _declined_block(capsys, fact) == [
+        "  first: outside its fragment",
+        "  second: no rule applies",
+    ]
+
+
+def test_only_a_fact_left_assumed_gets_a_declined_line(capsys) -> None:
+    """A decline a weaker oracle went on to settle is explained by its status.
+
+    An axiom is assumed on its citation, which its ``CITED`` line gives, and
+    an empty reason names nothing.
+    """
+    assert _declined_block(capsys, _left(Status.TESTED, declined="rules: no")) is None
+    assert _declined_block(capsys, _left(Status.REFUTED, declined="rules: no")) is None
+    assert _declined_block(capsys, _left(kind="axiom", declined="rules: no")) is None
+    assert _declined_block(capsys, _left(declined="")) is None
+    assert _declined_block(capsys, _left()) is None
+    assert cli.decline_lines(_left(declined=[])) == []
+
+
+DECLINES = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Fin, Fn, Nat
+
+
+@theorem
+def opaque(f: Fn[Nat, Nat]) -> f(0) == f(0):
+    """A family over Nat, which no sampler draws, so the tester leaves it assumed."""
+'''
+
+
+class _DecliningOracle:
+    """An oracle that is willing to try every fact and declines each, saying why."""
+
+    name = "stand-in"
+
+    def trust_class(self) -> str:
+        return "decision-procedure"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.term is not None
+
+    def establish(self, fact, /):
+        return fact.with_status(fact.status, declined=f"{self.name}: outside its fragment")
+
+
+def test_lanky_check_prints_a_decline_and_exits_zero(tmp_path, monkeypatch, capsys) -> None:
+    """The reason reaches ``lanky check`` through the oracles, and the exit code is 0."""
+    from lanky.plugins import registry
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, _DecliningOracle()])
+    path = write_file(tmp_path, DECLINES)
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "DECLINED opaque at claims.py:" in printed
+    assert "\n  stand-in: outside its fragment\n" in printed
+
+
+# }}}
+
+
 # {{{ facts rest on facts
 
 CITED = '''

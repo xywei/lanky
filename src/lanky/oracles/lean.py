@@ -1033,16 +1033,27 @@ class LeanOracle:
         return self.session.mathlib is not None
 
     def establish(self, fact: Fact, /) -> Fact | None:
-        """Try the ladder; ``PROVED`` on success, the fact unchanged otherwise."""
+        """Try the ladder; ``PROVED`` on success, the fact unchanged otherwise.
+
+        A statement the printer declines, or a Lean that cannot be driven, is
+        returned with the reason as ``lean_declined`` and as the standard
+        ``declined`` (see :func:`lanky.cli.decline_lines`). :meth:`can_establish`
+        asks the printer first, so a check reaches this only when the two are
+        called apart.
+        """
         session = self.session
         mathlib = session.mathlib is not None
         try:
             statement = statement_of(fact.term, fact.owner or fact.id, mathlib=mathlib)
         except UnsupportedTerm as exc:
-            return fact.with_status(fact.status, lean_declined=str(exc))
+            return fact.with_status(
+                fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
+            )
         available, reason = self.availability()
         if not available:
-            return fact.with_status(fact.status, lean_declined=reason)
+            return fact.with_status(
+                fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+            )
         override = self.tactics.get(fact.id)
         ladder = [override] if override is not None else tactic_ladder(statement)
         last = ""
