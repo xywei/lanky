@@ -101,9 +101,9 @@ lanky's `main`.
   fact id, which a factory gives the claims it makes since an id names a
   definition, fail the check: the first is checked and the others are named
   in a `DUPLICATE` block, unchecked, rather than one silently replacing
-  another. Files from different
-  source roots are checked in a process per root, so two directories that each
-  hold a `helpers.py` are each checked against their own.
+  another. Files from different source roots are checked in a process per
+  root, so two directories that each hold a `helpers.py` are each checked
+  against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
@@ -247,12 +247,12 @@ lanky's `main`.
   enclosures overlap, such as `exp(x) * exp(-x) <= 1` at any `x` but `0`
   (#33). Its pass rests on the draws at `x = 0` alone, and says so: the row
   reads `tested`, and a `WARNING` under the table says that the pass rests on
-  thin evidence. A complex `log` or `sqrt`, an `exp` of an argument past `2**14`, and
-  a negative number to a power that is not an integer are not enclosed, and
-  leave the draw undecided. Where Lean is total and Python raises (a division
-  by zero, the logarithm of zero, the square root of a negative number), the
-  fact carries a note in Mathlib mode, as an integer division by zero does in
-  either mode.
+  thin evidence. A complex `log` or `sqrt`, an `exp` of an argument past
+  `2**14`, and a negative number to a power that is not an integer are not
+  enclosed, and leave the draw undecided. Where Lean is total and Python
+  raises (a division by zero, the logarithm of zero, the square root of a
+  negative number), the fact carries a note in Mathlib mode, as an integer
+  division by zero does in either mode.
 - A family prints as a total function, so every application of one has to be
   shown in bounds before the statement can go to Lean. The check is affine
   arithmetic over the enclosing binders, not a solver, so an argument it cannot
@@ -272,19 +272,18 @@ lanky's `main`.
   those are outnumbered by the declined ones, or take fewer than three
   distinct assignments when the draws, decided or not, took more, the pass
   stays `tested` and gets a `reason`, printed under the table as a
-  `WARNING`. Over `Fin` the domain is enumerated and both answers hold. The connectives are three-valued: an
-  operand the draws leave open does not decide `&` or `|`, and a false
-  conjunct or a true disjunct settles it however the operands are ordered. So
-  are the quantifiers, an `all` being the conjunction of its points and an
-  `any` their disjunction: a point the draws leave open, or whose guard has no
-  answer, does not end the walk, and `all(p(i) for i in Fin[2])` reads as
-  `p(0) & p(1)` does. A
-  refinement is read as the hypothesis it is, so one that quantifies over
-  `Nat` rejects a draw that breaks it and leaves one it held at undecided. A
-  quantifier over a refined domain `T & p`, which a plugin building terms by
-  hand can write, ranges over the points of `T` where `p` holds, as the Lean
-  printer reads it: enumerated when `T` is, filtered draws when it is
-  sampled.
+  `WARNING`. Over `Fin` the domain is enumerated and both answers hold. The
+  connectives are three-valued: an operand the draws leave open does not
+  decide `&` or `|`, and a false conjunct or a true disjunct settles it
+  however the operands are ordered. So are the quantifiers, an `all` being
+  the conjunction of its points and an `any` their disjunction: a point the
+  draws leave open, or whose guard has no answer, does not end the walk, and
+  `all(p(i) for i in Fin[2])` reads as `p(0) & p(1)` does. A refinement is
+  read as the hypothesis it is, so one that quantifies over `Nat` rejects a
+  draw that breaks it and leaves one it held at undecided. A quantifier over a
+  refined domain `T & p`, which a plugin building terms by hand can write,
+  ranges over the points of `T` where `p` holds, as the Lean printer reads it:
+  enumerated when `T` is, filtered draws when it is sampled.
 
 **Not yet.**
 
