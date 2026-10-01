@@ -2943,7 +2943,7 @@ def test_lean_reads_a_parameterless_theorems_goal_as_its_goal(
         assert fact.status is Status.PROVED
         assert fact.decided_by == "lean"
         assert "unsatisfied" not in fact.provenance
-        assert f"theorem {fact.owner} : ∀ " in fact.provenance["lean_source"]
+        assert f"theorem Lanky.{fact.owner} : ∀ " in fact.provenance["lean_source"]
     assert facts["closed_flipped"].provenance["vacuous"] == (
         "the goal's guard is empty wherever the hypotheses hold: proved by lean"
     )
