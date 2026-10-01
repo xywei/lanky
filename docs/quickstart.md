@@ -616,11 +616,20 @@ more bits than a float has. Both are `tested` without Mathlib and `proved`
 with it, and a real claim is `refuted` only at a draw where the enclosures
 exclude it. An equality whose sides agree counts as holding only where the
 statement asserts it; under a negation or in a hypothesis the agreement
-decides nothing, and neither does an order the enclosures straddle. Where
-Lean's functions are total and Python's raise, the fact carries a note in
-Mathlib mode, as `div_zero` does above: a true division by something that may
-be zero, and a logarithm or square root of something that may leave its Python
-domain.
+decides nothing, and neither does an order the enclosures straddle. So
+`exp(x) * exp(-x) <= 1` is decided only at `x = 0`, where the value is
+rational, and the tester draws again in place of every draw it drops, so all
+200 valid draws are there, out of some three thousand. The row reads
+`tested`, and a `WARNING` under the table says that the pass rests on thin
+evidence: how many draws decided nothing, that the valid ones are all at
+`{'x': Fraction(0, 1)}`, and, on a line of its own, why one draw decided
+nothing. A pass gets that warning whenever the draws it dropped outnumber
+the ones it decided, or its decided draws take fewer than three distinct
+assignments when the draws, decided or not, took more; the JSON has it as
+the fact's `reason`. Where Lean's functions are total and Python's raise, the
+fact carries a note in Mathlib mode, as `div_zero` does above: a true
+division by something that may be zero, and a logarithm or square root of
+something that may leave its Python domain.
 `def neg(x: Real & (x < 0)) -> sqrt(x) == 0` is proved with Mathlib, whose
 square root of a negative number is `0`, and no draw can evaluate it in Python.
 
@@ -642,6 +651,12 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
 - Leave off a theorem's return annotation. `@theorem` raises `TypeError`
   where the function is defined, because a theorem needs a goal, and
   `lanky check` reports the file as one that does not import.
+- Make two claims from one definition, with a function that decorates a
+  nested `def` each time it is called. A fact id names a definition, so both
+  claims have one id; the first is checked and stays in the table, and
+  `lanky check` names the others in a `DUPLICATE` block under it, unchecked,
+  and exits 1. A factory that wants several claims gives each function a
+  `__qualname__` of its own before it decorates it.
 - Write a theorem whose hypotheses no sample can satisfy, such as
   `def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1`. Without Lean the
   fact comes back `assumed`, rather than passing vacuously; its provenance
@@ -720,6 +735,13 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
   does not decide a connective, though: `~all(k < 100 for k in Nat) | (n >= 0)`
   reads `tested`, because `n >= 0` holds at every draw and a disjunction with
   a true operand is true, and it reads the same with the operands swapped.
+  Nor does an undecided point decide a quantifier, whose points are a
+  conjunction (`all`) or a disjunction (`any`):
+  `all(~all(k < 100 for k in Nat) & (i < 1) for i in Fin[n + 2])` is refuted
+  at `i = 1`, though its body has no answer at `i = 0`, as the same claim
+  spelled out point by point is. A point whose guard has no answer, as
+  `if 10 // i > 3` at `i = 0`, is settled by a body that holds there, for an
+  `all`, or fails there, for an `any`, and is open otherwise.
 - `uv sync --group dev --extra lean`, put a Lean toolchain the REPL supports on
   `PATH` (the README's Install section says which; CI uses v4.29.1), and watch
   a row change from `tested` to `proved`. The first run builds a Lean REPL,

@@ -2253,6 +2253,157 @@ def test_a_theorem_with_no_file_behind_it_keeps_its_module() -> None:
     )
 
 
+FACTORY = """\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+K = 1
+
+
+def make():
+    @theorem
+    def claim(n: Nat) -> n + K == n:
+        \"\"\"True only for K = 0.\"\"\"
+    return claim
+
+
+wrong = make()
+K = 0
+right = make()
+"""
+
+
+def test_two_claims_with_one_id_are_refused_and_fail_the_check(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#52: the ledger kept the last claim of a factory and dropped the refuted first one.
+
+    Both claims are written at one line of one file, so they have one id, and
+    ``Ledger.add`` replaced the first by the second: one ``tested`` row and
+    exit code 0, though ``n + 1 == n`` is false at every ``n``. The first
+    claim is checked and kept now, the second is named under the table and
+    not checked, and the check fails on the definition whatever the claims
+    say.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "factory.py"
+    path.write_text(FACTORY, encoding="utf-8")
+    ledger = check_path(path)
+    (fact,) = list(ledger)
+    assert fact.id == "theorem:factory.make.<locals>.claim@10"
+    assert fact.statement == "n : Nat |- n + 1 == n"
+    assert fact.status is Status.REFUTED
+    assert fact.provenance["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
+    assert [duplicated.id for duplicated in ledger.duplicated()] == [fact.id]
+    out_json = tmp_path / "ledger.json"
+    assert cli.main(["check", str(path), "--json", str(out_json)]) == 1
+    printed = capsys.readouterr().out
+    assert (
+        "DUPLICATE make.<locals>.claim at factory.py:10: 2 claims have the id "
+        "theorem:factory.make.<locals>.claim@10\n"
+        "  checked, in the table: n : Nat |- n + 1 == n\n"
+        "  not checked: n : Nat |- n + 0 == n\n"
+        "  each claim needs an id of its own: a definition of its own, or a "
+        "__qualname__ of its own before it is decorated\n"
+    ) in printed
+    assert "REFUTED make.<locals>.claim at factory.py:10" in printed
+    (entry,) = json.loads(out_json.read_text(encoding="utf-8"))
+    assert entry["provenance"]["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
+
+    # two claims that are both true fail the check all the same: one of them
+    # was never checked, and nothing says it is the same claim
+    path = tmp_path / "true" / "factory.py"
+    path.parent.mkdir()
+    path.write_text(FACTORY.replace("K = 1", "K = 0"), encoding="utf-8")
+    (fact,) = list(check_path(path))
+    assert fact.status is Status.TESTED
+    assert fact.provenance["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
+    assert cli.main(["check", str(path)]) == 1
+    assert "DUPLICATE make.<locals>.claim at factory.py:10" in capsys.readouterr().out
+
+
+def test_a_definition_with_several_duplicated_facts_gets_one_block(capsys) -> None:
+    """A plugin's kernel owns a fact per obligation, and a factory duplicates each of them.
+
+    The definition is named once, with every id under it and the claims of
+    each, rather than once per obligation.
+    """
+    facts = [
+        Fact(
+            id=f"in-bounds:kernels.make.<locals>.double@8:S0:{access}",
+            kind="in-bounds",
+            statement=f"{access} is in bounds",
+            status=Status.DECIDED,
+            where="kernels.py:11",
+            owner="make.<locals>.double",
+            provenance={"duplicate_claims": [f"{access} is in bounds"]},
+        )
+        for access in ("read:x[i]", "write:y[i]")
+    ]
+    ledger = Ledger([*facts, Fact(id="theorem:t", kind="theorem", statement="t", owner="t")])
+    assert cli.CheckVerb._report_duplicates(ledger) is True
+    assert capsys.readouterr().out == (
+        "\n"
+        "DUPLICATE make.<locals>.double at kernels.py:11: several claims have each of the "
+        "2 ids below\n"
+        "  in-bounds:kernels.make.<locals>.double@8:S0:read:x[i]\n"
+        "    checked, in the table: read:x[i] is in bounds\n"
+        "    not checked: read:x[i] is in bounds\n"
+        "  in-bounds:kernels.make.<locals>.double@8:S0:write:y[i]\n"
+        "    checked, in the table: write:y[i] is in bounds\n"
+        "    not checked: write:y[i] is in bounds\n"
+        "  each claim needs an id of its own: a definition of its own, or a "
+        "__qualname__ of its own before it is decorated\n"
+    )
+    assert cli.CheckVerb._report_duplicates(Ledger(facts[:0])) is False
+
+
+NAMED_APART = """\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.plugins import registry
+from lanky.prelude import Nat
+
+K = 2
+
+
+def make(name):
+    def claim(n: Nat) -> n + K >= n:
+        \"\"\"True for every K that is not negative.\"\"\"
+    claim.__qualname__ = name
+    return theorem(claim)
+
+
+two = make("claim_two")
+K = 0
+none = make("claim_none")
+registry.register_object(none)
+"""
+
+
+def test_claims_a_factory_names_apart_are_two_facts(tmp_path, monkeypatch, capsys) -> None:
+    """A ``__qualname__`` of its own, given before the function is decorated, is an id of its own.
+
+    And an object registered twice is one object: its claims are collected
+    once, and are not two claims of one id.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "factory.py"
+    path.write_text(NAMED_APART, encoding="utf-8")
+    ledger = check_path(path)
+    assert [fact.owner for fact in ledger] == ["claim_two", "claim_none"]
+    assert [fact.statement for fact in ledger] == [
+        "n : Nat |- n + 2 >= n",
+        "n : Nat |- n + 0 >= n",
+    ]
+    assert not ledger.duplicated()
+    assert cli.main(["check", str(path)]) == 0
+    assert "DUPLICATE" not in capsys.readouterr().out
+
+
 # }}}
 
 

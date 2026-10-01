@@ -100,7 +100,11 @@ another. The connectives, and the list of hypotheses, are read three-valued
 (:func:`~lanky.terms.conjoin`, :func:`~lanky.terms.disjoin`): a false conjunct
 settles a conjunction and a true disjunct a disjunction, whatever an operand
 before it could not answer, so the order the operands are written in does not
-change what a draw decides.
+change what a draw decides. So are the quantifiers, whose points are a
+conjunction or a disjunction: a universal is refuted at a point where its body
+fails, and an existential witnessed at one where it holds, whatever an earlier
+point could not answer, and a point whose guard has no answer is settled by a
+body that settles it whatever the guard.
 
 A refinement is read as the hypothesis it is, standing ``NEGATIVE``, with a
 sampler for the quantifiers in it. ``n: Nat & all(k < n + 100 for k in Nat)``
@@ -158,6 +162,7 @@ __all__ = [
     "in_sort",
     "sample_value",
     "sampling_order",
+    "thin_pass_reason",
     "truth_value",
 ]
 
@@ -169,6 +174,14 @@ SORT_SAMPLE_POINTS = 4
 
 #: How many draws per requested sample before giving up on the hypotheses.
 REJECTION_FACTOR = 20
+
+#: The fewest distinct assignments the valid draws of a pass may take before the
+#: pass is called thin, unless the draws that reached the statement took fewer
+#: (see :func:`thin_pass_reason`).
+DISTINCT_FLOOR = 3
+
+#: How many of a thin pass's distinct valid assignments its reason names.
+_NAMED_ASSIGNMENTS = 3
 
 #: What evaluation raises where the sampled reading has no answer and Lean's
 #: total one does: a division by zero, and an elementary function outside its
@@ -589,9 +602,11 @@ def satisfy_hypotheses(
     for i in Fin[n] & (i > 0))`` says nothing about ``f(0)``, which keeps its
     drawn value. A refinement that cannot be answered at some point ends the
     walk and leaves the hypothesis to the filter, which meets the same
-    question there: a division by zero or an undecided point drops the draw,
-    and a refinement that is not a proposition stops the test, as it does
-    wherever a proposition is read.
+    question there and reads the point three-valued, as a quantifier reads
+    its points: another point that breaks the definition rejects the draw, a
+    definition that holds at the point settles it there, and otherwise the
+    draw is undecided. A refinement that is not a proposition stops the test,
+    as it does wherever a proposition is read.
 
     A quantified definition over a sampled domain, ``all(f(k) == 0 for k in
     Nat)``, has no points to assign at, and is left to the filter as well. It
@@ -680,6 +695,11 @@ class TestReport:
     zero, the guard held nowhere the tester looked, and the goal may say
     nothing (see :func:`lanky.check.goal_guard_fact`); a pass over valid draws
     then carries a ``reason`` that says so (:func:`goal_unreached_reason`).
+
+    Any other pass carries a ``reason`` when it rests on thin evidence, many
+    undecided draws or valid ones at a few assignments (#55): ``ok`` is still
+    ``True``, and the reason says how far the pass goes
+    (:func:`thin_pass_reason`).
     """
 
     ok: bool
@@ -776,6 +796,10 @@ def _sample(
     report = TestReport(ok=True, goal_reached=0 if isinstance(goal, Forall) else None)
     undecided_reason = ""
     unsampleable_reason = ""
+    # The distinct assignments of the valid draws, and of every draw the
+    # statement was evaluated at, valid or undecided, for thin_pass_reason.
+    decided: dict[str, dict[str, Any]] = {}
+    reached: set[str] = set()
     for _ in range(samples * REJECTION_FACTOR):
         if report.valid >= samples:
             break
@@ -799,6 +823,8 @@ def _sample(
                 report.skipped.append(str(exc))
             continue
         reach = _Reach()
+        assignment = {name: _describe(context[name]) for name, _ in variables}
+        key = repr(assignment)
         try:
             if not _hypotheses_hold(hypotheses, context, sampler):
                 continue
@@ -806,12 +832,15 @@ def _sample(
         except (Undecided, *_GAPS) as exc:
             _count_reach(report, reach)
             report.undecided += 1
+            reached.add(key)
             undecided_reason = undecided_reason or _undecided_reason(exc)
             if len(report.skipped) < 3:
                 report.skipped.append(_undecided_reason(exc))
             continue
         _count_reach(report, reach)
         report.valid += 1
+        reached.add(key)
+        decided.setdefault(key, assignment)
         if not satisfied:
             report.ok = False
             # The drawn variables come first and win a clash of names: they are
@@ -834,7 +863,71 @@ def _sample(
             )
     elif report.goal_reached == 0:
         report.reason = goal_unreached_reason(goal, report.valid)
+    else:
+        report.reason = thin_pass_reason(
+            report.valid,
+            report.undecided,
+            list(decided.values()),
+            len(reached),
+            undecided_reason,
+        )
     return report
+
+
+def thin_pass_reason(
+    valid: int,
+    undecided: int,
+    decided: list[dict[str, Any]],
+    reached: int,
+    undecided_reason: str = "",
+) -> str:
+    """Why a pass rests on thin evidence, or ``""`` when it does not (#55).
+
+    A draw the statement cannot be answered at is dropped and another is
+    drawn in its place, until there are enough valid ones, so a pass counts
+    only the draws it could decide, and those can be a few points of the
+    domain: ``exp(x) * exp(-x) <= 1`` is decided only at ``x = 0``, where the
+    value is rational, and its 200 valid draws were all there, out of some
+    3000. Two things make a pass thin, and either one is said.
+
+    The draws that decided nothing outnumber the valid ones (``undecided`` and
+    ``valid``), so the pass rests on a minority of what was drawn. Or the
+    valid draws take fewer distinct assignments, ``decided``, than
+    :data:`DISTINCT_FLOOR`, while the draws the statement was evaluated at,
+    valid or not, took more (``reached`` counts them): a domain that has one
+    or two assignments, a single ``Bool``, a hypothesis ``n == 0``, is not
+    thin for having few.
+
+    This is the dropped-draw counterpart of :func:`goal_unreached_reason`, for
+    every way a draw is dropped: a comparison its enclosures cannot settle, a
+    division by zero, an undecided quantifier. The pass is still a pass, and
+    the reason says how far it goes. It names the valid assignments when
+    there are at most three, and ends with the reason one undecided draw
+    gave, ``undecided_reason``, on a line of its own.
+    """
+    few = len(decided) < min(DISTINCT_FLOOR, reached)
+    if undecided <= valid and not few:
+        return ""
+    named = [assignment for assignment in decided if assignment]
+    where = ""
+    if named and len(named) <= _NAMED_ASSIGNMENTS:
+        where = ", ".join(repr(assignment) for assignment in named)
+        where = where if len(named) == 1 else f"one of {where}"
+    if undecided > valid:
+        head = f"{undecided} draws decided nothing, more than the {valid} valid ones"
+        if where:
+            head += f", which are all at {where}"
+    else:
+        head = (
+            f"its {valid} valid draws take {len(decided)} of the {reached} distinct "
+            "assignments the draws that reached the statement took"
+        )
+        if where:
+            head += f", and are all at {where}"
+    lines = [f"the pass rests on thin evidence: {head}"]
+    if undecided and undecided_reason:
+        lines.append(f"a draw that decided nothing: {undecided_reason}")
+    return "\n".join(lines)
 
 
 def goal_unreached_reason(goal: Forall, valid: int) -> str:
@@ -911,25 +1004,21 @@ def _falsify(
 
     A conjunction is read three-valued, as the evaluator reads it
     (:func:`~lanky.terms.conjoin`): a conjunct that cannot be answered at this
-    draw does not hide a counterexample in a later one.
+    draw does not hide a counterexample in a later one. So is a universal,
+    whose points are one conjunction
+    (:meth:`~lanky.terms.LankyEvaluationMapper.map_forall`): a point the body
+    cannot be answered at does not hide a counterexample at a later point, and
+    a point whose guard or refinement cannot be answered
+    (:class:`~lanky.terms.OpenPoint`) is no counterexample, though the body
+    fails there, and is passed over when the body holds there (#29).
 
     ``reach`` is told when the walk of the goal's own quantifier gets through
     to a point, before the body is evaluated there, so it knows even when the
-    body then leaves the draw undecided. Only the outermost call is given one.
+    body then leaves the draw undecided. A point whose guard has no answer is
+    not one it got through to. Only the outermost call is given one.
     """
     if isinstance(goal, Forall):
-        scope = dict(context)
-        mapper = LankyEvaluationMapper(scope, sampler, Polarity.POSITIVE)
-        with closing(mapper.guarded_assignments(goal)) as walk:
-            for _ in walk:
-                if reach is not None:
-                    reach.reached = True
-                holds, witness, failing = _falsify(goal.body, scope, sampler)
-                if not holds:
-                    point = {var.name: scope[var.name] for var, _ in goal.binders}
-                    point.update((k, v) for k, v in witness.items() if k not in point)
-                    return False, point, failing
-        return True, {}, None
+        return _falsify_universal(goal, context, sampler, reach)
     if isinstance(goal, prim.LogicalAnd):
         pending: Exception | None = None
         for child in goal.children:
@@ -946,6 +1035,60 @@ def _falsify(
         return True, {}, None
     holds = truth_value(evaluate(goal, context, sampler), goal)
     return holds, {}, None if holds else goal
+
+
+def _falsify_universal(
+    goal: Forall,
+    context: dict[str, Any],
+    sampler: Any,
+    reach: _Reach | None,
+) -> tuple[bool, dict[str, Any], Any]:
+    """:func:`_falsify` of a universal: its points one by one, read three-valued.
+
+    The walk is the evaluator's (``guarded_assignments``), and so is the
+    reading of the points (``map_forall``): the first point certainly in the
+    guarded domain where the body fails is the counterexample; a point whose
+    body has no answer, and a point the walk could not place in the domain or
+    out of it, where the body fails, leave the answer open; and when no point
+    refutes the universal the first open answer is raised again, whatever the
+    end of a sampled walk would have said.
+
+    Raises:
+        Undecided: If no point refutes the universal and one has no answer,
+            or the ``ZeroDivisionError`` or ``UndefinedValue`` that one
+            raised; or what the walk raises at its end (see
+            :meth:`~lanky.terms.LankyEvaluationMapper.guarded_assignments`).
+    """
+    scope = dict(context)
+    mapper = LankyEvaluationMapper(scope, sampler, Polarity.POSITIVE)
+    pending: Exception | None = None
+    try:
+        with closing(mapper.guarded_assignments(goal)) as walk:
+            for unsure in walk:
+                if unsure is not None and not unsure.bound:
+                    pending = pending or unsure.reason
+                    continue
+                if unsure is None and reach is not None:
+                    reach.reached = True
+                try:
+                    holds, witness, failing = _falsify(goal.body, scope, sampler)
+                except (Undecided, *_GAPS) as exc:
+                    pending = pending or exc
+                    continue
+                if holds:
+                    continue
+                if unsure is not None:
+                    pending = pending or unsure.reason
+                    continue
+                point = {var.name: scope[var.name] for var, _ in goal.binders}
+                point.update((k, v) for k, v in witness.items() if k not in point)
+                return False, point, failing
+    except Undecided:
+        if pending is None:
+            raise
+    if pending is not None:
+        raise pending
+    return True, {}, None
 
 
 def _refutation_reason(failing: Any) -> str:

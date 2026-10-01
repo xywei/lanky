@@ -24,6 +24,11 @@ A goal that is a universal is watched for one more thing: whether its
 quantifier got through to any point of its guarded domain at any draw. When it
 never did, a pass says nothing about the goal's body, and the provenance
 records ``goal_reached: 0`` for :func:`lanky.check.establish` to examine.
+
+A pass whose draws mostly decided nothing, or whose valid draws are all at a
+few assignments, is still ``TESTED``, and its ``reason`` says that the
+evidence is thin (:func:`lanky.testing.thin_pass_reason`); ``lanky check``
+prints it under the table.
 """
 
 from __future__ import annotations
@@ -111,6 +116,10 @@ class TestOracle:
                 **goal,
             )
         extra = {"undecided": report.undecided} if report.undecided else {}
+        if report.reason and not goal:
+            # A pass on thin evidence says so (#55); a goal whose guard no draw
+            # got through is said by the check instead, as goal_unreached.
+            extra["reason"] = report.reason
         return fact.with_status(
             Status.TESTED,
             self.name,

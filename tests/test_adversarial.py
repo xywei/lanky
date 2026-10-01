@@ -763,18 +763,31 @@ def test_hypotheses_survive_a_theorem_with_no_sort_variables() -> None:
     assert result.provenance["valid"] == 0
 
 
-def test_a_theorem_with_no_variables_and_no_hypotheses_is_unchanged() -> None:
-    """A goal with nothing in front of it is still just the goal.
+def test_a_theorem_with_no_variables_and_no_hypotheses_keeps_its_goal_a_goal() -> None:
+    """A goal with nothing in front of it is wrapped all the same (#35).
 
-    The binderless wrapper is for the guard. With no guard to carry there is
-    nothing to wrap, and the term stays the goal itself.
+    Every reader of a term takes a ``Forall`` apart into variables,
+    hypotheses and goal, so the goal itself, handed over as the term, had its
+    own quantifier taken apart in its place. Wrapped in a ``Forall`` with no
+    binders and no guard, it is the body, and prints as it always did. A
+    closed statement whose goal Python already answered stays the ``bool``.
     """
 
     @theorem
     def plain() -> all(x >= 0 for x in Nat):
-        """No variables, no hypotheses, no wrapper."""
+        """No variables, no hypotheses."""
 
-    assert plain.term is plain.goal
+    assert isinstance(plain.term, Forall)
+    assert plain.term.binders == ()
+    assert plain.term.guard is None
+    assert plain.term.body is plain.goal
+    assert render(plain.term) == render(plain.goal)
+
+    @theorem
+    def answered() -> 1 == 2:
+        """Python answered the goal while the annotation was evaluated."""
+
+    assert answered.term is False
 
 
 # }}}
@@ -1681,14 +1694,19 @@ def test_a_definition_over_a_refined_domain_is_assigned_only_inside_it() -> None
 
 
 def test_a_definition_over_a_refinement_that_cannot_be_answered_drops_the_draw() -> None:
-    """The walk meets ``6 // i`` at ``i = 0``; the draw is undecided, not a crash."""
+    """The walk meets ``6 // i`` at ``i = 0``; the draw is undecided, not a crash.
+
+    The assignment pass leaves the definition to the filter, which reads the
+    point as one with no answer (#29): a draw whose table breaks the
+    definition at ``i = 1`` or ``i = 2`` is rejected, one that holds it there
+    and at ``i = 0`` is admitted, and the rest are undecided.
+    """
     from lanky.testing import check
 
     f, i = Var("f"), Var("i")
     definition = Forall(((i, Fin[3] & (6 // i > 1)),), f(i) == 0)
     report = check([("f", Fn[Fin[3], Nat])], [definition], f(1) == 0, samples=20)
     assert report.ok
-    assert report.valid == 0
     assert report.undecided > 0
 
 
@@ -2400,6 +2418,94 @@ def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() 
         )
 
 
+CLOSED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def closed_flipped() -> all(k >= 0 for k in Nat if (k > 5) & (k < 3)):\n"
+    '    """No parameters: the goal\'s universal is the goal, not the statement."""\n\n\n'
+    "@theorem\n"
+    "def closed_rare() -> all(k >= 0 for k in Nat if k > 100):\n"
+    '    """No parameters, and a guard no draw reaches."""\n\n\n'
+    "@theorem\n"
+    "def closed_nested() -> all(all(k >= j for k in Nat if (k > 5) & (k < 3)) for j in Nat):\n"
+    '    """No parameters: the guard of the inner universal is not the goal\'s."""\n'
+)
+
+
+def test_a_parameterless_theorems_goal_is_read_as_its_goal(tmp_path, oracles, capsys) -> None:
+    """#35: a parameterless theorem's goal quantifier was read as its hypotheses.
+
+    Its term was the goal itself, and every reader took the universal apart:
+    ``k`` became the statement's variable and the guard its hypotheses, so the
+    check warned about hypotheses the theorems do not have, while ``pytest``,
+    which hands the oracle the goal as a goal, said that no draw could decide
+    the statement. The goal is now the goal everywhere: no draw gets through
+    its guard, which decides no draw, so the rows are ``assumed``, the reason
+    is the one ``pytest`` gives, and nothing is said about hypotheses.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, CLOSED, "closed.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    for owner in ("closed_flipped", "closed_rare"):
+        fact = facts[owner]
+        assert fact.status is Status.ASSUMED
+        assert "unsatisfied" not in fact.provenance
+        assert fact.provenance["goal_reached"] == 0
+        assert fact.provenance["untested"].startswith("no draw could decide the statement")
+    from lanky.check import import_path
+    from lanky.plugins import registry
+    from lanky.theory import Theorem
+
+    # the reading pytest gives: the theorem's own report, of the goal as a goal
+    with registry.collecting():
+        module = import_path(path)
+    for owner in ("closed_flipped", "closed_rare"):
+        held = getattr(module, owner)
+        assert isinstance(held, Theorem)
+        assert held.report().reason == facts[owner].provenance["untested"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "hypotheses never satisfied" not in printed
+    assert "WARNING" not in printed
+
+
+def test_a_parameterless_theorems_empty_goal_guard_is_the_goals(tmp_path, oracles, capsys) -> None:
+    """#35: with a stronger oracle, what is vacuous is the goal's guard, and only the outermost.
+
+    ``closed_flipped`` was ``proved (vacuous)`` because "the hypotheses are
+    inconsistent", which the theorem has none of; it is vacuous because the
+    goal's guard is empty, and the question put to the stronger oracle is
+    the goal guard's. ``closed_nested`` was examined one level down, at the
+    universal inside its goal, against the rule that only the goal's
+    outermost quantifier is; it is proved, and not vacuous. (The stand-in
+    proves every question it is put, so it calls ``closed_rare``'s guard
+    empty too, which Lean does not; see the Lean test of the same file.)
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    path = _write(tmp_path, CLOSED, "closed.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    flipped = facts["closed_flipped"]
+    assert flipped.status is Status.PROVED
+    assert flipped.provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by stub-kernel"
+    )
+    assert "unsatisfied" not in flipped.provenance
+    nested = facts["closed_nested"]
+    assert nested.status is Status.PROVED
+    assert not nested.is_vacuous
+    assert "goal_reached" not in nested.provenance
+    assert "hypotheses" not in shown
+    assert shown.count("goal-guard") == 2
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "VACUOUS closed_flipped at closed.py:7:" in printed
+    assert "VACUOUS closed_nested" not in printed
+    assert "hypotheses never satisfied" not in printed
+
+
 # }}}
 
 
@@ -2455,6 +2561,47 @@ def test_an_undecided_conjunct_does_not_hide_a_refuted_one() -> None:
     assert fact.status is Status.REFUTED
     point = fact.provenance["counterexample"]
     assert point["i"] == point["n"]
+
+
+POINTS = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    "@theorem\n"
+    "def pointwise(n: Nat) -> all(~all(k < 100 for k in Nat) & (i < 1) for i in Fin[n + 2]):\n"
+    '    """False at i = 1, where the second conjunct is; undecided at i = 0."""\n\n\n'
+    "@theorem\n"
+    "def spelled(n: Nat) -> (\n"
+    "    (~all(k < 100 for k in Nat) & (0 < 1)) & (~all(k < 100 for k in Nat) & (1 < 1))\n"
+    "):\n"
+    '    """The same claim at the points 0 and 1, spelled out."""\n\n\n'
+    "@theorem\n"
+    "def guarded(n: Nat) -> all(i < 2 for i in Fin[n + 3] if 10 // i > 3):\n"
+    '    """False at i = 2; the guard divides by zero at i = 0."""\n\n\n'
+    "@theorem\n"
+    "def witnessed(n: Nat) -> any(~all(k < 100 for k in Nat) | (i == n) for i in Fin[n + 1]):\n"
+    '    """True: i = n is a witness, after points that have no answer."""\n'
+)
+
+
+def test_a_quantifier_and_its_points_spelled_out_agree(tmp_path, oracles) -> None:
+    """#29: ``pointwise`` was ``assumed`` and ``spelled`` refuted; both are refuted.
+
+    The walk of the goal's quantifier stopped at ``i = 0``, where the body
+    has no answer, and dropped the draw, though ``i = 1`` refutes it. So did
+    a guard with no answer at ``i = 0``. An existential is read the same way:
+    a witness after points with no answer decides every draw.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, POINTS, "points_probe.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    assert facts["spelled"].status is Status.REFUTED
+    assert facts["pointwise"].status is Status.REFUTED
+    assert facts["pointwise"].provenance["counterexample"]["i"] == 1
+    assert facts["guarded"].status is Status.REFUTED
+    assert facts["guarded"].provenance["counterexample"]["i"] == 2
+    assert facts["witnessed"].status is Status.TESTED
+    assert "undecided" not in facts["witnessed"].provenance
 
 
 def test_a_hypothesis_a_draw_breaks_rejects_it_whatever_came_before() -> None:
@@ -2599,6 +2746,179 @@ def test_the_other_refinements_the_tester_reads_have_a_sampler_too() -> None:
     report = check([("n", Nat), ("f", Fn[Fin[n], Nat])], [definition], n >= 0, samples=20)
     assert report.ok
     assert report.valid > 0
+
+
+# }}}
+
+
+# {{{ a pass on thin evidence
+
+
+THIN = (
+    "from __future__ import annotations\n\n"
+    "from lanky import exp, log, theorem\n"
+    "from lanky.prelude import Nat, Real\n\n\n"
+    "@theorem\n"
+    "def exp_neg(x: Real) -> exp(x) * exp(-x) <= 1:\n"
+    '    """Decided only at x = 0, where the value is rational."""\n\n\n'
+    "@theorem\n"
+    "def exp_log(x: Real, h: x > 0) -> exp(log(x)) <= x:\n"
+    '    """Decided only at x = 1."""\n\n\n'
+    "@theorem\n"
+    "def two_points(n: Nat, h: n < 3) -> 10 // n >= 0:\n"
+    '    """Undecided at n = 0, which Python divides by; decided at n = 1 and n = 2."""\n\n\n'
+    "@theorem\n"
+    "def one_gap(n: Nat) -> (10 // n) * n <= 10:\n"
+    '    """Undecided at n = 0 only, which leaves five of the six values."""\n'
+)
+
+
+def test_a_pass_on_thin_evidence_says_so_and_stays_tested(tmp_path, oracles, capsys) -> None:
+    """#55: a pass whose draws mostly decided nothing read like a pass over the reals.
+
+    ``exp(x) * exp(-x) <= 1`` holds as an identity, and its enclosures overlap
+    at every draw but ``x = 0``, where the value is rational; the tester drops
+    an undecided draw and draws again, so its 200 valid draws were all at
+    ``x = 0``, out of some 3000, and nothing but the ``undecided`` count in
+    the JSON said so. Such a pass keeps ``tested``, and gets a ``reason``, in
+    the provenance and under the table. So does one whose valid draws take
+    fewer distinct assignments than the floor while its undecided draws took
+    more; a pass with a few undecided draws among many decided ones does not.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, THIN, "thin.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    for owner, at in (("exp_neg", "{'x': Fraction(0, 1)}"), ("exp_log", "{'x': Fraction(1, 1)}")):
+        fact = facts[owner]
+        assert fact.status is Status.TESTED
+        first, second = fact.provenance["reason"].splitlines()
+        undecided = fact.provenance["undecided"]
+        assert first == (
+            f"the pass rests on thin evidence: {undecided} draws decided nothing, more "
+            f"than the 200 valid ones, which are all at {at}"
+        )
+        assert second.startswith("a draw that decided nothing: the two sides of ")
+    two = facts["two_points"]
+    assert two.status is Status.TESTED
+    first, second = two.provenance["reason"].splitlines()
+    assert first.startswith(
+        "the pass rests on thin evidence: its 200 valid draws take 2 of the 3 distinct "
+        "assignments the draws that reached the statement took, and are all at one of "
+    )
+    assert "{'n': 1}" in first and "{'n': 2}" in first
+    assert second.startswith("a draw that decided nothing: the statement divides by zero")
+    gap = facts["one_gap"]
+    assert gap.status is Status.TESTED
+    assert gap.provenance["undecided"] > 0
+    assert "reason" not in gap.provenance
+    out_json = tmp_path / "ledger.json"
+    assert cli.main(["check", path, "--json", str(out_json)]) == 0
+    printed = capsys.readouterr().out
+    assert (
+        "\nWARNING exp_neg at thin.py:7: the pass rests on thin evidence: "
+        f"{facts['exp_neg'].provenance['undecided']} draws decided nothing, more than the "
+        "200 valid ones, which are all at {'x': Fraction(0, 1)}\n"
+        "  a draw that decided nothing: the two sides of exp(x)*exp(-1*x) <= 1 are "
+    ) in printed
+    assert "WARNING two_points at thin.py:17: the pass rests on thin evidence" in printed
+    assert "WARNING one_gap" not in printed
+    entries = {entry["owner"]: entry for entry in json.loads(out_json.read_text("utf-8"))}
+    assert entries["exp_neg"]["status"] == "tested"
+    assert entries["exp_neg"]["provenance"]["reason"] == facts["exp_neg"].provenance["reason"]
+
+
+def test_a_proof_says_nothing_about_a_thin_sample(tmp_path, oracles, capsys) -> None:
+    """The reason is the tester's, about a pass it made: a stronger oracle's proof gets none.
+
+    ``exp_log`` has a hypothesis, so a proof of it is cross-checked by
+    sampling, and the sample is as thin as before; what it says about the
+    pass is not recorded on a fact that a proof established.
+    """
+    oracles(ProvesEverything(), TestOracle())
+    path = _write(tmp_path, THIN, "thin.py")
+    for fact in check_path(path):
+        assert fact.status is Status.PROVED
+        assert "reason" not in fact.provenance
+    assert cli.main(["check", path]) == 0
+    assert "thin evidence" not in capsys.readouterr().out
+
+
+def test_thin_pass_reason_counts_draws_and_assignments() -> None:
+    """What makes a pass thin, and what a domain with few assignments does not."""
+    from lanky.testing import DISTINCT_FLOOR, thin_pass_reason
+
+    assert DISTINCT_FLOOR == 3
+    many = [{"n": k} for k in range(6)]
+    assert thin_pass_reason(200, 40, many, 6, "a gap") == ""
+    # a domain with two assignments, both decided, is no thinner than it is
+    assert thin_pass_reason(200, 10, [{"b": True}, {"b": False}], 2, "a gap") == ""
+    assert thin_pass_reason(200, 0, [{"n": 0}], 1) == ""
+    assert thin_pass_reason(200, 10, [{"b": True}], 2, "a gap") == (
+        "the pass rests on thin evidence: its 200 valid draws take 1 of the 2 distinct "
+        "assignments the draws that reached the statement took, and are all at "
+        "{'b': True}\n"
+        "a draw that decided nothing: a gap"
+    )
+    # undecided draws that outnumber the valid ones, at many assignments
+    assert thin_pass_reason(200, 300, many, 40, "a gap") == (
+        "the pass rests on thin evidence: 300 draws decided nothing, more than the "
+        "200 valid ones\n"
+        "a draw that decided nothing: a gap"
+    )
+    # a statement with no variables has one assignment, which is not named
+    assert thin_pass_reason(10, 30, [{}], 1, "a gap") == (
+        "the pass rests on thin evidence: 30 draws decided nothing, more than the "
+        "10 valid ones\n"
+        "a draw that decided nothing: a gap"
+    )
+    # the edges: as many undecided draws as valid ones do not outnumber them,
+    # one more does; three distinct assignments are the floor, two are below it
+    # once the draws took a third
+    assert thin_pass_reason(200, 200, many, 6) == ""
+    assert thin_pass_reason(200, 201, many, 6).startswith(
+        "the pass rests on thin evidence: 201 draws decided nothing"
+    )
+    assert thin_pass_reason(200, 10, many[:3], 6) == ""
+    assert thin_pass_reason(200, 10, many[:2], 2) == ""
+    assert thin_pass_reason(200, 10, many[:2], 3).startswith(
+        "the pass rests on thin evidence: its 200 valid draws take 2 of the 3"
+    )
+
+
+ORDINARY = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Bool, Fin, Nat, Real\n\n\n"
+    "@theorem\n"
+    "def plain(n: Nat) -> n + 0 == n:\n"
+    '    """Every draw decides it."""\n\n\n'
+    "@theorem\n"
+    "def bools(a: Bool, b: Bool) -> (a & b) | ~a | ~b:\n"
+    '    """Four assignments in all."""\n\n\n'
+    "@theorem\n"
+    "def one_point(n: Nat, h: n == 0) -> n * n == 0:\n"
+    '    """One assignment in all, which is not thin for being one."""\n\n\n'
+    "@theorem\n"
+    "def enumerated(n: Nat) -> all(i < n + 1 for i in Fin[n + 1]):\n"
+    '    """A goal quantifier over an enumerated domain."""\n\n\n'
+    "@theorem\n"
+    "def exact(x: Real, y: Real) -> (x + y) - y == x:\n"
+    '    """Rationals, read exactly."""\n\n\n'
+    "@theorem\n"
+    "def sampled() -> all(k + 1 > k for k in Nat):\n"
+    '    """A sampled goal quantifier, and no parameters."""\n'
+)
+
+
+def test_an_ordinary_pass_says_nothing_about_thin_evidence(tmp_path, oracles, capsys) -> None:
+    """#55's reason is for a thin pass only: these decide every draw, or have few assignments."""
+    oracles(TestOracle())
+    path = _write(tmp_path, ORDINARY, "ordinary.py")
+    for fact in check_path(path):
+        assert fact.status is Status.TESTED, fact.owner
+        assert "reason" not in fact.provenance, fact.owner
+    assert cli.main(["check", path]) == 0
+    assert "WARNING" not in capsys.readouterr().out
 
 
 # }}}

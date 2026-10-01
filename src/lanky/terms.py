@@ -71,6 +71,7 @@ __all__ = [
     "LogicalAnd",
     "LogicalNot",
     "LogicalOr",
+    "OpenPoint",
     "Polarity",
     "Scope",
     "Subscript",
@@ -1164,7 +1165,8 @@ class _Walk:
     ``sampled`` lists the domains the walk drew points from rather than
     enumerating them, each once, in the order they were met. ``visited``
     counts the assignments the refinements admitted, and ``reached`` the ones
-    the guard admitted as well.
+    the guard admitted as well. ``unsure`` counts the points the walk could
+    place neither in the guarded domain nor out of it (:class:`OpenPoint`).
 
     Whether a domain was drawn from is recorded as the walk goes rather than
     read off the binders, because a walk can end before it gets to a sampled
@@ -1177,6 +1179,7 @@ class _Walk:
         self.sampled: list[Any] = []
         self.visited = 0
         self.reached = 0
+        self.unsure = 0
 
     def drew(self, domain: Any) -> None:
         """Record that points were drawn from ``domain``."""
@@ -1186,6 +1189,32 @@ class _Walk:
     def names(self) -> str:
         """The sampled domains, as a reason names them."""
         return ", ".join(str(domain) for domain in self.sampled)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class OpenPoint:
+    """A point of a quantifier's walk that the values in hand put neither in its domain nor out.
+
+    :meth:`LankyEvaluationMapper.guarded_assignments` yields one, in place of
+    ``None``, where the guard or a refinement has no answer at the point (see
+    :data:`_OPEN`: an undecided quantifier in it, a division by zero), and
+    where a binder's domain cannot be enumerated at all, because its bound has
+    no answer (``Fin[10 // i]`` at ``i = 0``). A quantifier reads its points
+    as one conjunction or one disjunction, three-valued, so such a point does
+    not end the walk: a body that settles it there settles it, and otherwise
+    the point is open (see :meth:`LankyEvaluationMapper.map_forall`).
+
+    Attributes:
+        reason: The open answer, which is raised again when no point settles
+            the quantifier.
+        bound: Whether the binders are bound at the point, so that the body
+            can be read there. They are where a guard or a refinement is
+            open; a domain that could not be enumerated has no points to bind,
+            and stands for all of them at once.
+    """
+
+    reason: Exception
+    bound: bool = True
 
 
 #: The nodes that say where their operands stand (see :class:`Polarity`). Every
@@ -1259,7 +1288,12 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     :func:`disjoin`). An operand the values in hand cannot answer does not
     stop it, and a later operand that settles it, a ``False`` in a
     conjunction or a ``True`` in a disjunction, answers it all the same, so
-    the order the operands are written in does not change the answer.
+    the order the operands are written in does not change the answer. A
+    quantifier reads its points the same way, a universal as the conjunction
+    of its points and an existential as their disjunction (:meth:`map_forall`,
+    :meth:`map_exists`), so ``all(p(i) for i in Fin[2])`` and ``p(0) & p(1)``
+    agree; a point whose guard or refinement has no answer is settled by a
+    body that settles it whatever the guard, and is open otherwise.
 
     Wherever a proposition's truth is read, in a connective, a guard, a
     refinement or the body of a quantifier, the value has to be a truth value
@@ -1397,38 +1431,71 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         binder_list: Sequence[tuple[Var, Any]],
         refinements: Polarity,
         walk: _Walk,
-    ) -> Iterator[None]:
-        """The walk :meth:`assignments` describes, recording what it drew in ``walk``."""
+        keep_open: bool = False,
+        unsure: Exception | None = None,
+    ) -> Iterator[OpenPoint | None]:
+        """The walk :meth:`assignments` describes, recording what it drew in ``walk``.
+
+        Without ``keep_open`` a refinement or a domain bound with no answer at
+        a point raises, and the walk ends there. With it the walk goes on, as
+        a quantifier reads its points (see :meth:`guarded_assignments`): a
+        point a refinement cannot answer is bound and yielded as an
+        :class:`OpenPoint`, and every point under it inherits the open answer,
+        ``unsure``, unless a refinement below rejects it; a binder whose
+        domain cannot be enumerated is yielded once, as an :class:`OpenPoint`
+        with nothing bound, in place of the points it would have had.
+        """
         if not binder_list:
-            yield None
+            yield None if unsure is None else OpenPoint(unsure)
             return
         (var, domain), rest = binder_list[0], binder_list[1:]
         saved = self.context.get(var.name, _UNSET)
         try:
-            points = self._points(domain)
+            try:
+                points = self._points(domain)
+            except _OPEN as exc:
+                if not keep_open:
+                    raise
+                yield OpenPoint(unsure or exc, bound=False)
+                return
             if not self.is_exhaustive(domain):
                 walk.drew(domain)
             for point in points:
                 self.context[var.name] = point
-                if not self._admits(domain, refinements):
-                    continue
-                yield from self._walk(rest, refinements, walk)
+                here = unsure
+                try:
+                    if not self._admits(domain, refinements):
+                        continue
+                except _OPEN as exc:
+                    if not keep_open:
+                        raise
+                    here = here or exc
+                yield from self._walk(rest, refinements, walk, keep_open, here)
         finally:
             if saved is _UNSET:
                 self.context.pop(var.name, None)
             else:
                 self.context[var.name] = saved
 
-    def guarded_assignments(self, expr: Forall | Exists) -> Iterator[None]:
+    def guarded_assignments(self, expr: Forall | Exists) -> Iterator[OpenPoint | None]:
         """Bind a quantifier's binders at each point of its guarded domain.
 
         The points are the assignments :meth:`assignments` yields at which the
-        guard holds too. A universal's refinements and guard are the
-        antecedent of what it claims, and stand opposite to it; an
-        existential's are conjuncts of it, and stand where it does. The caller
-        evaluates the body at each point and stops at the answer it is looking
-        for, a counterexample to a universal or a witness to an existential,
-        which closes the walk.
+        guard holds too, and each is yielded as ``None``. A universal's
+        refinements and guard are the antecedent of what it claims, and stand
+        opposite to it; an existential's are conjuncts of it, and stand where
+        it does. The caller evaluates the body at each point and stops at the
+        answer it is looking for, a counterexample to a universal or a witness
+        to an existential, which closes the walk.
+
+        A point the guard or a refinement has no answer at is not the end of
+        the walk (#29). It is bound and yielded as an :class:`OpenPoint`
+        carrying the open answer, and so is a binder domain that cannot be
+        enumerated, with nothing bound, since a quantifier is a conjunction or
+        a disjunction of its points and reads them three-valued, as
+        :func:`conjoin` reads operands. A guard or a refinement that rejects
+        the point still settles it, whatever another could not answer. Only a
+        point yielded as ``None`` counts as one the walk reached.
 
         A walk that runs to its end is where sampling can leave the answer
         open, and that is settled here, after the last point. When the walk
@@ -1447,13 +1514,26 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         universal = isinstance(expr, Forall)
         antecedent = self.polarity.flipped() if universal else self.polarity
         walk = _Walk()
-        with closing(self._walk(list(expr.binders), antecedent, walk)) as points:
-            for _ in points:
-                walk.visited += 1
-                if not self._holds(expr.guard, antecedent):
+        with closing(
+            self._walk(list(expr.binders), antecedent, walk, keep_open=True)
+        ) as points:
+            for unsure in points:
+                if unsure is not None and not unsure.bound:
+                    walk.unsure += 1
+                    yield unsure
                     continue
-                walk.reached += 1
-                yield None
+                if unsure is None:
+                    walk.visited += 1
+                try:
+                    if not self._holds(expr.guard, antecedent):
+                        continue
+                except _OPEN as exc:
+                    unsure = unsure or OpenPoint(exc)
+                if unsure is None:
+                    walk.reached += 1
+                else:
+                    walk.unsure += 1
+                yield unsure
         if not walk.sampled:
             return
         if universal:
@@ -1506,34 +1586,81 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         and nothing anywhere else (:meth:`guarded_assignments` declines it
         there).
 
+        The points are read three-valued, as the operands of a conjunction
+        are (:func:`conjoin`), so the order of the domain does not change the
+        answer (#29): a point whose body has no answer is passed over, and a
+        later point where the body fails is a counterexample all the same;
+        when none is, the first open answer is raised again. A point whose
+        guard or refinement has no answer (an :class:`OpenPoint`) is settled
+        when the body holds there, since an implication with a true
+        consequent holds whatever its antecedent, and is open otherwise.
+
         The walk is closed explicitly on the way out. Leaving it to the
         collector would work in CPython and rest on refcounting for something
         that has to hold: until the walk is closed its ``finally`` has not run,
         and the binding this quantifier replaced is still the inner point.
 
         Raises:
-            Undecided: If a sampled walk met no counterexample and that is not
-                an answer here (:meth:`guarded_assignments`).
+            Undecided: If no point is a counterexample and one has no answer,
+                or the ``ZeroDivisionError`` or :class:`UndefinedValue` that
+                one raised; or if a sampled walk met no counterexample and
+                that is not an answer here (:meth:`guarded_assignments`).
         """
-        with closing(self.guarded_assignments(expr)) as points:
-            for _ in points:
-                if not self._truth(expr.body):
-                    return False
-        return True
+        return self._quantify(expr)
 
     def map_exists(self, expr: Exists) -> Any:
         """True when the body holds somewhere in the guarded domain.
 
+        The points are read three-valued, as the operands of a disjunction
+        are (:func:`disjoin`): a witness after a point that has no answer is
+        a witness all the same. A point whose guard or refinement has no
+        answer is settled when the body fails there, since it is then no
+        witness whatever its guard, and is open otherwise.
+
         Raises:
-            Undecided: If no witness turned up and a binder domain was sampled
-                rather than enumerated, so "no witness among these points" is
-                not "no witness" (:meth:`guarded_assignments`).
+            Undecided: If no point is a witness and one has no answer, or
+                the ``ZeroDivisionError`` or :class:`UndefinedValue` that one
+                raised; or if no witness turned up and a binder domain was
+                sampled rather than enumerated, so "no witness among these
+                points" is not "no witness" (:meth:`guarded_assignments`).
         """
-        with closing(self.guarded_assignments(expr)) as points:
-            for _ in points:
-                if self._truth(expr.body):
-                    return True
-        return False
+        return self._quantify(expr)
+
+    def _quantify(self, expr: Forall | Exists) -> bool:
+        """Read a quantifier's points as one conjunction or one disjunction, three-valued.
+
+        A universal is settled by a point where the body fails, and an
+        existential by one where it holds; such a point settles it only when
+        the point is certainly in the guarded domain. When nothing settles it,
+        the first open answer is raised again, whatever the end of a sampled
+        walk would have said: that a sampled universal held at every draw, or
+        that no witness was drawn, is not what happened at a draw that had no
+        answer.
+        """
+        settles = isinstance(expr, Exists)
+        pending: Exception | None = None
+        try:
+            with closing(self.guarded_assignments(expr)) as points:
+                for unsure in points:
+                    if unsure is not None and not unsure.bound:
+                        pending = pending or unsure.reason
+                        continue
+                    try:
+                        body = self._truth(expr.body)
+                    except _OPEN as exc:
+                        pending = pending or exc
+                        continue
+                    if body != settles:
+                        continue
+                    if unsure is None:
+                        return settles
+                    pending = pending or unsure.reason
+        except Undecided:
+            if pending is None:
+                raise
+        if pending is not None:
+            raise pending
+        return not settles
 
     def map_lanky_sum(self, expr: Sum) -> Any:
         """Add the body over the guarded domain.
@@ -1716,9 +1843,15 @@ def _decline_sampled_pass(expr: Forall, walk: _Walk, polarity: Polarity) -> None
             missed = "satisfied its refinement"
         else:
             missed = "reached a point of its domain"
+        if walk.unsure:
+            # the body was read at a draw the guard or a refinement had no
+            # answer at, which is no point of the guarded domain for certain
+            missed, looked = f"{missed} for certain", "held at no point known to be in its domain"
+        else:
+            looked = "was evaluated at no point"
         raise Undecided(
-            f"no draw of {names} {missed}, so {render(expr)} was evaluated at "
-            "no point, which is not evidence that it holds"
+            f"no draw of {names} {missed}, so {render(expr)} {looked}, which is "
+            "not evidence that it holds"
         )
     if polarity is Polarity.POSITIVE:
         return
