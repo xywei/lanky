@@ -32,7 +32,7 @@ from lanky.terms import (
     structurally_equal,
     sum_,
 )
-from lanky.testing import check, sort_sampler
+from lanky.testing import Table, check, sort_sampler
 
 
 def test_scope_invents_variables() -> None:
@@ -440,6 +440,11 @@ def test_a_quantifier_goes_on_past_a_point_with_no_answer() -> None:
         evaluate(Forall(((i, Fin[2]),), undecided | (i > 5)), {}, _sampler())
     with pytest.raises(ZeroDivisionError):
         evaluate(Exists(((i, Fin[3]),), 10 // i == 7), {})
+    # a point after one with no answer is evaluated now, and a body that is not
+    # a proposition there is refused, where the point before used to hide it
+    g = Var("g")
+    with pytest.raises(TypeError, match="not a truth value"):
+        evaluate(Forall(((i, Fin[2]),), g(1 - i)), {"g": Table([5], name="g")})
 
 
 def test_a_point_whose_guard_has_no_answer_is_settled_by_its_body() -> None:

@@ -65,7 +65,9 @@ loopty uses changes, and loopty's floor follows it.
   rules: a universal's pass is undecided where it does not stand `POSITIVE`,
   a walk that reached no point is undecided, and a point whose guard has no
   answer is not one it reached. A sum is unchanged: a point it cannot place
-  leaves it with no value.
+  leaves it with no value. A point after one with no answer is evaluated
+  now, so a body that is not a proposition there is refused where the
+  earlier point used to hide it, as #25 has it for an operand.
 - **A parameterless theorem's goal is read as its goal** (#35). With no
   parameters and no hypotheses, `Theorem.term` was the goal itself, and every
   reader of a term takes a `Forall` apart into variables, hypotheses and
