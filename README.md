@@ -97,7 +97,10 @@ lanky's `main`.
   with its counterexample, its witness and its reason, the three standard
   provenance keys, read the same way whichever oracle or plugin refuted it; or
   with `no witness recorded` when it carries none of them. Each axiom is named
-  under the table in a `CITED` line with its citation. Files from different
+  under the table in a `CITED` line with its citation, and a fact left
+  `assumed` that an oracle looked at and declined, saying why, in a
+  `DECLINED` line with the reason it gave as `declined`, a standard provenance
+  key too; neither changes the exit code. Files from different
   source roots are checked in a process per root, so two directories that each
   hold a `helpers.py` are each checked against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
@@ -183,9 +186,17 @@ lanky's `main`.
   strategy read off the term. No Mathlib is fetched or needed. CI runs the
   suite against Lean v4.29.1 as well as without Lean. A name Python accepts
   and Lean reserves, a variable `fun` or a theorem `scoped`, is printed
-  quoted (`«fun»`), and an attempt that runs past `LANKY_LEAN_TIMEOUT` costs
-  that attempt alone: the REPL the driver killed is started again for the
-  next.
+  quoted (`«fun»`). A theorem is declared as `Lanky.<name>`, so a claim
+  named like a core declaration (`and_comm`, `id`, `trivial`) is not refused
+  as already declared; a variable named like a root name the printer writes
+  (`Int`, `Nat`, `Bool`, `Finset`) has those printed `_root_.Int` in its
+  statement; and a variable named `rfl` or `_`, which `intro` and `rcases`
+  read as patterns, is introduced under a fresh name. An attempt that runs
+  past `LANKY_LEAN_TIMEOUT` costs that attempt alone: the REPL the driver
+  killed is started again for the next. And a REPL ends with the process
+  that started it, however that process ends, a `SIGKILL` included: a small
+  reaper process per lanky process kills it when the pipe from lanky
+  closes.
 - Mathlib mode, opt-in: `LANKY_LEAN_MATHLIB` names a Lake project with
   Mathlib fetched, and `python -m lanky.mathlib DIR` sets one up from the
   project lanky ships, pinned to Mathlib v4.29.1 and every dependency at a
@@ -243,9 +254,12 @@ lanky's `main`.
   sampled universal is, on evidence. Under a negation, in a hypothesis, or as
   a value, the same agreement decides nothing, and neither does an order whose
   enclosures overlap, such as `exp(x) * exp(-x) <= 1` at any `x` but `0`
-  (#33). A complex `log` or `sqrt`, an `exp` of an argument past `2**14`, and
-  a negative number to a power that is not an integer are not enclosed, and
-  leave the draw undecided. Where Lean is total and Python raises (a division
+  (#33). A complex `log` and `sqrt` are Python's principal branches,
+  enclosed off their branch cut, the non-positive real axis, where Python
+  picks a side by the sign of a zero, which an exact number does not have
+  (#51). On the cut, an `exp` of an argument past `2**14`, and a negative
+  number to a power that is not an integer, the draw is left undecided.
+  Where Lean is total and Python raises (a division
   by zero, the logarithm of zero, the square root of a negative number), the
   fact carries a note in Mathlib mode, as an integer division by zero does in
   either mode.
@@ -404,7 +418,9 @@ test). Each oracle answers
 `can_establish(fact)`; `check_path` offers each fact to the strongest one that
 says yes and stops at the first answer. A fact nobody establishes is `ASSUMED`,
 which is not a failure. An oracle that cannot answer declines, so a timeout is
-never read as a counterexample.
+never read as a counterexample. One that took a fact and found it outside what
+it decides returns it unchanged with the reason as `declined`, and `lanky
+check` prints that under the table for a fact that stays `ASSUMED`.
 
 Decorators are inert and registering: `@theorem` returns a callable object that
 runs natively and puts itself in the registry. `lanky check FILE` imports the
