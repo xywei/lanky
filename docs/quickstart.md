@@ -624,6 +624,12 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
 - Leave off a theorem's return annotation. `@theorem` raises `TypeError`
   where the function is defined, because a theorem needs a goal, and
   `lanky check` reports the file as one that does not import.
+- Make two claims from one definition, with a function that decorates a
+  nested `def` each time it is called. A fact id names a definition, so both
+  claims have one id; the first is checked and stays in the table, and
+  `lanky check` names the others in a `DUPLICATE` block under it, unchecked,
+  and exits 1. A factory that wants several claims gives each function a
+  `__qualname__` of its own before it decorates it.
 - Write a theorem whose hypotheses no sample can satisfy, such as
   `def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1`. Without Lean the
   fact comes back `assumed`, rather than passing vacuously; its provenance

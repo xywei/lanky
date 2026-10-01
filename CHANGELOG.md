@@ -85,6 +85,25 @@ loopty uses changes, and loopty's floor follows it.
   and in Lean, where the theorem is stated with no parameters and a
   quantified goal. A closed statement whose goal Python already answered,
   `-> 1 == 2`, keeps the `bool` for its term.
+- **Two claims with one fact id fail the check** (#52). An id names a
+  definition by its module, qualified name and line, so a function that
+  decorates a nested definition each time it is called gives every claim it
+  makes one id, and `check_path` added each to the ledger with `Ledger.add`,
+  which replaces a fact of the same id: the ledger kept the last claim and
+  dropped the others without a word, a refuted one included, and `lanky
+  check` exited 0 on a factory whose first claim, `n + 1 == n`, is false.
+  `check_path` now checks the first claim of an id and keeps it, records
+  each later one on it, by its statement, as `duplicate_claims` in its
+  provenance, and does not check it. The new `Ledger.duplicated()` returns
+  the facts so marked, and `lanky check` prints a `DUPLICATE` block for each
+  under the table, naming the definition, the id, the claim that was
+  checked and those that were not, and exits 1, whatever the claims say:
+  each claim needs an id of its own, a definition of its own or a
+  `__qualname__` of its own given to the function before it is decorated.
+  `Ledger.add` still replaces, which is how an oracle upgrades a fact. A
+  plugin's facts are collected the same way, so two loopty kernels one
+  factory makes are refused too. An object registered twice is one object,
+  and its claims are collected once.
 
 ## [0.1.0.dev0] - 2026-09-18
 

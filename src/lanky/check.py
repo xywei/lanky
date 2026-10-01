@@ -12,7 +12,10 @@ it imports: ``lanky check a.py b.py`` is how two files are checked together.
 Each file gets a ledger of its own, and a claim has one id in all of them: the
 id names its definition by the module name the file's path gives it
 (:func:`module_name`), not by the name the check imported the file under, so a
-theorem of ``helpers.py`` that ``main.py`` uses is the same id in both.
+theorem of ``helpers.py`` that ``main.py`` uses is the same id in both. Within
+a file's ledger an id names one claim: two claims of one id, which a
+definition that makes several claims gives them, are refused rather than one
+replacing the other (see :func:`check_path`).
 
 A check imports into the process that runs it. :func:`check_path` is the check
 of one file in this process, and the modules the file imports stay imported
@@ -970,7 +973,22 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
 
     Only the objects this import registers are considered, and they are
     released from the registry afterwards, so checking several files in one
-    process keeps their ledgers apart and does not accumulate them.
+    process keeps their ledgers apart and does not accumulate them. An object
+    registered twice is one object, and its claims are collected once.
+
+    Two claims with one id are refused (#52). An id names a definition, and
+    a definition that makes several claims, a function that decorates a
+    nested definition each time it is called, gives every one of them the
+    id of its one line; :meth:`Ledger.add` replaces a fact of the same id,
+    so the ledger kept the last of them and dropped the others without a
+    word, a refuted one included. The first claim of an id is checked and
+    kept, and each later one is recorded on it, by its statement, as
+    ``duplicate_claims`` in its provenance, and is not checked; ``lanky
+    check`` names the definition under the table and exits 1 (see
+    :meth:`lanky.ledger.Ledger.duplicated`). Each claim needs an id of its
+    own: a definition of its own, or a ``__qualname__`` of its own given to
+    the function before it is decorated. A plugin's facts are collected
+    here too, so two kernels one factory makes are refused the same way.
 
     What it does not keep apart is their imports. The file is imported into
     the calling process, and every check that process runs shares one
@@ -992,7 +1010,11 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     with registry.collecting() as decorated:
         module = import_path(path)
     ledger = Ledger()
+    collected: set[int] = set()
     for obj in decorated:
+        if id(obj) in collected:
+            continue
+        collected.add(id(obj))
         owned = _owned(obj, path, module)
         if owned is False:
             continue
@@ -1000,7 +1022,24 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
             for fact in theory.facts(obj):
                 if owned is None and not _recorded_in(fact, path):
                     continue
+                if fact.id in ledger:
+                    if verbose:
+                        print(
+                            f"{fact.where} {fact.owner}: {fact.statement} (not checked: "
+                            f"an earlier claim has the id {fact.id})"
+                        )
+                    ledger.add(_with_duplicate(ledger[fact.id], fact))
+                    continue
                 if verbose:
                     print(f"{fact.where} {fact.owner}: {fact.statement}")
                 ledger.add(establish(fact, verbose=verbose))
     return ledger
+
+
+def _with_duplicate(kept: Fact, claim: Fact) -> Fact:
+    """``kept``, with ``claim``, a later claim of its id, recorded as refused.
+
+    See :func:`check_path`.
+    """
+    claims = [*kept.provenance.get("duplicate_claims", ()), claim.statement]
+    return kept.with_status(kept.status, duplicate_claims=claims)

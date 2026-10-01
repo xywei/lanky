@@ -9,7 +9,10 @@ subcommand of ``lanky`` without lanky knowing what loopty is.
 a refuted fact is a broken claim, and a vacuous one is a claim whose hypotheses
 an oracle has shown inconsistent, or whose goal's guard it has shown empty
 wherever the hypotheses hold, which is true and says nothing, while an assumed
-one is a claim nobody got to. Every oracle reads a statement the same
+one is a claim nobody got to. It exits 1 as well when two claims of a file have
+one fact id, which a definition that makes several claims gives them: a ledger
+holds one fact per id, so the later claims are named in a ``DUPLICATE`` block
+and not checked (see :func:`lanky.check.check_path`). Every oracle reads a statement the same
 way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
 refuted does not depend on whether Lean is installed. What Lean adds is proofs,
 and the proof that a claim is vacuous, which fails a check that without it only
@@ -102,7 +105,8 @@ class CheckVerb:
     def run(self, args: argparse.Namespace, /) -> int:
         """Check each file, print its ledger, and report refutations.
 
-        Exit code 1 on any refutation or vacuous fact, and 1 with the traceback
+        Exit code 1 on any refutation or vacuous fact, and on two claims of
+        one id, which leaves one of them unchecked; and 1 with the traceback
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
@@ -305,7 +309,8 @@ class CheckVerb:
     def _report(ledger: Ledger) -> bool:
         """Print one ledger and what follows it; whether anything failed.
 
-        A fact fails when it is refuted or vacuous.
+        A fact fails when it is refuted or vacuous, or when another claim had
+        its id (see :meth:`_report_duplicates`).
         """
         print(ledger.render())
         CheckVerb._report_citations(ledger)
@@ -324,15 +329,45 @@ class CheckVerb:
                 print(f"  {note}")
         vacuous = CheckVerb._report_hypotheses(ledger)
         CheckVerb._report_unresolved(ledger)
+        duplicated = CheckVerb._report_duplicates(ledger)
         refuted = ledger.by_status(Status.REFUTED)
         if not refuted:
-            return vacuous
+            return vacuous or duplicated
         print()
         for fact in refuted:
             print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
             for line in refutation_lines(fact):
                 print(f"  {line}")
         return True
+
+    @staticmethod
+    def _report_duplicates(ledger: Ledger) -> bool:
+        """Name each definition that made several claims with one id; whether there was one.
+
+        The claims a definition makes all have its id, and a ledger holds one
+        fact per id, so :func:`lanky.check.check_path` checks the first claim
+        and records the others on it, unchecked (#52). Each such definition
+        gets a ``DUPLICATE`` block: the id, the claim in the table, and the
+        claims that were not checked, by their statements, and then what to
+        do about it. It fails the check, since a claim nobody checked could be
+        false, and a refuted one used to be dropped this way without a word.
+        """
+        duplicated = ledger.duplicated()
+        for fact in duplicated:
+            claims = fact.provenance["duplicate_claims"]
+            print()
+            print(
+                f"DUPLICATE {fact.owner} at {fact.where}: {len(claims) + 1} claims "
+                f"have the id {fact.id}"
+            )
+            print(f"  checked, in the table: {fact.statement}")
+            for statement in claims:
+                print(f"  not checked: {statement}")
+            print(
+                "  each claim needs an id of its own: a definition of its own, or a "
+                "__qualname__ of its own before it is decorated"
+            )
+        return bool(duplicated)
 
     @staticmethod
     def _report_citations(ledger: Ledger) -> None:

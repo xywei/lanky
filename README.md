@@ -97,7 +97,11 @@ lanky's `main`.
   with its counterexample, its witness and its reason, the three standard
   provenance keys, read the same way whichever oracle or plugin refuted it; or
   with `no witness recorded` when it carries none of them. Each axiom is named
-  under the table in a `CITED` line with its citation. Files from different
+  under the table in a `CITED` line with its citation. Two claims with one
+  fact id, which a factory gives the claims it makes since an id names a
+  definition, fail the check: the first is checked and the others are named
+  in a `DUPLICATE` block, unchecked, rather than one silently replacing
+  another. Files from different
   source roots are checked in a process per root, so two directories that each
   hold a `helpers.py` are each checked against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,

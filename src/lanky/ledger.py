@@ -320,6 +320,18 @@ class Ledger:
         """Every fact shown vacuous (see :attr:`Fact.is_vacuous`), in order."""
         return tuple(fact for fact in self if fact.is_vacuous)
 
+    def duplicated(self) -> tuple[Fact, ...]:
+        """Every fact whose id another claim had as well, in order.
+
+        :meth:`add` replaces a fact of the same id, which is how an oracle
+        upgrades one, so a ledger cannot hold two claims of one id.
+        :func:`lanky.check.check_path` keeps the first claim of an id and
+        records each later one on it, by its statement, as
+        ``duplicate_claims`` in its provenance; those are the facts here, and
+        ``lanky check`` fails on them (#52).
+        """
+        return tuple(fact for fact in self if fact.provenance.get("duplicate_claims"))
+
     def counts(self) -> dict[str, int]:
         """How many facts of each status, for a one-line summary."""
         out: dict[str, int] = {}
