@@ -117,7 +117,6 @@ _ELEMENTARY_LEMMAS = (
 )
 
 
-
 def _mathlib_tactics(lemmas: tuple[str, ...]) -> tuple[str, ...]:
     """The whole-goal attempts of Mathlib mode, with ``lemmas`` for the elementary functions."""
     return (
@@ -478,6 +477,9 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - a failed import is a reason, not a crash
             self.error = f"importing Mathlib failed ({type(exc).__name__}: {exc})"
             return False
+        except BaseException:
+            self._interrupted()
+            raise
         message = getattr(response, "message", None)
         problems = [str(message)] if message is not None else _errors(response)
         if problems:
@@ -523,11 +525,28 @@ class LeanSession:
             except Exception:  # noqa: BLE001 - a session being closed cannot fail
                 pass
 
+    def _interrupted(self) -> None:
+        """Stop a REPL whose command was interrupted, by Ctrl-C above all, so the process can end.
+
+        lean-interact reads the REPL's answer in a thread of its own, which the
+        interpreter waits for on its way out, before anything registered to
+        run at exit, and which reads until the REPL answers. So a
+        ``KeyboardInterrupt`` raised while the REPL was busy unwound
+        ``lanky check`` and then left the process waiting until the attempt
+        finished, a minute for a tactic bounded by heartbeats and as long as
+        an unbounded one takes, with the REPL running for no one (#46). The
+        REPL is stopped where the command is interrupted, which ends that
+        read, and the next command starts another, as after a timeout.
+        """
+        self.close()
+
     def run(self, source: str) -> tuple[bool, str]:
         """Elaborate one declaration; ``(closed, first diagnostic)``.
 
         A declaration is closed when Lean reports no error and no ``sorry``:
-        the kernel accepted the proof term the tactics built.
+        the kernel accepted the proof term the tactics built. A command
+        interrupted by anything but an error, a ``KeyboardInterrupt`` above
+        all, stops the REPL (:meth:`_interrupted`) and is raised again.
         """
         from lean_interact import Command
 
@@ -543,6 +562,9 @@ class LeanSession:
             response = self.server.run(command, timeout=self.timeout)
         except Exception as exc:  # noqa: BLE001 - a timeout must not stop the ladder
             return False, f"{type(exc).__name__}: {exc}"
+        except BaseException:
+            self._interrupted()
+            raise
         message = getattr(response, "message", None)
         if message is not None:
             return False, str(message)
@@ -611,8 +633,9 @@ def _reaper() -> subprocess.Popen | None:
     ends, whatever ends it, ``SIGKILL`` included, and the reaper then kills
     every REPL's process group it was handed and not told to forget. It is in
     a session of its own, so a signal sent to this process's group does not
-    end it first. A process forked from this one starts a reaper of its own
-    for the REPLs it starts, and hands it none of this one's. ``None`` off
+    end it first. A process forked from this one lets go of this one's
+    reaper (see :func:`_after_fork`), starts a reaper of its own for the
+    REPLs it starts, and hands it none of this one's. ``None`` off
     POSIX, where there are no process groups to kill, and where the reaper
     cannot be started; the sessions then work as they did.
     """
@@ -675,6 +698,39 @@ def _forget_group(group: int) -> None:
         _WATCHED.discard(group)
         if _REAPER is not None:
             _tell(_REAPER, f"-{group}\n")
+
+
+def _after_fork() -> None:
+    """In a forked process: let go of the parent's reaper, which the fork would keep waiting.
+
+    A fork inherits the write end of the pipe the reaper reads, and the
+    reaper sees the pipe close only when every process that holds it has
+    ended, so with the fork still running, a parent ended by ``SIGKILL`` left
+    its REPLs running until the fork ended too. The fork's copy of the pipe
+    is pointed at ``/dev/null`` (closing the file object could wait on a lock
+    a thread of the parent held at the fork, and closing its descriptor
+    alone would leave the object to close whatever takes the number next),
+    and the fork starts a reaper of its own for the REPLs it starts (see
+    :func:`_reaper`). Its lock is a new one, for the same reason.
+    """
+    global _REAPER_LOCK
+    _REAPER_LOCK = threading.Lock()
+    process = _REAPER
+    if process is None or process.stdin is None:
+        return
+    try:
+        descriptor = process.stdin.fileno()
+        null = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(null, descriptor, inheritable=False)
+        finally:
+            os.close(null)
+    except (OSError, ValueError):  # pragma: no cover - a pipe already closed
+        pass
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX
+    os.register_at_fork(after_in_child=_after_fork)
 
 
 def _release_reaper(process: subprocess.Popen) -> None:

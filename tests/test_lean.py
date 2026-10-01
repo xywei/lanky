@@ -1421,6 +1421,46 @@ def test_a_core_session_starts_a_killed_server_again(monkeypatch) -> None:
     assert "could not be restarted" in detail
 
 
+class _Interrupted:
+    """A stand-in server whose command is interrupted, as Ctrl-C interrupts one."""
+
+    def __init__(self) -> None:
+        self.kills = 0
+
+    def is_alive(self) -> bool:
+        return True
+
+    def run(self, command, timeout=None):
+        raise KeyboardInterrupt
+
+    def kill(self) -> None:
+        self.kills += 1
+
+
+def test_an_interrupted_command_stops_the_repl(monkeypatch) -> None:
+    """#46: Ctrl-C during an attempt left the process waiting for the REPL's answer.
+
+    lean-interact reads the answer in a thread the interpreter waits for on
+    its way out, so ``lanky check`` interrupted while the REPL was busy did
+    not end until the attempt did, and the session's close at exit, which
+    would have stopped the REPL, ran only after that. The REPL is stopped
+    where the command is interrupted now, the interrupt goes on, and the
+    session starts another REPL for its next command.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "lean_interact", SimpleNamespace(Command=lambda **fields: fields)
+    )
+    session = LeanSession(timeout=60)
+    session.server = server = _Interrupted()
+    with pytest.raises(KeyboardInterrupt):
+        session.run("theorem t : True := trivial\n")
+    assert server.kills == 1
+    assert (session.server, session.error) == (None, None)
+
+
 #: A stand-in for ``lake env repl``: a process that starts one of its own,
 #: prints that one's pid, and sleeps, as ``lake`` waits on the REPL.
 _LAKE = """\
@@ -1595,6 +1635,98 @@ def test_the_reaper_leaves_alone_a_repl_its_session_closed() -> None:
         assert not repl.gone(), "the reaper killed a REPL its session had taken back"
     finally:
         repl.kill()
+
+
+#: :data:`_HANDED_OVER`, but the process forks a child that outlives it.
+_FORKED = """\
+import os, subprocess, sys, time
+from types import SimpleNamespace
+import lanky.oracles.lean as lean
+repl = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                        start_new_session=True, stdout=subprocess.DEVNULL)
+session = lean.LeanSession()
+session.server = SimpleNamespace(_proc=repl, kill=lambda: None)
+session._opened()
+fork = os.fork()
+if fork == 0:
+    time.sleep(120)
+    os._exit(0)
+print(repl.pid, fork, flush=True)
+time.sleep(120)
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX process groups")
+def test_a_fork_does_not_keep_the_repl_of_its_parent_going() -> None:
+    """A fork held the reaper's pipe open, so the REPL outlived its parent while the fork ran.
+
+    The reaper kills when every process holding the pipe has ended, and a
+    fork (``multiprocessing``'s default start on Linux) inherits it. The fork
+    lets go of it now, so the parent's end is the one the reaper sees.
+    """
+    import signal
+    import subprocess
+    import sys
+
+    program = subprocess.Popen([sys.executable, "-c", _FORKED], stdout=subprocess.PIPE)
+    repl = fork = None
+    try:
+        repl_pid, fork_pid = map(int, program.stdout.readline().split())
+        repl, fork = ProcessWatch(repl_pid), ProcessWatch(fork_pid)
+        program.send_signal(signal.SIGKILL)
+        assert program.wait(timeout=60) == -signal.SIGKILL
+        assert repl.wait(60), "the REPL outlived its process while a fork of it ran"
+        assert not fork.gone(), "the fork ended first, so this shows nothing"
+    finally:
+        program.kill()
+        program.wait()
+        for watched in (repl, fork):
+            if watched is not None:
+                watched.kill()
+
+
+#: A program that gives a Lean session an attempt that sleeps for five
+#: minutes, in its main thread, and says which processes the REPL is.
+_INTERRUPTED_REPL = """\
+import threading, time
+import psutil
+from lanky.oracles.lean import LeanSession
+session = LeanSession(timeout=900)
+assert session.start(), session.error
+lake = psutil.Process(session.server._proc.pid)
+def report():
+    time.sleep(3)
+    print(*[process.pid for process in [lake, *lake.children(recursive=True)]], flush=True)
+threading.Thread(target=report, daemon=True).start()
+session.run("theorem t : True := by\\n  sleep 300000\\n  trivial\\n")
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+def test_ctrl_c_ends_a_process_whose_repl_is_busy(lean_oracle: LeanOracle) -> None:
+    """#46 with a real Lean: ``SIGINT`` during a five-minute attempt ended nothing for minutes."""
+    import signal
+    import subprocess
+    import sys
+
+    program = subprocess.Popen(
+        [sys.executable, "-c", _INTERRUPTED_REPL],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    watched: list[ProcessWatch] = []
+    try:
+        watched = [ProcessWatch(int(pid)) for pid in program.stdout.readline().split()]
+        assert len(watched) >= 2, "the REPL is lake and the process lake runs"
+        program.send_signal(signal.SIGINT)
+        assert program.wait(timeout=60) == -signal.SIGINT
+        for process in watched:
+            assert process.wait(60), "the REPL outlived the interrupt"
+    finally:
+        program.kill()
+        program.wait()
+        for process in watched:
+            process.kill()
 
 
 def test_an_unavailable_oracle_is_named_in_the_check_report(monkeypatch) -> None:
