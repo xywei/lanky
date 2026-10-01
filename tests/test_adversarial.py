@@ -1681,14 +1681,19 @@ def test_a_definition_over_a_refined_domain_is_assigned_only_inside_it() -> None
 
 
 def test_a_definition_over_a_refinement_that_cannot_be_answered_drops_the_draw() -> None:
-    """The walk meets ``6 // i`` at ``i = 0``; the draw is undecided, not a crash."""
+    """The walk meets ``6 // i`` at ``i = 0``; the draw is undecided, not a crash.
+
+    The assignment pass leaves the definition to the filter, which reads the
+    point as one with no answer (#29): a draw whose table breaks the
+    definition at ``i = 1`` or ``i = 2`` is rejected, one that holds it there
+    and at ``i = 0`` is admitted, and the rest are undecided.
+    """
     from lanky.testing import check
 
     f, i = Var("f"), Var("i")
     definition = Forall(((i, Fin[3] & (6 // i > 1)),), f(i) == 0)
     report = check([("f", Fn[Fin[3], Nat])], [definition], f(1) == 0, samples=20)
     assert report.ok
-    assert report.valid == 0
     assert report.undecided > 0
 
 
@@ -2455,6 +2460,47 @@ def test_an_undecided_conjunct_does_not_hide_a_refuted_one() -> None:
     assert fact.status is Status.REFUTED
     point = fact.provenance["counterexample"]
     assert point["i"] == point["n"]
+
+
+POINTS = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Fin, Nat\n\n\n"
+    "@theorem\n"
+    "def pointwise(n: Nat) -> all(~all(k < 100 for k in Nat) & (i < 1) for i in Fin[n + 2]):\n"
+    '    """False at i = 1, where the second conjunct is; undecided at i = 0."""\n\n\n'
+    "@theorem\n"
+    "def spelled(n: Nat) -> (\n"
+    "    (~all(k < 100 for k in Nat) & (0 < 1)) & (~all(k < 100 for k in Nat) & (1 < 1))\n"
+    "):\n"
+    '    """The same claim at the points 0 and 1, spelled out."""\n\n\n'
+    "@theorem\n"
+    "def guarded(n: Nat) -> all(i < 2 for i in Fin[n + 3] if 10 // i > 3):\n"
+    '    """False at i = 2; the guard divides by zero at i = 0."""\n\n\n'
+    "@theorem\n"
+    "def witnessed(n: Nat) -> any(~all(k < 100 for k in Nat) | (i == n) for i in Fin[n + 1]):\n"
+    '    """True: i = n is a witness, after points that have no answer."""\n'
+)
+
+
+def test_a_quantifier_and_its_points_spelled_out_agree(tmp_path, oracles) -> None:
+    """#29: ``pointwise`` was ``assumed`` and ``spelled`` refuted; both are refuted.
+
+    The walk of the goal's quantifier stopped at ``i = 0``, where the body
+    has no answer, and dropped the draw, though ``i = 1`` refutes it. So did
+    a guard with no answer at ``i = 0``. An existential is read the same way:
+    a witness after points with no answer decides every draw.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, POINTS, "points_probe.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    assert facts["spelled"].status is Status.REFUTED
+    assert facts["pointwise"].status is Status.REFUTED
+    assert facts["pointwise"].provenance["counterexample"]["i"] == 1
+    assert facts["guarded"].status is Status.REFUTED
+    assert facts["guarded"].provenance["counterexample"]["i"] == 2
+    assert facts["witnessed"].status is Status.TESTED
+    assert "undecided" not in facts["witnessed"].provenance
 
 
 def test_a_hypothesis_a_draw_breaks_rejects_it_whatever_came_before() -> None:

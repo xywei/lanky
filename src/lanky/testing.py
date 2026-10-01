@@ -99,7 +99,11 @@ another. The connectives, and the list of hypotheses, are read three-valued
 (:func:`~lanky.terms.conjoin`, :func:`~lanky.terms.disjoin`): a false conjunct
 settles a conjunction and a true disjunct a disjunction, whatever an operand
 before it could not answer, so the order the operands are written in does not
-change what a draw decides.
+change what a draw decides. So are the quantifiers, whose points are a
+conjunction or a disjunction: a universal is refuted at a point where its body
+fails, and an existential witnessed at one where it holds, whatever an earlier
+point could not answer, and a point whose guard has no answer is settled by a
+body that settles it whatever the guard.
 
 A refinement is read as the hypothesis it is, standing ``NEGATIVE``, with a
 sampler for the quantifiers in it. ``n: Nat & all(k < n + 100 for k in Nat)``
@@ -588,9 +592,11 @@ def satisfy_hypotheses(
     for i in Fin[n] & (i > 0))`` says nothing about ``f(0)``, which keeps its
     drawn value. A refinement that cannot be answered at some point ends the
     walk and leaves the hypothesis to the filter, which meets the same
-    question there: a division by zero or an undecided point drops the draw,
-    and a refinement that is not a proposition stops the test, as it does
-    wherever a proposition is read.
+    question there and reads the point three-valued, as a quantifier reads
+    its points: another point that breaks the definition rejects the draw,
+    a definition that holds at the point settles it there, and otherwise the
+    draw is undecided. A refinement that is not a
+    proposition stops the test, as it does wherever a proposition is read.
 
     A quantified definition over a sampled domain, ``all(f(k) == 0 for k in
     Nat)``, has no points to assign at, and is left to the filter as well. It
@@ -910,25 +916,21 @@ def _falsify(
 
     A conjunction is read three-valued, as the evaluator reads it
     (:func:`~lanky.terms.conjoin`): a conjunct that cannot be answered at this
-    draw does not hide a counterexample in a later one.
+    draw does not hide a counterexample in a later one. So is a universal,
+    whose points are one conjunction
+    (:meth:`~lanky.terms.LankyEvaluationMapper.map_forall`): a point the body
+    cannot be answered at does not hide a counterexample at a later point, and
+    a point whose guard or refinement cannot be answered
+    (:class:`~lanky.terms.OpenPoint`) is no counterexample, though the body
+    fails there, and is passed over when the body holds there (#29).
 
     ``reach`` is told when the walk of the goal's own quantifier gets through
     to a point, before the body is evaluated there, so it knows even when the
-    body then leaves the draw undecided. Only the outermost call is given one.
+    body then leaves the draw undecided. A point whose guard has no answer is
+    not one it got through to. Only the outermost call is given one.
     """
     if isinstance(goal, Forall):
-        scope = dict(context)
-        mapper = LankyEvaluationMapper(scope, sampler, Polarity.POSITIVE)
-        with closing(mapper.guarded_assignments(goal)) as walk:
-            for _ in walk:
-                if reach is not None:
-                    reach.reached = True
-                holds, witness, failing = _falsify(goal.body, scope, sampler)
-                if not holds:
-                    point = {var.name: scope[var.name] for var, _ in goal.binders}
-                    point.update((k, v) for k, v in witness.items() if k not in point)
-                    return False, point, failing
-        return True, {}, None
+        return _falsify_universal(goal, context, sampler, reach)
     if isinstance(goal, prim.LogicalAnd):
         pending: Exception | None = None
         for child in goal.children:
@@ -945,6 +947,60 @@ def _falsify(
         return True, {}, None
     holds = truth_value(evaluate(goal, context, sampler), goal)
     return holds, {}, None if holds else goal
+
+
+def _falsify_universal(
+    goal: Forall,
+    context: dict[str, Any],
+    sampler: Any,
+    reach: _Reach | None,
+) -> tuple[bool, dict[str, Any], Any]:
+    """:func:`_falsify` of a universal: its points one by one, read three-valued.
+
+    The walk is the evaluator's (``guarded_assignments``), and so is the
+    reading of the points (``map_forall``): the first point certainly in the
+    guarded domain where the body fails is the counterexample; a point whose
+    body has no answer, and a point the walk could not place in the domain or
+    out of it, where the body fails, leave the answer open; and when no point
+    refutes the universal the first open answer is raised again, whatever the
+    end of a sampled walk would have said.
+
+    Raises:
+        Undecided: If no point refutes the universal and one has no answer,
+            or the ``ZeroDivisionError`` or ``UndefinedValue`` that one
+            raised; or what the walk raises at its end (see
+            :meth:`~lanky.terms.LankyEvaluationMapper.guarded_assignments`).
+    """
+    scope = dict(context)
+    mapper = LankyEvaluationMapper(scope, sampler, Polarity.POSITIVE)
+    pending: Exception | None = None
+    try:
+        with closing(mapper.guarded_assignments(goal)) as walk:
+            for unsure in walk:
+                if unsure is not None and not unsure.bound:
+                    pending = pending or unsure.reason
+                    continue
+                if unsure is None and reach is not None:
+                    reach.reached = True
+                try:
+                    holds, witness, failing = _falsify(goal.body, scope, sampler)
+                except (Undecided, *_GAPS) as exc:
+                    pending = pending or exc
+                    continue
+                if holds:
+                    continue
+                if unsure is not None:
+                    pending = pending or unsure.reason
+                    continue
+                point = {var.name: scope[var.name] for var, _ in goal.binders}
+                point.update((k, v) for k, v in witness.items() if k not in point)
+                return False, point, failing
+    except Undecided:
+        if pending is None:
+            raise
+    if pending is not None:
+        raise pending
+    return True, {}, None
 
 
 def _refutation_reason(failing: Any) -> str:

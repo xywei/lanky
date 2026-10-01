@@ -266,7 +266,11 @@ lanky's `main`.
   statement, the fact stays `ASSUMED` with the reason. Over `Fin` the domain is
   enumerated and both answers hold. The connectives are three-valued: an
   operand the draws leave open does not decide `&` or `|`, and a false
-  conjunct or a true disjunct settles it however the operands are ordered. A
+  conjunct or a true disjunct settles it however the operands are ordered. So
+  are the quantifiers, an `all` being the conjunction of its points and an
+  `any` their disjunction: a point the draws leave open, or whose guard has no
+  answer, does not end the walk, and `all(p(i) for i in Fin[2])` reads as
+  `p(0) & p(1)` does. A
   refinement is read as the hypothesis it is, so one that quantifies over
   `Nat` rejects a draw that breaks it and leaves one it held at undecided. A
   quantifier over a refined domain `T & p`, which a plugin building terms by

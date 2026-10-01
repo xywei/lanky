@@ -42,6 +42,30 @@ loopty uses changes, and loopty's floor follows it.
   file of a namespace package (a directory with no `__init__.py`) shares its
   stem with a file of that name beside the package; their facts are told
   apart by `where` and the `path` in the provenance.
+- **The quantifiers are three-valued** (#29). A quantifier evaluated its body
+  point by point and gave up at the first point it had no answer at, an
+  undecided operand or a division by zero, though a later point settles it:
+  `all(~all(k < 100 for k in Nat) & (i < 1) for i in Fin[n + 2])` read
+  `assumed`, and the same claim spelled out at `i = 0` and `i = 1` was
+  refuted, since #25 made the connectives three-valued. A universal is now
+  read as the conjunction of its points and an existential as their
+  disjunction, as `lanky.terms.conjoin` and `disjoin` read operands: a point
+  with no answer is passed over, a later point where the body fails refutes
+  the universal (and one where it holds witnesses the existential), and when
+  nothing settles the quantifier the first open answer is raised again. A
+  point whose guard or refinement has no answer is yielded by
+  `LankyEvaluationMapper.guarded_assignments` as the new
+  `lanky.terms.OpenPoint` rather than ending the walk; a universal's such
+  point is settled when the body holds there, an existential's when it fails
+  there, and it is open otherwise. So is a binder whose domain cannot be
+  enumerated (`j in Fin[10 // i]` at `i = 0`), which stands for its points
+  as a whole and has no body to read. The evaluator, the tester's walk of a
+  universal goal and the hypotheses read the points this way, so the claim
+  above is refuted at `i = 1` with Lean and without. A sampled walk keeps its
+  rules: a universal's pass is undecided where it does not stand `POSITIVE`,
+  a walk that reached no point is undecided, and a point whose guard has no
+  answer is not one it reached. A sum is unchanged: a point it cannot place
+  leaves it with no value.
 
 ## [0.1.0.dev0] - 2026-09-18
 

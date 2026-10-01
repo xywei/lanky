@@ -13,6 +13,7 @@ from lanky.terms import (
     Exists,
     Forall,
     LankyEvaluationMapper,
+    OpenPoint,
     Polarity,
     Scope,
     Sum,
@@ -405,6 +406,117 @@ def test_a_refinement_is_one_conjunction_read_three_valued() -> None:
         (Nat & (10 // n > 1) & (n < 5)).holds({"n": 0})
 
 
+def _drawn(*points: int):
+    """A sampler that draws ``points``, in that order, from whatever it is asked for."""
+    return lambda domain: list(points)
+
+
+def test_a_quantifier_goes_on_past_a_point_with_no_answer() -> None:
+    """A universal is the conjunction of its points, and an existential their disjunction (#29).
+
+    Each quantifier used to stop at the first point its body had no answer
+    at, though a later point settles it: the body fails there, for a
+    universal, or holds there, for an existential. Spelled out point by
+    point, the same claim was settled, since the connectives are read
+    three-valued (#25), so the two spellings disagreed. Now they agree.
+    """
+    i, k = Var("i"), Var("k")
+    undecided = ~Forall(((k, Nat),), k < 100)
+    pointwise = Forall(((i, Fin[2]),), undecided & (i < 1))
+    spelled = (undecided & True) & (undecided & False)
+    assert evaluate(pointwise, {}, _sampler()) is False
+    assert evaluate(spelled, {}, _sampler()) is False
+    witnessed = Exists(((i, Fin[2]),), undecided | (i == 1))
+    assert evaluate(witnessed, {}, _sampler()) is True
+    # a division by zero is a point with no answer too
+    assert evaluate(Forall(((i, Fin[3]),), 10 // i > 100), {}) is False
+    assert evaluate(Exists(((i, Fin[3]),), 10 // i == 5), {}) is True
+    # and so is a draw of a sampled domain: a later draw still refutes it
+    assert evaluate(Forall(((k, Nat),), (10 // k >= 0) & (k < 3)), {}, _drawn(0, 4)) is False
+    # with nothing to settle it, the first open answer is raised again
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(((i, Fin[3]),), 10 // i >= 0), {})
+    with pytest.raises(Undecided, match="assumes or denies it"):
+        evaluate(Forall(((i, Fin[2]),), undecided | (i > 5)), {}, _sampler())
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Exists(((i, Fin[3]),), 10 // i == 7), {})
+
+
+def test_a_point_whose_guard_has_no_answer_is_settled_by_its_body() -> None:
+    """``i in Fin[3] if 10 // i > 4``: the guard divides by zero at ``i = 0``.
+
+    The point is neither in the guarded domain nor out of it. A universal's
+    point is an implication, which holds when its body does, whatever the
+    guard; an existential's is a conjunction, which fails when its body does.
+    Otherwise the point is open, and the quantifier is settled by another
+    point or not at all. The guard used to end the walk at ``i = 0``.
+    """
+    i = Var("i")
+    guard = 10 // i > 4
+    # the body holds at i = 0, and i = 2 is a counterexample
+    assert evaluate(Forall(((i, Fin[3]),), i < 2, guard), {}) is False
+    # the body holds at every point, the open one included
+    assert evaluate(Forall(((i, Fin[3]),), i >= 0, guard), {}) is True
+    # the body fails at the open point and nowhere else: no counterexample
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(((i, Fin[3]),), i > 0, guard), {})
+    # a witness at i = 2, after the open point
+    assert evaluate(Exists(((i, Fin[3]),), i == 2, guard), {}) is True
+    # the body fails at the open point, which is then no witness either way
+    assert evaluate(Exists(((i, Fin[3]),), i == 5, guard), {}) is False
+    # the body holds at the open point and nowhere else: no certain witness
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Exists(((i, Fin[3]),), i == 0, guard), {})
+
+
+def test_a_point_whose_refinement_or_domain_has_no_answer_does_not_end_the_walk() -> None:
+    """A refinement is read as a guard is, and a domain with no answer stands for its points.
+
+    ``Fin[3] & (10 // i > 4)`` cannot place ``i = 0``. ``j in Fin[10 // i]``
+    has no points to walk at ``i = 0``, so that part of the domain is open as
+    a whole, and the body is not read there; ``i = 1`` still settles the
+    quantifier. Both used to end the walk with the division by zero.
+    """
+    i, j = Var("i"), Var("j")
+    refined = Fin[3] & (10 // i > 4)
+    assert evaluate(Forall(((i, refined),), i < 2), {}) is False
+    assert evaluate(Exists(((i, refined),), i == 2), {}) is True
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Exists(((i, refined),), i == 0), {})
+    nested = ((i, Fin[2]), (j, Fin[10 // i]))
+    assert evaluate(Forall(nested, j < 3), {}) is False
+    assert evaluate(Exists(nested, j == 4), {}) is True
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(nested, j < 10), {})
+    # a reduction has no such reading: a sum over an open part has no value
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Sum(nested, j), {})
+
+
+def test_a_point_with_no_answer_is_not_reached_and_keeps_the_sampled_rules() -> None:
+    """The sampled rules stand: a point with no answer is not evidence that a universal holds.
+
+    A sampled universal whose guard has no answer at any draw reached no
+    point, so its pass is undecided wherever it stands; and one that held at
+    every draw it could answer is undecided under a negation, raising the
+    draw it could not answer, rather than saying that it held at every draw.
+    """
+    k = Var("k")
+    with pytest.raises(Undecided, match="passed the guard"):
+        evaluate(Forall(((k, Nat),), k >= 0, 10 // k > 100), {}, _drawn(0, 0))
+    with pytest.raises(ZeroDivisionError):
+        evaluate(Forall(((k, Nat),), k < 0, 10 // k > 100), {}, _drawn(0, 0))
+    with pytest.raises(ZeroDivisionError):
+        evaluate(~Forall(((k, Nat),), 10 // k >= 0), {}, _drawn(0, 1))
+    mapper = LankyEvaluationMapper({}, _drawn(0, 4))
+    with closing(mapper.guarded_assignments(Forall(((k, Nat),), k >= 0, 10 // k > 1))) as walk:
+        points = [(mapper.context["k"], point) for point in walk]
+    assert [k for k, _ in points] == [0, 4]
+    assert isinstance(points[0][1], OpenPoint) and points[0][1].bound
+    assert isinstance(points[0][1].reason, ZeroDivisionError)
+    assert points[1][1] is None
+
+
 # }}}
 
 
@@ -563,10 +675,17 @@ def test_a_forall_no_draw_of_a_refinement_reaches_is_undecided() -> None:
 
 
 def test_a_refinement_that_cannot_be_answered_raises_as_a_guard_does() -> None:
-    """``Fin[3] & (6 // k > 1)`` has no answer at ``k = 0``, and says so."""
+    """``Fin[3] & (6 // k > 1)`` has no answer at ``k = 0``, and says so.
+
+    It says so when nothing else settles the quantifier (#29): the body fails
+    at ``k = 0`` alone, which is a counterexample only if the point is in the
+    domain. A body that holds at ``k = 0`` settles the point whatever the
+    refinement says there.
+    """
     k = Var("k")
     with pytest.raises(ZeroDivisionError):
-        evaluate(Forall(((k, Fin[3] & (6 // k > 1)),), k >= 0), {})
+        evaluate(Forall(((k, Fin[3] & (6 // k > 1)),), k > 0), {})
+    assert evaluate(Forall(((k, Fin[3] & (6 // k > 1)),), k >= 0), {}) is True
     with pytest.raises(TypeError, match="not a truth value"):
         evaluate(Forall(((k, Fin[3] & (k + 1)),), k >= 0), {})
 

@@ -702,6 +702,13 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
   does not decide a connective, though: `~all(k < 100 for k in Nat) | (n >= 0)`
   reads `tested`, because `n >= 0` holds at every draw and a disjunction with
   a true operand is true, and it reads the same with the operands swapped.
+  Nor does an undecided point decide a quantifier, whose points are a
+  conjunction (`all`) or a disjunction (`any`):
+  `all(~all(k < 100 for k in Nat) & (i < 1) for i in Fin[n + 2])` is refuted
+  at `i = 1`, though its body has no answer at `i = 0`, as the same claim
+  spelled out point by point is. A point whose guard has no answer, as
+  `if 10 // i > 3` at `i = 0`, is settled by a body that holds there, for an
+  `all`, or fails there, for an `any`, and is open otherwise.
 - `uv sync --group dev --extra lean`, put a Lean toolchain the REPL supports on
   `PATH` (the README's Install section says which; CI uses v4.29.1), and watch
   a row change from `tested` to `proved`. The first run builds a Lean REPL,
