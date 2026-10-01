@@ -1165,7 +1165,8 @@ class _Walk:
     ``sampled`` lists the domains the walk drew points from rather than
     enumerating them, each once, in the order they were met. ``visited``
     counts the assignments the refinements admitted, and ``reached`` the ones
-    the guard admitted as well.
+    the guard admitted as well. ``unsure`` counts the points the walk could
+    place neither in the guarded domain nor out of it (:class:`OpenPoint`).
 
     Whether a domain was drawn from is recorded as the walk goes rather than
     read off the binders, because a walk can end before it gets to a sampled
@@ -1178,6 +1179,7 @@ class _Walk:
         self.sampled: list[Any] = []
         self.visited = 0
         self.reached = 0
+        self.unsure = 0
 
     def drew(self, domain: Any) -> None:
         """Record that points were drawn from ``domain``."""
@@ -1517,6 +1519,7 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         ) as points:
             for unsure in points:
                 if unsure is not None and not unsure.bound:
+                    walk.unsure += 1
                     yield unsure
                     continue
                 if unsure is None:
@@ -1528,6 +1531,8 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
                     unsure = unsure or OpenPoint(exc)
                 if unsure is None:
                     walk.reached += 1
+                else:
+                    walk.unsure += 1
                 yield unsure
         if not walk.sampled:
             return
@@ -1838,9 +1843,15 @@ def _decline_sampled_pass(expr: Forall, walk: _Walk, polarity: Polarity) -> None
             missed = "satisfied its refinement"
         else:
             missed = "reached a point of its domain"
+        if walk.unsure:
+            # the body was read at a draw the guard or a refinement had no
+            # answer at, which is no point of the guarded domain for certain
+            missed, looked = f"{missed} for certain", "held at no point known to be in its domain"
+        else:
+            looked = "was evaluated at no point"
         raise Undecided(
-            f"no draw of {names} {missed}, so {render(expr)} was evaluated at "
-            "no point, which is not evidence that it holds"
+            f"no draw of {names} {missed}, so {render(expr)} {looked}, which is "
+            "not evidence that it holds"
         )
     if polarity is Polarity.POSITIVE:
         return

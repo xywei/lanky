@@ -507,7 +507,7 @@ def test_a_point_with_no_answer_is_not_reached_and_keeps_the_sampled_rules() -> 
     draw it could not answer, rather than saying that it held at every draw.
     """
     k = Var("k")
-    with pytest.raises(Undecided, match="passed the guard"):
+    with pytest.raises(Undecided, match="passed the guard 10 // k > 100 for certain, so"):
         evaluate(Forall(((k, Nat),), k >= 0, 10 // k > 100), {}, _drawn(0, 0))
     with pytest.raises(ZeroDivisionError):
         evaluate(Forall(((k, Nat),), k < 0, 10 // k > 100), {}, _drawn(0, 0))
