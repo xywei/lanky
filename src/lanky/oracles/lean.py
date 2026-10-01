@@ -114,20 +114,29 @@ _ELEMENTARY_LEMMAS = (
     "Real.sqrt_eq_zero'",
 )
 
+
+
+def _mathlib_tactics(lemmas: tuple[str, ...]) -> tuple[str, ...]:
+    """The whole-goal attempts of Mathlib mode, with ``lemmas`` for the elementary functions."""
+    return (
+        "norm_num",
+        "positivity",
+        "ring",
+        "field_simp",
+        "linarith",
+        "nlinarith",
+        "(push_cast; ring)",
+        f"simp [{', '.join(lemmas)}]",
+        f"simp_all [{', '.join(lemmas)}] <;> linarith",
+    )
+
+
 #: The whole-goal attempts Mathlib mode adds after :data:`BASE_TACTICS`. An
 #: attempt that leaves a goal open fails as a declaration, so a tactic such as
-#: ``norm_num`` that can succeed without closing needs no ``done`` here.
-MATHLIB_TACTICS: tuple[str, ...] = (
-    "norm_num",
-    "positivity",
-    "ring",
-    "field_simp",
-    "linarith",
-    "nlinarith",
-    "(push_cast; ring)",
-    f"simp [{', '.join(_ELEMENTARY_LEMMAS)}]",
-    f"simp_all [{', '.join(_ELEMENTARY_LEMMAS)}] <;> linarith",
-)
+#: ``norm_num`` that can succeed without closing needs no ``done`` here. A
+#: statement with a variable named ``Real`` or ``Complex`` gets them with the
+#: lemmas named from the root (see :func:`lanky.lean.global_name`).
+MATHLIB_TACTICS: tuple[str, ...] = _mathlib_tactics(_ELEMENTARY_LEMMAS)
 
 #: :data:`_CLOSERS`, with Mathlib's closing tactics after the core ones.
 _MATHLIB_CLOSERS = (
@@ -135,13 +144,18 @@ _MATHLIB_CLOSERS = (
     "| (push_cast; ring) | (norm_num; done)"
 )
 
-#: Peel the last term off a sum over ``Finset.Ico a (b + 1)``, which is how a
-#: reduction's bound reads after an induction's step has rewritten it. Tried,
-#: never required: a goal with no such sum is left as it was.
-_PEEL_SUM = (
-    "try rw [← Finset.insert_Ico_right_eq_Ico_add_one (by omega), "
-    "Finset.sum_insert (by simp)]"
-)
+
+def _peel_sum(statement: LeanStatement) -> str:
+    """Peel the last term off a sum over ``Finset.Ico a (b + 1)``.
+
+    That is how a reduction's bound reads after an induction's step has
+    rewritten it. Tried, never required: a goal with no such sum is left as it
+    was. The lemmas are named as the statement names root declarations
+    (:meth:`lanky.lean.LeanStatement.qualified`).
+    """
+    insert = statement.qualified("Finset.insert_Ico_right_eq_Ico_add_one")
+    return f"try rw [← {insert} (by omega), {statement.qualified('Finset.sum_insert')} (by simp)]"
+
 
 #: How long importing Mathlib may take when a session starts, in seconds. The
 #: first import on a machine reads several gigabytes; later ones are quicker.
@@ -562,9 +576,15 @@ def _fresh(stem: str, used: set[str]) -> str:
     return name
 
 
+#: The names ``intro`` and an ``rcases`` pattern read as a pattern rather than
+#: as a name: ``rfl`` substitutes the equation it is given, and ``_`` (which the
+#: printer writes ``«_»``, the same name) introduces nothing a script can name.
+_PATTERN_NAMES = frozenset({"rfl", "_"})
+
+
 def _goal_intro(
     statement: LeanStatement,
-) -> tuple[list[str], list[Var], list[Any], dict[str, str]]:
+) -> tuple[list[str], list[Var], list[Any], dict[str, str], dict[str, str]]:
     """What ``intro`` must name to strip the goal's own quantifier.
 
     The printer emits one binder at a time with its guards right after it
@@ -576,7 +596,13 @@ def _goal_intro(
     it one, which is what an induction on it has to start from. The names are
     Lean source, so a variable named like a keyword is quoted, as the printer
     quotes it (:func:`lanky.lean.lean_identifier`); the fourth value is keyed
-    by the lanky name.
+    by the lanky name, and so is the fifth, the name each variable is
+    introduced as.
+
+    That is its own name, unless it is one that ``intro`` and ``rcases`` read
+    as a pattern (:data:`_PATTERN_NAMES`): ``intro rfl`` substitutes, and fails
+    on a variable, so a variable named ``rfl`` is introduced under a fresh
+    name, ``x``, and a strategy names it so.
 
     The guards are rendered to be counted, and rendering a bound such as
     ``Fin[2 ** n]`` needs to know that ``n`` is a natural, so each binder's
@@ -585,7 +611,7 @@ def _goal_intro(
     """
     goal = statement.goal_term
     if not isinstance(goal, Forall):
-        return [], [], [], {}
+        return [], [], [], {}, {}
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     # every binder's name is taken before a guard is named, so that a guard of
     # an earlier binder is never named like a later one, which would shadow it
@@ -593,10 +619,15 @@ def _goal_intro(
     names: list[str] = []
     variables: list[Var] = []
     naturals: dict[str, str] = {}
+    introduced: dict[str, str] = {}
     guards = list(conjuncts(goal.guard))
     scope = dict(statement.types)
     for position, (var, domain) in enumerate(goal.binders):
-        names.append(lean_identifier(var.name))
+        if var.name in _PATTERN_NAMES:
+            introduced[var.name] = _fresh("x", used)
+        else:
+            introduced[var.name] = lean_identifier(var.name)
+        names.append(introduced[var.name])
         variables.append(var)
         conditions = domain_guards(var, domain, scope)
         scope = {**scope, var.name: domain}
@@ -607,7 +638,7 @@ def _goal_intro(
         if position == len(goal.binders) - 1:
             for _ in guards:
                 names.append(_fresh("hg", used))
-    return names, variables, guards, naturals
+    return names, variables, guards, naturals, introduced
 
 
 def _induction_target(variables: list[Var], guards: list[Any]) -> tuple[Var | None, str | None]:
@@ -665,17 +696,22 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     where it would otherwise see two. In the base case the variable split
     against lies between ``0`` and ``↑0``, and is substituted away. A variable
     that is not a natural has nothing to trade, and is not induced on.
+
+    A variable is named as it was introduced (see :func:`_goal_intro`), and a
+    root declaration as the statement names it, ``_root_.Int`` where a
+    variable is named ``Int`` (:meth:`lanky.lean.LeanStatement.qualified`).
     """
     with dialect(statement.mathlib):
-        names, variables, guards, naturals = _goal_intro(statement)
+        names, variables, guards, naturals, introduced = _goal_intro(statement)
     target, companion = _induction_target(variables, guards)
     if target is None or target.name not in naturals:
         return []
-    induced = lean_identifier(target.name)
+    induced = introduced[target.name]
     if companion is not None:
-        companion = lean_identifier(companion)
+        companion = introduced[companion]
     closers = _closers(statement)
-    peel = [f"  {_PEEL_SUM}"] if _has_reduction(statement) else []
+    peel = [f"  {_peel_sum(statement)}"] if _has_reduction(statement) else []
+    integer, natural = statement.qualified("Int"), statement.qualified("Nat")
     used = set(names) | {name for name, _ in statement.binders}
     used |= {name for name, _ in statement.hypotheses}
     step = _fresh("k", used)
@@ -701,18 +737,20 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     if companion is not None:
         pinned = _fresh("hzero", used)
         zero = (
-            f"first | omega | (have {pinned} : {companion} = ((0 : Nat) : Int) := "
-            f"(by omega); subst {pinned}; {closers}) | (simp_all; done) "
+            f"first | omega | (have {pinned} : {companion} = ((0 : {natural}) : {integer}) "
+            f":= (by omega); subst {pinned}; {closers}) | (simp_all; done) "
             "| (simp_all <;> omega)"
         )
     head = [f"intro {' '.join(names)}"] if names else []
     head += [
-        f"obtain ⟨{induced}, rfl⟩ := Int.eq_ofNat_of_zero_le {naturals[target.name]}",
+        f"obtain ⟨{induced}, rfl⟩ := {statement.qualified('Int.eq_ofNat_of_zero_le')} "
+        f"{naturals[target.name]}",
         f"induction {induced} with",
         "| zero =>",
         f"  {zero}",
         f"| succ {step} {hypothesis} =>",
-        f"  have {cast} : (({step} + 1 : Nat) : Int) = ({step} : Int) + 1 := (by omega)",
+        f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = ({step} : {integer}) + 1 "
+        ":= (by omega)",
         f"  try simp only [{cast}] at *",
     ]
 
@@ -725,8 +763,8 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
                 [
                     *head,
                     *instantiations,
-                    f"  by_cases {less} : ({step} : Int) < {companion}",
-                    f"  · have {equality} : {companion} = ({step} : Int) + 1 := (by omega)",
+                    f"  by_cases {less} : ({step} : {integer}) < {companion}",
+                    f"  · have {equality} : {companion} = ({step} : {integer}) + 1 := (by omega)",
                     f"    subst {equality}",
                     f"    {closers}",
                     f"  · {apply_ih}",
@@ -774,12 +812,15 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
     what it recurs on is ``n``, a parameter of the theorem. The parameter is
     traded for the natural it is (as in :func:`induction_scripts`), the step
     rewrites ``↑(k + 1)`` to ``↑k + 1``, so that the bound reads
-    ``Finset.Ico 0 (↑k + 1 + 1)``, and :data:`_PEEL_SUM` takes the last term
+    ``Finset.Ico 0 (↑k + 1 + 1)``, and :func:`_peel_sum` takes the last term
     off the sum. What is left is the induction hypothesis plus a polynomial
     identity or inequality, which the closers take. The base case peels the
     one term of ``Finset.Ico 0 (↑0 + 1)`` the same way.
 
     A goal that is itself quantified is left to :func:`induction_scripts`.
+    The natural the parameter is traded for takes its name, unless the name is
+    one an ``rcases`` pattern reads as a pattern (``rfl``, see
+    :data:`_PATTERN_NAMES`), and then a fresh one.
     """
     if not statement.mathlib or isinstance(statement.goal_term, Forall):
         return []
@@ -792,6 +833,8 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
                 bounds |= free_variables(domain.bound)
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     closers = _closers(statement)
+    peel = _peel_sum(statement)
+    integer, natural = statement.qualified("Int"), statement.qualified("Nat")
     scripts = []
     # a statement built by hand may leave out the lanky names, which are then
     # the printed ones
@@ -815,6 +858,7 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
         if not own:
             continue
         later = sum(1 for at in anchors if at > position)
+        traded = _fresh("x", used) if name in _PATTERN_NAMES else printed
         step = _fresh("k", used)
         hypothesis = _fresh("ih", used)
         cast = _fresh("hcast", used)
@@ -826,17 +870,18 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
         scripts.append(
             "\n".join(
                 [
-                    f"obtain ⟨{printed}, rfl⟩ := Int.eq_ofNat_of_zero_le {own[0]}",
-                    f"induction {printed} with",
+                    f"obtain ⟨{traded}, rfl⟩ := "
+                    f"{statement.qualified('Int.eq_ofNat_of_zero_le')} {own[0]}",
+                    f"induction {traded} with",
                     "| zero =>",
-                    f"  {_PEEL_SUM}",
+                    f"  {peel}",
                     f"  {closers}",
                     f"| succ {step} {hypothesis} =>",
-                    f"  have {cast} : (({step} + 1 : Nat) : Int) = ({step} : Int) + 1 "
-                    ":= (by omega)",
+                    f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = "
+                    f"({step} : {integer}) + 1 := (by omega)",
                     f"  try simp only [{cast}] at *",
                     f"  first | {apply_ih} | skip",
-                    f"  {_PEEL_SUM}",
+                    f"  {peel}",
                     f"  {closers}",
                 ]
             )
@@ -852,10 +897,10 @@ def tactic_ladder(statement: LeanStatement) -> list[str]:
     :data:`MATHLIB_TACTICS` on the whole goal, and :func:`reduction_scripts`.
     """
     with dialect(statement.mathlib):
-        names, _, _, _ = _goal_intro(statement)
+        names, _, _, _, _ = _goal_intro(statement)
     ladder = list(BASE_TACTICS)
     if statement.mathlib:
-        ladder += MATHLIB_TACTICS
+        ladder += _mathlib_tactics(tuple(map(statement.qualified, _ELEMENTARY_LEMMAS)))
     if names:
         introduction = f"intro {' '.join(names)}"
         ladder += [

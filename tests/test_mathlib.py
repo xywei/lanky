@@ -452,9 +452,10 @@ def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
     # declared in a namespace of its own, where no Mathlib lemma can already have the name
     assert statement.declared_name == "Lanky.gauss"
     assert statement.source("omega").startswith("theorem Lanky.gauss (n : Int) (h0 : 0 ≤ n) :")
+    # and so is a core statement, where no root declaration of core Lean can (#39)
     core = statement_of(commutes.term, "commutes")
-    assert core.declared_name == "commutes"
-    assert core.source("omega").startswith("theorem commutes (a : Int)")
+    assert core.declared_name == "Lanky.commutes"
+    assert core.source("omega").startswith("theorem Lanky.commutes (a : Int)")
 
 
 def test_the_mathlib_ladder_follows_the_core_one() -> None:

@@ -91,6 +91,20 @@ variable named ``true`` or ``false`` would be what the bare Boolean literal
 names, which makes ``true == True`` read ``true = true`` and proves it, so
 where one is in scope the literal is ``Bool.true``.
 
+The names Lean already gives a meaning to are kept apart from the statement's
+in two more ways. A theorem is declared in the ``Lanky`` namespace,
+``theorem Lanky.and_comm``, since core Lean declares ``id``, ``trivial``,
+``congr``, ``absurd``, ``and_comm`` and many more at the root, and Mathlib
+thousands, and a claim named after one would be refused as already declared
+at every attempt (:attr:`LeanStatement.declared_name`). And a variable named
+like a root name the printer writes, ``Int``, ``Nat``, ``Bool``, ``Real``,
+``Complex`` or ``Finset`` (:data:`ROOT_NAMES`), would be what that name means
+after its binder: in ``(Int : Int) (b : Int)`` the second ``Int`` is the
+variable, and ``Int.fdiv`` a field of it. In a statement with such a
+variable, and only there, those names are printed from the root,
+``_root_.Int`` (:func:`global_name`), and the tactic scripts name them the same
+way.
+
 An exponent is the one operand ``Int`` does not take: Lean's ``^`` on ``Int``
 wants a ``Nat``. A literal is printed as it is, a ``Nat`` or ``Fin`` variable as
 ``e.toNat`` (which is ``e``, given ``0 ≤ e``), and a family's natural value
@@ -168,7 +182,7 @@ numeral.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -192,11 +206,13 @@ from lanky.terms import (
 )
 
 __all__ = [
+    "ROOT_NAMES",
     "LeanStatement",
     "UnsupportedTerm",
     "check_applications",
     "dialect",
     "domain_guards",
+    "global_name",
     "is_natural",
     "lean_identifier",
     "lean_type",
@@ -232,6 +248,54 @@ def dialect(mathlib: bool | None) -> Iterator[None]:
 def _in_mathlib() -> bool:
     """Whether the dialect in effect is Mathlib's."""
     return _MATHLIB.get()
+
+
+#: The root names of core Lean and Mathlib that the printer and the Lean
+#: oracle's tactic scripts write unqualified: the types a variable, a value or
+#: a cast is given, and the namespaces of the functions, constants and lemmas
+#: they apply (``Int.fdiv``, ``Finset.Ico``, ``Complex.I``, ``Real.exp_add``).
+#: ``True`` and ``False`` are the propositions a Boolean constant prints as.
+#: A variable named like one of them would be what the name means after its
+#: binder, so a statement that has one prints them from the root
+#: (:func:`global_name`).
+ROOT_NAMES = frozenset({"Bool", "Complex", "False", "Finset", "Int", "Nat", "Real", "True"})
+
+#: The root names a variable of the statement being printed is named like,
+#: which are printed from the root while it is printed (see :func:`global_name`).
+_SHADOWED: ContextVar[frozenset[str]] = ContextVar("lanky_lean_shadowed", default=frozenset())
+
+
+@contextmanager
+def _shadowing(names: Collection[str]) -> Iterator[None]:
+    """Print ``names``, root names a variable shadows, from the root for the duration."""
+    token = _SHADOWED.set(frozenset(names))
+    try:
+        yield
+    finally:
+        _SHADOWED.reset(token)
+
+
+def global_name(name: str, shadowed: Collection[str] | None = None) -> str:
+    """Lean source for a root declaration, ``Int`` or ``Int.fdiv``, whatever a variable is named.
+
+    The name as it stands, unless its first component is among ``shadowed``,
+    the root names some variable of the statement is named like: then it is
+    ``_root_.Int``, which names the declaration whatever is bound. After a
+    binder ``(Int : Int)`` a bare ``Int`` is the variable, so ``(b : Int)``
+    says ``b`` has a value of the variable as its type, which does not
+    elaborate, and ``Int.fdiv b 2`` reads ``fdiv`` as a field of it. Only a
+    statement with such a variable gets the prefix, so every other statement
+    prints as it always did. ``shadowed`` defaults to the names of the
+    statement being printed (see :func:`print_lean` and :func:`statement_of`).
+    """
+    if shadowed is None:
+        shadowed = _SHADOWED.get()
+    return f"_root_.{name}" if name.split(".", 1)[0] in shadowed else name
+
+
+def _shadowed_roots(term: Any) -> frozenset[str]:
+    """The root names (:data:`ROOT_NAMES`) a name bound or free in ``term`` is spelled like."""
+    return frozenset(_mentioned(term)) & ROOT_NAMES
 
 
 class UnsupportedTerm(NotImplementedError):
@@ -457,9 +521,10 @@ def _lean_type(obj: Any) -> str:
                 f"the sort {obj.name} has no core-Lean counterpart "
                 "(Real needs Mathlib)"
             )
-        return name
+        # Prop is a keyword, and ℝ and ℂ are notations, which no variable shadows
+        return global_name(name) if name in ROOT_NAMES else name
     if isinstance(obj, FinType):
-        return "Int"
+        return global_name("Int")
     if isinstance(obj, FnType):
         domain = _lean_type(obj.domain)
         if isinstance(_unrefined(obj.domain), FnType):
@@ -491,7 +556,7 @@ def _value_type(obj: Any) -> str:
     integer arithmetic all the same.
     """
     if is_natural(obj):
-        return "Nat"
+        return global_name("Nat")
     return _lean_type(obj)
 
 
@@ -640,7 +705,7 @@ def _field_literal(value: Fraction | float | complex) -> str:
         sign = "-" if imaginary < 0 else "+"
         return (
             f"({_rational_text(real)} {sign} {_rational_text(abs(imaginary))} "
-            "* Complex.I : ℂ)"
+            f"* {global_name('Complex.I')} : ℂ)"
         )
     if isinstance(value, float):
         value = _exact(value)
@@ -718,7 +783,7 @@ def _render_division(expr: prim.FloorDiv | prim.Remainder, outer: int, types: _T
             # a leaf of type ℤ, which a real tree around it casts whole
             return f"({text} : ℤ)"
         return _parens(text, _MUL, outer)
-    function = "Int.fdiv" if floor else "Int.fmod"
+    function = global_name("Int.fdiv" if floor else "Int.fmod")
     text = (
         f"{function} {_render(expr.numerator, _ATOM, types)} "
         f"{_render(expr.denominator, _ATOM, types)}"
@@ -807,9 +872,9 @@ def _render_base(expr: Any, types: _Types) -> str:
     """
     expr = _integral(expr)
     if isinstance(expr, int) and not isinstance(expr, bool):
-        return f"({expr} : Int)"
+        return f"({expr} : {global_name('Int')})"
     if _closed_arithmetic(expr):
-        return f"({_render(expr, _QUANT, types)} : Int)"
+        return f"({_render(expr, _QUANT, types)} : {global_name('Int')})"
     return _render(expr, _POW + 1, types)
 
 
@@ -991,7 +1056,7 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
             "do not draw the same way: cmath picks a side of it by the sign of a "
             "zero imaginary part, and Lean's complex numbers have no signed zero"
         )
-    return _parens(f"{name} {_render(expr.argument, _ATOM, types)}", _APP, outer)
+    return _parens(f"{global_name(name)} {_render(expr.argument, _ATOM, types)}", _APP, outer)
 
 
 def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
@@ -1040,7 +1105,10 @@ def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
         if position == len(expr.binders) - 1:
             conditions += [_render_prop(guard, _AND + 1, inner) for guard in guards]
         condition = f" with {' ∧ '.join(conditions)}" if conditions else ""
-        text = f"∑ {lean_identifier(var.name)} ∈ Finset.Ico (0 : ℤ) {bound}{condition}, {text}"
+        text = (
+            f"∑ {lean_identifier(var.name)} ∈ {global_name('Finset.Ico')} (0 : ℤ) "
+            f"{bound}{condition}, {text}"
+        )
     return _parens(text, _QUANT, outer)
 
 
@@ -1106,7 +1174,7 @@ def _render_prop(expr: Any, outer: int, types: _Types) -> str:
     comparison, ``false`` is still what is printed.
     """
     if isinstance(expr, bool):
-        return "True" if expr else "False"
+        return global_name("True" if expr else "False")
     return _render(expr, outer, types)
 
 
@@ -1127,7 +1195,7 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
         if isinstance(expr, bool) and text in types:
             # a variable named ``true`` is in scope, and the bare literal
             # would be that variable (see the module docstring)
-            text = f"Bool.{text}"
+            text = global_name(f"Bool.{text}")
         # an ascribed literal is bracketed already, whatever its sign
         atomic = text.startswith("(") or not _is_negative(expr)
         return _parens(text, _ATOM if atomic else _ADD, outer)
@@ -1169,7 +1237,7 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
             )
         left = _render(expr.left, _CMP + 1, types)
         if _closed_arithmetic(expr.left) and _closed_arithmetic(expr.right):
-            left = f"({_render(expr.left, _QUANT, types)} : Int)"
+            left = f"({_render(expr.left, _QUANT, types)} : {global_name('Int')})"
         text = f"{left} {relation} {_render(expr.right, _CMP + 1, types)}"
         return _parens(text, _CMP, outer)
     if isinstance(expr, prim.LogicalAnd):
@@ -1202,7 +1270,7 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
         if is_natural(_application_type(expr, types)):
             # A natural value is a Nat in Lean (see _value_type); used as a
             # number it is cast, so that its arithmetic is integer arithmetic.
-            return f"({text} : Int)"
+            return f"({text} : {global_name('Int')})"
         return _parens(text, _APP, outer)
     raise UnsupportedTerm(f"cannot print {type(expr).__name__} in Lean: {expr!r}")
 
@@ -1242,14 +1310,15 @@ def print_lean(expr: Any, mathlib: bool | None = None) -> str:
     """Render a lanky term as one Lean 4 proposition.
 
     ``mathlib=True`` prints in the Mathlib dialect (see the module docstring),
-    for a session that has imported Mathlib.
+    for a session that has imported Mathlib. A root name some variable of the
+    term is named like is printed from the root (:func:`global_name`).
 
     Raises:
         UnsupportedTerm: If the term leaves the fragment of the dialect, or
             applies a family outside the domain it declares
             (:func:`check_applications`).
     """
-    with dialect(mathlib):
+    with dialect(mathlib), _shadowing(_shadowed_roots(expr)):
         check_applications(expr)
         return _render_prop(expr, _QUANT, _free_scope(expr))
 
@@ -1727,6 +1796,9 @@ class LeanStatement:
             ``binders``, which is what ``types`` is keyed by and what a
             strategy compares with a term's names; ``binders`` has the names
             as Lean source.
+        shadowed: The root names (:data:`ROOT_NAMES`) a variable of the
+            statement is named like, which the statement prints from the root
+            and a tactic script has to name the same way (:meth:`qualified`).
     """
 
     name: str
@@ -1739,6 +1811,16 @@ class LeanStatement:
     types: dict[str, Any] = field(default_factory=dict)
     mathlib: bool = False
     variables: tuple[str, ...] = field(default_factory=tuple)
+    shadowed: frozenset[str] = frozenset()
+
+    def qualified(self, name: str) -> str:
+        """A root declaration as this statement's source names it (see :func:`global_name`).
+
+        ``Int.eq_ofNat_of_zero_le`` as it stands, and
+        ``_root_.Int.eq_ofNat_of_zero_le`` in a statement with a variable
+        named ``Int``, in which the bare name would be read as a field of it.
+        """
+        return global_name(name, self.shadowed)
 
     def _parameters(self) -> list[tuple[bool, int]]:
         """The parameters in order, as ``(is_hypothesis, index)`` pairs."""
@@ -1775,23 +1857,29 @@ class LeanStatement:
             prop = self.hypotheses[index][1]
             term = self.hypothesis_terms[index] if self.hypothesis_terms else None
             if term is not None:
-                with dialect(self.mathlib):
+                with dialect(self.mathlib), _shadowing(self.shadowed):
                     prop = _render_prop(term, _ARROW + 1, self.types)
             text = f"{prop} → {text}"
         return text
 
     @property
     def declared_name(self) -> str:
-        """The name the theorem is declared under: :attr:`name`, or ``Lanky.name``.
+        """The name the theorem is declared under: ``Lanky.name``, in either dialect.
 
-        A Mathlib statement is declared in the ``Lanky`` namespace. Mathlib
-        declares thousands of lemmas at the root, ``mul_comm``, ``sq_nonneg`` and
-        ``two_mul`` among them, and a claim named after one would be refused as
-        already declared at every attempt, whatever its tactic. Nothing in
-        Mathlib lives under ``Lanky``, and the prefix changes nothing else: the
-        statement's own names are its binders and fully qualified constants.
+        Core Lean declares ``id``, ``trivial``, ``congr``, ``absurd`` and
+        ``and_comm`` at the root, and Mathlib declares thousands of lemmas
+        there, ``mul_comm``, ``sq_nonneg`` and ``two_mul`` among them, so a
+        claim named after one was refused as already declared at every
+        attempt, whatever its tactic, and fell through to the tester. So is a
+        keyword that is also a root declaration, ``inferInstanceAs``, which
+        quoting cannot help, and a name that cleaning turns into one: ``True_``
+        is declared as ``True``. Nothing in core Lean or Mathlib lives under
+        ``Lanky``, and the prefix changes nothing else: the statement's own
+        names are its binders and fully qualified constants. It used to be
+        the Mathlib dialect's alone, so a core proof's ``lean_source`` named
+        the theorem at the root.
         """
-        return f"Lanky.{self.name}" if self.mathlib else self.name
+        return f"Lanky.{self.name}"
 
     def source(self, tactic: str) -> str:
         """The full Lean declaration proved by ``tactic``.
@@ -1832,12 +1920,16 @@ def statement_of(
     :func:`lean_type` and :func:`domain_guards` have it. ``mathlib=True``
     prints it in the Mathlib dialect (see the module docstring).
 
+    A root name some variable of the statement is named like is printed from
+    the root (:func:`global_name`), and the statement records which in
+    :attr:`LeanStatement.shadowed`.
+
     Raises:
         UnsupportedTerm: If any part of the statement leaves the fragment, or
             applies a family outside the domain it declares
             (:func:`check_applications`).
     """
-    with dialect(mathlib):
+    with dialect(mathlib), _shadowing(_shadowed_roots(term)):
         return _statement_of(term, name)
 
 
@@ -1845,9 +1937,12 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
     """:func:`statement_of`, in the dialect in effect."""
     lean_name = _lean_name(name)
     mathlib = _in_mathlib()
+    shadowed = _SHADOWED.get()
     check_applications(term)
     if not isinstance(term, Forall):
-        return LeanStatement(lean_name, (), (), print_lean(term), term, mathlib=mathlib)
+        return LeanStatement(
+            lean_name, (), (), print_lean(term), term, mathlib=mathlib, shadowed=shadowed
+        )
 
     binders: list[tuple[str, str]] = []
     hypotheses: list[tuple[str, str]] = []
@@ -1879,6 +1974,7 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
         types=types,
         mathlib=mathlib,
         variables=tuple(var.name for var, _ in term.binders),
+        shadowed=shadowed,
     )
 
 

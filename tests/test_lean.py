@@ -36,12 +36,13 @@ from lanky.oracles.lean import (
     LeanSession,
     induction_scripts,
     kill_servers,
+    reduction_scripts,
     tactic_ladder,
     use_tactic,
 )
 from lanky.plugins import registry
 from lanky.prelude import Bool, Fin, FinType, Fn, Int, Nat, Real
-from lanky.terms import Abs, Exists, Forall, Sum, Var
+from lanky.terms import Abs, Elementary, Exists, Forall, Sum, Var
 
 # {{{ terms to print
 
@@ -252,7 +253,7 @@ def test_a_statement_becomes_lean_binders_and_hypotheses() -> None:
     assert statement.goal == "x + y = y + x"
     # each binder's guard follows it, as it does in print_lean
     assert statement.source("omega") == (
-        "theorem commutes (x : Int) (h0 : 0 ≤ x) (y : Int) (h1 : 0 ≤ y) : "
+        "theorem Lanky.commutes (x : Int) (h0 : 0 ≤ x) (y : Int) (h1 : 0 ≤ y) : "
         "x + y = y + x := by\n  omega\n"
     )
 
@@ -267,7 +268,7 @@ def test_an_index_typed_variable_carries_its_bounds_as_hypotheses() -> None:
 def test_the_scan_statement_prints_as_a_lean_theorem() -> None:
     statement = statement_of(scan_monotone.term, "scan_monotone")
     assert statement.source("omega").splitlines()[0] == (
-        "theorem scan_monotone (size : Int) (h0 : 0 ≤ size) (cnt : Int → Nat) "
+        "theorem Lanky.scan_monotone (size : Int) (h0 : 0 ≤ size) (cnt : Int → Nat) "
         "(off : Int → Nat) (h1 : (off 0 : Int) = 0) "
         "(h2 : ∀ r : Int, 0 ≤ r → r < size → "
         "(off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) : "
@@ -672,7 +673,9 @@ def test_a_theorem_named_like_a_keyword_is_declared_under_its_quoted_name() -> N
     scoped = _scoped()
     statement = statement_of(scoped.term, "scoped")
     assert statement.name == "«scoped»"
-    assert statement.source("omega").startswith("theorem «scoped» (a : Int) (h0 : 0 ≤ a) ")
+    assert statement.source("omega").startswith(
+        "theorem Lanky.«scoped» (a : Int) (h0 : 0 ≤ a) "
+    )
     mathlib = statement_of(scoped.term, "scoped", mathlib=True)
     assert mathlib.declared_name == "Lanky.«scoped»"
     # a qualified name is cleaned first, and quoted only if what is left needs it
@@ -713,7 +716,8 @@ def test_a_variable_named_like_a_hypothesis_does_not_meet_one() -> None:
     statement = statement_of(_named_like_a_hypothesis().term, "named")
     assert statement.hypotheses == (("h0_1", "0 ≤ h0"), ("h1", "0 ≤ b"))
     assert statement.source("omega").startswith(
-        "theorem named (h0 : Int) (h0_1 : 0 ≤ h0) (b : Int) (h1 : 0 ≤ b) : h0 + b = b + h0"
+        "theorem Lanky.named (h0 : Int) (h0_1 : 0 ≤ h0) (b : Int) (h1 : 0 ≤ b) : "
+        "h0 + b = b + h0"
     )
 
     first, second = Var("h0"), Var("h1")
@@ -760,6 +764,153 @@ def test_the_ladder_names_no_guard_like_a_later_binder() -> None:
     assert "obtain ⟨hd, rfl⟩ := Int.eq_ofNat_of_zero_le hd_2" in script
 
 
+def test_a_claim_named_like_a_core_declaration_is_declared_in_a_namespace() -> None:
+    """#39 and #43: ``theorem and_comm`` is refused as already declared, whatever the tactic.
+
+    Core Lean declares ``and_comm``, ``trivial``, ``id``, ``absurd`` and
+    ``congr`` at the root, so a claim named like one read ``tested`` with
+    "already declared" as its reason. A keyword that is also a root
+    declaration, ``inferInstanceAs``, was quoted and refused all the same, and
+    ``True_`` was cleaned into ``True``. Every statement is declared in the
+    ``Lanky`` namespace now, as a Mathlib one already was.
+    """
+    for name in ("and_comm", "trivial", "id", "absurd", "congr"):
+        statement = statement_of(commutes.term, name)
+        assert statement.declared_name == f"Lanky.{name}"
+        assert statement.source("omega").startswith(f"theorem Lanky.{name} (x : Int) ")
+    assert statement_of(commutes.term, "inferInstanceAs").declared_name == (
+        "Lanky.«inferInstanceAs»"
+    )
+    assert statement_of(commutes.term, "True_").declared_name == "Lanky.True"
+
+
+def _typed_like_int():
+    @theorem
+    def typed(Int: Nat, b: Nat) -> Int + b == b + Int:
+        """A variable named like the type a natural is printed as."""
+
+    return typed
+
+
+def test_a_variable_named_like_a_type_the_printer_writes_leaves_the_type_alone() -> None:
+    """#43: ``(Int : Int) (b : Int)`` read the second ``Int`` as the variable.
+
+    The binder ``b`` was given the variable as its type, which does not
+    elaborate, and every attempt failed with "type expected". A root name
+    some variable is named like is printed from the root, ``_root_.Int``, in
+    that statement and only there.
+    """
+    statement = statement_of(_typed_like_int().term, "typed")
+    assert statement.binders == (("Int", "_root_.Int"), ("b", "_root_.Int"))
+    assert statement.goal == "Int + b = b + Int"
+    assert statement.shadowed == frozenset({"Int"})
+    assert statement.qualified("Int.eq_ofNat_of_zero_le") == "_root_.Int.eq_ofNat_of_zero_le"
+    assert statement.qualified("Nat") == "Nat"
+    # a statement with no such variable prints as it always did
+    assert statement_of(commutes.term, "commutes").binders == (("x", "Int"), ("y", "Int"))
+    assert statement_of(commutes.term, "commutes").qualified("Int") == "Int"
+
+    # every root name the printer writes: the types, a cast, a floor division, a power
+    family, nat, integer = Var("f"), Var("Nat"), Var("Int")
+    term = Forall(
+        ((nat, Nat), (integer, Nat), (family, Fn[Fin[nat], Nat])),
+        Forall(((i, FinType(nat)),), family(i) // (integer + 1) <= 2**i),
+    )
+    assert print_lean(term) == (
+        "∀ Nat : _root_.Int, 0 ≤ Nat → ∀ Int : _root_.Int, 0 ≤ Int → "
+        "∀ f : _root_.Int → _root_.Nat, ∀ i : _root_.Int, 0 ≤ i → i < Nat → "
+        "_root_.Int.fdiv (f i : _root_.Int) (Int + 1) ≤ (2 : _root_.Int) ^ i.toNat"
+    )
+    boolean, true = Var("Bool"), Var("true")
+    assert print_lean(Forall(((boolean, Bool), (true, Bool)), true == True)) == (  # noqa: E712
+        "∀ Bool : _root_.Bool, ∀ true : _root_.Bool, true = _root_.Bool.true"
+    )
+    assert print_lean(Forall(((Var("True"), Nat),), True)) == (
+        "∀ True : Int, 0 ≤ True → _root_.True"
+    )
+
+
+def test_mathlib_names_are_printed_from_the_root_where_a_variable_shadows_them() -> None:
+    """``Real.exp``, ``Complex.I`` and ``Finset.Ico`` are fields of a variable named so."""
+    real, finset, x = Var("Real"), Var("Finset"), Var("x")
+    exponential = Forall(((real, Real), (x, Real)), Elementary("exp", x) > 0)
+    assert print_lean(exponential, mathlib=True) == (
+        "∀ Real : ℝ, ∀ x : ℝ, _root_.Real.exp x > 0"
+    )
+    complex_ = Forall(((Var("Complex"), Real),), Var("Complex") * complex(0, 1) == 0)
+    assert "(0 + 1 * _root_.Complex.I : ℂ)" in print_lean(complex_, mathlib=True)
+    reduction = Forall(((finset, Nat),), Sum(((i, FinType(finset)),), i) >= 0)
+    assert "∑ i ∈ _root_.Finset.Ico (0 : ℤ) Finset, i" in print_lean(reduction, mathlib=True)
+    statement = statement_of(exponential, "positive", mathlib=True)
+    ladder = tactic_ladder(statement)
+    assert "simp [_root_.Real.exp_add, Complex.exp_add, _root_.Real.exp_sub, " in "\n".join(
+        ladder
+    )
+
+
+def _scan_over_rfl():
+    @theorem
+    def scan_rfl(
+        size: Nat,
+        cnt: Fn[Fin[size], Nat],
+        off: Fn[Fin[size + 1], Nat],
+        h0: off(0) == 0,
+        hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[size]),
+    ) -> all(off(a) <= off(rfl) for a in Fin[size + 1] for rfl in Fin[size + 1] if a <= rfl):
+        """The scan's monotonicity, inducing on a variable named ``rfl``."""
+
+    return scan_rfl
+
+
+def test_a_variable_named_rfl_is_introduced_under_a_name_no_pattern_reads() -> None:
+    """#43: ``obtain ⟨rfl, rfl⟩`` substituted twice, and ``intro rfl`` substitutes too.
+
+    The induction strategy introduced the goal's variables under their own
+    names and traded the one it induces on for a natural in an ``rcases``
+    pattern, so a variable named ``rfl`` was read as a substitution at both,
+    and the script failed. It is introduced as a fresh ``x`` now, and the
+    strategy names it so; ``_`` is the other name a pattern reads.
+    """
+    scripts = induction_scripts(statement_of(_scan_over_rfl().term, "scan_rfl"))
+    for script in scripts:
+        assert script.startswith("intro a hd hd_1 x hd_2 hd_3 hg\n")
+        assert "obtain ⟨x, rfl⟩ := Int.eq_ofNat_of_zero_le hd_2" in script
+        assert "induction x with" in script
+    hole = Var("_")
+    term = Forall(((n, Nat),), Forall(((hole, FinType(n + 1)),), hole <= n))
+    (script,) = induction_scripts(statement_of(term, "t"))
+    assert script.startswith("intro x hd hd_1\n")
+    # a parameter traded in a Mathlib reduction's induction gets a fresh name too
+    rfl = Var("rfl")
+    gauss_rfl = Forall(((rfl, Nat),), 2 * Sum(((i, FinType(rfl + 1)),), i) == rfl * (rfl + 1))
+    (script,) = reduction_scripts(statement_of(gauss_rfl, "gauss_rfl", mathlib=True))
+    assert script.startswith("obtain ⟨x, rfl⟩ := Int.eq_ofNat_of_zero_le h0\ninduction x with")
+
+
+def _scan_over_int():
+    @theorem
+    def scan_int(
+        Int: Nat,
+        cnt: Fn[Fin[Int], Nat],
+        off: Fn[Fin[Int + 1], Nat],
+        h0: off(0) == 0,
+        hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[Int]),
+    ) -> all(off(p) <= off(q) for p in Fin[Int + 1] for q in Fin[Int + 1] if p <= q):
+        """The scan's monotonicity, over a size named like the type a natural prints as."""
+
+    return scan_int
+
+
+def test_the_induction_names_root_declarations_as_the_statement_does() -> None:
+    """A size named ``Int`` made ``Int.eq_ofNat_of_zero_le`` and the casts fields of it."""
+    scripts = induction_scripts(statement_of(_scan_over_int().term, "scan_int"))
+    for script in scripts:
+        assert "obtain ⟨q, rfl⟩ := _root_.Int.eq_ofNat_of_zero_le hd_2" in script
+        # Nat is not shadowed here, and stays as it is
+        assert "((k + 1 : Nat) : _root_.Int) = (k : _root_.Int) + 1" in script
+    assert "by_cases hlt : (k : _root_.Int) < p" in scripts[0]
+
+
 # }}}
 
 
@@ -800,7 +951,7 @@ def test_a_natural_is_an_integer_with_its_bound_as_a_hypothesis() -> None:
     assert print_lean(_truncated.term) == "∀ n : Int, 0 ≤ n → n - 1 ≥ 0"
     statement = statement_of(_truncated.term, "truncated")
     assert statement.source("omega").splitlines()[0] == (
-        "theorem truncated (n : Int) (h0 : 0 ≤ n) : n - 1 ≥ 0 := by"
+        "theorem Lanky.truncated (n : Int) (h0 : 0 ≤ n) : n - 1 ≥ 0 := by"
     )
     assert print_lean(one_below.term) == "∀ m : Int, 0 ≤ m → m - 1 ≤ m"
 
@@ -1664,7 +1815,7 @@ def test_lean_closes_a_nat_identity(lean_oracle: LeanOracle) -> None:
     assert proved.status is Status.PROVED
     assert proved.decided_by == "lean"
     assert proved.provenance["tactic"] == "omega"
-    assert "theorem commutes" in proved.provenance["lean_source"]
+    assert "theorem Lanky.commutes" in proved.provenance["lean_source"]
 
 
 def test_lean_closes_a_bounded_implication(lean_oracle: LeanOracle) -> None:
@@ -1983,11 +2134,110 @@ def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_pat
             owner,
             fact.provenance.get("lean_reason"),
         )
-    assert "theorem «scoped» (a : Int)" in by_owner["scoped"].provenance["lean_source"]
+    assert "theorem Lanky.«scoped» (a : Int)" in by_owner["scoped"].provenance["lean_source"]
     truth = by_owner["truth"]
     assert (truth.status, truth.decided_by) == (Status.REFUTED, "property-test")
     for owner in ("empty", "unreached"):
         assert by_owner[owner].is_vacuous, (owner, by_owner[owner].provenance)
+
+
+#: #39 and #43: claims named like root declarations of core Lean, and
+#: variables named like what the printer and the induction write.
+_ROOT_NAME_CLAIMS = '''\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Fin, Fn, Nat
+
+
+@theorem
+def and_comm(a: Nat, b: Nat) -> a + b == b + a:
+    """Named like a root declaration of core Lean."""
+
+
+@theorem
+def trivial(a: Nat, b: Nat) -> a + b == b + a:
+    """Another."""
+
+
+@theorem
+def id(a: Nat, b: Nat) -> a + b == b + a:
+    """Another."""
+
+
+@theorem
+def absurd(a: Nat, b: Nat) -> a + b == b + a:
+    """Another."""
+
+
+@theorem
+def congr(a: Nat, b: Nat) -> a + b == b + a:
+    """Another."""
+
+
+@theorem
+def inferInstanceAs(a: Nat, b: Nat) -> a + b == b + a:
+    """A keyword that is also a root declaration."""
+
+
+@theorem
+def True_(a: Nat, b: Nat) -> a + b == b + a:
+    """Cleaned into True."""
+
+
+@theorem
+def typed(Int: Nat, b: Nat) -> Int + b == b + Int:
+    """A variable named like the type a natural prints as."""
+
+
+@theorem
+def scan_int(
+    Int: Nat,
+    cnt: Fn[Fin[Int], Nat],
+    off: Fn[Fin[Int + 1], Nat],
+    h0: off(0) == 0,
+    hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[Int]),
+) -> all(off(p) <= off(q) for p in Fin[Int + 1] for q in Fin[Int + 1] if p <= q):
+    """The scan's monotonicity over a size named Int, which the induction names."""
+
+
+@theorem
+def scan_rfl(
+    size: Nat,
+    cnt: Fn[Fin[size], Nat],
+    off: Fn[Fin[size + 1], Nat],
+    h0: off(0) == 0,
+    hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[size]),
+) -> all(off(a) <= off(rfl) for a in Fin[size + 1] for rfl in Fin[size + 1] if a <= rfl):
+    """The scan's monotonicity, inducing on a variable named rfl."""
+'''
+
+
+def test_lean_proves_claims_named_like_what_lean_declares(
+    lean_oracle: LeanOracle, tmp_path
+) -> None:
+    """#39 and #43: every row read ``tested``, each for its own reason.
+
+    The first seven with "has already been declared". ``typed`` with "type
+    expected", since the variable ``Int`` was the type of ``b``.
+    ``scan_int``'s induction named ``Int.eq_ofNat_of_zero_le`` and the casts
+    as fields of its size. ``scan_rfl``'s introduced its variable as ``rfl``,
+    which ``intro`` and ``rcases`` read as a substitution.
+    """
+    from lanky.check import check_path
+
+    path = tmp_path / "root_names.py"
+    path.write_text(_ROOT_NAME_CLAIMS, encoding="utf-8")
+    by_owner = {fact.owner: fact for fact in check_path(path)}
+    assert len(by_owner) == 10
+    for owner, fact in by_owner.items():
+        assert (fact.status, fact.decided_by) == (Status.PROVED, "lean"), (
+            owner,
+            fact.provenance.get("lean_reason"),
+        )
+    assert "theorem Lanky.and_comm (a : Int)" in by_owner["and_comm"].provenance["lean_source"]
+    assert "(b : _root_.Int)" in by_owner["typed"].provenance["lean_source"]
+    assert "induction x with" in by_owner["scan_rfl"].provenance["tactic"]
 
 
 #: Lean source that prints every token of the parser's table, one to a line.
