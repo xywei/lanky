@@ -12,14 +12,15 @@ wherever the hypotheses hold, which is true and says nothing, while an assumed
 one is a claim nobody got to. It exits 1 as well when two claims of a file have
 one fact id, which a definition that makes several claims gives them: a ledger
 holds one fact per id, so the later claims are named in a ``DUPLICATE`` block
-and not checked (see :func:`lanky.check.check_path`). Every oracle reads a statement the same
-way, as integer arithmetic (see :mod:`lanky.lean`), so whether a claim is
-refuted does not depend on whether Lean is installed. What Lean adds is proofs,
-and the proof that a claim is vacuous, which fails a check that without it only
-warns (see below). Each refuted fact is repeated under the table with what
-explains it: its ``counterexample``, its ``witness`` and its ``reason``, three
-standard provenance keys read the same way whichever oracle or plugin refuted
-it, or a line saying that none was recorded (see :func:`refutation_lines`).
+and not checked (see :func:`lanky.check.check_path`). Every oracle reads a
+statement the same way, as integer arithmetic (see :mod:`lanky.lean`), so
+whether a claim is refuted does not depend on whether Lean is installed. What
+Lean adds is proofs, and the proof that a claim is vacuous, which fails a check
+that without it only warns (see below). Each refuted fact is repeated under the
+table with what explains it: its ``counterexample``, its ``witness`` and its
+``reason``, three standard provenance keys read the same way whichever oracle
+or plugin refuted it, or a line saying that none was recorded (see
+:func:`refutation_lines`).
 
 A fact that rests on others is worth no more than they are, and the table says
 so after its status (see :meth:`lanky.ledger.Ledger.support`); ``--json``

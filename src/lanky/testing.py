@@ -602,10 +602,10 @@ def satisfy_hypotheses(
     drawn value. A refinement that cannot be answered at some point ends the
     walk and leaves the hypothesis to the filter, which meets the same
     question there and reads the point three-valued, as a quantifier reads
-    its points: another point that breaks the definition rejects the draw,
-    a definition that holds at the point settles it there, and otherwise the
-    draw is undecided. A refinement that is not a
-    proposition stops the test, as it does wherever a proposition is read.
+    its points: another point that breaks the definition rejects the draw, a
+    definition that holds at the point settles it there, and otherwise the
+    draw is undecided. A refinement that is not a proposition stops the test,
+    as it does wherever a proposition is read.
 
     A quantified definition over a sampled domain, ``all(f(k) == 0 for k in
     Nat)``, has no points to assign at, and is left to the filter as well. It
