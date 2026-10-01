@@ -1419,9 +1419,17 @@ def _atan_series(z: Fraction, bits: int) -> tuple[Fraction, Fraction]:
     The sum stops at the first power that floors to zero, and what it leaves
     out, an alternating tail of decreasing terms, is below its first term,
     which is below two units.
+
+    A unit is ``2**-bits`` divided by the power of two ``z`` is below, so that
+    the bounds are as close relative to ``atan(z)``, which is about ``z``, for
+    a small ``z`` as for one near a half: the argument of a number just off
+    the positive real axis is that small, and a fixed unit would leave its
+    sign undecided below ``2**-bits``.
     """
     if not 0 <= z <= Fraction(1, 2):
         raise ValueError(f"the series is summed for 0 <= z <= 1/2, not at {z}")
+    if z:
+        bits += max(0, z.denominator.bit_length() - z.numerator.bit_length())
     one = 1 << bits
     numerator, denominator = z.numerator, z.denominator
     square_numerator, square_denominator = numerator * numerator, denominator * denominator

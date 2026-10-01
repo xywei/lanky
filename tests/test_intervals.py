@@ -214,6 +214,17 @@ def test_pi_and_the_arctangent_are_enclosed_narrowly() -> None:
         assert _middle(value) == pytest.approx(math.atan2(y, x_), abs=1e-15), (y, x_)
         if isinstance(value, Interval):
             assert _width(value) <= Fraction(1, 2**120), (y, x_)
+    # just off the positive real axis the argument is about y / x, and it is
+    # enclosed as closely relative to its size as any other: with a fixed unit
+    # its sign was undecided once it was below that unit
+    for y, x_ in [(Fraction(1, 2**300), 1), (Fraction(-3, 10**60), 7), (1, 10**30)]:
+        value = atan2_value(Fraction(y), Fraction(x_))
+        ratio = Fraction(y) / x_
+        assert value.lo < ratio < value.hi, (y, x_)
+        assert _width(value) <= abs(ratio) / 2**120, (y, x_)
+        assert compare("<" if y < 0 else ">", value, 0) is True
+    tilted = elementary("log", ComplexValue(Fraction(1), Fraction(1, 2**300)))
+    assert compare(">", tilted.imag, 0) is True
     assert atan2_value(Fraction(0), Fraction(5)) == 0
     assert agree(atan2_value(Fraction(1), Fraction(1)), pi / 4)
     assert agree(atan2_value(Fraction(-1), Fraction(0)), -pi / 2)
