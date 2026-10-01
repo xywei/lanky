@@ -24,6 +24,7 @@ def run(pytester, *arguments: str):
     """``pytester.runpytest``, with what it needs to load lanky's plugin."""
     return pytester.runpytest(*plugin_arguments(), *arguments)
 
+
 MODULE = '''
 from __future__ import annotations
 

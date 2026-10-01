@@ -98,8 +98,9 @@ in two more ways. A theorem is declared in the ``Lanky`` namespace,
 thousands, and a claim named after one would be refused as already declared
 at every attempt (:attr:`LeanStatement.declared_name`). And a variable named
 like a root name the printer writes, ``Int``, ``Nat``, ``Bool``, ``Real``,
-``Complex`` or ``Finset`` (:data:`ROOT_NAMES`), would be what that name means
-after its binder: in ``(Int : Int) (b : Int)`` the second ``Int`` is the
+``Complex`` or ``Finset``, or ``True`` and ``False``, which only a term built
+by hand can name a variable (:data:`ROOT_NAMES`), would be what that name
+means after its binder: in ``(Int : Int) (b : Int)`` the second ``Int`` is the
 variable, and ``Int.fdiv`` a field of it. In a statement with such a
 variable, and only there, those names are printed from the root,
 ``_root_.Int`` (:func:`global_name`), and the tactic scripts name them the same

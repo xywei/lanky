@@ -196,7 +196,7 @@ lanky's `main`.
   killed is started again for the next. And a REPL ends with the process
   that started it, however that process ends, a `SIGKILL` included: a small
   reaper process per lanky process kills it when the pipe from lanky
-  closes.
+  closes, and Ctrl-C during an attempt stops it at once.
 - Mathlib mode, opt-in: `LANKY_LEAN_MATHLIB` names a Lake project with
   Mathlib fetched, and `python -m lanky.mathlib DIR` sets one up from the
   project lanky ships, pinned to Mathlib v4.29.1 and every dependency at a

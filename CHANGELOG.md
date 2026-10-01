@@ -79,10 +79,11 @@ loopty uses changes, and loopty's floor follows it.
   exponential of one argument or `2 * exp(x)` at one draw, is one enclosure,
   so a table the tester fills from a definition such as
   `f(i) == 2 * exp(x)` satisfies that definition when it is read back as a
-  hypothesis, and `exp(x) - exp(x)` is `0`. A complex `log` or `sqrt` (until
-  #51, below), an `exp` past `2**14`, a negative number to a power that is not an integer,
-  and arithmetic with a float infinity or NaN are undecided rather than
-  guessed; a comparison with an infinity or a NaN is Python's.
+  hypothesis, and `exp(x) - exp(x)` is `0`. A complex `log` or `sqrt`
+  (until #51, below), an `exp` past `2**14`, a negative number to a power
+  that is not an integer, and arithmetic with a float infinity or NaN are
+  undecided rather than guessed; a comparison with an infinity or a NaN is
+  Python's.
   `lanky.exp(0.5)` at a number, `evaluate` outside the exact reading and
   `Theorem.__call__` are Python's, as before. So the claims
   above are `tested`, `x + 1e-20 == x`, which every float draw passed, is
@@ -95,7 +96,10 @@ loopty uses changes, and loopty's floor follows it.
   Python's principal branches now, as `cmath` computes them: `log z` is
   `log|z| + i atan2(im z, re z)`, with an arctangent series and `π` from
   Machin's formula enclosing the argument, and `sqrt z` is the principal
-  root, exact where it is rational (`sqrt(-3 + 4i)` is `1 + 2i`). On the
+  root, exact where it is rational (`sqrt(-3 + 4i)` is `1 + 2i`). The
+  arctangent is summed in units scaled to its argument, so the argument of a
+  number just off the positive real axis, `1 + 2**-300 i` say, is enclosed as
+  closely relative to its size as any other, and its sign is decided. On the
   branch cut, the non-positive real axis, `cmath` picks a side by the sign
   of a zero imaginary part, which a fraction does not have, so an argument
   on it, or an enclosure meeting it, is undecided, and the logarithm of a
@@ -108,10 +112,13 @@ loopty uses changes, and loopty's floor follows it.
   and can say why; the pytential demonstration's rule engine did, in its
   provenance as `declined`, and the row read `assumed` with nothing under
   the table, as for a claim no oracle knows. `declined` is a standard
-  provenance key now, read the same way whatever the plugin (a list holds
-  one reason per oracle), and a fact left `assumed` that has one gets a
-  `DECLINED <owner> at <where>: <statement>` line under the table with the
-  reason indented under it, after the `CITED` lines. A fact a weaker oracle
+  provenance key now, read the same way whatever the plugin, and a fact
+  left `assumed` that has one gets a `DECLINED <owner> at <where>:
+  <statement>` line under the table with the reason indented under it,
+  after the `CITED` lines. A list holds one reason per oracle, and
+  `check_path` keeps the reason of each oracle that declined a fact, in the
+  order they were asked, where each one's would otherwise take the place of
+  the one before. A fact a weaker oracle
   went on to settle, and an axiom, get none, and the exit code does not
   change. The Lean oracle records the standard key beside `lean_declined`
   when it is asked directly about a statement it cannot print.
@@ -149,8 +156,14 @@ loopty uses changes, and loopty's floor follows it.
   REPL, a Python process in a session of its own that reads a pipe from it,
   and when the pipe closes, which the kernel does however the process ended,
   kills every REPL process group it was handed. A session that closes takes
-  its REPL back first, and a forked process starts a reaper of its own. POSIX
-  only; on Windows nothing changes.
+  its REPL back first. A forked process lets go of its parent's end of the
+  pipe, which it inherits and which kept the parent's REPLs going for as
+  long as the fork ran, and starts a reaper of its own. And Ctrl-C during
+  an attempt stops the REPL where the command is interrupted: lean-interact
+  reads the answer in a thread the interpreter waits for on its way out,
+  before anything registered at exit runs, so an interrupted `lanky check`
+  used to wait until the attempt finished. POSIX only; on Windows nothing
+  changes.
 
 ### Notes
 
