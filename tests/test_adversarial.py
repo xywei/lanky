@@ -763,18 +763,31 @@ def test_hypotheses_survive_a_theorem_with_no_sort_variables() -> None:
     assert result.provenance["valid"] == 0
 
 
-def test_a_theorem_with_no_variables_and_no_hypotheses_is_unchanged() -> None:
-    """A goal with nothing in front of it is still just the goal.
+def test_a_theorem_with_no_variables_and_no_hypotheses_keeps_its_goal_a_goal() -> None:
+    """A goal with nothing in front of it is wrapped all the same (#35).
 
-    The binderless wrapper is for the guard. With no guard to carry there is
-    nothing to wrap, and the term stays the goal itself.
+    Every reader of a term takes a ``Forall`` apart into variables,
+    hypotheses and goal, so the goal itself, handed over as the term, had its
+    own quantifier taken apart in its place. Wrapped in a ``Forall`` with no
+    binders and no guard, it is the body, and prints as it always did. A
+    closed statement whose goal Python already answered stays the ``bool``.
     """
 
     @theorem
     def plain() -> all(x >= 0 for x in Nat):
-        """No variables, no hypotheses, no wrapper."""
+        """No variables, no hypotheses."""
 
-    assert plain.term is plain.goal
+    assert isinstance(plain.term, Forall)
+    assert plain.term.binders == ()
+    assert plain.term.guard is None
+    assert plain.term.body is plain.goal
+    assert render(plain.term) == render(plain.goal)
+
+    @theorem
+    def answered() -> 1 == 2:
+        """Python answered the goal while the annotation was evaluated."""
+
+    assert answered.term is False
 
 
 # }}}
@@ -2403,6 +2416,94 @@ def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() 
         goal_guard_fact(
             Fact(id="u", kind="theorem", statement="u", term=Forall(((n, Nat),), n >= 0))
         )
+
+
+CLOSED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def closed_flipped() -> all(k >= 0 for k in Nat if (k > 5) & (k < 3)):\n"
+    '    """No parameters: the goal\'s universal is the goal, not the statement."""\n\n\n'
+    "@theorem\n"
+    "def closed_rare() -> all(k >= 0 for k in Nat if k > 100):\n"
+    '    """No parameters, and a guard no draw reaches."""\n\n\n'
+    "@theorem\n"
+    "def closed_nested() -> all(all(k >= j for k in Nat if (k > 5) & (k < 3)) for j in Nat):\n"
+    '    """No parameters: the guard of the inner universal is not the goal\'s."""\n'
+)
+
+
+def test_a_parameterless_theorems_goal_is_read_as_its_goal(tmp_path, oracles, capsys) -> None:
+    """#35: a parameterless theorem's goal quantifier was read as its hypotheses.
+
+    Its term was the goal itself, and every reader took the universal apart:
+    ``k`` became the statement's variable and the guard its hypotheses, so the
+    check warned about hypotheses the theorems do not have, while ``pytest``,
+    which hands the oracle the goal as a goal, said that no draw could decide
+    the statement. The goal is now the goal everywhere: no draw gets through
+    its guard, which decides no draw, so the rows are ``assumed``, the reason
+    is the one ``pytest`` gives, and nothing is said about hypotheses.
+    """
+    oracles(TestOracle())
+    path = _write(tmp_path, CLOSED, "closed.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    for owner in ("closed_flipped", "closed_rare"):
+        fact = facts[owner]
+        assert fact.status is Status.ASSUMED
+        assert "unsatisfied" not in fact.provenance
+        assert fact.provenance["goal_reached"] == 0
+        assert fact.provenance["untested"].startswith("no draw could decide the statement")
+    from lanky.check import import_path
+    from lanky.plugins import registry
+    from lanky.theory import Theorem
+
+    # the reading pytest gives: the theorem's own report, of the goal as a goal
+    with registry.collecting():
+        module = import_path(path)
+    for owner in ("closed_flipped", "closed_rare"):
+        held = getattr(module, owner)
+        assert isinstance(held, Theorem)
+        assert held.report().reason == facts[owner].provenance["untested"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "hypotheses never satisfied" not in printed
+    assert "WARNING" not in printed
+
+
+def test_a_parameterless_theorems_empty_goal_guard_is_the_goals(tmp_path, oracles, capsys) -> None:
+    """#35: with a stronger oracle, what is vacuous is the goal's guard, and only the outermost.
+
+    ``closed_flipped`` was ``proved (vacuous)`` because "the hypotheses are
+    inconsistent", which the theorem has none of; it is vacuous because the
+    goal's guard is empty, and the question put to the stronger oracle is
+    the goal guard's. ``closed_nested`` was examined one level down, at the
+    universal inside its goal, against the rule that only the goal's
+    outermost quantifier is; it is proved, and not vacuous. (The stand-in
+    proves every question it is put, so it calls ``closed_rare``'s guard
+    empty too, which Lean does not; see the Lean test of the same file.)
+    """
+    shown: list[str] = []
+    oracles(_recording(shown), TestOracle())
+    path = _write(tmp_path, CLOSED, "closed.py")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    flipped = facts["closed_flipped"]
+    assert flipped.status is Status.PROVED
+    assert flipped.provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by stub-kernel"
+    )
+    assert "unsatisfied" not in flipped.provenance
+    nested = facts["closed_nested"]
+    assert nested.status is Status.PROVED
+    assert not nested.is_vacuous
+    assert "goal_reached" not in nested.provenance
+    assert "hypotheses" not in shown
+    assert shown.count("goal-guard") == 2
+    assert cli.main(["check", path]) == 1
+    printed = capsys.readouterr().out
+    assert "VACUOUS closed_flipped at closed.py:7:" in printed
+    assert "VACUOUS closed_nested" not in printed
+    assert "hypotheses never satisfied" not in printed
 
 
 # }}}

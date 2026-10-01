@@ -66,6 +66,25 @@ loopty uses changes, and loopty's floor follows it.
   a walk that reached no point is undecided, and a point whose guard has no
   answer is not one it reached. A sum is unchanged: a point it cannot place
   leaves it with no value.
+- **A parameterless theorem's goal is read as its goal** (#35). With no
+  parameters and no hypotheses, `Theorem.term` was the goal itself, and every
+  reader of a term takes a `Forall` apart into variables, hypotheses and
+  goal: `def closed() -> all(k >= 0 for k in Nat if k > 100)` had `k` read as
+  the statement's variable and its guard as the statement's hypotheses, so
+  `lanky check` warned "hypotheses never satisfied in 4000 draws" about a
+  theorem with none, and with Lean a flipped guard was vacuous because "the
+  hypotheses are inconsistent", while `pytest`, which hands the oracle the
+  goal as a goal, said that no draw could decide the statement. The goal's
+  guard was examined one level down as well, at a universal inside the goal,
+  against the rule that only the goal's outermost quantifier is. The term is
+  now a `Forall` with no binders and no guard around the goal, so every
+  reader sees the goal as the goal: such a theorem reads `assumed` with the
+  reason `pytest` gives, a flipped guard is vacuous because "the goal's guard
+  is empty wherever the hypotheses hold", and only the goal's outermost
+  quantifier is examined. The empty binders print as nothing, in the ledger
+  and in Lean, where the theorem is stated with no parameters and a
+  quantified goal. A closed statement whose goal Python already answered,
+  `-> 1 == 2`, keeps the `bool` for its term.
 
 ## [0.1.0.dev0] - 2026-09-18
 

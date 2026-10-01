@@ -2410,6 +2410,57 @@ def test_lean_shows_a_vacuous_claim_vacuous(lean_oracle: LeanOracle, tmp_path, c
     assert "proved (vacuous)  lean" in capsys.readouterr().out
 
 
+_CLOSED = (
+    "from __future__ import annotations\n\n"
+    "from lanky import theorem\n"
+    "from lanky.prelude import Nat\n\n\n"
+    "@theorem\n"
+    "def closed_flipped() -> all(k >= 0 for k in Nat if (k > 5) & (k < 3)):\n"
+    '    """No parameters: the goal\'s universal is the goal, not the statement."""\n\n\n'
+    "@theorem\n"
+    "def closed_rare() -> all(k >= 0 for k in Nat if k > 100):\n"
+    '    """No parameters, and a guard no draw reaches."""\n\n\n'
+    "@theorem\n"
+    "def closed_nested() -> all(all(k >= j for k in Nat if (k > 5) & (k < 3)) for j in Nat):\n"
+    '    """No parameters: the guard of the inner universal is not the goal\'s."""\n'
+)
+
+
+def test_lean_reads_a_parameterless_theorems_goal_as_its_goal(
+    lean_oracle: LeanOracle, tmp_path, capsys
+) -> None:
+    """#35 with a real Lean: the theorem is stated with no parameters, and its goal quantifies.
+
+    ``closed_flipped`` was proved from the goal's guard as though it were the
+    hypotheses, and marked vacuous because "the hypotheses are inconsistent";
+    it is vacuous because the guard of its goal is empty. ``closed_rare`` is
+    proved, with no warning about hypotheses it does not have, and
+    ``closed_nested``, whose goal's outermost quantifier reaches its points,
+    is proved and not vacuous.
+    """
+    from lanky import cli
+    from lanky.check import check_path
+
+    path = tmp_path / "closed.py"
+    path.write_text(_CLOSED, encoding="utf-8")
+    facts = {fact.owner: fact for fact in check_path(path)}
+    for fact in facts.values():
+        assert fact.status is Status.PROVED
+        assert fact.decided_by == "lean"
+        assert "unsatisfied" not in fact.provenance
+        assert f"theorem {fact.owner} : ∀ " in fact.provenance["lean_source"]
+    assert facts["closed_flipped"].provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by lean"
+    )
+    assert not facts["closed_rare"].is_vacuous
+    assert not facts["closed_nested"].is_vacuous
+    assert cli.main(["check", str(path)]) == 1
+    printed = capsys.readouterr().out
+    assert "hypotheses never satisfied" not in printed
+    assert "VACUOUS closed_flipped" in printed
+    assert "VACUOUS closed_nested" not in printed
+
+
 def test_lean_shows_a_vacuous_axiom_vacuous_without_being_shown_the_axiom(
     lean_oracle: LeanOracle, tmp_path, capsys
 ) -> None:
