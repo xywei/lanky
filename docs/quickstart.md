@@ -173,7 +173,7 @@ statement on one line):
 ```text
 lean_version: v4.29.1
 
-theorem scan_monotone (n : Int) (h0 : 0 ≤ n) (cnt : Int → Nat) (off : Int → Nat)
+theorem Lanky.scan_monotone (n : Int) (h0 : 0 ≤ n) (cnt : Int → Nat) (off : Int → Nat)
     (h1 : (off 0 : Int) = 0)
     (h2 : ∀ r : Int, 0 ≤ r → r < n → (off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) :
     ∀ a : Int, 0 ≤ a → a < n + 1 → ∀ b : Int, 0 ≤ b → b < n + 1 → a ≤ b →
@@ -255,8 +255,8 @@ REFUTED truncated at gap.py:7: n : Nat |- n - 1 >= 0
 ```
 
 That is the output with the Lean extra and without it, and `lanky check` exits
-1 either way. Lean is given `theorem truncated (n : Int) (h0 : 0 ≤ n) : n - 1 ≥
-0`, which is false at `n = 0` as the Python reading is, so no tactic closes it
+1 either way. Lean is given `theorem Lanky.truncated (n : Int) (h0 : 0 ≤ n) :
+n - 1 ≥ 0`, which is false at `n = 0` as the Python reading is, so no tactic closes it
 and the tester's counterexample is the answer. A statement whose integer
 reading is true keeps its proof: `n - 1 <= n` reads `proved lean`.
 
@@ -486,6 +486,23 @@ column it is worth what they are.
   marks a fact one decided as `decided (heuristic)`, a counterexample the
   property tester finds overrules it, and only a decision procedure or a
   kernel can make a fact vacuous.
+- **A decline says why.** A claim outside the fragment is declined with the
+  reason. Claim the second kind for the interior trace of `eta*D`:
+
+  ```python
+  @rules.second_kind
+  def depends_on_eta():
+      """Second kind only when eta is not 0."""
+      return trace(eta * D, INTERIOR), -eta / 2 * I + eta * D
+  ```
+
+  The rewrite is decided, and the verdict, `-1/2*eta*I + eta*D is second
+  kind`, reads `assumed`, as a claim no oracle knows does. Under the table
+  `lanky check` prints `DECLINED depends_on_eta at` its place, with the reason
+  the rules gave indented under it: `layer-rules: the identity coefficient
+  -1/2*eta mentions eta, so the verdict depends on its value`. `declined` is
+  a standard provenance key, read the same way whatever the plugin, and it
+  does not change the exit code.
 - **A refusal is a verdict, and names its term.** The single layer is claimed
   of the first kind (no identity term), and the Neumann trace of the combined
   field is claimed not of the second kind because of `D'`; both are decided.
@@ -578,8 +595,9 @@ account):
   `lanky.sqrt` are `Real.exp`, `Real.log` and `Real.sqrt`, and `Complex.exp`
   of a complex argument. A complex `log` or `sqrt` is declined: `cmath` picks
   a side of the branch cut by the sign of a zero imaginary part, and Lean's
-  `ℂ` has no signed zero. At a number they are Python's `math` and `cmath`
-  functions, so the file still runs.
+  `ℂ` has no signed zero. The tester reads them as `cmath`'s principal
+  branches, enclosed off the cut and undecided on it. At a number they are
+  Python's `math` and `cmath` functions, so the file still runs.
 - A float literal is the rational number Python holds, `(1 / 2 : ℝ)` for
   `0.5`, and true division is division in a field, `(x : ℝ) / y`, because
   Python's `/` does not divide integers as integers either.

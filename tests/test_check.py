@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from conftest import ProcessWatch
 from lanky import cli
 from lanky.check import check_path, oracle_lines
 from lanky.ledger import Fact, Ledger, Status
@@ -1262,27 +1263,20 @@ def test_a_second_sigterm_does_not_end_the_child_before_its_repls(tmp_path) -> N
     import signal
     import subprocess
     import sys
-    import time
 
     child = subprocess.Popen(
         [sys.executable, "-c", TERMINATED.format(extra=AGAIN)], stdout=subprocess.PIPE
     )
-    repl = int(child.stdout.readline())
+    repl = ProcessWatch(int(child.stdout.readline()))
     try:
         child.send_signal(signal.SIGTERM)
-        assert child.wait(timeout=10) == -signal.SIGTERM
-        deadline = time.monotonic() + 10
-        while not _gone(repl) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert _gone(repl), "the REPL outlived the child"
+        assert child.wait(timeout=60) == -signal.SIGTERM
+        assert repl.wait(60), "the REPL outlived the child"
     finally:
         if child.poll() is None:
             child.kill()
             child.wait()
-        if not _gone(repl):
-            import os
-
-            os.kill(repl, signal.SIGKILL)
+        repl.kill()
 
 
 @pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
@@ -1369,31 +1363,23 @@ def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
     ]
 
 
+#: A checked file that writes its process's pid and sleeps. The pid is written
+#: whole or not at all, by a rename, since the test reads the file while it is
+#: written.
 SLOW = '''\
 import os
 import time
 
-with open({pidfile!r}, "w", encoding="utf-8") as handle:
+with open({pidfile!r} + ".part", "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))
-time.sleep(60)
+os.replace({pidfile!r} + ".part", {pidfile!r})
+time.sleep(120)
 '''
 
 
 def _gone(pid: int) -> bool:
     """Whether process ``pid`` has ended; one ended and not yet reaped counts."""
-    import os
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:  # pragma: no cover - a pid taken by another user's process
-        return True
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            return handle.read().rsplit(")", 1)[1].split()[0] == "Z"
-    except (OSError, IndexError):  # no /proc: alive, as far as can be told
-        return False
+    return ProcessWatch(pid).gone()
 
 
 @pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
@@ -1403,7 +1389,14 @@ def test_a_child_ends_when_the_command_is_ended_alone(tmp_path, name) -> None:
 
     Such a signal ends the command at once, with nothing run on the way out,
     and the child used to keep checking for no one: here, sleeping out the
-    minute its file sleeps. It now gets ``SIGTERM`` when its parent ends.
+    two minutes its file sleeps. It now gets ``SIGTERM`` when its parent ends.
+
+    The test failed now and then under load (#53), after three seconds: its
+    wait for the child had seen it a zombie and stopped, and the assertion
+    after it asked again while the child was reaped, when ``kill`` still finds
+    a process whose ``/proc`` entry is gone, and read it as running. The child
+    is watched by ``ProcessWatch`` now, which answers once, and given a
+    minute, which a passing run never waits for.
     """
     import signal
     import subprocess
@@ -1419,27 +1412,22 @@ def test_a_child_ends_when_the_command_is_ended_alone(tmp_path, name) -> None:
     )
     child = None
     try:
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 120
         while child is None:
             assert command.poll() is None, "the command ended before its child began"
             assert time.monotonic() < deadline, "the child never began"
-            text = pidfile.read_text(encoding="utf-8") if pidfile.exists() else ""
-            child = int(text) if text else None
+            if pidfile.exists():
+                child = ProcessWatch(int(pidfile.read_text(encoding="utf-8")))
             time.sleep(0.05)
         command.send_signal(getattr(signal, name))
-        command.wait(timeout=30)
-        deadline = time.monotonic() + 20
-        while not _gone(child) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert _gone(child), "the child outlived the command"
+        command.wait(timeout=60)
+        assert child.wait(60), "the child outlived the command"
     finally:
         if command.poll() is None:
             command.kill()
             command.wait()
-        if child is not None and not _gone(child):
-            import os
-
-            os.kill(child, signal.SIGKILL)
+        if child is not None:
+            child.kill()
 
 
 LEAVES_ONE_RUNNING = '''\
@@ -1718,6 +1706,159 @@ def test_an_empty_witness_is_not_printed(capsys) -> None:
     assert _block(capsys, _refuted(witness="", counterexample={})) == [
         "  no witness recorded"
     ]
+
+
+# }}}
+
+
+# {{{ what is printed under a DECLINED line
+
+
+def _left(status: Status = Status.ASSUMED, kind: str = "theorem", **provenance) -> Fact:
+    """A fact an oracle left at ``status``, carrying exactly this provenance."""
+    return Fact(
+        id="theorem:claim",
+        kind=kind,
+        statement="verdict(eta*I + D)",
+        status=status,
+        where="claims.py:9",
+        owner="claim",
+        provenance=provenance,
+    )
+
+
+def _declined_block(capsys, fact: Fact) -> list[str] | None:
+    """The lines under the fact's ``DECLINED`` line, or ``None`` when there is no such line."""
+    assert cli.CheckVerb._report(Ledger([fact])) is (fact.status is Status.REFUTED)
+    printed = capsys.readouterr().out
+    head = "DECLINED claim at claims.py:9: verdict(eta*I + D)"
+    if head not in printed:
+        assert "DECLINED" not in printed
+        return None
+    return printed.split(head, 1)[1].split("\n\n", 1)[0].splitlines()[1:]
+
+
+def test_a_fact_an_oracle_declined_says_why_under_the_table(capsys) -> None:
+    """#37: an assumed row said nothing of the oracle that looked at it and declined.
+
+    The pytential demonstration's rule engine declines a verdict that depends
+    on a parameter's value, and records why as ``declined``; the row read
+    ``assumed``, as for a claim no oracle knows, and the reason was in the
+    JSON alone. It is printed under the table now, and does not fail the check.
+    """
+    reason = (
+        "layer-rules: the identity coefficient -1/2*eta mentions eta, so the "
+        "verdict depends on its value"
+    )
+    fact = _left(declined=reason)
+    assert _declined_block(capsys, fact) == [f"  {reason}"]
+    assert cli.decline_lines(fact) == [reason]
+    # a reason of several lines is indented line by line, and so is one per oracle
+    fact = _left(declined="layer-rules: two kernels\nLaplace(2) and Helmholtz(2, k=k)")
+    assert _declined_block(capsys, fact) == [
+        "  layer-rules: two kernels",
+        "  Laplace(2) and Helmholtz(2, k=k)",
+    ]
+    fact = _left(declined=["first: outside its fragment", "second: no rule applies"])
+    assert _declined_block(capsys, fact) == [
+        "  first: outside its fragment",
+        "  second: no rule applies",
+    ]
+
+
+def test_only_a_fact_left_assumed_gets_a_declined_line(capsys) -> None:
+    """A decline a weaker oracle went on to settle is explained by its status.
+
+    An axiom is assumed on its citation, which its ``CITED`` line gives, and
+    an empty reason names nothing.
+    """
+    assert _declined_block(capsys, _left(Status.TESTED, declined="rules: no")) is None
+    assert _declined_block(capsys, _left(Status.REFUTED, declined="rules: no")) is None
+    assert _declined_block(capsys, _left(kind="axiom", declined="rules: no")) is None
+    assert _declined_block(capsys, _left(declined="")) is None
+    assert _declined_block(capsys, _left()) is None
+    assert cli.decline_lines(_left(declined=[])) == []
+
+
+DECLINES = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Fin, Fn, Nat
+
+
+@theorem
+def opaque(f: Fn[Nat, Nat]) -> f(0) == f(0):
+    """A family over Nat, which no sampler draws, so the tester leaves it assumed."""
+'''
+
+
+class _DecliningOracle:
+    """An oracle that is willing to try every fact and declines each, saying why.
+
+    With no reason it hands the fact back as it was given, as an oracle that
+    declines without saying why does.
+    """
+
+    def __init__(
+        self,
+        name: str = "stand-in",
+        trust: str = "decision-procedure",
+        reason: str | None = "outside its fragment",
+    ) -> None:
+        self.name, self._trust, self._reason = name, trust, reason
+
+    def trust_class(self) -> str:
+        return self._trust
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.term is not None
+
+    def establish(self, fact, /):
+        if self._reason is None:
+            return fact
+        return fact.with_status(fact.status, declined=f"{self.name}: {self._reason}")
+
+
+def test_lanky_check_prints_a_decline_and_exits_zero(tmp_path, monkeypatch, capsys) -> None:
+    """The reason reaches ``lanky check`` through the oracles, and the exit code is 0."""
+    from lanky.plugins import registry
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, _DecliningOracle()])
+    path = write_file(tmp_path, DECLINES)
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "DECLINED opaque at claims.py:" in printed
+    assert "\n  stand-in: outside its fragment\n" in printed
+
+
+def test_each_oracle_that_declined_is_named_under_the_table(tmp_path, monkeypatch, capsys) -> None:
+    """Two oracles that decline one fact each say why, in the order they were asked.
+
+    An oracle records its reason as ``declined`` over what the fact carried,
+    so the second one's took the first one's place, and the line under the
+    table named only the last oracle that looked. One that declines without
+    a reason adds nothing, and leaves the others' in place.
+    """
+    from lanky.plugins import registry
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    oracles = [
+        _DecliningOracle("rules", "heuristic", "no rule applies"),
+        _DecliningOracle("quiet", "decision-procedure", None),
+        _DecliningOracle("solver", "decision-procedure", "outside its fragment"),
+    ]
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, *oracles])
+    path = write_file(tmp_path, DECLINES)
+    (fact,) = check_path(path)
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["declined"] == ["solver: outside its fragment", "rules: no rule applies"]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    block = printed.split("DECLINED opaque at claims.py:", 1)[1].splitlines()
+    assert block[1:3] == ["  solver: outside its fragment", "  rules: no rule applies"]
+    assert printed.count("DECLINED ") == 1
 
 
 # }}}

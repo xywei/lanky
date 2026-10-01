@@ -18,6 +18,16 @@ loopty uses changes, and loopty's floor follows it.
   package, and a file outside any package is its stem. `None` for a path that
   names no file, such as the `<string>` of a function compiled from a string
   or a symbolic link that leads back to itself.
+- `lanky.cli.decline_lines(fact)`: the lines `lanky check` prints under a
+  `DECLINED` line, from the standard provenance key `declined` (#37).
+- `lanky.intervals.complex_log_value`, `complex_sqrt_value`, `atan2_value`
+  and `pi_value`: the principal complex logarithm and square root of the
+  exact reading, the argument of a complex number in `(-π, π]`, and `π`
+  (#51).
+- `lanky.lean.global_name(name)` and `lanky.lean.ROOT_NAMES`: a root
+  declaration as a statement's source names it, `_root_.Int` where a variable
+  is named `Int`; and `LeanStatement.shadowed` and `LeanStatement.qualified`,
+  which carry that to a tactic script (#43).
 
 ### Changed
 
@@ -42,6 +52,119 @@ loopty uses changes, and loopty's floor follows it.
   file of a namespace package (a directory with no `__init__.py`) shares its
   stem with a file of that name beside the package; their facts are told
   apart by `where` and the `path` in the provenance.
+- **The property tester reads the reals exactly** (#33). It computed `Real`
+  and `Complex` in floating point, so `exp(x + y) == exp(x) * exp(y)` and
+  `(x + 0.1) - 0.1 == x` were refuted by rounding, and `lanky check` exited 1
+  on claims Lean proves over `ℝ`; `exp(x - 1000) > 0` was refuted because the
+  float underflows to `0.0`; and a proof of `x / y * y == x` got a
+  `SEMANTICS` block whose counterexample was a rounding error. `Real` and
+  `Complex` are now drawn as fractions (a `Complex` as the new
+  `lanky.intervals.ComplexValue`, two fractions), whatever their exactness
+  class, which still says how a kernel computes and no longer what a
+  statement means. The tester evaluates in the new exact reading
+  (`lanky.terms.exact_reading`): a float literal is the rational it holds,
+  as the Lean printer reads it, `n / 2` and `2 ** -1` of integers are
+  fractions, and `exp`, `log`, `sqrt` and the complex `exp` are exact where
+  the value is rational (`exp(0)`, `log(1)`, `sqrt(9/4)`) and enclosed in a
+  `lanky.intervals.Interval` where it is not: rational endpoints, rounded
+  outward to 128 bits, summed from their series with every rounding bounded,
+  and no dependency. A comparison is true where the enclosures prove it,
+  false where they exclude it, which keeps a refutation as definite as a
+  proof, and undecided where they straddle it. An equality between
+  transcendental numbers is never proved that way, so one that stands
+  `POSITIVE`, where the statement asserts it, holds when its sides agree to
+  64 bits, which is evidence as a sampled universal's pass is; anywhere else
+  it is undecided, as is an order whose enclosures overlap. One enclosure is
+  one number and equal to itself, and one operation on the same numbers, the
+  exponential of one argument or `2 * exp(x)` at one draw, is one enclosure,
+  so a table the tester fills from a definition such as
+  `f(i) == 2 * exp(x)` satisfies that definition when it is read back as a
+  hypothesis, and `exp(x) - exp(x)` is `0`. A complex `log` or `sqrt`
+  (until #51, below), an `exp` past `2**14`, a negative number to a power
+  that is not an integer, and arithmetic with a float infinity or NaN are
+  undecided rather than guessed; a comparison with an infinity or a NaN is
+  Python's.
+  `lanky.exp(0.5)` at a number, `evaluate` outside the exact reading and
+  `Theorem.__call__` are Python's, as before. So the claims
+  above are `tested`, `x + 1e-20 == x`, which every float draw passed, is
+  refuted, and the claims in the Mathlib tests that were private because the
+  tester refuted them are public and collected.
+- **The tester encloses the complex logarithm and square root** (#51). Every
+  draw of a statement that applied `log` or `sqrt` to a complex number was
+  undecided, so `exp(log(z + 2)) == z + 2` over `abs(z) < 1` read `assumed`
+  with `untested` in its provenance, and no oracle decided it. They are
+  Python's principal branches now, as `cmath` computes them: `log z` is
+  `log|z| + i atan2(im z, re z)`, with an arctangent series and `π` from
+  Machin's formula enclosing the argument, and `sqrt z` is the principal
+  root, exact where it is rational (`sqrt(-3 + 4i)` is `1 + 2i`). The
+  arctangent is summed in units scaled to its argument, so the argument of a
+  number just off the positive real axis, `1 + 2**-300 i` say, is enclosed as
+  closely relative to its size as any other, and its sign is decided. On the
+  branch cut, the non-positive real axis, `cmath` picks a side by the sign
+  of a zero imaginary part, which a fraction does not have, so an argument
+  on it, or an enclosure meeting it, is undecided, and the logarithm of a
+  complex zero has no value, as in Python. That claim is `tested`, and
+  `sqrt(z * z) == z` is refuted at a draw with a negative real part. The
+  Lean printer still declines both, since Lean's `ℂ` has no signed zero
+  either and its branch-cut convention would have to be matched.
+- **`lanky check` says why an oracle declined a fact** (#37). An oracle that
+  takes a fact and finds it outside what it decides returns it unchanged,
+  and can say why; the pytential demonstration's rule engine did, in its
+  provenance as `declined`, and the row read `assumed` with nothing under
+  the table, as for a claim no oracle knows. `declined` is a standard
+  provenance key now, read the same way whatever the plugin, and a fact
+  left `assumed` that has one gets a `DECLINED <owner> at <where>:
+  <statement>` line under the table with the reason indented under it,
+  after the `CITED` lines. A list holds one reason per oracle, and
+  `check_path` keeps the reason of each oracle that declined a fact, in the
+  order they were asked, where each one's would otherwise take the place of
+  the one before. A fact a weaker oracle
+  went on to settle, and an axiom, get none, and the exit code does not
+  change. The Lean oracle records the standard key beside `lean_declined`
+  when it is asked directly about a statement it cannot print.
+- **A Lean theorem is declared as `Lanky.<name>` in core mode too** (#39,
+  #43). Core Lean declares `and_comm`, `trivial`, `id`, `absurd`, `congr`
+  and more at the root, so a claim named like one was refused as already
+  declared at every attempt and read `tested`; so was `inferInstanceAs`, a
+  keyword that is also a declaration, and `True_`, which cleaning turns into
+  `True`. Mathlib mode already declared its statements in the `Lanky`
+  namespace. The `lean_source` of every core proof changes with it:
+  `theorem commutes ...` is `theorem Lanky.commutes ...`.
+- **A variable named like a root name the printer writes** (#43). After a
+  binder `(Int : Int)`, `Int` is the variable, so `def f(Int: Nat, b: Nat)`
+  printed `(b : Int)` with the variable as a type and was refused with "type
+  expected", and `Int.fdiv` was read as a field of it. In a statement with a
+  variable named `Int`, `Nat`, `Bool`, `Real`, `Complex`, `Finset`, `True` or
+  `False`, and only there, those names are printed from the root,
+  `_root_.Int`, in the statement and in the tactic scripts: the casts, the
+  floor division, the literals, `Complex.I`, `Real.exp`, `Finset.Ico`, and the
+  lemmas the induction and Mathlib's attempts name. Every other statement
+  prints as before.
+- **A variable named `rfl` or `_` is introduced under a fresh name** (#43).
+  `intro rfl` and an `rcases` pattern `⟨b, rfl⟩` read `rfl` as a
+  substitution, so the induction strategy failed on a goal variable named
+  `rfl` with "subst failed", and an `rcases` pattern reads `_` as a hole. The
+  strategy introduces such a variable as `x` (or the next fresh name), and
+  so does the Mathlib reduction induction for a parameter.
+- **A Lean REPL ends with the process that started it, however it ends**
+  (#46). lean-interact starts the REPL in a session of its own, and an
+  attempt's timeout is kept by the lanky process, so a process ended by a
+  signal, which runs nothing on the way out, left its REPL going on with its
+  attempt: `lanky check` of one root, or a program calling `check_path` or
+  the oracle, ended by `kill`, and a child of `lanky check` sent `SIGKILL`
+  directly. Each lanky process now starts a small reaper with its first
+  REPL, a Python process in a session of its own that reads a pipe from it,
+  and when the pipe closes, which the kernel does however the process ended,
+  kills every REPL process group it was handed. A session that closes takes
+  its REPL back first. A forked process lets go of its parent's end of the
+  pipe, which it inherits and which kept the parent's REPLs going for as
+  long as the fork ran, and starts a reaper of its own. And Ctrl-C during
+  an attempt stops the REPL where the command is interrupted: lean-interact
+  reads the answer in a thread the interpreter waits for on its way out,
+  before anything registered at exit runs, so an interrupted `lanky check`
+  used to wait until the attempt finished. POSIX only; on Windows nothing
+  changes.
+
 - **The quantifiers are three-valued** (#29). A quantifier evaluated its body
   point by point and gave up at the first point it had no answer at, an
   undecided operand or a division by zero, though a later point settles it:
@@ -130,6 +253,33 @@ loopty uses changes, and loopty's floor follows it.
   the table as a `WARNING`, with exit code 0. A fact a stronger oracle
   established gets no such reason from its cross-check, since the pass is
   not what it rests on.
+
+### Notes
+
+- Over `Real` and `Complex` the tester and Mathlib read one statement, over
+  `ℝ` and `ℂ` (#33), but the tester's enclosures decide less than a proof: an
+  equality of transcendental numbers holds on evidence where it is asserted,
+  and is undecided under a negation or in a hypothesis, and an order whose
+  enclosures overlap is undecided. Such a draw is not noted as a gap, since
+  both readings have an answer there.
+- The pytest-plugin tests pass where lanky is importable and not installed,
+  `PYTHONPATH=src python -m pytest`, as well as under `uv run pytest` (#40):
+  they relied on pytest loading the plugin through its `pytest11` entry
+  point, which only an installed distribution registers, and now name it
+  with `-p lanky.pytest_plugin` where the entry point is missing or
+  entry-point plugins are off. Each runs both ways.
+- The two child-process tests that failed now and then under load (#53)
+  asked whether a process had ended twice, in a wait loop and then in the
+  assertion after it, and read `/proc` in between. A process that ends is a
+  zombie until it is reaped, and while it is reaped `kill(pid, 0)` still
+  finds it and its `/proc` entry is already gone, which the watcher read as
+  a process still running: the loop saw the zombie and stopped, and the
+  assertion read it as alive. They watch a process with
+  `tests/conftest.ProcessWatch` now, which reads an unreadable entry as a
+  process that has gone and answers once, and which also reads a pid another
+  process has taken since, by its start time, as a process that has ended.
+  Their deadlines are a minute, which a passing run never waits for. The
+  code under test does not change.
 
 ## [0.1.0.dev0] - 2026-09-18
 
@@ -1001,42 +1151,6 @@ listed because it changes behaviour a reader could already have depended on.
   there is no child, and such a process holds whatever reads the command's
   own output, as it would for any program.) No verdict and no ledger
   changes.
-- **The property tester reads the reals exactly** (#33). It computed `Real`
-  and `Complex` in floating point, so `exp(x + y) == exp(x) * exp(y)` and
-  `(x + 0.1) - 0.1 == x` were refuted by rounding, and `lanky check` exited 1
-  on claims Lean proves over `ℝ`; `exp(x - 1000) > 0` was refuted because the
-  float underflows to `0.0`; and a proof of `x / y * y == x` got a
-  `SEMANTICS` block whose counterexample was a rounding error. `Real` and
-  `Complex` are now drawn as fractions (a `Complex` as the new
-  `lanky.intervals.ComplexValue`, two fractions), whatever their exactness
-  class, which still says how a kernel computes and no longer what a
-  statement means. The tester evaluates in the new exact reading
-  (`lanky.terms.exact_reading`): a float literal is the rational it holds,
-  as the Lean printer reads it, `n / 2` and `2 ** -1` of integers are
-  fractions, and `exp`, `log`, `sqrt` and the complex `exp` are exact where
-  the value is rational (`exp(0)`, `log(1)`, `sqrt(9/4)`) and enclosed in a
-  `lanky.intervals.Interval` where it is not: rational endpoints, rounded
-  outward to 128 bits, summed from their series with every rounding bounded,
-  and no dependency. A comparison is true where the enclosures prove it,
-  false where they exclude it, which keeps a refutation as definite as a
-  proof, and undecided where they straddle it. An equality between
-  transcendental numbers is never proved that way, so one that stands
-  `POSITIVE`, where the statement asserts it, holds when its sides agree to
-  64 bits, which is evidence as a sampled universal's pass is; anywhere else
-  it is undecided, as is an order whose enclosures overlap. One enclosure is
-  one number and equal to itself, and one operation on the same numbers, the
-  exponential of one argument or `2 * exp(x)` at one draw, is one enclosure,
-  so a table the tester fills from a definition such as
-  `f(i) == 2 * exp(x)` satisfies that definition when it is read back as a
-  hypothesis, and `exp(x) - exp(x)` is `0`. A complex `log` or `sqrt`, an
-  `exp` past `2**14`, a negative number to a power that is not an integer,
-  and arithmetic with a float infinity or NaN are undecided rather than
-  guessed; a comparison with an infinity or a NaN is Python's.
-  `lanky.exp(0.5)` at a number, `evaluate` outside the exact reading and
-  `Theorem.__call__` are Python's, as before. So the claims
-  above are `tested`, `x + 1e-20 == x`, which every float draw passed, is
-  refuted, and the claims in the Mathlib tests that were private because the
-  tester refuted them are public and collected.
 
 ### Notes
 
@@ -1050,12 +1164,11 @@ listed because it changes behaviour a reader could already have depended on.
   tests skip and the facts Lean would prove are tested instead, and with Lean
   v4.29.1, where they run. The ledger says which happened. A third, optional
   job runs the Mathlib tests against the pinned Mathlib.
-- Over `Real` and `Complex` the tester and Mathlib read one statement, over
-  `ℝ` and `ℂ` (#33), but the tester's enclosures decide less than a proof: an
-  equality of transcendental numbers holds on evidence where it is asserted,
-  and is undecided under a negation or in a hypothesis, and an order whose
-  enclosures overlap is undecided. Such a draw is not noted as a gap, since
-  both readings have an answer there.
+- Over `Real` and `Complex` the tester's reading is floating point (fractions
+  for `Real.exact`) and Mathlib's is exact, so an identity that holds up to
+  rounding is refuted without Mathlib and proved with it. That is what the
+  exactness class says, and it is not noted as a gap; #33 asks which reading
+  should decide.
 - Python's `and` between two propositions in a generator's `if` clause is *not*
   refused: CPython compiles a conjunction in a comprehension filter into two
   successive tests, so both halves are captured and the guard is the one that

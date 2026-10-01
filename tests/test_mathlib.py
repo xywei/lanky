@@ -452,9 +452,10 @@ def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
     # declared in a namespace of its own, where no Mathlib lemma can already have the name
     assert statement.declared_name == "Lanky.gauss"
     assert statement.source("omega").startswith("theorem Lanky.gauss (n : Int) (h0 : 0 ≤ n) :")
+    # and so is a core statement, where no root declaration of core Lean can (#39)
     core = statement_of(commutes.term, "commutes")
-    assert core.declared_name == "commutes"
-    assert core.source("omega").startswith("theorem commutes (a : Int)")
+    assert core.declared_name == "Lanky.commutes"
+    assert core.source("omega").startswith("theorem Lanky.commutes (a : Int)")
 
 
 def test_the_mathlib_ladder_follows_the_core_one() -> None:
@@ -949,6 +950,58 @@ def test_a_claim_over_words_mathlib_reserves_is_proved(mathlib_oracle: LeanOracl
     proved = mathlib_oracle.establish(fact)
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
     assert "\ntheorem Lanky.«lemma» («to» : ℝ) («over» : ℝ) : " in proved.provenance["lean_source"]
+
+
+_REAL, _COMPLEX, _FINSET, _RFL = Var("Real"), Var("Complex"), Var("Finset"), Var("rfl")
+
+
+@pytest.mark.parametrize(
+    ("owner", "term", "tactic"),
+    [
+        ("exp_named_Real", Forall(((_REAL, Real),), exp(_REAL) > 0), None),
+        (
+            "exp_add_named_Real",
+            Forall(((_REAL, Real), (y, Real)), exp(_REAL + y) == exp(_REAL) * exp(y)),
+            None,
+        ),
+        (
+            "named_Complex",
+            Forall(((_COMPLEX, Complex),), _COMPLEX + complex(0, 1) == complex(0, 1) + _COMPLEX),
+            None,
+        ),
+        (
+            "gauss_named_rfl",
+            Forall(((_RFL, Nat),), 2 * Sum(((i, FinType(_RFL + 1)),), i) == _RFL * (_RFL + 1)),
+            "obtain ⟨x, rfl⟩ := Int.eq_ofNat_of_zero_le h0\ninduction x with",
+        ),
+        (
+            "gauss_named_Finset",
+            Forall(
+                ((_FINSET, Nat),),
+                2 * Sum(((i, FinType(_FINSET + 1)),), i) == _FINSET * (_FINSET + 1),
+            ),
+            "obtain ⟨Finset, rfl⟩ := Int.eq_ofNat_of_zero_le h0",
+        ),
+    ],
+    ids=["exp_named_Real", "exp_add_named_Real", "named_Complex", "gauss_rfl", "gauss_Finset"],
+)
+def test_names_lean_gives_a_meaning_to_are_kept_apart_in_mathlib(
+    mathlib_oracle: LeanOracle, owner: str, term: object, tactic: str | None
+) -> None:
+    """#43 in Mathlib mode: a variable named ``Real``, ``Complex``, ``Finset`` or ``rfl``.
+
+    After a binder named ``Real``, ``Real.exp`` and the lemma ``Real.exp_add``
+    are fields of the variable, and so are ``Complex.I`` and ``Finset.Ico``
+    and the lemmas the sum's peel names after one named so; they are named
+    from the root. A parameter named ``rfl`` that the reduction's induction
+    trades for a natural is traded under a fresh name, since the ``rcases``
+    pattern ``⟨rfl, rfl⟩`` substitutes twice.
+    """
+    fact = Fact(id=owner, kind="theorem", statement=owner, term=term, owner=owner)
+    proved = mathlib_oracle.establish(fact)
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    if tactic is not None:
+        assert proved.provenance["tactic"].startswith(tactic), proved.provenance["tactic"]
 
 
 #: Lean source that prints every token of the parser's table, one to a line.

@@ -54,15 +54,27 @@ one for a part is no complex number either. An enclosure is below ``inf`` for
 certain, and a NaN equals nothing, as Python compares them, but arithmetic
 with either, or a function of either, leaves the draw undecided.
 
+The complex logarithm and square root are Python's principal branches, as
+``cmath`` computes them: ``log z`` is ``log|z| + i atan2(im z, re z)``, its
+imaginary part enclosed with an arctangent series and ``π`` from Machin's
+formula, and ``sqrt z`` is the principal root, exact where it is rational
+(``sqrt(-3 + 4i)`` is ``1 + 2i``). Both have their branch cut on the
+non-positive real axis, where ``cmath`` picks a side by the sign of a zero
+imaginary part (``log(complex(-1, -0.0))`` is ``-πi``, and ``log(complex(-1,
+0.0))`` is ``πi``). An exact number has no signed zero, so an argument on the
+cut, or one whose enclosure meets it, is undecided: which side Python would
+take is not known there, and that is the only place where it matters.
+
 What is not enclosed is left undecided, never guessed: a complex logarithm or
-square root (the printer declines both, see :mod:`lanky.lean`), an exponential,
-a cosine or a sine of an argument beyond :data:`EXP_LIMIT`, and a negative
-number to a power that is not an integer, which Python answers with a complex
-number. A logarithm or a square root outside its Python domain raises
-:class:`~lanky.terms.UndefinedValue`, as Python's functions do, which is the gap
-to Mathlib's total functions that :mod:`lanky.semantics` notes; an argument
-whose enclosure reaches the edge of the domain is undecided, since which side
-it is on is not known.
+square root on its branch cut, an exponential, a cosine or a sine of an
+argument beyond :data:`EXP_LIMIT`, a negative number to a power that is not an
+integer, which Python answers with a complex number, and a complex power that
+is not an integer power. A logarithm or a square root outside its Python
+domain raises :class:`~lanky.terms.UndefinedValue`, as Python's functions do,
+which is the gap to Mathlib's total functions that :mod:`lanky.semantics`
+notes, and so does the logarithm of a complex zero; an argument whose
+enclosure reaches the edge of the domain is undecided, since which side it is
+on is not known.
 
 Nothing here changes what a file computes when it runs: ``lanky.exp(0.5)`` at a
 number is Python's float, and so is :func:`lanky.terms.evaluate` at floats. The
@@ -90,12 +102,16 @@ __all__ = [
     "ComplexValue",
     "Interval",
     "agree",
+    "atan2_value",
     "compare",
+    "complex_log_value",
+    "complex_sqrt_value",
     "describe",
     "elementary",
     "exact",
     "exp_value",
     "log_value",
+    "pi_value",
     "power",
     "quotient",
     "sqrt_value",
@@ -1031,15 +1047,16 @@ def elementary(function: str, value: Any) -> Any:
 
     A real argument (an integer, a fraction, a float as the rational it holds,
     or an enclosure) gives :func:`exp_value`, :func:`log_value` or
-    :func:`sqrt_value`, and a complex one gives the complex exponential. A
-    complex logarithm or square root is not enclosed: the printer declines
-    both, since Python picks a side of the branch cut by the sign of a zero,
-    and the draw decides nothing.
+    :func:`sqrt_value`, and a complex one gives the complex exponential, the
+    principal logarithm or the principal square root, as ``cmath`` does
+    (:func:`complex_log_value`, :func:`complex_sqrt_value`). On the branch cut
+    of the last two Python picks a side by the sign of a zero, which an exact
+    number does not have, and the draw decides nothing.
 
     Raises:
         UndefinedValue: If Python's function has no value there: the logarithm
-            of a number that is not positive, or the square root of a negative
-            one.
+            of a number that is not positive, or of a complex zero, or the
+            square root of a negative one.
         Undecided: Where the exact reading has no enclosure (see the module
             docstring).
         TypeError: If ``value`` is not a number, a ``bool`` included.
@@ -1055,11 +1072,9 @@ def elementary(function: str, value: Any) -> Any:
             raise TypeError(f"{value!r} is not a complex number")
         if function == "exp":
             return _complex_exp(*parts)
-        raise Undecided(
-            f"{function}({describe(value)}) is a complex {function}, which the tester "
-            "does not enclose: Python picks a side of its branch cut by the sign of a "
-            "zero, which an exact number does not have, so this draw decides nothing"
-        )
+        if function == "log":
+            return complex_log_value(*parts)
+        return complex_sqrt_value(*parts)
     x = _real(value)
     if function == "exp":
         return exp_value(x)
@@ -1387,6 +1402,249 @@ def _complex_exp_of(real: Fraction | Interval, imag: Fraction | Interval) -> Com
         return ComplexValue(magnitude, Fraction(0))
     cos_value, sin_value = _cos_sin(imag)
     return ComplexValue(magnitude * cos_value, magnitude * sin_value)
+
+
+# }}}
+
+
+# {{{ the arctangent, pi, and the complex logarithm and square root
+
+
+def _atan_series(z: Fraction, bits: int) -> tuple[Fraction, Fraction]:
+    """Bounds on ``atan(z)`` for ``0 <= z <= 1/2``, from its alternating series in fixed point.
+
+    Each power ``z**(2k + 1)`` is the one before times ``z**2``, floored, so it
+    is off by less than ``4/3`` of a unit, and a term divides it, floored
+    again, so that each of the ``k`` terms is off by less than three units.
+    The sum stops at the first power that floors to zero, and what it leaves
+    out, an alternating tail of decreasing terms, is below its first term,
+    which is below two units.
+
+    A unit is ``2**-bits`` divided by the power of two ``z`` is below, so that
+    the bounds are as close relative to ``atan(z)``, which is about ``z``, for
+    a small ``z`` as for one near a half: the argument of a number just off
+    the positive real axis is that small, and a fixed unit would leave its
+    sign undecided below ``2**-bits``.
+    """
+    if not 0 <= z <= Fraction(1, 2):
+        raise ValueError(f"the series is summed for 0 <= z <= 1/2, not at {z}")
+    if z:
+        bits += max(0, z.denominator.bit_length() - z.numerator.bit_length())
+    one = 1 << bits
+    numerator, denominator = z.numerator, z.denominator
+    square_numerator, square_denominator = numerator * numerator, denominator * denominator
+    power_of_z = one * numerator // denominator
+    total, count = 0, 0
+    while power_of_z:
+        term = power_of_z // (2 * count + 1)
+        total += -term if count % 2 else term
+        count += 1
+        power_of_z = power_of_z * square_numerator // square_denominator
+    margin = 3 * count + 4
+    return Fraction(total - margin, one), Fraction(total + margin, one)
+
+
+@functools.cache
+def _pi(bits: int) -> tuple[Fraction, Fraction]:
+    """Bounds on ``π``, from Machin's ``π/4 = 4 atan(1/5) - atan(1/239)``."""
+    fifth_lo, fifth_hi = _atan_series(Fraction(1, 5), bits)
+    small_lo, small_hi = _atan_series(Fraction(1, 239), bits)
+    return 4 * (4 * fifth_lo - small_hi), 4 * (4 * fifth_hi - small_lo)
+
+
+def _atan_bounds(q: Fraction, bits: int) -> tuple[Fraction, Fraction]:
+    """Bounds on ``atan(q)`` for any rational ``q``, reduced to the series' range.
+
+    ``atan`` is odd, ``atan(q)`` is ``π/2 - atan(1/q)`` above one, and
+    ``π/4 + atan((q - 1) / (q + 1))`` between a half and one, where the new
+    argument is at most a third in size.
+    """
+    if q < 0:
+        lo, hi = _atan_bounds(-q, bits)
+        return -hi, -lo
+    if q == 0:
+        return Fraction(0), Fraction(0)
+    pi_lo, pi_hi = _pi(bits)
+    if q > 1:
+        lo, hi = _atan_bounds(1 / q, bits)
+        return pi_lo / 2 - hi, pi_hi / 2 - lo
+    if q > Fraction(1, 2):
+        lo, hi = _atan_bounds((q - 1) / (q + 1), bits)
+        return pi_lo / 4 + lo, pi_hi / 4 + hi
+    return _atan_series(q, bits)
+
+
+def _arg_bounds(y: Fraction, x: Fraction) -> tuple[Fraction, Fraction]:
+    """Bounds on ``atan2(y, x)``, the argument of ``x + y i`` in ``(-π, π]``.
+
+    Off the branch cut and away from zero: the caller has made sure of both.
+    """
+    bits = PRECISION + _GUARD
+    if x > 0:
+        return _atan_bounds(y / x, bits)
+    pi_lo, pi_hi = _pi(bits)
+    if x == 0:
+        return (pi_lo / 2, pi_hi / 2) if y > 0 else (-pi_hi / 2, -pi_lo / 2)
+    lo, hi = _atan_bounds(y / x, bits)
+    if y > 0:
+        return lo + pi_lo, hi + pi_hi
+    return lo - pi_hi, hi - pi_lo
+
+
+def pi_value() -> Interval:
+    """An enclosure of ``π``, one object."""
+    return _pi_enclosure()
+
+
+@functools.cache
+def _pi_enclosure() -> Interval:
+    """:func:`pi_value`, computed once."""
+    lo, hi = _pi(PRECISION + _GUARD)
+    return Interval(_round(lo, False), _round(hi, True))
+
+
+def _contains_zero(value: Fraction | Interval) -> bool:
+    """Whether ``value`` is zero, or an enclosure with zero in it."""
+    lo, hi = _bounds(value)
+    return lo <= 0 <= hi
+
+
+def _on_the_cut(real: Fraction | Interval, imag: Fraction | Interval, *, zero: bool) -> bool:
+    """Whether ``real + imag i`` is, or its enclosure meets, the non-positive real axis.
+
+    With ``zero`` the origin counts, as it does for the logarithm, which has no
+    value there; without it only the negative half does, as for the square
+    root, which is continuous at zero.
+    """
+    if not _contains_zero(imag):
+        return False
+    lo = _bounds(real)[0]
+    return lo <= 0 if zero else lo < 0
+
+
+def _undecided_cut(function: str, real: Any, imag: Any) -> Undecided:
+    """What a complex logarithm or square root on its branch cut raises."""
+    return Undecided(
+        f"{function}({describe(ComplexValue(real, imag))}) is on the branch cut of the "
+        "complex " + ("logarithm" if function == "log" else "square root")
+        + ", or its enclosure meets it, and Python picks a side of the cut by the sign "
+        "of a zero imaginary part, which an exact number does not have, so this draw "
+        "decides nothing"
+    )
+
+
+def atan2_value(y: Fraction | Interval, x: Fraction | Interval) -> Fraction | Interval:
+    """``atan2(y, x)``, the argument of ``x + y i`` in ``(-π, π]``, off its branch cut.
+
+    ``0`` on the positive real axis, and an enclosure anywhere else. An
+    enclosed point is a box, whose argument lies between the arguments of its
+    corners, since the box is convex and meets neither the cut nor zero.
+
+    Raises:
+        Undecided: If ``x + y i`` is on the non-positive real axis, or its
+            enclosure meets it, where the argument is ``π`` or ``-π`` by the
+            sign of a zero (see :func:`complex_log_value`).
+    """
+    y, x = _real(y), _real(x)
+    if _on_the_cut(x, y, zero=True):
+        raise Undecided(
+            f"atan2({describe(y)}, {describe(x)}) is on the non-positive real axis, or "
+            "its enclosure meets it, where the argument is pi or -pi by the sign of a "
+            "zero, which an exact number does not have"
+        )
+    if isinstance(x, Interval) or isinstance(y, Interval):
+        return _once("atan2", (y, x), lambda: _arg_of_box(_bounds(y), _bounds(x)))
+    return _arg_exact(y, x)
+
+
+@functools.lru_cache(maxsize=4096)
+def _arg_exact(y: Fraction, x: Fraction) -> Fraction | Interval:
+    """``atan2(y, x)`` at exact parts, one object per argument."""
+    lo, hi = _arg_bounds(y, x)
+    return _enclosure(lo, hi)
+
+
+def _arg_of_box(y: tuple[Fraction, Fraction], x: tuple[Fraction, Fraction]) -> Fraction | Interval:
+    """The enclosure of the argument over a box, from the arguments of its corners."""
+    corners = [_arg_bounds(b, a) for a in x for b in y]
+    return _enclosure(min(lo for lo, _ in corners), max(hi for _, hi in corners))
+
+
+def complex_log_value(real: Any, imag: Any) -> ComplexValue:
+    """``log(real + imag i)``, Python's principal logarithm: ``log|z| + i atan2(imag, real)``.
+
+    The real part is ``log(real**2 + imag**2) / 2``, which needs no square
+    root, and the logarithm of the real part where ``imag`` is exactly zero
+    and ``real`` positive, so that ``log(x + 0j)`` is ``log(x)``, one number.
+    The imaginary part is :func:`atan2_value`.
+
+    Raises:
+        UndefinedValue: At zero, where ``cmath.log`` raises.
+        Undecided: On the branch cut, the non-positive real axis, or where the
+            enclosure meets it.
+    """
+    real, imag = _real(real), _real(imag)
+    if _is_zero(real) and _is_zero(imag):
+        raise _undefined("log", ComplexValue(real, imag), "its argument is zero")
+    if _on_the_cut(real, imag, zero=True):
+        raise _undecided_cut("log", real, imag)
+    if isinstance(real, Interval) or isinstance(imag, Interval):
+        return _complex_log_of(real, imag)
+    return _complex_log_exact(real, imag)
+
+
+@functools.lru_cache(maxsize=4096)
+def _complex_log_exact(real: Fraction, imag: Fraction) -> ComplexValue:
+    """``log(real + imag i)`` at exact parts, one object per argument."""
+    return _complex_log_of(real, imag)
+
+
+def _complex_log_of(real: Fraction | Interval, imag: Fraction | Interval) -> ComplexValue:
+    """``log|z| + i arg z``, for a ``z`` off the cut."""
+    if _is_zero(imag):
+        return ComplexValue(log_value(real), Fraction(0))
+    return ComplexValue(log_value(real**2 + imag**2) / 2, atan2_value(imag, real))
+
+
+def complex_sqrt_value(real: Any, imag: Any) -> ComplexValue:
+    """``sqrt(real + imag i)``, Python's principal square root, exact where it is rational.
+
+    With ``|z|`` the modulus, the root is ``a + b i`` with ``a = sqrt((|z| +
+    real) / 2)`` and ``b = imag / (2 a)`` where ``real`` is not negative, and
+    with ``|b| = sqrt((|z| - real) / 2)``, of the sign of ``imag``, and ``a =
+    |imag| / (2 |b|)`` where it is, which keeps either from cancelling. A real
+    part that is not negative with ``imag`` exactly zero is the real root.
+
+    Raises:
+        Undecided: On the branch cut, the negative real axis, or where the
+            enclosure meets it.
+    """
+    real, imag = _real(real), _real(imag)
+    if _on_the_cut(real, imag, zero=False):
+        raise _undecided_cut("sqrt", real, imag)
+    if isinstance(real, Interval) or isinstance(imag, Interval):
+        return _once("csqrt", (real, imag), lambda: _complex_sqrt_of(real, imag))
+    return _complex_sqrt_exact(real, imag)
+
+
+@functools.lru_cache(maxsize=4096)
+def _complex_sqrt_exact(real: Fraction, imag: Fraction) -> ComplexValue:
+    """``sqrt(real + imag i)`` at exact parts, one object per argument."""
+    return _complex_sqrt_of(real, imag)
+
+
+def _complex_sqrt_of(real: Fraction | Interval, imag: Fraction | Interval) -> ComplexValue:
+    """The principal root of a ``z`` off the cut."""
+    if _is_zero(imag):
+        return ComplexValue(sqrt_value(real), Fraction(0))
+    modulus = sqrt_value(real**2 + imag**2)
+    lo, hi = _bounds(real)
+    if lo + hi >= 0:
+        a = sqrt_value((modulus + real) / 2)
+        return ComplexValue(a, imag / (2 * a))
+    b = sqrt_value((modulus - real) / 2)
+    a = abs(imag) / (2 * b)
+    return ComplexValue(a, b if _order(">", imag, 0) else -b)
 
 
 # }}}

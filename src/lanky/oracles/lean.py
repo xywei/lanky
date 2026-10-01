@@ -56,6 +56,8 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
+import threading
 import weakref
 from importlib.util import find_spec
 from typing import Any
@@ -114,20 +116,28 @@ _ELEMENTARY_LEMMAS = (
     "Real.sqrt_eq_zero'",
 )
 
+
+def _mathlib_tactics(lemmas: tuple[str, ...]) -> tuple[str, ...]:
+    """The whole-goal attempts of Mathlib mode, with ``lemmas`` for the elementary functions."""
+    return (
+        "norm_num",
+        "positivity",
+        "ring",
+        "field_simp",
+        "linarith",
+        "nlinarith",
+        "(push_cast; ring)",
+        f"simp [{', '.join(lemmas)}]",
+        f"simp_all [{', '.join(lemmas)}] <;> linarith",
+    )
+
+
 #: The whole-goal attempts Mathlib mode adds after :data:`BASE_TACTICS`. An
 #: attempt that leaves a goal open fails as a declaration, so a tactic such as
-#: ``norm_num`` that can succeed without closing needs no ``done`` here.
-MATHLIB_TACTICS: tuple[str, ...] = (
-    "norm_num",
-    "positivity",
-    "ring",
-    "field_simp",
-    "linarith",
-    "nlinarith",
-    "(push_cast; ring)",
-    f"simp [{', '.join(_ELEMENTARY_LEMMAS)}]",
-    f"simp_all [{', '.join(_ELEMENTARY_LEMMAS)}] <;> linarith",
-)
+#: ``norm_num`` that can succeed without closing needs no ``done`` here. A
+#: statement with a variable named ``Real`` or ``Complex`` gets them with the
+#: lemmas named from the root (see :func:`lanky.lean.global_name`).
+MATHLIB_TACTICS: tuple[str, ...] = _mathlib_tactics(_ELEMENTARY_LEMMAS)
 
 #: :data:`_CLOSERS`, with Mathlib's closing tactics after the core ones.
 _MATHLIB_CLOSERS = (
@@ -135,13 +145,18 @@ _MATHLIB_CLOSERS = (
     "| (push_cast; ring) | (norm_num; done)"
 )
 
-#: Peel the last term off a sum over ``Finset.Ico a (b + 1)``, which is how a
-#: reduction's bound reads after an induction's step has rewritten it. Tried,
-#: never required: a goal with no such sum is left as it was.
-_PEEL_SUM = (
-    "try rw [← Finset.insert_Ico_right_eq_Ico_add_one (by omega), "
-    "Finset.sum_insert (by simp)]"
-)
+
+def _peel_sum(statement: LeanStatement) -> str:
+    """Peel the last term off a sum over ``Finset.Ico a (b + 1)``.
+
+    That is how a reduction's bound reads after an induction's step has
+    rewritten it. Tried, never required: a goal with no such sum is left as it
+    was. The lemmas are named as the statement names root declarations
+    (:meth:`lanky.lean.LeanStatement.qualified`).
+    """
+    insert = statement.qualified("Finset.insert_Ico_right_eq_Ico_add_one")
+    return f"try rw [← {insert} (by omega), {statement.qualified('Finset.sum_insert')} (by simp)]"
+
 
 #: How long importing Mathlib may take when a session starts, in seconds. The
 #: first import on a machine reads several gigabytes; later ones are quicker.
@@ -324,6 +339,8 @@ class LeanSession:
         self.environment: int | None = None
         #: The Mathlib revision the project pins, in a Mathlib session.
         self.mathlib_revision: str | None = None
+        #: The REPL's process group, while the reaper watches it (see :meth:`_watch`).
+        self._group: int | None = None
 
     def start(self) -> bool:
         """Open the session, remembering the reason if it cannot be opened."""
@@ -399,6 +416,8 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - every failure is a reason to report
             self.error = f"the Lean REPL did not start in the Mathlib project ({exc})"
             return False
+        # watched from the start, since the import can take minutes
+        self._watch()
         if not self._import_mathlib():
             self.close()
             return False
@@ -406,9 +425,46 @@ class LeanSession:
         return True
 
     def _opened(self) -> None:
-        """Have the server stopped on the way out of the process, and by :func:`kill_servers`."""
+        """Have the server stopped on the way out of the process, and by :func:`kill_servers`.
+
+        However the process ends: the REPL's process group is handed to this
+        process's reaper first (:meth:`_watch`), whose own handler at exit is
+        then registered before the session's, so that the session closes
+        first, at an exit that runs anything.
+        """
+        self._watch()
         atexit.register(self.close)
         _OPENED.add(self)
+
+    def _watch(self) -> None:
+        """Hand the running REPL's process group to the reaper, in place of the last one.
+
+        lean-interact starts the REPL in a session of its own, so its process
+        group is its pid, and the reaper (see :func:`_reaper`) kills that group
+        when this process ends, however it ends. A server that is not the
+        leader of a group of its own, and one in this process's group, is not
+        handed over: killing the group would kill more than the REPL.
+        """
+        process = getattr(self.server, "_proc", None)
+        pid = getattr(process, "pid", None)
+        if pid is not None and pid == self._group:
+            return
+        self._forget()
+        if pid is None:
+            return
+        try:
+            group = os.getpgid(pid)
+            own = os.getpgrp()
+        except (AttributeError, OSError):
+            return
+        if group == pid and group != own and _watch_group(group):
+            self._group = group
+
+    def _forget(self) -> None:
+        """Take this session's REPL group back from the reaper, which then leaves it alone."""
+        group, self._group = self._group, None
+        if group is not None:
+            _forget_group(group)
 
     def _import_mathlib(self) -> bool:
         """``import Mathlib`` in the running server, keeping the environment it leaves."""
@@ -421,6 +477,9 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - a failed import is a reason, not a crash
             self.error = f"importing Mathlib failed ({type(exc).__name__}: {exc})"
             return False
+        except BaseException:
+            self._interrupted()
+            raise
         message = getattr(response, "message", None)
         problems = [str(message)] if message is not None else _errors(response)
         if problems:
@@ -444,6 +503,7 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - a server that will not start is a reason
             self.error = f"the Lean REPL could not be restarted ({exc})"
             return False
+        self._watch()
         if self.mathlib is None:
             return True
         return self._import_mathlib()
@@ -454,8 +514,10 @@ class LeanSession:
         Letting the interpreter collect the server instead works, but the
         collection happens during shutdown, when the modules the server's own
         finalizer uses may already be gone; closing on purpose keeps that noise
-        out of a test run.
+        out of a test run. The reaper is told to forget the REPL first, since
+        its process group will be gone, and its number may be another's.
         """
+        self._forget()
         server, self.server = self.server, None
         if server is not None:
             try:
@@ -463,11 +525,28 @@ class LeanSession:
             except Exception:  # noqa: BLE001 - a session being closed cannot fail
                 pass
 
+    def _interrupted(self) -> None:
+        """Stop a REPL whose command was interrupted, by Ctrl-C above all, so the process can end.
+
+        lean-interact reads the REPL's answer in a thread of its own, which the
+        interpreter waits for on its way out, before anything registered to
+        run at exit, and which reads until the REPL answers. So a
+        ``KeyboardInterrupt`` raised while the REPL was busy unwound
+        ``lanky check`` and then left the process waiting until the attempt
+        finished, a minute for a tactic bounded by heartbeats and as long as
+        an unbounded one takes, with the REPL running for no one (#46). The
+        REPL is stopped where the command is interrupted, which ends that
+        read, and the next command starts another, as after a timeout.
+        """
+        self.close()
+
     def run(self, source: str) -> tuple[bool, str]:
         """Elaborate one declaration; ``(closed, first diagnostic)``.
 
         A declaration is closed when Lean reports no error and no ``sorry``:
-        the kernel accepted the proof term the tactics built.
+        the kernel accepted the proof term the tactics built. A command
+        interrupted by anything but an error, a ``KeyboardInterrupt`` above
+        all, stops the REPL (:meth:`_interrupted`) and is raised again.
         """
         from lean_interact import Command
 
@@ -483,6 +562,9 @@ class LeanSession:
             response = self.server.run(command, timeout=self.timeout)
         except Exception as exc:  # noqa: BLE001 - a timeout must not stop the ladder
             return False, f"{type(exc).__name__}: {exc}"
+        except BaseException:
+            self._interrupted()
+            raise
         message = getattr(response, "message", None)
         if message is not None:
             return False, str(message)
@@ -499,6 +581,178 @@ class LeanSession:
 _OPENED: weakref.WeakSet[LeanSession] = weakref.WeakSet()
 
 
+# {{{ the reaper
+
+#: The program the reaper runs (see :func:`_reaper`). It reads process groups
+#: from its standard input, a line each, a group to forget written with a
+#: minus, and when its input ends it kills the groups it still has. It ignores
+#: the signals a terminal or a ``kill`` of lanky's process group sends, so that
+#: it is there when the input ends, and needs nothing but the standard library.
+_REAPER_PROGRAM = """\
+import os, signal, sys
+for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"):
+    signal.signal(getattr(signal, name), signal.SIG_IGN)
+groups = set()
+for line in sys.stdin.buffer:
+    word = line.strip()
+    if word.startswith(b"-"):
+        groups.discard(int(word[1:]))
+    elif word:
+        groups.add(int(word))
+for group in groups:
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except OSError:
+        pass
+"""
+
+#: This process's reaper, the pid of the process that started it, and the
+#: groups it has been handed and not told to forget.
+_REAPER: subprocess.Popen | None = None
+_REAPER_OWNER: int | None = None
+_WATCHED: set[int] = set()
+_REAPER_LOCK = threading.Lock()
+
+
+def _reaper() -> subprocess.Popen | None:
+    """The process that kills this process's Lean REPLs when this process ends, however it ends.
+
+    lean-interact starts the REPL in a session of its own, and the timeout
+    of an attempt is kept by this process, so a process ended by a signal,
+    which runs nothing on the way out, used to leave its REPL going on with
+    the attempt it was given until the attempt finished (#46): within a
+    minute for a tactic bounded by heartbeats, much longer for one that is
+    not. That was ``lanky check`` of files with one root, or any program that
+    calls :func:`lanky.check.check_path` or the oracle, ended by ``kill``, a
+    child of ``lanky check`` sent ``SIGKILL``, and one busy in a long call that
+    keeps its ``SIGTERM`` handler from running.
+
+    The reaper is a small Python process, one per lanky process and started
+    with the first REPL, that reads a pipe from this one (see
+    :data:`_REAPER_PROGRAM`). The kernel closes the pipe when this process
+    ends, whatever ends it, ``SIGKILL`` included, and the reaper then kills
+    every REPL's process group it was handed and not told to forget. It is in
+    a session of its own, so a signal sent to this process's group does not
+    end it first. A process forked from this one lets go of this one's
+    reaper (see :func:`_after_fork`), starts a reaper of its own for the
+    REPLs it starts, and hands it none of this one's. ``None`` off
+    POSIX, where there are no process groups to kill, and where the reaper
+    cannot be started; the sessions then work as they did.
+    """
+    global _REAPER, _REAPER_OWNER
+    if os.name != "posix":  # pragma: no cover - Windows has no process groups
+        return None
+    pid = os.getpid()
+    if _REAPER_OWNER != pid:
+        # a fork of the process that started the reaper: its groups are not ours
+        _REAPER, _REAPER_OWNER = None, pid
+        _WATCHED.clear()
+    if _REAPER is not None and _REAPER.poll() is None:
+        return _REAPER
+    if not sys.executable:  # pragma: no cover - an embedded interpreter
+        return None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-c", _REAPER_PROGRAM],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:  # pragma: no cover - no interpreter to start
+        return None
+    _REAPER = process
+    atexit.register(_release_reaper, process)
+    # a reaper started again after the last one ended is handed what that one had
+    if _WATCHED and not _tell(process, "".join(f"{group}\n" for group in _WATCHED)):
+        return None
+    return process
+
+
+def _tell(process: subprocess.Popen, text: str) -> bool:
+    """Write to the reaper; whether it took it."""
+    try:
+        assert process.stdin is not None
+        process.stdin.write(text.encode("ascii"))
+        process.stdin.flush()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _watch_group(group: int) -> bool:
+    """Hand a REPL's process group to the reaper; whether it is watched."""
+    with _REAPER_LOCK:
+        process = _reaper()
+        if process is None or not _tell(process, f"{group}\n"):
+            return False
+        _WATCHED.add(group)
+        return True
+
+
+def _forget_group(group: int) -> None:
+    """Tell the reaper to leave a process group alone: it is being stopped another way."""
+    with _REAPER_LOCK:
+        if group not in _WATCHED or _REAPER_OWNER != os.getpid():
+            return
+        _WATCHED.discard(group)
+        if _REAPER is not None:
+            _tell(_REAPER, f"-{group}\n")
+
+
+def _after_fork() -> None:
+    """In a forked process: let go of the parent's reaper, which the fork would keep waiting.
+
+    A fork inherits the write end of the pipe the reaper reads, and the
+    reaper sees the pipe close only when every process that holds it has
+    ended, so with the fork still running, a parent ended by ``SIGKILL`` left
+    its REPLs running until the fork ended too. The fork's copy of the pipe
+    is pointed at ``/dev/null`` (closing the file object could wait on a lock
+    a thread of the parent held at the fork, and closing its descriptor
+    alone would leave the object to close whatever takes the number next),
+    and the fork starts a reaper of its own for the REPLs it starts (see
+    :func:`_reaper`). Its lock is a new one, for the same reason.
+    """
+    global _REAPER_LOCK
+    _REAPER_LOCK = threading.Lock()
+    process = _REAPER
+    if process is None or process.stdin is None:
+        return
+    try:
+        descriptor = process.stdin.fileno()
+        null = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(null, descriptor, inheritable=False)
+        finally:
+            os.close(null)
+    except (OSError, ValueError):  # pragma: no cover - a pipe already closed
+        pass
+
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX
+    os.register_at_fork(after_in_child=_after_fork)
+
+
+def _release_reaper(process: subprocess.Popen) -> None:
+    """At an exit that runs anything: close the reaper's input, and wait for it to end.
+
+    The sessions have closed by then and taken their groups back (see
+    :meth:`LeanSession._opened`), so it ends without killing anything; a
+    session still open has its REPL killed, as the session would have.
+    """
+    if _REAPER_OWNER != os.getpid():
+        return
+    try:
+        if process.stdin is not None:
+            process.stdin.close()
+        process.wait(timeout=5)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+
+# }}}
+
+
 def kill_servers() -> None:
     """Kill the Lean process of every session in this process, and everything it started.
 
@@ -509,7 +763,11 @@ def kill_servers() -> None:
     long that runs, since the timeout is kept by the process that is gone, and
     ends only when it next reads its input and finds it closed. A process
     about to end of a signal calls this first: a child of ``lanky check``
-    does, on ``SIGTERM`` (see :func:`lanky.cli._terminated`).
+    does, on ``SIGTERM`` (see :func:`lanky.cli._terminated`). A process that
+    ends of a signal it does not handle, ``SIGKILL`` above all, runs nothing,
+    and its REPLs are killed by its reaper instead (see :func:`_reaper`),
+    once the kernel has closed the pipe the reaper reads; this is the
+    quicker way for one that can run something.
 
     So this is written for a signal handler: it sends ``SIGKILL`` to the
     REPL's process group and returns, waiting for nothing and taking no lock,
@@ -562,9 +820,15 @@ def _fresh(stem: str, used: set[str]) -> str:
     return name
 
 
+#: The names ``intro`` and an ``rcases`` pattern read as a pattern rather than
+#: as a name: ``rfl`` substitutes the equation it is given, and ``_`` (which the
+#: printer writes ``«_»``, the same name) introduces nothing a script can name.
+_PATTERN_NAMES = frozenset({"rfl", "_"})
+
+
 def _goal_intro(
     statement: LeanStatement,
-) -> tuple[list[str], list[Var], list[Any], dict[str, str]]:
+) -> tuple[list[str], list[Var], list[Any], dict[str, str], dict[str, str]]:
     """What ``intro`` must name to strip the goal's own quantifier.
 
     The printer emits one binder at a time with its guards right after it
@@ -576,7 +840,13 @@ def _goal_intro(
     it one, which is what an induction on it has to start from. The names are
     Lean source, so a variable named like a keyword is quoted, as the printer
     quotes it (:func:`lanky.lean.lean_identifier`); the fourth value is keyed
-    by the lanky name.
+    by the lanky name, and so is the fifth, the name each variable is
+    introduced as.
+
+    That is its own name, unless it is one that ``intro`` and ``rcases`` read
+    as a pattern (:data:`_PATTERN_NAMES`): ``intro rfl`` substitutes, and fails
+    on a variable, so a variable named ``rfl`` is introduced under a fresh
+    name, ``x``, and a strategy names it so.
 
     The guards are rendered to be counted, and rendering a bound such as
     ``Fin[2 ** n]`` needs to know that ``n`` is a natural, so each binder's
@@ -585,7 +855,7 @@ def _goal_intro(
     """
     goal = statement.goal_term
     if not isinstance(goal, Forall):
-        return [], [], [], {}
+        return [], [], [], {}, {}
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     # every binder's name is taken before a guard is named, so that a guard of
     # an earlier binder is never named like a later one, which would shadow it
@@ -593,10 +863,15 @@ def _goal_intro(
     names: list[str] = []
     variables: list[Var] = []
     naturals: dict[str, str] = {}
+    introduced: dict[str, str] = {}
     guards = list(conjuncts(goal.guard))
     scope = dict(statement.types)
     for position, (var, domain) in enumerate(goal.binders):
-        names.append(lean_identifier(var.name))
+        if var.name in _PATTERN_NAMES:
+            introduced[var.name] = _fresh("x", used)
+        else:
+            introduced[var.name] = lean_identifier(var.name)
+        names.append(introduced[var.name])
         variables.append(var)
         conditions = domain_guards(var, domain, scope)
         scope = {**scope, var.name: domain}
@@ -607,7 +882,7 @@ def _goal_intro(
         if position == len(goal.binders) - 1:
             for _ in guards:
                 names.append(_fresh("hg", used))
-    return names, variables, guards, naturals
+    return names, variables, guards, naturals, introduced
 
 
 def _induction_target(variables: list[Var], guards: list[Any]) -> tuple[Var | None, str | None]:
@@ -665,17 +940,22 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     where it would otherwise see two. In the base case the variable split
     against lies between ``0`` and ``↑0``, and is substituted away. A variable
     that is not a natural has nothing to trade, and is not induced on.
+
+    A variable is named as it was introduced (see :func:`_goal_intro`), and a
+    root declaration as the statement names it, ``_root_.Int`` where a
+    variable is named ``Int`` (:meth:`lanky.lean.LeanStatement.qualified`).
     """
     with dialect(statement.mathlib):
-        names, variables, guards, naturals = _goal_intro(statement)
+        names, variables, guards, naturals, introduced = _goal_intro(statement)
     target, companion = _induction_target(variables, guards)
     if target is None or target.name not in naturals:
         return []
-    induced = lean_identifier(target.name)
+    induced = introduced[target.name]
     if companion is not None:
-        companion = lean_identifier(companion)
+        companion = introduced[companion]
     closers = _closers(statement)
-    peel = [f"  {_PEEL_SUM}"] if _has_reduction(statement) else []
+    peel = [f"  {_peel_sum(statement)}"] if _has_reduction(statement) else []
+    integer, natural = statement.qualified("Int"), statement.qualified("Nat")
     used = set(names) | {name for name, _ in statement.binders}
     used |= {name for name, _ in statement.hypotheses}
     step = _fresh("k", used)
@@ -701,18 +981,20 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     if companion is not None:
         pinned = _fresh("hzero", used)
         zero = (
-            f"first | omega | (have {pinned} : {companion} = ((0 : Nat) : Int) := "
-            f"(by omega); subst {pinned}; {closers}) | (simp_all; done) "
+            f"first | omega | (have {pinned} : {companion} = ((0 : {natural}) : {integer}) "
+            f":= (by omega); subst {pinned}; {closers}) | (simp_all; done) "
             "| (simp_all <;> omega)"
         )
     head = [f"intro {' '.join(names)}"] if names else []
     head += [
-        f"obtain ⟨{induced}, rfl⟩ := Int.eq_ofNat_of_zero_le {naturals[target.name]}",
+        f"obtain ⟨{induced}, rfl⟩ := {statement.qualified('Int.eq_ofNat_of_zero_le')} "
+        f"{naturals[target.name]}",
         f"induction {induced} with",
         "| zero =>",
         f"  {zero}",
         f"| succ {step} {hypothesis} =>",
-        f"  have {cast} : (({step} + 1 : Nat) : Int) = ({step} : Int) + 1 := (by omega)",
+        f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = ({step} : {integer}) + 1 "
+        ":= (by omega)",
         f"  try simp only [{cast}] at *",
     ]
 
@@ -725,8 +1007,8 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
                 [
                     *head,
                     *instantiations,
-                    f"  by_cases {less} : ({step} : Int) < {companion}",
-                    f"  · have {equality} : {companion} = ({step} : Int) + 1 := (by omega)",
+                    f"  by_cases {less} : ({step} : {integer}) < {companion}",
+                    f"  · have {equality} : {companion} = ({step} : {integer}) + 1 := (by omega)",
                     f"    subst {equality}",
                     f"    {closers}",
                     f"  · {apply_ih}",
@@ -774,12 +1056,15 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
     what it recurs on is ``n``, a parameter of the theorem. The parameter is
     traded for the natural it is (as in :func:`induction_scripts`), the step
     rewrites ``↑(k + 1)`` to ``↑k + 1``, so that the bound reads
-    ``Finset.Ico 0 (↑k + 1 + 1)``, and :data:`_PEEL_SUM` takes the last term
+    ``Finset.Ico 0 (↑k + 1 + 1)``, and :func:`_peel_sum` takes the last term
     off the sum. What is left is the induction hypothesis plus a polynomial
     identity or inequality, which the closers take. The base case peels the
     one term of ``Finset.Ico 0 (↑0 + 1)`` the same way.
 
     A goal that is itself quantified is left to :func:`induction_scripts`.
+    The natural the parameter is traded for takes its name, unless the name is
+    one an ``rcases`` pattern reads as a pattern (``rfl``, see
+    :data:`_PATTERN_NAMES`), and then a fresh one.
     """
     if not statement.mathlib or isinstance(statement.goal_term, Forall):
         return []
@@ -792,6 +1077,8 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
                 bounds |= free_variables(domain.bound)
     used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     closers = _closers(statement)
+    peel = _peel_sum(statement)
+    integer, natural = statement.qualified("Int"), statement.qualified("Nat")
     scripts = []
     # a statement built by hand may leave out the lanky names, which are then
     # the printed ones
@@ -815,6 +1102,7 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
         if not own:
             continue
         later = sum(1 for at in anchors if at > position)
+        traded = _fresh("x", used) if name in _PATTERN_NAMES else printed
         step = _fresh("k", used)
         hypothesis = _fresh("ih", used)
         cast = _fresh("hcast", used)
@@ -826,17 +1114,18 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
         scripts.append(
             "\n".join(
                 [
-                    f"obtain ⟨{printed}, rfl⟩ := Int.eq_ofNat_of_zero_le {own[0]}",
-                    f"induction {printed} with",
+                    f"obtain ⟨{traded}, rfl⟩ := "
+                    f"{statement.qualified('Int.eq_ofNat_of_zero_le')} {own[0]}",
+                    f"induction {traded} with",
                     "| zero =>",
-                    f"  {_PEEL_SUM}",
+                    f"  {peel}",
                     f"  {closers}",
                     f"| succ {step} {hypothesis} =>",
-                    f"  have {cast} : (({step} + 1 : Nat) : Int) = ({step} : Int) + 1 "
-                    ":= (by omega)",
+                    f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = "
+                    f"({step} : {integer}) + 1 := (by omega)",
                     f"  try simp only [{cast}] at *",
                     f"  first | {apply_ih} | skip",
-                    f"  {_PEEL_SUM}",
+                    f"  {peel}",
                     f"  {closers}",
                 ]
             )
@@ -852,10 +1141,10 @@ def tactic_ladder(statement: LeanStatement) -> list[str]:
     :data:`MATHLIB_TACTICS` on the whole goal, and :func:`reduction_scripts`.
     """
     with dialect(statement.mathlib):
-        names, _, _, _ = _goal_intro(statement)
+        names, _, _, _, _ = _goal_intro(statement)
     ladder = list(BASE_TACTICS)
     if statement.mathlib:
-        ladder += MATHLIB_TACTICS
+        ladder += _mathlib_tactics(tuple(map(statement.qualified, _ELEMENTARY_LEMMAS)))
     if names:
         introduction = f"intro {' '.join(names)}"
         ladder += [
@@ -988,16 +1277,27 @@ class LeanOracle:
         return self.session.mathlib is not None
 
     def establish(self, fact: Fact, /) -> Fact | None:
-        """Try the ladder; ``PROVED`` on success, the fact unchanged otherwise."""
+        """Try the ladder; ``PROVED`` on success, the fact unchanged otherwise.
+
+        A statement the printer declines, or a Lean that cannot be driven, is
+        returned with the reason as ``lean_declined`` and as the standard
+        ``declined`` (see :func:`lanky.cli.decline_lines`). :meth:`can_establish`
+        asks the printer first, so a check reaches this only when the two are
+        called apart.
+        """
         session = self.session
         mathlib = session.mathlib is not None
         try:
             statement = statement_of(fact.term, fact.owner or fact.id, mathlib=mathlib)
         except UnsupportedTerm as exc:
-            return fact.with_status(fact.status, lean_declined=str(exc))
+            return fact.with_status(
+                fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
+            )
         available, reason = self.availability()
         if not available:
-            return fact.with_status(fact.status, lean_declined=reason)
+            return fact.with_status(
+                fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+            )
         override = self.tactics.get(fact.id)
         ladder = [override] if override is not None else tactic_ladder(statement)
         last = ""

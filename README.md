@@ -97,13 +97,16 @@ lanky's `main`.
   with its counterexample, its witness and its reason, the three standard
   provenance keys, read the same way whichever oracle or plugin refuted it; or
   with `no witness recorded` when it carries none of them. Each axiom is named
-  under the table in a `CITED` line with its citation. Two claims with one
-  fact id, which a factory gives the claims it makes since an id names a
-  definition, fail the check: the first is checked and the others are named
-  in a `DUPLICATE` block, unchecked, rather than one silently replacing
-  another. Files from different source roots are checked in a process per
-  root, so two directories that each hold a `helpers.py` are each checked
-  against their own.
+  under the table in a `CITED` line with its citation, and a fact left
+  `assumed` that an oracle looked at and declined, saying why, in a
+  `DECLINED` line with the reason it gave as `declined`, a standard provenance
+  key too; neither changes the exit code. Two claims with one fact id, which
+  a factory gives the claims it makes since an id names a definition, fail
+  the check: the first is checked and the others are named in a `DUPLICATE`
+  block, unchecked, rather than one silently replacing another. Files from
+  different source roots are checked in a process per root, so two
+  directories that each hold a `helpers.py` are each checked against their
+  own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
@@ -187,9 +190,17 @@ lanky's `main`.
   strategy read off the term. No Mathlib is fetched or needed. CI runs the
   suite against Lean v4.29.1 as well as without Lean. A name Python accepts
   and Lean reserves, a variable `fun` or a theorem `scoped`, is printed
-  quoted (`«fun»`), and an attempt that runs past `LANKY_LEAN_TIMEOUT` costs
-  that attempt alone: the REPL the driver killed is started again for the
-  next.
+  quoted (`«fun»`). A theorem is declared as `Lanky.<name>`, so a claim
+  named like a core declaration (`and_comm`, `id`, `trivial`) is not refused
+  as already declared; a variable named like a root name the printer writes
+  (`Int`, `Nat`, `Bool`, `Finset`) has those printed `_root_.Int` in its
+  statement; and a variable named `rfl` or `_`, which `intro` and `rcases`
+  read as patterns, is introduced under a fresh name. An attempt that runs
+  past `LANKY_LEAN_TIMEOUT` costs that attempt alone: the REPL the driver
+  killed is started again for the next. And a REPL ends with the process
+  that started it, however that process ends, a `SIGKILL` included: a small
+  reaper process per lanky process kills it when the pipe from lanky
+  closes, and Ctrl-C during an attempt stops it at once.
 - Mathlib mode, opt-in: `LANKY_LEAN_MATHLIB` names a Lake project with
   Mathlib fetched, and `python -m lanky.mathlib DIR` sets one up from the
   project lanky ships, pinned to Mathlib v4.29.1 and every dependency at a
@@ -247,12 +258,14 @@ lanky's `main`.
   enclosures overlap, such as `exp(x) * exp(-x) <= 1` at any `x` but `0`
   (#33). Its pass rests on the draws at `x = 0` alone, and says so: the row
   reads `tested`, and a `WARNING` under the table says that the pass rests on
-  thin evidence. A complex `log` or `sqrt`, an `exp` of an argument past
-  `2**14`, and a negative number to a power that is not an integer are not
-  enclosed, and leave the draw undecided. Where Lean is total and Python
-  raises (a division by zero, the logarithm of zero, the square root of a
-  negative number), the fact carries a note in Mathlib mode, as an integer
-  division by zero does in either mode.
+  thin evidence. A complex `log` and `sqrt` are Python's principal branches,
+  enclosed off their branch cut, the non-positive real axis, where Python
+  picks a side by the sign of a zero, which an exact number does not have
+  (#51). On the cut, an `exp` of an argument past `2**14`, and a negative
+  number to a power that is not an integer, the draw is left undecided.
+  Where Lean is total and Python raises (a division by zero, the logarithm of
+  zero, the square root of a negative number), the fact carries a note in
+  Mathlib mode, as an integer division by zero does in either mode.
 - A family prints as a total function, so every application of one has to be
   shown in bounds before the statement can go to Lean. The check is affine
   arithmetic over the enclosing binders, not a solver, so an argument it cannot
@@ -415,7 +428,9 @@ test). Each oracle answers
 `can_establish(fact)`; `check_path` offers each fact to the strongest one that
 says yes and stops at the first answer. A fact nobody establishes is `ASSUMED`,
 which is not a failure. An oracle that cannot answer declines, so a timeout is
-never read as a counterexample.
+never read as a counterexample. One that took a fact and found it outside what
+it decides returns it unchanged with the reason as `declined`, and `lanky
+check` prints that under the table for a fact that stays `ASSUMED`.
 
 Decorators are inert and registering: `@theorem` returns a callable object that
 runs natively and puts itself in the registry. `lanky check FILE` imports the

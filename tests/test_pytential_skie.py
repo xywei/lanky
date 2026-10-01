@@ -10,7 +10,6 @@ dependency.
 from __future__ import annotations
 
 import importlib
-import importlib.metadata
 import re
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from pathlib import Path
 import pymbolic.primitives as prim
 import pytest
 
+from conftest import plugin_arguments
 from lanky import cli
 from lanky.check import check_path, import_path
 from lanky.ledger import Status
@@ -554,6 +554,59 @@ def test_claiming_the_second_kind_of_a_compact_operator_is_refuted(tmp_path) -> 
     )
 
 
+DEPENDS_ON_ETA = HEADER + '''
+from lanky import Var
+
+eta = Var("eta")
+
+
+@axiom(cite="Kress")
+def jump_D(gamma: C2Boundary, s: Side) -> trace(D, s) == D + s / 2 * I:
+    """The double-layer jump."""
+
+
+@axiom(cite="Kress")
+def compact_D(gamma: C2Boundary) -> compact(D):
+    """D is compact."""
+
+
+rules = RuleSet(jump_D, compact_D)
+
+
+@rules.second_kind
+def depends_on_eta():
+    """Second kind only when eta is not 0."""
+    return trace(eta * D, INTERIOR), -eta / 2 * I + eta * D
+'''
+
+
+def test_a_verdict_the_rules_decline_says_why_under_the_table(tmp_path, capsys) -> None:
+    """#37: the declined verdict read ``assumed``, as a claim no oracle knows does.
+
+    The rewrite is decided; the verdict is outside the fragment, since its
+    identity coefficient depends on ``eta``, and the reason the rules gave was
+    in the JSON alone. ``lanky check`` prints it under the table, and still
+    exits 0: an assumed fact is not a failure.
+    """
+    path = write(tmp_path, DEPENDS_ON_ETA)
+    ledger = check_path(path)
+    rewrite, verdict = (fact for fact in ledger if fact.owner == "depends_on_eta")
+    assert (rewrite.status, rewrite.decided_by) == (Status.DECIDED, "layer-rules")
+    assert verdict.status is Status.ASSUMED
+    reason = (
+        "layer-rules: the identity coefficient -1/2*eta mentions eta, so the verdict "
+        "depends on its value"
+    )
+    assert verdict.provenance["declined"] == reason
+    assert cli.main(["check", str(path)]) == 0
+    out = capsys.readouterr().out
+    block = re.search(r"^DECLINED depends_on_eta at claims\.py:\d+: (.*)\n(.*)\n", out, re.M)
+    assert block is not None, out
+    assert block.group(1) == verdict.statement
+    assert block.group(2) == f"  {reason}"
+    assert out.count("DECLINED ") == 1
+
+
 # }}}
 
 
@@ -583,10 +636,8 @@ def test_pytential_and_sympy_are_never_lanky_dependencies() -> None:
 
 def test_pytest_collects_the_axioms_and_skips_them(pytester) -> None:
     """They quantify over boundaries, which the property tester cannot draw."""
-    plugins = {entry.name for entry in importlib.metadata.entry_points(group="pytest11")}
-    arguments = [] if "lanky" in plugins else ["-p", "lanky.pytest_plugin"]
     with registry.collecting():
-        result = pytester.runpytest(str(DEMO), *arguments)
+        result = pytester.runpytest(str(DEMO), *plugin_arguments())
     result.assert_outcomes(skipped=8)
 
 

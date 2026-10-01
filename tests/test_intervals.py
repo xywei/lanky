@@ -9,6 +9,7 @@ and ``sin 1`` and against each other.
 
 from __future__ import annotations
 
+import cmath
 import decimal
 import math
 import random
@@ -16,23 +17,25 @@ from fractions import Fraction
 
 import pytest
 
-from lanky import exp, log, sqrt
+from lanky import exp, log, sqrt, theorem
 from lanky.intervals import (
     AGREEMENT,
     EXP_LIMIT,
     ComplexValue,
     Interval,
     agree,
+    atan2_value,
     compare,
     elementary,
     exact,
     exp_value,
     log_value,
+    pi_value,
     power,
     quotient,
     sqrt_value,
 )
-from lanky.prelude import Fin, Fn, Nat, Real
+from lanky.prelude import Complex, Fin, Fn, Nat, Real
 from lanky.terms import Forall, Undecided, UndefinedValue, Var, evaluate, exact_reading
 from lanky.testing import check
 
@@ -185,11 +188,156 @@ def test_complex_numbers_are_exact_and_have_no_order() -> None:
         a / ComplexValue(Fraction(0), Fraction(0))
     with pytest.raises(TypeError, match="no order"):
         compare("<", a, b)
-    with pytest.raises(Undecided, match="complex log"):
-        elementary("log", a)
-    with pytest.raises(Undecided, match="complex sqrt"):
-        elementary("sqrt", a)
     assert repr(a) == "ComplexValue(1/2, -3/4)"
+
+
+def _middle(value: object) -> float:
+    """The midpoint of an enclosure, or a rational, as a float."""
+    if isinstance(value, Interval):
+        return float((value.lo + value.hi) / 2)
+    return float(value)
+
+
+def test_pi_and_the_arctangent_are_enclosed_narrowly() -> None:
+    """#51: the argument of a complex number needs ``atan2``, and ``atan2`` needs ``π``."""
+    pi = pi_value()
+    digits = Fraction("3.14159265358979323846264338327950288419716939937510582097494459")
+    assert pi.lo < digits < pi.hi
+    assert _width(pi) <= Fraction(1, 2**124)
+    assert pi_value() is pi
+    # every quadrant, both axes, and arguments far from one in size
+    for y, x_ in [
+        (1, 1), (1, 0), (-1, 0), (1, -1), (-1, -1), (0, 5), (3, -4), (-3, 4),
+        (10**30, 1), (1, 10**30), (-1, -(10**30)), (Fraction(1, 3), Fraction(-7, 2)),
+    ]:
+        value = atan2_value(Fraction(y), Fraction(x_))
+        assert _middle(value) == pytest.approx(math.atan2(y, x_), abs=1e-15), (y, x_)
+        if isinstance(value, Interval):
+            assert _width(value) <= Fraction(1, 2**120), (y, x_)
+    # just off the positive real axis the argument is about y / x, and it is
+    # enclosed as closely relative to its size as any other: with a fixed unit
+    # its sign was undecided once it was below that unit
+    for y, x_ in [(Fraction(1, 2**300), 1), (Fraction(-3, 10**60), 7), (1, 10**30)]:
+        value = atan2_value(Fraction(y), Fraction(x_))
+        ratio = Fraction(y) / x_
+        assert value.lo < ratio < value.hi, (y, x_)
+        assert _width(value) <= abs(ratio) / 2**120, (y, x_)
+        assert compare("<" if y < 0 else ">", value, 0) is True
+    tilted = elementary("log", ComplexValue(Fraction(1), Fraction(1, 2**300)))
+    assert compare(">", tilted.imag, 0) is True
+    assert atan2_value(Fraction(0), Fraction(5)) == 0
+    assert agree(atan2_value(Fraction(1), Fraction(1)), pi / 4)
+    assert agree(atan2_value(Fraction(-1), Fraction(0)), -pi / 2)
+    # the negative real axis is where the sign of a zero picks pi or -pi
+    for y, x_ in [(0, -1), (0, 0)]:
+        with pytest.raises(Undecided, match="non-positive real axis"):
+            atan2_value(Fraction(y), Fraction(x_))
+
+
+#: Complex numbers off the branch cut, in every quadrant and on both axes.
+_OFF_THE_CUT = [
+    (Fraction(1, 2), Fraction(-3, 4)),
+    (Fraction(-3), Fraction(4)),
+    (Fraction(-3), Fraction(-4)),
+    (Fraction(0), Fraction(2)),
+    (Fraction(0), Fraction(-1, 9)),
+    (Fraction(5), Fraction(0)),
+    (Fraction(-1, 3), Fraction(1, 7)),
+    (Fraction(-10**6), Fraction(1, 10**6)),
+    (Fraction(7, 3), Fraction(10**9)),
+]
+
+
+@pytest.mark.parametrize("parts", _OFF_THE_CUT, ids=str)
+def test_the_complex_log_and_sqrt_are_pythons_principal_branches(parts) -> None:
+    """#51: a complex ``log`` or ``sqrt`` left every draw undecided; ``cmath`` agrees now."""
+    value = ComplexValue(*parts)
+    number = complex(float(parts[0]), float(parts[1]))
+    for function in ("log", "sqrt"):
+        result = elementary(function, value)
+        expected = getattr(cmath, function)(number)
+        assert _middle(result.real) == pytest.approx(expected.real, rel=1e-14, abs=1e-14)
+        assert _middle(result.imag) == pytest.approx(expected.imag, rel=1e-14, abs=1e-14)
+        # one argument, one value
+        assert elementary(function, ComplexValue(*parts)) is result
+    # exp undoes log, and the root squares back, to within the enclosures
+    assert agree(elementary("exp", elementary("log", value)), value)
+    assert agree(elementary("sqrt", value) ** 2, value)
+
+
+def test_a_complex_root_is_exact_where_it_is_rational() -> None:
+    for (re, im), (root_re, root_im) in [
+        ((-3, 4), (1, 2)),
+        ((3, 4), (2, 1)),
+        ((-3, -4), (1, -2)),
+        ((0, 2), (1, 1)),
+        ((Fraction(9, 4), 0), (Fraction(3, 2), 0)),
+        ((0, 0), (0, 0)),
+    ]:
+        root = elementary("sqrt", ComplexValue(Fraction(re), Fraction(im)))
+        assert (type(root.real), type(root.imag)) == (Fraction, Fraction)
+        assert (root.real, root.imag) == (root_re, root_im)
+    assert elementary("log", ComplexValue(Fraction(1), Fraction(0))).real == 0
+    real_log = elementary("log", ComplexValue(Fraction(2), Fraction(0)))
+    assert real_log.real is log_value(Fraction(2)) and real_log.imag == 0
+
+
+def test_on_the_branch_cut_the_complex_log_and_sqrt_decide_nothing() -> None:
+    """``cmath`` picks a side of the cut by the sign of a zero, which a fraction does not have.
+
+    ``cmath.log(complex(-1, 0.0))`` is ``πi`` and ``cmath.log(complex(-1,
+    -0.0))`` is ``-πi``, so an argument on the cut, or an enclosure meeting
+    it, is undecided. The logarithm of zero has no value in Python.
+    """
+    assert cmath.log(complex(-1, 0.0)).imag == -cmath.log(complex(-1, -0.0)).imag == math.pi
+    on_the_cut = ComplexValue(Fraction(-1), Fraction(0))
+    for function in ("log", "sqrt"):
+        with pytest.raises(Undecided, match="branch cut"):
+            elementary(function, on_the_cut)
+    tiny = Interval(Fraction(-1, 10**40), Fraction(1, 10**40))
+    near = ComplexValue(-exp_value(Fraction(1, 3)), tiny)
+    for function in ("log", "sqrt"):
+        with pytest.raises(Undecided, match="branch cut"):
+            elementary(function, near)
+    with pytest.raises(UndefinedValue, match="has no value in Python"):
+        elementary("log", ComplexValue(Fraction(0), Fraction(0)))
+    # an enclosure that meets only zero is not on the cut of the square root
+    touching = ComplexValue(Fraction(0), tiny)
+    with pytest.raises(Undecided, match="contains zero"):
+        elementary("sqrt", touching)
+
+
+def _log_of_exp():
+    @theorem
+    def log_of_exp(z: Complex & (abs(z) < 1)) -> exp(log(z + 2)) == z + 2:
+        """True: ``z + 2`` is off the logarithm's cut."""
+
+    return log_of_exp
+
+
+def _root_of_square():
+    @theorem
+    def root_of_square(z: Complex & (abs(z) < 1)) -> sqrt(z * z) == z:
+        """False where the real part of ``z`` is negative: the principal root's is not."""
+
+    return root_of_square
+
+
+def test_the_tester_decides_a_complex_log_and_sqrt() -> None:
+    """#51's claim was ``assumed``, with every draw undecided; it is ``tested`` now.
+
+    And a false claim about the principal root is refuted at a draw the
+    enclosures exclude, as definitely as an exact one.
+    """
+    from lanky.ledger import Status
+    from lanky.oracles.test import TestOracle
+
+    tested = TestOracle().establish(_log_of_exp().fact())
+    assert tested.status is Status.TESTED, tested.provenance
+    assert tested.provenance["valid"] > 100
+    refuted = TestOracle().establish(_root_of_square().fact())
+    assert refuted.status is Status.REFUTED, refuted.provenance
+    assert refuted.provenance["counterexample"]["z"].real < 0
 
 
 def test_what_python_leaves_undefined_raises_as_python_does() -> None:
