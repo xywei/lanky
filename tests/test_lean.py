@@ -1479,6 +1479,123 @@ def _gone(pid: int) -> bool:
     return ProcessWatch(pid).gone()
 
 
+#: A program that hands a stand-in REPL to the reaper as a session does, says
+#: which processes to watch, and then sleeps, or closes the session and ends.
+_HANDED_OVER = """\
+import subprocess, sys, time
+from types import SimpleNamespace
+import lanky.oracles.lean as lean
+repl = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                        start_new_session=True, stdout=subprocess.DEVNULL)
+session = lean.LeanSession()
+session.server = SimpleNamespace(_proc=repl, kill=lambda: None)
+session._opened()
+print(repl.pid, lean._REAPER.pid, flush=True)
+if sys.argv[1] == "sleep":
+    time.sleep(120)
+session.close()
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX process groups")
+def test_a_repl_ends_with_the_process_however_it_ends() -> None:
+    """#46: a REPL outlived a lanky process ended by a signal, going on with its attempt.
+
+    lean-interact starts the REPL in a session of its own, which no signal
+    sent to lanky's process or its group reaches, and the process ended of a
+    ``SIGKILL`` ran nothing on the way out. A reaper, which reads a pipe from
+    the process and kills the REPL's group when the pipe closes, ends it now,
+    whatever ended the process. The stand-in here is a REPL busy with an
+    attempt: it does not read its input.
+    """
+    import signal
+    import subprocess
+    import sys
+
+    program = subprocess.Popen(
+        [sys.executable, "-c", _HANDED_OVER, "sleep"], stdout=subprocess.PIPE
+    )
+    repl = reaper = None
+    try:
+        repl_pid, reaper_pid = map(int, program.stdout.readline().split())
+        repl, reaper = ProcessWatch(repl_pid), ProcessWatch(reaper_pid)
+        program.send_signal(signal.SIGKILL)
+        assert program.wait(timeout=60) == -signal.SIGKILL
+        assert repl.wait(60), "the REPL outlived the process"
+        assert reaper.wait(60), "the reaper outlived the process"
+    finally:
+        program.kill()
+        program.wait()
+        for watched in (repl, reaper):
+            if watched is not None:
+                watched.kill()
+
+
+#: A program that opens a Lean session, gives it an attempt that sleeps for
+#: five minutes, and says which processes the REPL is.
+_BUSY_REPL = """\
+import threading, time
+import psutil
+from lanky.oracles.lean import LeanSession
+session = LeanSession(timeout=900)
+assert session.start(), session.error
+attempt = "theorem t : True := by\\n  sleep 300000\\n  trivial\\n"
+threading.Thread(target=session.run, args=(attempt,), daemon=True).start()
+time.sleep(3)
+lake = psutil.Process(session.server._proc.pid)
+print(*[process.pid for process in [lake, *lake.children(recursive=True)]], flush=True)
+time.sleep(900)
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX process groups")
+def test_a_busy_repl_ends_with_a_process_ended_by_sigkill(lean_oracle: LeanOracle) -> None:
+    """#46 with a real Lean: the REPL went on with its five-minute attempt for no one."""
+    import signal
+    import subprocess
+    import sys
+
+    program = subprocess.Popen([sys.executable, "-c", _BUSY_REPL], stdout=subprocess.PIPE)
+    watched: list[ProcessWatch] = []
+    try:
+        watched = [ProcessWatch(int(pid)) for pid in program.stdout.readline().split()]
+        assert len(watched) >= 2, "the REPL is lake and the process lake runs"
+        program.send_signal(signal.SIGKILL)
+        assert program.wait(timeout=60) == -signal.SIGKILL
+        for process in watched:
+            assert process.wait(60), "the REPL outlived the process"
+    finally:
+        program.kill()
+        program.wait()
+        for process in watched:
+            process.kill()
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX process groups")
+def test_the_reaper_leaves_alone_a_repl_its_session_closed() -> None:
+    """A session that closes takes its REPL back, and the reaper ends without killing it.
+
+    Its process group is being stopped another way, and once it is gone its
+    number may be another process's. The stand-in here survives its session's
+    close, so that what the reaper did shows.
+    """
+    import subprocess
+    import sys
+
+    program = subprocess.run(
+        [sys.executable, "-c", _HANDED_OVER, "close"],
+        stdout=subprocess.PIPE,
+        timeout=120,
+        check=True,
+    )
+    repl_pid, reaper_pid = map(int, program.stdout.split())
+    repl, reaper = ProcessWatch(repl_pid), ProcessWatch(reaper_pid)
+    try:
+        assert reaper.wait(60), "the reaper outlived the process"
+        assert not repl.gone(), "the reaper killed a REPL its session had taken back"
+    finally:
+        repl.kill()
+
 
 def test_an_unavailable_oracle_is_named_in_the_check_report(monkeypatch) -> None:
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")

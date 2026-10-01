@@ -56,6 +56,8 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
+import threading
 import weakref
 from importlib.util import find_spec
 from typing import Any
@@ -338,6 +340,8 @@ class LeanSession:
         self.environment: int | None = None
         #: The Mathlib revision the project pins, in a Mathlib session.
         self.mathlib_revision: str | None = None
+        #: The REPL's process group, while the reaper watches it (see :meth:`_watch`).
+        self._group: int | None = None
 
     def start(self) -> bool:
         """Open the session, remembering the reason if it cannot be opened."""
@@ -413,6 +417,8 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - every failure is a reason to report
             self.error = f"the Lean REPL did not start in the Mathlib project ({exc})"
             return False
+        # watched from the start, since the import can take minutes
+        self._watch()
         if not self._import_mathlib():
             self.close()
             return False
@@ -420,9 +426,46 @@ class LeanSession:
         return True
 
     def _opened(self) -> None:
-        """Have the server stopped on the way out of the process, and by :func:`kill_servers`."""
+        """Have the server stopped on the way out of the process, and by :func:`kill_servers`.
+
+        However the process ends: the REPL's process group is handed to this
+        process's reaper first (:meth:`_watch`), whose own handler at exit is
+        then registered before the session's, so that the session closes
+        first, at an exit that runs anything.
+        """
+        self._watch()
         atexit.register(self.close)
         _OPENED.add(self)
+
+    def _watch(self) -> None:
+        """Hand the running REPL's process group to the reaper, in place of the last one.
+
+        lean-interact starts the REPL in a session of its own, so its process
+        group is its pid, and the reaper (see :func:`_reaper`) kills that group
+        when this process ends, however it ends. A server that is not the
+        leader of a group of its own, and one in this process's group, is not
+        handed over: killing the group would kill more than the REPL.
+        """
+        process = getattr(self.server, "_proc", None)
+        pid = getattr(process, "pid", None)
+        if pid is not None and pid == self._group:
+            return
+        self._forget()
+        if pid is None:
+            return
+        try:
+            group = os.getpgid(pid)
+            own = os.getpgrp()
+        except (AttributeError, OSError):
+            return
+        if group == pid and group != own and _watch_group(group):
+            self._group = group
+
+    def _forget(self) -> None:
+        """Take this session's REPL group back from the reaper, which then leaves it alone."""
+        group, self._group = self._group, None
+        if group is not None:
+            _forget_group(group)
 
     def _import_mathlib(self) -> bool:
         """``import Mathlib`` in the running server, keeping the environment it leaves."""
@@ -458,6 +501,7 @@ class LeanSession:
         except Exception as exc:  # noqa: BLE001 - a server that will not start is a reason
             self.error = f"the Lean REPL could not be restarted ({exc})"
             return False
+        self._watch()
         if self.mathlib is None:
             return True
         return self._import_mathlib()
@@ -468,8 +512,10 @@ class LeanSession:
         Letting the interpreter collect the server instead works, but the
         collection happens during shutdown, when the modules the server's own
         finalizer uses may already be gone; closing on purpose keeps that noise
-        out of a test run.
+        out of a test run. The reaper is told to forget the REPL first, since
+        its process group will be gone, and its number may be another's.
         """
+        self._forget()
         server, self.server = self.server, None
         if server is not None:
             try:
@@ -513,6 +559,144 @@ class LeanSession:
 _OPENED: weakref.WeakSet[LeanSession] = weakref.WeakSet()
 
 
+# {{{ the reaper
+
+#: The program the reaper runs (see :func:`_reaper`). It reads process groups
+#: from its standard input, a line each, a group to forget written with a
+#: minus, and when its input ends it kills the groups it still has. It ignores
+#: the signals a terminal or a ``kill`` of lanky's process group sends, so that
+#: it is there when the input ends, and needs nothing but the standard library.
+_REAPER_PROGRAM = """\
+import os, signal, sys
+for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"):
+    signal.signal(getattr(signal, name), signal.SIG_IGN)
+groups = set()
+for line in sys.stdin.buffer:
+    word = line.strip()
+    if word.startswith(b"-"):
+        groups.discard(int(word[1:]))
+    elif word:
+        groups.add(int(word))
+for group in groups:
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except OSError:
+        pass
+"""
+
+#: This process's reaper, the pid of the process that started it, and the
+#: groups it has been handed and not told to forget.
+_REAPER: subprocess.Popen | None = None
+_REAPER_OWNER: int | None = None
+_WATCHED: set[int] = set()
+_REAPER_LOCK = threading.Lock()
+
+
+def _reaper() -> subprocess.Popen | None:
+    """The process that kills this process's Lean REPLs when this process ends, however it ends.
+
+    lean-interact starts the REPL in a session of its own, and the timeout
+    of an attempt is kept by this process, so a process ended by a signal,
+    which runs nothing on the way out, used to leave its REPL going on with
+    the attempt it was given until the attempt finished (#46): within a
+    minute for a tactic bounded by heartbeats, much longer for one that is
+    not. That was ``lanky check`` of files with one root, or any program that
+    calls :func:`lanky.check.check_path` or the oracle, ended by ``kill``, a
+    child of ``lanky check`` sent ``SIGKILL``, and one busy in a long call that
+    keeps its ``SIGTERM`` handler from running.
+
+    The reaper is a small Python process, one per lanky process and started
+    with the first REPL, that reads a pipe from this one (see
+    :data:`_REAPER_PROGRAM`). The kernel closes the pipe when this process
+    ends, whatever ends it, ``SIGKILL`` included, and the reaper then kills
+    every REPL's process group it was handed and not told to forget. It is in
+    a session of its own, so a signal sent to this process's group does not
+    end it first. A process forked from this one starts a reaper of its own
+    for the REPLs it starts, and hands it none of this one's. ``None`` off
+    POSIX, where there are no process groups to kill, and where the reaper
+    cannot be started; the sessions then work as they did.
+    """
+    global _REAPER, _REAPER_OWNER
+    if os.name != "posix":  # pragma: no cover - Windows has no process groups
+        return None
+    pid = os.getpid()
+    if _REAPER_OWNER != pid:
+        # a fork of the process that started the reaper: its groups are not ours
+        _REAPER, _REAPER_OWNER = None, pid
+        _WATCHED.clear()
+    if _REAPER is not None and _REAPER.poll() is None:
+        return _REAPER
+    if not sys.executable:  # pragma: no cover - an embedded interpreter
+        return None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-I", "-c", _REAPER_PROGRAM],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:  # pragma: no cover - no interpreter to start
+        return None
+    _REAPER = process
+    atexit.register(_release_reaper, process)
+    # a reaper started again after the last one ended is handed what that one had
+    if _WATCHED and not _tell(process, "".join(f"{group}\n" for group in _WATCHED)):
+        return None
+    return process
+
+
+def _tell(process: subprocess.Popen, text: str) -> bool:
+    """Write to the reaper; whether it took it."""
+    try:
+        assert process.stdin is not None
+        process.stdin.write(text.encode("ascii"))
+        process.stdin.flush()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _watch_group(group: int) -> bool:
+    """Hand a REPL's process group to the reaper; whether it is watched."""
+    with _REAPER_LOCK:
+        process = _reaper()
+        if process is None or not _tell(process, f"{group}\n"):
+            return False
+        _WATCHED.add(group)
+        return True
+
+
+def _forget_group(group: int) -> None:
+    """Tell the reaper to leave a process group alone: it is being stopped another way."""
+    with _REAPER_LOCK:
+        if group not in _WATCHED or _REAPER_OWNER != os.getpid():
+            return
+        _WATCHED.discard(group)
+        if _REAPER is not None:
+            _tell(_REAPER, f"-{group}\n")
+
+
+def _release_reaper(process: subprocess.Popen) -> None:
+    """At an exit that runs anything: close the reaper's input, and wait for it to end.
+
+    The sessions have closed by then and taken their groups back (see
+    :meth:`LeanSession._opened`), so it ends without killing anything; a
+    session still open has its REPL killed, as the session would have.
+    """
+    if _REAPER_OWNER != os.getpid():
+        return
+    try:
+        if process.stdin is not None:
+            process.stdin.close()
+        process.wait(timeout=5)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+
+
+# }}}
+
+
 def kill_servers() -> None:
     """Kill the Lean process of every session in this process, and everything it started.
 
@@ -523,7 +707,11 @@ def kill_servers() -> None:
     long that runs, since the timeout is kept by the process that is gone, and
     ends only when it next reads its input and finds it closed. A process
     about to end of a signal calls this first: a child of ``lanky check``
-    does, on ``SIGTERM`` (see :func:`lanky.cli._terminated`).
+    does, on ``SIGTERM`` (see :func:`lanky.cli._terminated`). A process that
+    ends of a signal it does not handle, ``SIGKILL`` above all, runs nothing,
+    and its REPLs are killed by its reaper instead (see :func:`_reaper`),
+    once the kernel has closed the pipe the reaper reads; this is the
+    quicker way for one that can run something.
 
     So this is written for a signal handler: it sends ``SIGKILL`` to the
     REPL's process group and returns, waiting for nothing and taking no lock,
