@@ -1686,11 +1686,14 @@ def test_a_fork_does_not_keep_the_repl_of_its_parent_going() -> None:
 
 
 #: A program that gives a Lean session an attempt that sleeps for five
-#: minutes, in its main thread, and says which processes the REPL is.
+#: minutes, in its main thread, and says which processes the REPL is. It
+#: raises ``KeyboardInterrupt`` on ``SIGINT`` even where it was started with
+#: the signal ignored, as a command started in the background by a shell is.
 _INTERRUPTED_REPL = """\
-import threading, time
+import signal, threading, time
 import psutil
 from lanky.oracles.lean import LeanSession
+signal.signal(signal.SIGINT, signal.default_int_handler)
 session = LeanSession(timeout=900)
 assert session.start(), session.error
 lake = psutil.Process(session.server._proc.pid)
