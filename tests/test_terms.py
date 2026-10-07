@@ -246,6 +246,54 @@ def test_python_and_between_propositions_still_works() -> None:
     assert render(claim) == "forall a in Fin(n), b in Fin(n) where a <= b and b < n. a <= b"
 
 
+def test_a_truth_value_asked_outside_the_if_clause_is_refused() -> None:
+    """A conditional, ``not`` and a comparison of tuples ask from the generator's frame too.
+
+    Each was read as a guard, since the check took any layout it did not know
+    for one, and each said something else, which Lean then proved:
+    ``all((f(i) if i < 3 else -1) >= 0 for ...)`` was ``f(i) >= 0`` below
+    ``3``, and false wherever ``n > 3`` in Python; ``~any(not (i < k) for
+    ...)`` was ``~any(False ... if i < k)``, which holds, while Python finds
+    ``i = k``; and ``all((i, 0) == (k, 0) for ...)``, or ``if (i, 0) <= (k,
+    0)``, recorded the items' ``i == k`` as the guard. Only the ``if`` clause
+    records one now.
+    """
+    n, f = Var("n"), Var("f")
+    refused = "and not by its ``if`` clause: a conditional expression"
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall((f(i) if i < 3 else -1) >= 0 for i in Fin[n])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i >= 0 for i in Fin[n] if (i > 1 if i < 3 else i > 5))
+    with pytest.raises(SymbolicBoolError, match=refused):
+        exists(not (i < k) for i in Fin[n] for k in Fin[n])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall((i, 0) == (k, 0) for i in Fin[n] for k in Fin[n])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i == k for i in Fin[n] for k in Fin[n] if (i, 0) <= (k, 0))
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i == k for i in Fin[n] for k in Fin[n] if [i] < [k])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i == k for i in Fin[n] for k in Fin[n] if (i, 0) != (k, 0))
+
+
+def test_an_if_clause_is_a_guard_wherever_it_stands() -> None:
+    """The clauses the stricter check still reads: every ``if``, and tuples compared with ``==``.
+
+    A comparison with the term on the right is answered by the term's
+    reflected operator (``0 < i`` is ``i > 0``), and the items of two tuples
+    compared with ``==`` are the clause's own question, asked item by item.
+    """
+    n = Var("n")
+    reflected = forall(i > 0 for i in Fin[n] if 0 < i)
+    assert render(reflected) == "forall i in Fin(n) where i > 0. i > 0"
+    two = forall(i >= 0 for i in Fin[n] if i > 0 if i < 3)
+    assert render(two) == "forall i in Fin(n) where i > 0 and i < 3. i >= 0"
+    outer = forall(i <= k for i in Fin[n] if i < 3 for k in Fin[n])
+    assert render(outer) == "forall i in Fin(n), k in Fin(n) where i < 3. i <= k"
+    tuples = forall(i == k for i in Fin[n] for k in Fin[n] if (i, 0) == (k, 0))
+    assert render(tuples) == "forall i in Fin(n), k in Fin(n) where i == k. i == k"
+
+
 def test_a_concrete_comprehension_is_left_alone() -> None:
     """Nothing symbolic, nothing to refuse: plain Python keeps working."""
     assert forall(x > 0 for x in [1, 2, 3] if x > 0 and x < 3) is True

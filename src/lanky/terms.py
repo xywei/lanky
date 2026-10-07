@@ -445,6 +445,16 @@ _MISUSE = {
         "something else; a proposition becomes a bool only when it is evaluated "
         "at concrete values"
     ),
+    "value": (
+        "the truth value of {prop!r} was asked for by the generator being "
+        "traced, and not by its ``if`` clause: a conditional expression ``a if "
+        "c else b`` picks one branch by it, Python's ``not`` negates it, and a "
+        "comparison of two tuples or lists compares their items one by one, "
+        "so reading the answer as a guard would keep one branch or one "
+        "comparison and say something else; write the condition with the "
+        "connectives ``&``, ``|`` and ``~``, in the generator's ``if`` clause "
+        "where it is one, and compare items rather than tuples"
+    ),
 }
 
 #: The instructions that run code of the interpreter's own, which can ask a
@@ -452,6 +462,15 @@ _MISUSE = {
 #: ``in`` test, which compares its operand with each member, and the step of
 #: a loop over an iterator a builtin made, such as ``filter``'s.
 _CALLING = ("CALL", "CALL_KW", "CALL_FUNCTION_EX", "CONTAINS_OP", "FOR_ITER")
+
+#: What a comparison instruction is when its operands are swapped, which is
+#: how Python answers ``0 < i``: ``int`` declines, and the term's ``__gt__``
+#: builds ``i > 0``.
+_REFLECTED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
+
+#: Instructions the compiler puts between a conditional jump and what comes
+#: after it that do nothing (3.14 marks the branch not taken).
+_INERT = ("NOT_TAKEN", "NOP")
 
 
 @functools.lru_cache(maxsize=64)
@@ -461,13 +480,13 @@ def _instructions(code: Any) -> tuple[tuple[Any, ...], dict[int, int]]:
     return listing, {instruction.offset: index for index, instruction in enumerate(listing)}
 
 
-def _asking_context(frame: Any, code: Any) -> str:
-    """Classify the bytecode that asked for a truth value: guard, boolop, foreign.
+def _asking_context(frame: Any, code: Any, prop: Any = None) -> str:
+    """Classify the bytecode that asked for a truth value: guard, or a mistake.
 
     The one place Python may ask for the truth value of a proposition is the
     ``if`` clause of the generator expression being traced, and the answer is to
-    record a guard. Two ways of getting there are mistakes, and both are worth
-    catching because both are silent:
+    record a guard. Every other way of getting there is a mistake, and worth
+    catching because it is silent. ``prop`` is the proposition asked about.
 
     ``and`` and ``or`` short-circuit. ``if a and b`` happens to survive, because
     CPython compiles a conjunction in a comprehension filter into two successive
@@ -489,9 +508,31 @@ def _asking_context(frame: Any, code: Any) -> str:
     ``j < i`` (#63). So does an ``in`` test, ``if i in range(3)``, which asks
     for ``i == 0`` and stops. Either is a call (:data:`_CALLING`).
 
-    An unrecognized layout is read as a guard, which is what every earlier
-    CPython did: the check may miss a mistake on an interpreter it does not
-    know, but it never invents one.
+    What is left is told apart by what an ``if`` clause does with a point it
+    rejects: it goes back to the loop for the next one (:func:`_filters`).
+    Python asks for a truth value in the generator's own frame in other
+    places too, and the answer recorded as a guard said something else. A
+    conditional expression ``a if c else b`` picks a branch by ``c``, so
+    ``all((f(i) if i < 3 else -1) >= 0 for ...)`` became a statement about
+    the points below ``3``, which Lean proved and which is false wherever
+    ``n > 3``. ``not c`` in a body became the guard ``c`` and the body
+    ``False``. And a comparison of two tuples or lists compares their items
+    with ``==`` until two differ, so ``all((i, 0) == (k, 0) for ...)`` became
+    ``True`` wherever ``i == k``. Each of them is refused (``value``).
+
+    A comparison in an ``if`` clause asks about its own value (on 3.13 and
+    later the comparison answers the bool itself) only when the proposition
+    is that comparison, with its operator or the reflected one
+    (:func:`_compares`). The items of two tuples compared with ``<`` are
+    compared with ``==``, which is refused; compared with ``==`` they are the
+    clause's own question asked item by item, and the conjunction of the
+    guards recorded is what the equality of two tuples means.
+
+    A layout the check does not recognize as an ``if`` clause is refused. It
+    used to be read as a guard, so that the check would never invent a
+    mistake on an interpreter it did not know; but that is how the
+    conditional expression, ``not`` and the comparison of tuples got through,
+    and a statement refused costs a proof at worst.
     """
     if frame is None:
         return "guard"
@@ -500,7 +541,7 @@ def _asking_context(frame: Any, code: Any) -> str:
     listing, index_of = _instructions(frame.f_code)
     position = index_of.get(frame.f_lasti)
     if position is None:
-        return "guard"
+        return "value"
     current = listing[position]
     if current.opname in _CALLING:
         return "call"
@@ -508,13 +549,16 @@ def _asking_context(frame: Any, code: Any) -> str:
     if current.opname.startswith("POP_JUMP_IF"):
         # 3.12: the jump itself converts the value it pops.
         jump_at = position
-    else:
+    elif current.opname == "TO_BOOL" or (
+        current.opname == "COMPARE_OP" and _compares(current, prop)
+    ):
         # 3.13 and later: TO_BOOL, or a comparison the compiler told to answer
         # a bool, and the jump is the instruction after it.
-        following = position + 1
-        if following >= len(listing) or not listing[following].opname.startswith("POP_JUMP_IF"):
-            return "guard"
-        jump_at = following
+        jump_at = position + 1
+        if jump_at >= len(listing) or not listing[jump_at].opname.startswith("POP_JUMP_IF"):
+            return "value"
+    else:
+        return "value"
     if previous is not None and previous.opname == "COPY":
         return "boolop"
     jump = listing[jump_at]
@@ -526,7 +570,61 @@ def _asking_context(frame: Any, code: Any) -> str:
             and _tests_a_value(listing, other_at)
         ):
             return "boolop"
+    if not _filters(listing, index_of, jump_at):
+        return "value"
     return "guard"
+
+
+def _compares(instruction: Any, prop: Any) -> bool:
+    """Whether ``prop`` is the comparison ``instruction`` makes, not one of its items'.
+
+    Python answers ``0 < i`` with the term's ``__gt__``, so the reflected
+    operator counts as the same comparison. The instruction names its
+    operator as ``<`` on 3.12 and as ``bool(<)`` on 3.13 and later, where it
+    answers a bool itself.
+    """
+    if not isinstance(prop, prim.Comparison):
+        return False
+    operator = instruction.argrepr
+    if operator.startswith("bool(") and operator.endswith(")"):
+        operator = operator[len("bool(") : -1]
+    return operator in _REFLECTED and prop.operator in (operator, _REFLECTED[operator])
+
+
+def _past_inert(listing: tuple[Any, ...], position: int) -> int:
+    """The first instruction at ``position`` or after it that does something."""
+    while position < len(listing) and listing[position].opname in _INERT:
+        position += 1
+    return position
+
+
+def _filters(listing: tuple[Any, ...], index_of: dict[int, int], jump_at: int) -> bool:
+    """Whether the conditional jump at ``jump_at`` is a generator's ``if`` clause.
+
+    A clause sends the point it rejects back to its loop, to the ``FOR_ITER``
+    that draws the next one. CPython 3.12 to 3.14 compile it as a jump over a
+    ``JUMP_BACKWARD`` to the loop, taken for a point the clause keeps, and a
+    jump straight to such a ``JUMP_BACKWARD`` would be the same clause written
+    the other way round. A conditional expression jumps to its other branch,
+    and ``and`` or ``or`` used as a value to the end of the operator, so
+    neither is a clause.
+    """
+    loops = {instruction.offset for instruction in listing if instruction.opname == "FOR_ITER"}
+
+    def backward(position: int) -> bool:
+        return (
+            position < len(listing)
+            and listing[position].opname == "JUMP_BACKWARD"
+            and listing[position].argval in loops
+        )
+
+    target = index_of.get(listing[jump_at].argval)
+    if target is None:
+        return False
+    step = _past_inert(listing, jump_at + 1)
+    if backward(step):
+        return step < target <= _past_inert(listing, step + 1)
+    return backward(_past_inert(listing, target))
 
 
 def _tests_a_value(listing: tuple[Any, ...], position: int) -> bool:
@@ -570,7 +668,7 @@ class PropositionMixin(SymbolicMixin):
                 "undefined; evaluate it at concrete values (Theorem.__call__, "
                 "Theorem.test) or keep it symbolic"
             )
-        context = _asking_context(sys._getframe(1), trace.code)
+        context = _asking_context(sys._getframe(1), trace.code, self)
         if context != "guard":
             raise SymbolicBoolError(_MISUSE[context].format(prop=render(self)))
         trace.add_guard(self)
