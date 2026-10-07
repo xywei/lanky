@@ -301,12 +301,42 @@ def disjoin(operands: Iterable[Callable[[], bool]]) -> bool:
 # {{{ operator-overloading mixins
 
 
+#: What each arithmetic operator builds, as pymbolic's operators build it, from
+#: the term it is called on and the other operand. It is for an operand
+#: pymbolic's own operators refuse, a ``Fraction`` (see :func:`_make_binary`).
+_BUILDS: dict[str, Callable[[Any, Any], Any]] = {
+    "add": lambda term, other: prim.Sum((term, other)),
+    "radd": lambda term, other: prim.Sum((other, term)),
+    "sub": lambda term, other: prim.Sum((term, -other)),
+    "rsub": lambda term, other: prim.Sum((other, -term)),
+    "mul": lambda term, other: prim.Product((term, other)),
+    "rmul": lambda term, other: prim.Product((other, term)),
+    "truediv": lambda term, other: prim.Quotient(term, other),
+    "rtruediv": lambda term, other: prim.Quotient(other, term),
+    "floordiv": lambda term, other: prim.FloorDiv(term, other),
+    "rfloordiv": lambda term, other: prim.FloorDiv(other, term),
+    "mod": lambda term, other: prim.Remainder(term, other),
+    "rmod": lambda term, other: prim.Remainder(other, term),
+    "pow": lambda term, other: prim.Power(term, other),
+    "rpow": lambda term, other: prim.Power(other, term),
+}
+
+
 def _make_binary(name: str) -> Callable[..., Any]:
-    """Wrap one pymbolic arithmetic operator so that it answers a lanky node."""
+    """Wrap one pymbolic arithmetic operator so that it answers a lanky node.
+
+    A ``Fraction`` is an operand like an ``int`` or a ``float`` (#76).
+    pymbolic's operators take no ``Fraction``, so Python fell back on the
+    ``Fraction``'s own: ``x ** Fraction(1, 3)`` became ``x **
+    0.3333333333333333``, a float every oracle reads as the rational it holds
+    and not as a cube root, and ``Fraction(1, 3) * x`` raised. The node is
+    built here instead, as pymbolic builds it for a number.
+    """
     base = getattr(prim.ExpressionNode, f"__{name}__")
+    build = _BUILDS[name]
 
     def operation(self: Any, other: Any) -> Any:
-        result = base(self, other)
+        result = build(self, other) if isinstance(other, Fraction) else base(self, other)
         if result is NotImplemented:
             return NotImplemented
         return lift(result)
@@ -2409,7 +2439,9 @@ def free_variables(expr: Any) -> frozenset[str]:
     return frozenset()
 
 
-_OR, _AND, _NOT, _CMP, _ADD, _MUL, _POW, _ATOM = range(8)
+#: Precedence, loosest first. ``_NEG`` is a unary minus, which binds more
+#: tightly than ``*`` and more loosely than ``**``, as Python has it.
+_OR, _AND, _NOT, _CMP, _ADD, _MUL, _NEG, _POW, _ATOM = range(9)
 
 
 def _parens(text: str, inner: int, outer: int) -> str:
@@ -2422,40 +2454,105 @@ def _binders_text(expr: Forall | Exists | Sum) -> str:
     return ", ".join(f"{var.name} in {domain}" for var, domain in expr.binders)
 
 
+def _negated(expr: Any) -> Any:
+    """What a product ``-1*t`` negates, ``t``, or ``None`` for anything else.
+
+    pymbolic builds ``-t`` as the product ``(-1)*t``, and ``-(x*y)`` as
+    ``(-1)*x*y``, whose negated part is the product ``x*y``.
+    """
+    if not isinstance(expr, prim.Product) or len(expr.children) < 2:
+        return None
+    first = expr.children[0]
+    if isinstance(first, bool) or not isinstance(first, int) or first != -1:
+        return None
+    rest = expr.children[1:]
+    return rest[0] if len(rest) == 1 else Product(rest)
+
+
 def _signed(child: Any) -> tuple[bool, str]:
     """Split a summand into a sign and its text, so that ``a + (-1)*b`` prints as ``a - b``.
 
     Subtraction is not a pymbolic node: ``a - b`` is a sum with a negated
     summand, and printing it as written is what makes a statement readable.
+    The text is what follows a binary minus, which binds as loosely as a
+    sum does.
     """
-    if isinstance(child, prim.Product) and child.children:
-        first = child.children[0]
-        if isinstance(first, int) and first == -1:
-            rest = child.children[1:]
-            if len(rest) == 1:
-                return True, _render(rest[0], _MUL)
-            return True, _render(Product(rest), _MUL)
-    if isinstance(child, int | float | Fraction) and child < 0:
+    negated = _negated(child)
+    if negated is not None:
+        return True, _render(negated, _MUL)
+    if isinstance(child, int | float | Fraction) and not isinstance(child, bool) and child < 0:
         return True, _render(-child, _MUL)
     return False, _render(child, _ADD)
 
 
 def _sum_text(children: Sequence[Any]) -> str:
-    """Render the summands of a sum, with subtraction where a summand is negated."""
+    """Render the summands of a sum, with subtraction where a summand is negated.
+
+    The first summand has no minus to stand behind, so a negation there is a
+    unary minus, rendered as one (see :func:`_render`): ``-(n // 2) + 1`` is
+    not ``-n // 2 + 1``, which Python reads as ``(-n) // 2 + 1``.
+    """
     parts = []
     for position, child in enumerate(children):
-        negated, text = _signed(child)
         if position == 0:
-            parts.append(f"-{text}" if negated else text)
-        else:
-            parts.append(f"{' - ' if negated else ' + '}{text}")
+            parts.append(_render(child, _ADD))
+            continue
+        negated, text = _signed(child)
+        parts.append(f"{' - ' if negated else ' + '}{text}")
     return "".join(parts)
 
 
+def _product_text(children: Sequence[Any], negated: bool = False) -> str:
+    """Render the factors of a product, the first behind a unary minus if ``negated``.
+
+    Python reads ``a*b // c`` as ``(a*b) // c``, so a floor division or a
+    remainder after the first factor is bracketed: ``a*(b // c)``. A true
+    division is not, since ``a*b / c`` is the same number either way. A
+    first factor behind a minus is rendered as a unary minus's operand (see
+    :func:`_render`).
+    """
+    parts = []
+    for position, child in enumerate(children):
+        if position == 0:
+            parts.append(f"-{_render(child, _NEG)}" if negated else _render(child, _MUL))
+            continue
+        text = _render(child, _MUL)
+        if isinstance(child, prim.FloorDiv | prim.Remainder):
+            text = f"({text})"
+        parts.append(text)
+    return "*".join(parts)
+
+
+def _number_text(value: numbers.Number, outer: int) -> str:
+    """Render a number, bracketed where its sign or its slash would be misread.
+
+    ``Fraction(1, 3)`` reads ``1/3``, a division, and a negative number has
+    a unary minus in front: ``x**(1/3)`` and ``(-2)**n`` are not ``x**1/3``
+    and ``-2**n``, which Python reads as ``(x**1)/3`` and ``-(2**n)``.
+    """
+    text = str(value)
+    if "/" in text:
+        level = _MUL
+    elif text.startswith("-"):
+        level = _NEG
+    else:
+        level = _ATOM
+    return _parens(text, level, outer)
+
+
 def _render(expr: Any, outer: int) -> str:
-    """Render ``expr``, parenthesized for a context of precedence ``outer``."""
+    """Render ``expr``, parenthesized for a context of precedence ``outer``.
+
+    A negation, which pymbolic builds as the product ``(-1)*t``, is a unary
+    minus (#69): ``-x`` and ``-x*y`` rather than ``-1*x`` and ``-1*x*y``,
+    and ``(-x)**2`` with its brackets. What follows the minus is rendered at
+    the precedence of a unary minus, so ``-(a // b)`` keeps its brackets,
+    since Python reads ``-a // b`` as ``(-a) // b``.
+    """
     if isinstance(expr, Var | prim.Variable):
         return expr.name
+    if isinstance(expr, numbers.Number):
+        return _number_text(expr, outer)
     if isinstance(expr, Forall | Exists):
         universal = isinstance(expr, Forall)
         if not expr.binders:
@@ -2494,8 +2591,13 @@ def _render(expr: Any, outer: int) -> str:
     if isinstance(expr, prim.Sum):
         return _parens(_sum_text(expr.children), _ADD, outer)
     if isinstance(expr, prim.Product):
-        text = "*".join(_render(child, _MUL) for child in expr.children)
-        return _parens(text, _MUL, outer)
+        negated = _negated(expr)
+        if negated is None:
+            return _parens(_product_text(expr.children), _MUL, outer)
+        if isinstance(negated, prim.Product) and _negated(negated) is None:
+            # -x*y is (-x)*y, a product: its first factor stands behind the minus
+            return _parens(_product_text(negated.children, negated=True), _MUL, outer)
+        return _parens(f"-{_render(negated, _NEG)}", _NEG, outer)
     if isinstance(expr, prim.QuotientBase):
         if isinstance(expr, prim.FloorDiv):
             symbol = "//"
@@ -2506,7 +2608,8 @@ def _render(expr: Any, outer: int) -> str:
         text = f"{_render(expr.numerator, _MUL)} {symbol} {_render(expr.denominator, _POW)}"
         return _parens(text, _MUL, outer)
     if isinstance(expr, prim.Power):
-        text = f"{_render(expr.base, _POW)}**{_render(expr.exponent, _POW)}"
+        # ** groups to the right, so a power as the base is bracketed
+        text = f"{_render(expr.base, _POW + 1)}**{_render(expr.exponent, _POW)}"
         return _parens(text, _POW, outer)
     if isinstance(expr, prim.Call):
         args = ", ".join(_render(arg, _OR) for arg in expr.parameters)

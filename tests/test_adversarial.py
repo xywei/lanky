@@ -2818,7 +2818,7 @@ def test_a_pass_on_thin_evidence_says_so_and_stays_tested(tmp_path, oracles, cap
         "\nWARNING exp_neg at thin.py:7: the pass rests on thin evidence: "
         f"{facts['exp_neg'].provenance['undecided']} draws decided nothing, more than the "
         "200 valid ones, which are all at {'x': Fraction(0, 1)}\n"
-        "  a draw that decided nothing: the two sides of exp(x)*exp(-1*x) <= 1 are "
+        "  a draw that decided nothing: the two sides of exp(x)*exp(-x) <= 1 are "
     ) in printed
     assert "WARNING two_points at thin.py:17: the pass rests on thin evidence" in printed
     assert "WARNING one_gap" not in printed
