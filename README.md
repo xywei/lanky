@@ -302,9 +302,11 @@ lanky's `main`.
   families searches, but only for a linear combination: a step that needs a
   hypothesis used other than as an equation to combine, an inequality, or an
   instance whose guards are not linear arithmetic over the integers is not
-  found. A function Mathlib does not have, a Bessel or Hankel function, has
-  no form yet in which its recurrence is declared and a proof rests on it
-  (#82).
+  found, nor is a base case that holds only because the goal's own guard
+  excludes it (`all(f(n) == n for n in Nat if n >= 1)`, whose order 0 is no
+  equation to combine). A function Mathlib does not have, a Bessel or Hankel
+  function, has no form yet in which its recurrence is declared and a proof
+  rests on it (#82).
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real`, true division and
   an exponent that could be negative raise rather than emit source Lean would
   reject. In Mathlib mode all but the last are printed, and what is still
