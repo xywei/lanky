@@ -134,7 +134,7 @@ def test_the_claim_for_every_order_is_the_recurrence_sumpys_pde_gives(demo) -> N
     the wrangler stores and follows the recurrence elsewhere, ``R`` is ``D``.
     """
     from lanky.prelude import Fn, Nat, Real
-    from lanky.terms import render
+    from lanky.terms import Comparison, Forall, Product, Var, render, structurally_equal
 
     claim = demo.compressed_taylor
     assert claim.pde == {(2, 0): 1, (0, 2): 1}
@@ -148,10 +148,16 @@ def test_the_claim_for_every_order_is_the_recurrence_sumpys_pde_gives(demo) -> N
     term = every_order.term
     table = Fn[Nat, Fn[Nat, Real]]
     assert [(var.name, sort) for var, sort in term.binders] == [("D", table), ("R", table)]
-    pde, stored, recurrence = (render(hypothesis) for hypothesis in term.guard.children)
-    assert pde == "forall a in Nat, b in Nat. D(a + 2)(b) + D(a)(b + 2) == 0"
-    assert stored == "forall a in Nat, b in Nat where a < 2. R(a)(b) == D(a)(b)"
-    assert recurrence == "forall a in Nat, b in Nat. R(a + 2)(b) == -1*R(a)(b + 2)"
+    pde, stored, recurrence = term.guard.children
+    assert render(pde) == "forall a in Nat, b in Nat. D(a + 2)(b) + D(a)(b + 2) == 0"
+    assert render(stored) == "forall a in Nat, b in Nat where a < 2. R(a)(b) == D(a)(b)"
+    # compared as a term, since how a negation is printed is the printer's business
+    a, b, reconstructed = Var("a"), Var("b"), Var("R")
+    expected = Forall(
+        ((a, Nat), (b, Nat)),
+        Comparison(reconstructed(a + 2)(b), "==", Product((-1, reconstructed(a)(b + 2)))),
+    )
+    assert structurally_equal(recurrence, expected)
     assert render(term.body) == "forall a in Nat, b in Nat. R(a)(b) == D(a)(b)"
 
 
