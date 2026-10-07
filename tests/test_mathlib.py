@@ -263,6 +263,39 @@ def _lost_sign(
     """False: with its sign lost the recurrence gives ``R(2)(0) == D(0)(2) == -D(2)(0)``."""
 
 
+@theorem
+def _shifted_index(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 1) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: the recurrence takes one ``y`` too few."""
+
+
+@theorem
+def _doubled(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -2 * R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: the recurrence's coefficient is twice the PDE's."""
+
+
+@theorem
+def _short_base(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 1),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: nothing says what ``R(1)(b)`` is."""
+
+
 #: False in Python, ``log x - πi`` against ``log x + πi``, and true in Lean. A
 #: term built here and not an annotation, where ``complex`` would be a variable.
 _ACROSS_THE_CUT = Forall(
@@ -1646,16 +1679,57 @@ def test_lean_checks_a_certificate_and_refuses_a_wrong_one(mathlib_oracle: LeanO
     assert "ring" in detail or "linarith" in detail or "failed" in detail
 
 
+@pytest.mark.parametrize(
+    "claim",
+    [_lost_sign, _shifted_index, _doubled, _short_base],
+    ids=lambda claim: claim.__name__,
+)
 def test_a_claim_for_every_order_from_a_wrong_recurrence_is_not_proved(
-    mathlib_oracle: LeanOracle,
+    mathlib_oracle: LeanOracle, claim
 ) -> None:
-    """No certificate is found for it, and nothing else in the ladder proves it."""
+    """No certificate is found for it, and nothing else in the ladder proves it.
+
+    The recurrence with its sign lost, an index off by one, a coefficient
+    doubled, and a base that leaves ``R(1)(b)`` unsaid.
+    """
     from lanky.oracles.lean import family_induction_scripts
 
-    statement = statement_of(_lost_sign.term, "_lost_sign", mathlib=True)
+    statement = statement_of(claim.term, claim.__name__, mathlib=True)
     assert family_induction_scripts(statement) == []
-    result = mathlib_oracle.establish(_lost_sign.fact())
+    result = mathlib_oracle.establish(claim.fact())
     assert result.status is Status.ASSUMED
+
+
+def test_a_certificate_that_uses_the_claim_where_it_is_proved_is_refused(
+    mathlib_oracle: LeanOracle, monkeypatch
+) -> None:
+    """A hook that hands the induction hypothesis at the order being proved proves nothing.
+
+    lanky's search never proposes that use, and a hook is not trusted to keep
+    from it: the hypothesis takes a proof that its order is below the one
+    being proved, which ``omega`` cannot give, so Lean refuses every script,
+    and the false claim stays unproved however its certificate is written.
+    """
+    pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
+    from lanky.induction import Use
+    from lanky.oracles.lean import family_induction_scripts
+
+    a, b, k = Var("a"), Var("b"), Var("k")
+
+    def circular(case):
+        if case.name == "base":
+            return (Use("h1", (a, b)),)
+        return (Use("ih", (k + case.step, b)),)
+
+    statement = statement_of(_lost_sign.term, "_lost_sign", mathlib=True)
+    scripts = family_induction_scripts(statement, circular)
+    assert scripts
+    for script in scripts:
+        closed, _detail = mathlib_oracle.session.run(statement.source(script))
+        assert not closed, script
+    fact = _lost_sign.fact()
+    monkeypatch.setitem(mathlib_oracle.certificates, fact.id, circular)
+    assert mathlib_oracle.establish(fact).status is Status.ASSUMED
 
 
 # }}}
