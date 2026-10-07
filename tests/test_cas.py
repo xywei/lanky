@@ -353,9 +353,17 @@ def test_the_deadline_declines_a_simplification_that_runs_long(cas, monkeypatch)
 
 
 def test_the_deadline_reads_the_variable(cas, monkeypatch) -> None:
+    """When the fact is offered, so that a variable set after lanky is imported counts."""
+    monkeypatch.delenv("LANKY_CAS_TIMEOUT", raising=False)
+    assert CasOracle()._seconds() == 60
     monkeypatch.setenv("LANKY_CAS_TIMEOUT", "7.5")
     assert CasOracle()._seconds() == 7.5
     assert CasOracle(timeout=3)._seconds() == 3
+    monkeypatch.setenv("LANKY_CAS_TIMEOUT", "a minute")
+    result = CasOracle().establish(fact_of(Forall(((x, Real),), x == x)))
+    assert result.provenance["declined"] == (
+        "cas: LANKY_CAS_TIMEOUT is 'a minute', which is not a number of seconds"
+    )
 
 
 def test_no_deadline_off_the_main_thread_or_over_another_timer(cas) -> None:

@@ -61,8 +61,9 @@ from lanky.terms import render
 
 __all__ = ["DEFAULT_TIMEOUT", "CasOracle"]
 
-#: Seconds the simplifier may take over one fact before it is declined.
-DEFAULT_TIMEOUT = float(os.environ.get("LANKY_CAS_TIMEOUT", "60"))
+#: Seconds the simplifier may take over one fact before it is declined, unless
+#: ``LANKY_CAS_TIMEOUT`` says otherwise.
+DEFAULT_TIMEOUT = 60.0
 
 #: How much of a term or a difference a reason quotes.
 _QUOTED = 160
@@ -157,10 +158,23 @@ class CasOracle:
         return True
 
     def _seconds(self) -> float:
-        """The deadline for one fact, in seconds."""
+        """The deadline for one fact, in seconds.
+
+        Raises:
+            ValueError: If ``LANKY_CAS_TIMEOUT`` is not a number, which
+                :meth:`establish` declines the fact for, saying so.
+        """
         if self.timeout is not None:
             return self.timeout
-        return float(os.environ.get("LANKY_CAS_TIMEOUT", DEFAULT_TIMEOUT))
+        given = os.environ.get("LANKY_CAS_TIMEOUT")
+        if given is None:
+            return DEFAULT_TIMEOUT
+        try:
+            return float(given)
+        except ValueError:
+            raise ValueError(
+                f"LANKY_CAS_TIMEOUT is {given!r}, which is not a number of seconds"
+            ) from None
 
     def establish(self, fact: Fact, /) -> Fact | None:
         """``DECIDED`` when sympy takes every equation's difference to ``0``; declined otherwise.
@@ -177,7 +191,10 @@ class CasOracle:
         except (Untranslatable, ImportError) as exc:
             return self._declined(fact, str(exc))
         sympy = sympy_module()
-        seconds = self._seconds()
+        try:
+            seconds = self._seconds()
+        except ValueError as exc:
+            return self._declined(fact, str(exc))
         started = time.monotonic()
         try:
             with _deadline(seconds):

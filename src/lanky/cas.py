@@ -15,14 +15,15 @@ sides read alike crosses:
 - numbers, read exactly: an ``int`` is an integer, a ``Fraction`` a rational,
   and a float the rational it holds, as the property tester and the Lean
   printer read one; ``1j`` is sympy's ``I``;
-- variables, which have to be bound by a quantifier of the statement whose sort
-  names a set of numbers: ``Real`` is a real symbol, ``Complex`` a complex one,
-  ``Int`` an integer, and ``Nat`` and a point of ``Fin[n]`` an integer that is
-  not negative, so sympy applies no identity the sort does not grant (``sqrt(x**2)``
-  of a real ``x`` is ``Abs(x)``, not ``x``);
-- addition, multiplication, true division and powers, ``abs``, and ``lanky.exp``,
-  ``lanky.log`` and ``lanky.sqrt``, which are sympy's ``exp``, ``log`` and
-  ``sqrt``: Python's principal branches, where Python gives them a value.
+- variables, which have to be bound by a quantifier of the statement whose
+  sort names a set of numbers: ``Real`` is a real symbol, ``Complex`` a
+  complex one, ``Int`` an integer, and ``Nat`` and a point of ``Fin[n]`` an
+  integer that is not negative, so sympy applies no identity the sort does not
+  grant (``sqrt(x**2)`` of a real ``x`` is ``Abs(x)``, not ``x``);
+- addition, multiplication, true division and powers, ``abs``, and
+  ``lanky.exp``, ``lanky.log`` and ``lanky.sqrt``, which are sympy's ``exp``,
+  ``log`` and ``sqrt``: Python's principal branches, where Python gives them a
+  value.
 
 Everything else is :class:`Untranslatable`, with the reason: a family applied to
 an argument, a subscript, a reduction, a floor division or a remainder, a
@@ -31,12 +32,13 @@ boundary is not a number), a free variable nobody gave a sort to, a truth value
 used as a number. A float sympy holds to a precision of its own, ``pi``, and an
 infinity have no counterpart on the way back.
 
-Where a reading has no value, the readings are not compared. sympy simplifies a
-rational function as the function it is wherever its denominator is not zero,
-and a logarithm or a square root as the principal branch it is wherever Python's
-function has a value; Python raises at the points in between, where the
-property tester leaves a draw undecided, and where Lean's functions are total,
-which :mod:`lanky.semantics` notes on the fact as it does for any oracle.
+Where Python gives a statement no value, the readings are not compared. sympy
+simplifies a rational function as the function it is wherever its denominator
+is not zero, and a logarithm or a square root as the principal branch it is
+wherever Python's function has a value. At the other points Python raises, so
+the property tester leaves a draw there undecided, while Lean's functions are
+total there; that gap is :mod:`lanky.semantics`'s, which notes it on the fact
+whichever oracle settles it.
 
 sympy is an optional dependency, the ``cas`` extra, and is imported when a
 translation is asked for, not when this module is: ``import lanky`` does not
