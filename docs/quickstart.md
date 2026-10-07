@@ -592,12 +592,20 @@ What the Mathlib dialect adds, in brief (`src/lanky/lean.py` has the whole
 account):
 
 - `Real` and `Complex` are `ℝ` and `ℂ`, and `lanky.exp`, `lanky.log` and
-  `lanky.sqrt` are `Real.exp`, `Real.log` and `Real.sqrt`, and `Complex.exp`
-  of a complex argument. A complex `log` or `sqrt` is declined: `cmath` picks
-  a side of the branch cut by the sign of a zero imaginary part, and Lean's
-  `ℂ` has no signed zero. The tester reads them as `cmath`'s principal
-  branches, enclosed off the cut and undecided on it. At a number they are
-  Python's `math` and `cmath` functions, so the file still runs.
+  `lanky.sqrt` are `Real.exp`, `Real.log` and `Real.sqrt`, and
+  `Complex.exp`, `Complex.log` and `Complex.sqrt` of a complex argument. The
+  complex `log` and `sqrt` are `cmath`'s principal branches off the branch
+  cut, the non-positive real axis, and not on it: `cmath` picks a side of the
+  cut by the sign of a zero imaginary part, and Lean's `ℂ` has no signed
+  zero. So a statement that takes one comes with side conditions, that every
+  argument stays off the cut, which Lean proves from the hypotheses and
+  guards around it before it tries the statement; when it cannot, the
+  statement is declined, and the reason names the side condition. With
+  `y != 0` among the hypotheses, `sqrt(x + y * 1j) ** 2 == x + y * 1j` is
+  proved, and `exp(log(z)) == z` over every nonzero `z` is declined. The
+  tester reads them as `cmath`'s principal branches too, enclosed off the cut
+  and undecided on it. At a number they are Python's `math` and `cmath`
+  functions, so the file still runs.
 - A float literal is the rational number Python holds, `(1 / 2 : ℝ)` for
   `0.5`, and true division is division in a field, `(x : ℝ) / y`, because
   Python's `/` does not divide integers as integers either.

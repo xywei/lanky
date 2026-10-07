@@ -207,10 +207,14 @@ lanky's `main`.
   commit. The oracle imports Mathlib once and prints statements over `Real`
   and `Complex` (`ℝ` and `ℂ`), sums (`∑` over `Finset.Ico`), absolute values,
   true division, floats as the rationals Python holds, and `exp`, `log` and
-  `sqrt` (`Real.exp` and the rest). The ladder goes on to `norm_num`,
-  `positivity`, `ring`, `field_simp`, `linarith` and `nlinarith`, and to an
-  induction for a sum whose bound a natural parameter sets, so Gauss's sum in
-  `examples/gauss.py` reads `proved lean`. With the variable unset, the oracle
+  `sqrt` (`Real.exp` and the rest, and `Complex.exp`, `Complex.log` and
+  `Complex.sqrt`). A complex `log` or `sqrt` is Python's principal branch
+  off its branch cut and not on it, so Lean proves a statement that takes
+  one only after it proves that every argument stays off the cut (#59). The
+  ladder goes on to `norm_num`, `positivity`, `ring`, `field_simp`,
+  `linarith` and `nlinarith`, and to an induction for a sum whose bound a
+  natural parameter sets, so Gauss's sum in `examples/gauss.py` reads
+  `proved lean`. With the variable unset, the oracle
   is the core one, exactly. [docs/quickstart.md](docs/quickstart.md#prove-it-with-mathlib)
   walks through it.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
@@ -246,9 +250,12 @@ lanky's `main`.
   an exponent that could be negative raise rather than emit source Lean would
   reject. In Mathlib mode all but the last are printed, and what is still
   declined is a sum over `Nat`, a `Fin` with a real bound, a floor division or
-  a remainder of a real, an order between complex numbers and a complex
-  logarithm or square root: each would be printed with a meaning Python does
-  not give it.
+  a remainder of a real, an order between complex numbers, and a complex
+  logarithm or square root that Lean cannot show stays off its branch cut:
+  each would be printed with a meaning Python does not give it. Showing that
+  takes the hypotheses and guards around the argument and two cheap attempts,
+  so `exp(log(z)) == z` for a nonzero `z`, true on both sides of the cut, is
+  declined all the same.
 - Over `Real` and `Complex` the tester's enclosures decide less than Lean
   does. Two enclosures can never show two transcendental numbers equal, so an
   equality counts as holding where the statement asserts it and its two sides

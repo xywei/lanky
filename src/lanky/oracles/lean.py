@@ -18,8 +18,12 @@ environment, the statement is printed in the Mathlib dialect, and the ladder
 goes on, after the core attempts, to Mathlib's tactics (``norm_num``,
 ``positivity``, ``ring``, ``field_simp``, ``linarith``, ``nlinarith``) and to
 an induction for a reduction whose bound a natural parameter sets. A fact
-proved there records the Mathlib revision it was proved against. With the
-variable unset nothing of this is consulted, and the oracle is the core one.
+proved there records the Mathlib revision it was proved against. A statement
+that takes a complex logarithm or square root comes with side conditions, that
+each argument stays off the function's branch cut, where Python and Lean read
+it differently (see :mod:`lanky.lean`); they are proved before the statement
+is tried, and one Lean cannot prove declines the statement. With the variable
+unset nothing of this is consulted, and the oracle is the core one.
 
 The ladder is not proof search. It is five cheap attempts and then one strategy
 that is derived from the shape of the statement: a statement of the form "for
@@ -106,14 +110,19 @@ _CLOSERS = "first | omega | (simp_all; done) | (simp_all <;> omega)"
 
 #: The facts about ``exp``, ``log`` and ``sqrt`` that are not in Mathlib's
 #: simp set and that a statement over them most often needs: the exponential
-#: of a sum or a difference, and the square root of a number that is not
-#: positive, which is where Mathlib's total ``Real.sqrt`` is ``0``.
+#: of a sum or a difference, the square root of a number that is not
+#: positive, which is where Mathlib's total ``Real.sqrt`` is ``0``, the
+#: exponential of a complex logarithm, and the complex square root unfolded to
+#: the power ``z ^ (2⁻¹ : ℂ)`` it is defined as, which is what Mathlib's simp
+#: set knows about (``Complex.sqrt z ^ 2`` is ``z``).
 _ELEMENTARY_LEMMAS = (
     "Real.exp_add",
     "Complex.exp_add",
     "Real.exp_sub",
     "Complex.exp_sub",
     "Real.sqrt_eq_zero'",
+    "Complex.exp_log",
+    "Complex.sqrt",
 )
 
 
@@ -138,6 +147,43 @@ def _mathlib_tactics(lemmas: tuple[str, ...]) -> tuple[str, ...]:
 #: statement with a variable named ``Real`` or ``Complex`` gets them with the
 #: lemmas named from the root (see :func:`lanky.lean.global_name`).
 MATHLIB_TACTICS: tuple[str, ...] = _mathlib_tactics(_ELEMENTARY_LEMMAS)
+
+#: What closes a side condition once ``norm_num`` has computed the real and
+#: imaginary parts of its argument. The condition is a disjunction,
+#: ``0 < Complex.re a ∨ Complex.im a ≠ 0``, and ``norm_num`` settles a part
+#: that is a constant, which leaves one side of it or nothing: ``x + 1j`` has
+#: the imaginary part ``1``. A part that is not constant needs a hypothesis,
+#: ``y > 0`` for ``x + y * 1j`` say, so each side is tried with the
+#: arithmetic tactics, which read the hypotheses. Every arm closes the goal or
+#: fails, so that ``first`` goes on to the next one.
+_OFF_THE_CUT_CLOSERS = (
+    "first | positivity | linarith | nlinarith "
+    "| (left; positivity) | (left; linarith) | (left; nlinarith) "
+    "| (right; positivity) | (right; intro; linarith) | (right; intro; nlinarith) "
+    "| (right; intro; simp_all; done) | (simp_all; done)"
+)
+
+#: The attempts at a side condition (:attr:`lanky.lean.LeanStatement.side_conditions`),
+#: each after an ``intros`` that brings any variable and guard the condition
+#: quantifies into the context. A side condition says that a complex number is
+#: off a branch cut, and is proved from the statement's hypotheses and guards
+#: alone, which is what keeps it cheap: two attempts, and a statement whose
+#: argument they cannot keep off the cut is declined (see :mod:`lanky.lean`).
+SIDE_CONDITION_TACTICS: tuple[str, ...] = (
+    f"(try norm_num) <;> {_OFF_THE_CUT_CLOSERS}",
+    "simp_all",
+)
+
+#: What closes the side goal of a lemma ``simp`` rewrites with, ``a ≠ 0`` for
+#: ``Complex.exp_log``, once ``simp`` has taken ``a`` apart into its real and
+#: imaginary parts: what is left says that they are not both zero, ``x = 0 →
+#: ¬y = 0`` for ``x + y * 1j`` or ``¬x * x + 1 = 0`` for ``x * x + 1``, and
+#: the arithmetic tactics show it from the hypotheses (``y > 0``) or from
+#: nothing. Every arm closes the goal or fails.
+_NONZERO_CLOSERS = (
+    "first | positivity | linarith | nlinarith "
+    "| (intro; linarith) | (intro; nlinarith) | (intro; positivity)"
+)
 
 #: :data:`_CLOSERS`, with Mathlib's closing tactics after the core ones.
 _MATHLIB_CLOSERS = (
@@ -1139,12 +1185,27 @@ def tactic_ladder(statement: LeanStatement) -> list[str]:
     A statement printed in the Mathlib dialect gets the core ladder first, as
     it stands but for the closers, and then Mathlib's attempts: the tactics in
     :data:`MATHLIB_TACTICS` on the whole goal, and :func:`reduction_scripts`.
+    One that takes a complex logarithm or square root, which is one with side
+    conditions (:attr:`lanky.lean.LeanStatement.side_conditions`), gets two
+    more whole-goal attempts. ``Complex.exp_log`` holds for an argument that
+    is not zero, and ``simp`` shows one is not by its real and imaginary parts
+    (``Complex.ext_iff``), so that ``exp(log(x + 1j)) == x + 1j`` is proved.
+    ``simp`` does not read the hypotheses there, so the second attempt is the
+    same ``simp`` with a discharger that does, through the arithmetic tactics
+    (:data:`_NONZERO_CLOSERS`): ``exp(log(x + y * 1j)) == x + y * 1j`` under
+    ``y > 0``, and ``exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j``.
     """
     with dialect(statement.mathlib):
         names, _, _, _, _ = _goal_intro(statement)
     ladder = list(BASE_TACTICS)
     if statement.mathlib:
-        ladder += _mathlib_tactics(tuple(map(statement.qualified, _ELEMENTARY_LEMMAS)))
+        lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
+        ladder += _mathlib_tactics(lemmas)
+        if statement.side_conditions:
+            ext = statement.qualified("Complex.ext_iff")
+            parts = ", ".join((*lemmas, ext))
+            ladder.append(f"simp [{parts}]")
+            ladder.append(f"simp (disch := (simp [{ext}] <;> {_NONZERO_CLOSERS})) [{parts}]")
     if names:
         introduction = f"intro {' '.join(names)}"
         ladder += [
@@ -1283,7 +1344,14 @@ class LeanOracle:
         returned with the reason as ``lean_declined`` and as the standard
         ``declined`` (see :func:`lanky.cli.decline_lines`). :meth:`can_establish`
         asks the printer first, so a check reaches this only when the two are
-        called apart.
+        called apart. So is a statement whose side conditions Lean cannot
+        prove (:meth:`_side_conditions`), which are tried before the ladder.
+
+        A proof records its tactic, the Lean version, and as ``lean_source``
+        the file that replays it: the side conditions' theorems first, if the
+        statement has any, then the statement's, after ``import Mathlib`` in
+        Mathlib mode. The propositions the side conditions proved are listed
+        as ``lean_side_conditions``.
         """
         session = self.session
         mathlib = session.mathlib is not None
@@ -1298,6 +1366,13 @@ class LeanOracle:
             return fact.with_status(
                 fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
             )
+        conditions, declined = self._side_conditions(statement)
+        if declined is not None:
+            if session.error is not None:
+                return fact.with_status(fact.status, lean_tried=0, lean_reason=session.error)
+            return fact.with_status(
+                fact.status, lean_declined=declined, declined=f"{self.name}: {declined}"
+            )
         override = self.tactics.get(fact.id)
         ladder = [override] if override is not None else tactic_ladder(statement)
         last = ""
@@ -1305,7 +1380,12 @@ class LeanOracle:
             source = statement.source(tactic)
             closed, detail = session.run(source)
             if closed:
-                extra = {}
+                extra: dict[str, Any] = {}
+                if conditions:
+                    source = "\n".join((*conditions, source))
+                    extra["lean_side_conditions"] = [
+                        condition.proposition for condition in statement.side_conditions
+                    ]
                 if mathlib:
                     # the file that replays it, which the REPL command, run in
                     # the environment the import left, could not spell
@@ -1327,6 +1407,40 @@ class LeanOracle:
             lean_tried=len(ladder),
             lean_reason=session.error or last,
         )
+
+    def _side_conditions(self, statement: LeanStatement) -> tuple[list[str], str | None]:
+        """Prove a statement's side conditions, before the statement itself is tried.
+
+        A side condition is what makes the printed statement mean in Lean what
+        the lanky one means in Python: that the argument of a complex logarithm
+        or square root is off its branch cut (see :mod:`lanky.lean`). Each is
+        tried with :data:`SIDE_CONDITION_TACTICS`. The sources that proved them
+        come back, to be kept with the proof, or, at the first one no attempt
+        closes, why the statement is declined: a proof of it would be a proof
+        of what Lean reads on the cut, which is not what Python computes there.
+        """
+        session = self.session
+        proved: list[str] = []
+        for condition in statement.side_conditions:
+            closing = None
+            for tactic in SIDE_CONDITION_TACTICS:
+                source = condition.source(f"intros\n{tactic}")
+                closed, _detail = session.run(source)
+                if closed:
+                    closing = source
+                    break
+                if session.error is not None:
+                    return proved, session.error
+            if closing is None:
+                return proved, (
+                    f"Lean could not prove {condition.proposition}, so the statement "
+                    "may take a complex logarithm or square root on its branch cut, "
+                    "where cmath picks a side by the sign of a zero imaginary part "
+                    "and Lean's complex numbers have no signed zero, or the "
+                    "logarithm of zero, which has no value in Python"
+                )
+            proved.append(closing)
+        return proved, None
 
 
 # }}}

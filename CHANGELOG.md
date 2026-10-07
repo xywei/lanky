@@ -28,6 +28,15 @@ loopty uses changes, and loopty's floor follows it.
   declaration as a statement's source names it, `_root_.Int` where a variable
   is named `Int`; and `LeanStatement.shadowed` and `LeanStatement.qualified`,
   which carry that to a tactic script (#43).
+- `LeanStatement.side_conditions`: the statements Lean has to prove before a
+  Mathlib statement means in Lean what it means in Python, one per argument
+  of a complex logarithm or square root, that it is off the branch cut; and
+  `lanky.oracles.lean.SIDE_CONDITION_TACTICS`, what the oracle tries on them
+  (#59). A proof of a statement with any lists them in its provenance as
+  `lean_side_conditions`.
+- `lanky.lean.elementary_arguments(term)`: every `exp`, `log` and `sqrt` in a
+  term, with what its argument is as a number (`Int`, `Real` or `Complex`) as
+  the printer reads it (#59).
 
 ### Changed
 
@@ -105,8 +114,47 @@ loopty uses changes, and loopty's floor follows it.
   on it, or an enclosure meeting it, is undecided, and the logarithm of a
   complex zero has no value, as in Python. That claim is `tested`, and
   `sqrt(z * z) == z` is refuted at a draw with a negative real part. The
-  Lean printer still declines both, since Lean's `ℂ` has no signed zero
-  either and its branch-cut convention would have to be matched.
+  Lean printer declined both, since Lean's `ℂ` has no signed zero either,
+  until #59, below.
+- **Mathlib mode prints the complex logarithm and square root** (#59). Both
+  were declined, so a statement that took either was decided by the tester
+  alone. Mathlib's `Complex.log z` is `Real.log ‖z‖ + arg z * I`, with the
+  argument in `(-π, π]`, and `Complex.sqrt z` is `z ^ (2⁻¹ : ℂ)`, the root of
+  half the argument: off the branch cut, the non-positive real axis, these
+  are `cmath`'s principal branches, which the tester encloses (#51). On the
+  cut they part, since `cmath` picks a side by the sign of a zero imaginary
+  part and Lean's `ℂ` has none: `log(x * complex(-1, -0.0)) ==
+  log(x * complex(-1, 0.0))` is `log x - πi` against `log x + πi` in Python
+  at every positive `x`, and a theorem `simp` proves in Lean. So the printer
+  prints `Complex.log` and `Complex.sqrt`, and a statement that takes one
+  carries side conditions (`LeanStatement.side_conditions`): for each
+  argument `a`, that it is off the cut, `0 < Complex.re a ∨ Complex.im a ≠
+  0` for a logarithm, which leaves out zero, where `cmath.log` raises and
+  Lean's logarithm is `0`, and `0 ≤ Complex.re a ∨ Complex.im a ≠ 0` for a
+  square root, which is `0` at `0` in both readings. A side condition
+  quantifies over the binders around the argument, under the guards Python
+  has evaluated by the time it reaches it: the hypotheses, a refinement, and
+  the `if` of a generator around it. The Lean oracle proves the side
+  conditions before it tries the statement, with `norm_num` and the
+  arithmetic tactics on the hypotheses, and declines the statement, saying
+  which one it could not prove, when it cannot; so what Lean proves never
+  reaches the cut, where the two readings are one. The example above is
+  declined, and so is `exp(log(z)) == z` for a nonzero `z`, which holds on
+  both sides of the cut but has nothing to keep `z` off it. A literal
+  argument on the cut, or a complex zero under a logarithm, which only a
+  term built by hand holds (`lanky.log` of a number is Python's value), is
+  declined where it is printed, and a complex logarithm or square root in a
+  binder's domain outright. A proof's `lean_source` proves the side conditions first, under
+  `Lanky.<name>_branch_cut_<i>`, and then the statement. The ladder's `simp`
+  lemmas gain `Complex.exp_log` and `Complex.sqrt`, and a statement with side
+  conditions gets two more attempts, a `simp` with `Complex.ext_iff` and the
+  same `simp` with a discharger that shows `Complex.exp_log`'s argument
+  nonzero from the hypotheses with the arithmetic tactics, so
+  `exp(log(x + 1j)) == x + 1j`, `exp(log(x + y * 1j)) == x + y * 1j` under
+  `y > 0`, and `sqrt(x + y * 1j) ** 2 == x + y * 1j` under `y != 0` read
+  `proved lean`. A complex argument no longer gets the
+  `semantics` note of the real logarithm and square root, whose gap its side
+  conditions close.
 - **`lanky check` says why an oracle declined a fact** (#37). An oracle that
   takes a fact and finds it outside what it decides returns it unchanged,
   and can say why; the pytential demonstration's rule engine did, in its

@@ -145,11 +145,12 @@ above, apart from one ascription described below, and declines less:
 - An absolute value is ``|x|``, and ``‖z‖`` for a complex ``z``, which is the
   modulus Python's ``abs`` computes.
 - ``exp``, ``log`` and ``sqrt`` (:class:`lanky.terms.Elementary`) are
-  ``Real.exp``, ``Real.log`` and ``Real.sqrt``, and ``Complex.exp`` for a
-  complex argument. A complex logarithm or square root is declined: ``cmath``
-  reads the sign of a zero imaginary part to pick a side of the branch cut,
-  so ``log(x * complex(-1, -0.0))`` is ``-πi`` at ``x = 1``, and Lean's
-  complex numbers have no signed zero.
+  ``Real.exp``, ``Real.log`` and ``Real.sqrt``, and ``Complex.exp``,
+  ``Complex.log`` and ``Complex.sqrt`` for a complex argument. The complex
+  logarithm and square root are principal branches, as ``cmath``'s are, and
+  agree with them off the branch cut, the non-positive real axis; on it they
+  cannot, and a statement that may reach it is declined (see *the branch
+  cut*, below).
 - A reduction over ``Fin`` binders is ``∑ i ∈ Finset.Ico (0 : ℤ) n, body``,
   with a guard or a refinement as ``with``. Its binder is an ``Int``, as a
   bounded quantifier's is, so the body is the same integer arithmetic. A sum
@@ -178,6 +179,43 @@ differences, ``1`` where Python computes ``0``; and ``sum(1 for i in Fin[n])``
 would be a natural, so that ``... - 3 >= 0`` holds in Lean at ``n = 0``. So the
 lower bound is ascribed, ``(0 : ℤ)``, and so is a body that is an integer
 numeral.
+
+*The branch cut.* Mathlib's ``Complex.log z`` is ``Real.log ‖z‖ + arg z * I``
+with ``Complex.arg`` in ``(-π, π]``, and ``Complex.sqrt z`` is ``z ^ (2⁻¹ :
+ℂ)``, the root whose argument is half of ``z``'s: off the non-positive real
+axis these are ``cmath.log`` and ``cmath.sqrt``, the principal branches the
+tester encloses (:mod:`lanky.intervals`). On the axis they part. ``cmath``
+reads the sign of a zero imaginary part to pick a side of the cut, so
+``log(x * complex(-1, -0.0))`` is ``-πi`` at ``x = 1`` and ``log(x *
+complex(-1, 0.0))`` is ``πi``, while Lean's complex numbers have no signed
+zero and both are ``π * I``: printed as they stand, the two make an equation
+Lean proves and Python refutes at every positive ``x``. The tester leaves a
+draw on the cut undecided, and the printer's reading has to stop there too.
+
+A literal argument, which only a term built by hand holds (``lanky.log`` of a
+number is Python's value), is looked at: ``Elementary("log", -1 + 0j)`` is
+declined where it is printed, as is the logarithm of ``0j``, which ``cmath``
+has no value for and Lean's total logarithm makes ``0``, and one off the cut
+needs nothing more. Any other argument is something only a proof can keep
+off the cut, so the statement carries the claim that it is off as a *side
+condition* (:attr:`LeanStatement.side_conditions`): a theorem of its own,
+``0 < Complex.re a ∨ Complex.im a ≠ 0`` for a logarithm of ``a``, which
+leaves out zero as well, and ``0 ≤ Complex.re a ∨ Complex.im a ≠ 0`` for a
+square root, which is ``0`` at ``0`` in both readings. It quantifies over the
+binders around the argument, with the guards Python has evaluated by the time
+it reaches it: a theorem's hypotheses, a refinement of a binder's domain, and
+the ``if`` of a generator around it. A guard that takes a logarithm itself
+gets a side condition of its own, under the guards outside it and not its
+own, so a guard a side condition assumes means in Lean what Python
+evaluated. The Lean oracle proves the side conditions before it tries the
+statement, and declines the statement when it cannot, so what Lean proves is
+a statement that never reaches the cut, which is where its reading and
+Python's are one. The side condition asks more than it needs, which costs a
+proof at worst: it is about every point of an existential's domain and not
+only the witness, it takes no hypothesis from the connectives around the
+argument, and a statement that is true on both sides of the cut, such as
+``exp(log(z)) == z`` for a nonzero ``z``, is declined all the same. A complex
+logarithm or square root in a binder's domain is declined outright.
 """
 
 from __future__ import annotations
@@ -191,6 +229,7 @@ from fractions import Fraction
 from typing import Any
 
 import pymbolic.primitives as prim
+from pymbolic import expr_dataclass
 
 from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import (
@@ -204,6 +243,7 @@ from lanky.terms import (
     free_variables,
     init_args,
     render,
+    structurally_equal,
 )
 
 __all__ = [
@@ -213,6 +253,7 @@ __all__ = [
     "check_applications",
     "dialect",
     "domain_guards",
+    "elementary_arguments",
     "global_name",
     "is_natural",
     "lean_identifier",
@@ -929,7 +970,7 @@ def _kind(expr: Any, types: _Types) -> str:
         return "Complex"
     if isinstance(expr, prim.Comparison | prim.LogicalAnd | prim.LogicalOr | prim.LogicalNot):
         return "Prop"
-    if isinstance(expr, Forall | Exists):
+    if isinstance(expr, Forall | Exists | _OffTheCut):
         return "Prop"
     if isinstance(expr, prim.Sum | prim.Product):
         return _widest(_kind(child, types) for child in expr.children)
@@ -942,8 +983,7 @@ def _kind(expr: Any, types: _Types) -> str:
     if isinstance(expr, Abs):
         return "Int" if _kind(expr.operand, types) == "Int" else "Real"
     if isinstance(expr, Elementary):
-        argument = _kind(expr.argument, types)
-        return "Complex" if argument == "Complex" and expr.function == "exp" else "Real"
+        return "Complex" if _kind(expr.argument, types) == "Complex" else "Real"
     if isinstance(expr, Sum):
         inner = dict(types)
         for var, domain in expr.binders:
@@ -1022,11 +1062,19 @@ def _render_abs(expr: Abs, types: _Types) -> str:
 
 
 #: What each elementary function is called in Mathlib, for a real argument and
-#: for a complex one; ``None`` where lanky does not print it.
+#: for a complex one.
 _ELEMENTARY = {
     "exp": ("Real.exp", "Complex.exp"),
-    "log": ("Real.log", None),
-    "sqrt": ("Real.sqrt", None),
+    "log": ("Real.log", "Complex.log"),
+    "sqrt": ("Real.sqrt", "Complex.sqrt"),
+}
+
+#: The functions with a branch cut on the complex plane, what each is called
+#: where the printer says why a statement is declined, and where its cut is:
+#: a logarithm's takes zero in, where ``cmath.log`` has no value.
+_CUT_FUNCTIONS = {
+    "log": ("logarithm", "the non-positive real axis"),
+    "sqrt": ("square root", "the negative real axis"),
 }
 
 
@@ -1034,30 +1082,199 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
     """Print ``exp``, ``log`` or ``sqrt`` as Mathlib's function of the argument's kind.
 
     An integer argument is cast to ``ℝ`` by Lean where it is applied, which is
-    what Python's ``math.exp(n)`` does too. The complex logarithm and square
-    root are declined: ``cmath.log`` and ``cmath.sqrt`` read the sign of a
-    zero imaginary part to choose a side of their branch cut, so that
-    ``cmath.log(complex(-1, -0.0))`` is ``-πi`` and ``cmath.log(complex(-1,
-    0.0))`` is ``πi``, while Lean's complex numbers have no signed zero and
-    ``Complex.log (-1)`` is ``π * I`` from either side. The complex
-    exponential is entire, and has no cut to disagree about. An
+    what Python's ``math.exp(n)`` does too. A complex argument gets the
+    complex function, the principal branch for the logarithm and the square
+    root, which is ``cmath``'s off the branch cut. A literal on the cut, or
+    the logarithm of a complex zero, is declined here (see *the branch cut*
+    in the module docstring); any other complex argument is printed, and the
+    statement carries a side condition that keeps it off the cut
+    (:attr:`LeanStatement.side_conditions`). The complex exponential is
+    entire, and has no cut to disagree about. An
     :class:`~lanky.terms.Elementary` built by hand with any other function is
-    declined too.
+    declined.
     """
     if expr.function not in _ELEMENTARY:
         raise UnsupportedTerm(
             f"{render(expr)} applies {expr.function!r}, which lanky does not print"
         )
     real, complex_ = _ELEMENTARY[expr.function]
-    name = complex_ if _kind(expr.argument, types) == "Complex" else real
-    if name is None:
-        kind = "logarithm" if expr.function == "log" else "square root"
+    is_complex = _kind(expr.argument, types) == "Complex"
+    if is_complex and _literal_on_the_cut(expr.function, expr.argument):
+        kind, axis = _CUT_FUNCTIONS[expr.function]
         raise UnsupportedTerm(
-            f"{render(expr)} is a complex {kind}, whose branch cut Python and Lean "
-            "do not draw the same way: cmath picks a side of it by the sign of a "
-            "zero imaginary part, and Lean's complex numbers have no signed zero"
+            f"{render(expr)} is a complex {kind} on its branch cut, {axis}, where "
+            "Python and Lean do not agree: cmath picks a side of the cut by the "
+            "sign of a zero imaginary part, or has no value at all, and Lean's "
+            "complex numbers have no signed zero"
         )
+    name = complex_ if is_complex else real
     return _parens(f"{global_name(name)} {_render(expr.argument, _ATOM, types)}", _APP, outer)
+
+
+def _literal_on_the_cut(function: str, argument: Any) -> bool:
+    """Whether a literal argument of a complex ``log`` or ``sqrt`` is on its branch cut.
+
+    The cut is the non-positive real axis for the logarithm, zero included,
+    where ``cmath.log`` raises, and the negative real axis for the square
+    root, which is ``0`` at ``0`` in Python and in Lean. Anything but a
+    literal is not looked at here, and is left to a side condition.
+    """
+    if function not in _CUT_FUNCTIONS or not isinstance(argument, complex):
+        return False
+    if argument.imag != 0:
+        return False
+    return argument.real <= 0 if function == "log" else argument.real < 0
+
+
+@expr_dataclass(eq=False)
+class _OffTheCut(prim.ExpressionNode):
+    """The proposition that ``argument`` is off the branch cut of ``function``.
+
+    Not a lanky term: it is the body of a side condition, which only the
+    printer builds (:func:`_side_conditions`) and only the printer prints, as
+    ``0 < Complex.re a ∨ Complex.im a ≠ 0`` for ``log``, which leaves out zero
+    too, and ``0 ≤ Complex.re a ∨ Complex.im a ≠ 0`` for ``sqrt``. It is a
+    pymbolic node so that every walk of a term (its free variables, the names
+    it mentions, the applications of a family in it) goes through
+    ``argument`` as it would through any operand.
+    """
+
+    function: str
+    argument: Any
+
+
+def _render_off_the_cut(expr: _OffTheCut, outer: int, types: _Types) -> str:
+    """Print the side condition that a complex argument is off its branch cut."""
+    argument = _render(expr.argument, _ATOM, types)
+    relation = "<" if expr.function == "log" else "≤"
+    text = (
+        f"0 {relation} {global_name('Complex.re')} {argument} ∨ "
+        f"{global_name('Complex.im')} {argument} ≠ 0"
+    )
+    return _parens(text, _OR, outer)
+
+
+def _side_conditions(term: Any) -> list[Any]:
+    """The side conditions of a statement: each complex ``log`` and ``sqrt`` is off its cut.
+
+    One term per argument that is neither a literal (decided where it is
+    printed) nor the same as an earlier one: the binders around the argument
+    as nested universals, outermost first, each with the guard Python has
+    evaluated by the time it reaches the argument, which is the guard of a
+    quantifier or a reduction whose body holds it, and not the guard of one
+    whose guard holds it. The body is an :class:`_OffTheCut`.
+
+    Raises:
+        UnsupportedTerm: For a complex logarithm or square root in a binder's
+            domain, a refinement predicate say, which the side condition
+            would have to quantify over the binder it is about.
+    """
+    found: list[Any] = []
+    _collect_cuts(term, (), _free_scope(term), found)
+    return found
+
+
+def _collect_cuts(
+    expr: Any,
+    context: tuple[tuple[Any, Any], ...],
+    types: _Types,
+    found: list[Any],
+) -> None:
+    """Add to ``found`` the side condition of every complex ``log`` and ``sqrt`` in ``expr``.
+
+    ``context`` is the ``(binders, guard)`` of every quantifier and reduction
+    around ``expr``, outermost first, the guard ``None`` where it has not been
+    evaluated yet, and ``types`` the scope the printer would have there.
+    """
+    if isinstance(expr, Forall | Exists | Sum):
+        inner = dict(types)
+        for var, domain in expr.binders:
+            inner[var.name] = domain
+            _refuse_cuts_in_domain(var, domain, inner)
+        if expr.guard is not None:
+            _collect_cuts(expr.guard, (*context, (expr.binders, None)), inner, found)
+        _collect_cuts(expr.body, (*context, (expr.binders, expr.guard)), inner, found)
+        return
+    if not isinstance(expr, prim.ExpressionNode):
+        return
+    if (
+        isinstance(expr, Elementary)
+        and expr.function in _CUT_FUNCTIONS
+        and not isinstance(_integral(expr.argument), int | float | Fraction | complex)
+        and _kind(expr.argument, types) == "Complex"
+    ):
+        condition: Any = _OffTheCut(expr.function, expr.argument)
+        for binders, guard in reversed(context):
+            condition = Forall(binders, condition, guard)
+        if not any(structurally_equal(condition, seen) for seen in found):
+            found.append(condition)
+    for child in init_args(expr):
+        for item in child if isinstance(child, tuple) else (child,):
+            _collect_cuts(item, context, types, found)
+
+
+def _refuse_cuts_in_domain(var: Var, domain: Any, types: _Types) -> None:
+    """Decline a complex ``log`` or ``sqrt`` in what a binder's domain carries.
+
+    A refinement predicate is about the variable being bound, which a side
+    condition would have to quantify over before its own refinement holds, and
+    a ``Fin`` bound or a family type with a complex logarithm in it is not
+    something a statement needs. Declining costs a proof at worst.
+    """
+    for node in _domain_terms(domain):
+        found: list[Any] = []
+        _collect_cuts(node, (), types, found)
+        if found:
+            raise UnsupportedTerm(
+                f"the domain of {var.name} ({domain}) takes a complex logarithm or "
+                "square root, which lanky cannot keep off its branch cut there"
+            )
+
+
+def _domain_terms(domain: Any) -> list[Any]:
+    """The expressions a binder's domain carries: refinement predicates, bounds, family types."""
+    if isinstance(domain, Refined):
+        return [*_domain_terms(domain.base), *domain.props]
+    if isinstance(domain, FinType):
+        return [domain.bound]
+    if isinstance(domain, FnType):
+        return [*_domain_terms(domain.domain), *_domain_terms(domain.codomain)]
+    return []
+
+
+def elementary_arguments(term: Any) -> list[tuple[Elementary, str]]:
+    """Every ``exp``, ``log`` and ``sqrt`` in ``term``, with what its argument is as a number.
+
+    ``Int``, ``Real`` or ``Complex``, as the Mathlib dialect reads the argument
+    where the function is applied, which is what decides between ``Real.log``
+    and ``Complex.log`` (see :func:`_render_elementary`): so
+    :mod:`lanky.semantics` notes the gaps of the function that is printed. A
+    body, a guard and every expression a binder's domain carries are walked,
+    each under the binders around it.
+    """
+    found: list[tuple[Elementary, str]] = []
+    _walk_elementary(term, _free_scope(term), found)
+    return found
+
+
+def _walk_elementary(expr: Any, types: _Types, found: list[tuple[Elementary, str]]) -> None:
+    """Add to ``found`` every elementary function in ``expr``, read in the scope ``types``."""
+    if isinstance(expr, Forall | Exists | Sum):
+        inner = dict(types)
+        for var, domain in expr.binders:
+            inner[var.name] = domain
+            for node in _domain_terms(domain):
+                _walk_elementary(node, inner, found)
+        for part in (expr.guard, expr.body):
+            _walk_elementary(part, inner, found)
+        return
+    if not isinstance(expr, prim.ExpressionNode):
+        return
+    if isinstance(expr, Elementary):
+        found.append((expr, _kind(expr.argument, types)))
+    for child in init_args(expr):
+        for item in child if isinstance(child, tuple) else (child,):
+            _walk_elementary(item, types, found)
 
 
 def _render_reduction(expr: Sum, outer: int, types: _Types) -> str:
@@ -1223,6 +1440,8 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
         raise UnsupportedTerm(
             f"{expr.function} needs Real.{expr.function}, which is Mathlib"
         )
+    if isinstance(expr, _OffTheCut):
+        return _render_off_the_cut(expr, outer, types)
     if isinstance(expr, prim.Comparison):
         relation = _RELATIONS.get(expr.operator)
         if relation is None:
@@ -1800,6 +2019,12 @@ class LeanStatement:
         shadowed: The root names (:data:`ROOT_NAMES`) a variable of the
             statement is named like, which the statement prints from the root
             and a tactic script has to name the same way (:meth:`qualified`).
+        side_conditions: Statements Lean has to prove before this one means
+            in Lean what it means in Python: in the Mathlib dialect, that each
+            argument of a complex logarithm or square root is off its branch
+            cut (see the module docstring), one statement per argument. Empty
+            for a statement with none, and in the core dialect, which prints
+            neither function.
     """
 
     name: str
@@ -1813,6 +2038,7 @@ class LeanStatement:
     mathlib: bool = False
     variables: tuple[str, ...] = field(default_factory=tuple)
     shadowed: frozenset[str] = frozenset()
+    side_conditions: tuple[LeanStatement, ...] = field(default_factory=tuple)
 
     def qualified(self, name: str) -> str:
         """A root declaration as this statement's source names it (see :func:`global_name`).
@@ -1925,17 +2151,29 @@ def statement_of(
     the root (:func:`global_name`), and the statement records which in
     :attr:`LeanStatement.shadowed`.
 
+    In the Mathlib dialect, a statement that takes the complex logarithm or
+    square root of something other than a literal carries the claims that keep
+    it off the branch cut as :attr:`LeanStatement.side_conditions`, each a
+    statement of its own named after this one, ``name_branch_cut_0`` and on.
+
     Raises:
         UnsupportedTerm: If any part of the statement leaves the fragment, or
             applies a family outside the domain it declares
             (:func:`check_applications`).
     """
     with dialect(mathlib), _shadowing(_shadowed_roots(term)):
-        return _statement_of(term, name)
+        statement = _statement_of(term, name)
+        if not statement.mathlib:
+            return statement
+        statement.side_conditions = tuple(
+            _statement_of(condition, f"{name}_branch_cut_{index}")
+            for index, condition in enumerate(_side_conditions(term))
+        )
+        return statement
 
 
 def _statement_of(term: Any, name: str) -> LeanStatement:
-    """:func:`statement_of`, in the dialect in effect."""
+    """:func:`statement_of`, in the dialect in effect, with no side condition."""
     lean_name = _lean_name(name)
     mathlib = _in_mathlib()
     shadowed = _SHADOWED.get()

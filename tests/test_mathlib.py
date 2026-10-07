@@ -11,6 +11,7 @@ sets ``LANKY_LEAN_MATHLIB_TEST_REQUIRED=1``, under which they fail instead.
 
 from __future__ import annotations
 
+import cmath
 import json
 import math
 import os
@@ -25,10 +26,12 @@ import pytest
 
 from lanky import exp, log, sqrt, theorem
 from lanky import mathlib as mathlib_mode
+from lanky.check import goal_guard_fact, hypotheses_fact
 from lanky.intervals import ComplexValue, exp_value
 from lanky.lean import (
     UnsupportedTerm,
     domain_guards,
+    elementary_arguments,
     lean_identifier,
     lean_type,
     print_lean,
@@ -53,6 +56,7 @@ from lanky.semantics import (
 from lanky.terms import (
     Abs,
     Elementary,
+    Exists,
     Forall,
     Product,
     Sum,
@@ -161,6 +165,33 @@ def scan_monotone(
     hs: all(off(r + 1) == off(r) + cnt(r) for r in Fin[n]),
 ) -> all(off(a) <= off(b) for a in Fin[n + 1] for b in Fin[n + 1] if a <= b):
     """The scan from the README, which the core induction proves."""
+
+
+@theorem
+def exp_log_off_the_cut(x: Real) -> exp(log(x + 1j)) == x + 1j:
+    """The principal logarithm undone, where the imaginary part keeps it off the cut."""
+
+
+@theorem
+def root_squared(x: Real, y: Real, hy: y != 0) -> sqrt(x + y * 1j) ** 2 == x + y * 1j:
+    """The principal square root squared, where a hypothesis keeps it off the cut."""
+
+
+@theorem
+def exp_log_above_the_axis(x: Real, y: Real, hy: y > 0) -> exp(log(x + y * 1j)) == x + y * 1j:
+    """The logarithm undone, where only a hypothesis shows its argument is not zero."""
+
+
+@theorem
+def exp_log_of_a_positive(x: Real) -> exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j:
+    """The logarithm undone on the positive real axis, which is off the cut."""
+
+
+#: False in Python, ``log x - πi`` against ``log x + πi``, and true in Lean. A
+#: term built here and not an annotation, where ``complex`` would be a variable.
+_ACROSS_THE_CUT = Forall(
+    ((x, Real),), log(x * complex(-1, -0.0)) == log(x * complex(-1, 0.0)), x > 0
+)
 
 
 # }}}
@@ -302,10 +333,10 @@ def test_the_elementary_functions_are_mathlibs() -> None:
     assert mathlib(exp(z) != 0, z=Complex) == "Complex.exp z ≠ 0"
     # an integer argument is cast where the function is applied, as math.exp(n) casts
     assert mathlib(exp(n) >= 1, n=Nat) == "Real.exp n ≥ 1"
-    with pytest.raises(UnsupportedTerm, match="complex square root"):
-        print_lean(Forall(((z, Complex),), sqrt(z) == z), mathlib=True)
-    with pytest.raises(UnsupportedTerm, match="complex logarithm"):
-        print_lean(Forall(((z, Complex),), log(z) == log(z)), mathlib=True)
+    # and the complex logarithm and square root are Mathlib's principal branches (#59)
+    assert mathlib(sqrt(z) == z, z=Complex) == "Complex.sqrt z = z"
+    assert mathlib(log(z) == log(z), z=Complex) == "Complex.log z = Complex.log z"
+    assert mathlib(Abs(log(z + 2)) < 1, z=Complex) == "‖Complex.log (z + 2)‖ < 1"
     with pytest.raises(UnsupportedTerm, match="needs Real.exp"):
         print_lean(exp_positive.term)
     # a node built by hand with a function lanky has no Mathlib name for
@@ -313,21 +344,133 @@ def test_the_elementary_functions_are_mathlibs() -> None:
         print_lean(Forall(((x, Real),), Elementary("sin", x) <= 1), mathlib=True)
 
 
-def test_a_complex_logarithm_is_declined_for_its_branch_cut() -> None:
-    """``cmath.log`` picks a side of its cut by the sign of a zero, and Lean cannot.
+def test_a_complex_logarithm_carries_the_claim_that_it_is_off_the_cut() -> None:
+    """``cmath.log`` picks a side of its cut by the sign of a zero, and Lean cannot (#59).
 
     At ``x = 1`` the two sides are ``-πi`` and ``πi`` in Python, while both
     print as ``Complex.log (x * (-1 + 0 * Complex.I : ℂ))``, which Lean's
-    ``simp`` proves equal: printed, the statement was a proof of something
-    Python refutes at every positive ``x``.
+    ``simp`` proves equal. Printed as it stands, the statement was a proof of
+    something Python refutes at every positive ``x``, so it is printed with a
+    side condition, that the argument is off the cut, which is false there,
+    and which the Lean oracle has to prove before the statement counts.
     """
-    across = Forall(((x, Real),), log(x * complex(-1.0, -0.0)) == log(x * complex(-1.0, 0.0)))
     assert evaluate(log(x * complex(-1.0, -0.0)), {"x": 1.0}) == pytest.approx(-math.pi * 1j)
     assert evaluate(log(x * complex(-1.0, 0.0)), {"x": 1.0}) == pytest.approx(math.pi * 1j)
-    with pytest.raises(UnsupportedTerm, match="complex logarithm"):
-        print_lean(across, mathlib=True)
-    # the real logarithm of a real argument is Mathlib's, as is the complex exponential
+    statement = statement_of(_ACROSS_THE_CUT, "across", mathlib=True)
+    argument = "x * (-1 + 0 * Complex.I : ℂ)"
+    assert statement.goal == f"Complex.log ({argument}) = Complex.log ({argument})"
+    # the two arguments print alike, and the claim about them is made once
+    (condition,) = statement.side_conditions
+    assert condition.source("intros\nnorm_num") == (
+        "theorem Lanky.across_branch_cut_0 (x : ℝ) (h0 : x > 0) : "
+        f"0 < Complex.re ({argument}) ∨ Complex.im ({argument}) ≠ 0 := by\n"
+        "  intros\n  norm_num\n"
+    )
+    # a square root's cut is the negative axis, and zero is on neither side of it
+    root = statement_of(Forall(((z, Complex),), sqrt(z + 1j) == sqrt(z + 1j)), "r", mathlib=True)
+    (condition,) = root.side_conditions
+    assert condition.proposition == (
+        "∀ z : ℂ, 0 ≤ Complex.re (z + (0 + 1 * Complex.I : ℂ)) "
+        "∨ Complex.im (z + (0 + 1 * Complex.I : ℂ)) ≠ 0"
+    )
+    # the real logarithm of a real argument is Mathlib's, and claims nothing more
     assert mathlib(log(Abs(z)) <= Abs(z), z=Complex) == "Real.log ‖z‖ ≤ ‖z‖"
+    for term in (Forall(((z, Complex),), log(Abs(z)) <= Abs(z)), exp_add.term):
+        assert statement_of(term, mathlib=True).side_conditions == ()
+    # and core Lean prints neither the numbers nor the functions, so it has nothing to claim
+    with pytest.raises(UnsupportedTerm, match="Real needs Mathlib"):
+        statement_of(_ACROSS_THE_CUT)
+    with pytest.raises(UnsupportedTerm, match="needs Real.log"):
+        statement_of(Forall(((n, Nat),), log(n * 1j) == log(n * 1j)))
+
+
+def test_a_literal_on_the_cut_is_declined_and_one_off_it_needs_no_claim() -> None:
+    """A literal argument is looked at where it is printed (#59).
+
+    Only a node built by hand holds one, since ``lanky.log`` of a number is
+    Python's value. ``log`` of a negative real or of zero is declined, the
+    second because ``cmath.log`` raises where Lean's total logarithm is ``0``;
+    ``sqrt`` of zero is ``0`` in both readings, and a literal off the cut is
+    a point where the two branches agree, with nothing to claim.
+    """
+    for function, value in (("log", complex(-1, 0)), ("log", complex(-1, -0.0)), ("log", 0j)):
+        with pytest.raises(UnsupportedTerm, match="branch cut"):
+            print_lean(Forall(((x, Real),), Elementary(function, value) == x), mathlib=True)
+    with pytest.raises(UnsupportedTerm, match="complex square root on its branch cut"):
+        print_lean(Forall(((x, Real),), Elementary("sqrt", complex(-4, 0)) == x), mathlib=True)
+    for function, value, printed in (
+        ("sqrt", 0j, "Complex.sqrt (0 + 0 * Complex.I : ℂ)"),
+        ("log", 1j, "Complex.log (0 + 1 * Complex.I : ℂ)"),
+        ("log", complex(2, 0), "Complex.log (2 + 0 * Complex.I : ℂ)"),
+        ("sqrt", complex(-4, 1), "Complex.sqrt (-4 + 1 * Complex.I : ℂ)"),
+    ):
+        term = Forall(((z, Complex),), Elementary(function, value) == z)
+        statement = statement_of(term, "lit", mathlib=True)
+        assert statement.goal == f"{printed} = z"
+        assert statement.side_conditions == ()
+
+
+def test_a_side_condition_assumes_what_python_has_evaluated_by_then() -> None:
+    """The claim that an argument is off the cut is made under the guards around it (#59).
+
+    A theorem's hypotheses, a refinement and the ``if`` of a generator around
+    the argument hold wherever Python computes it, and a guard that takes a
+    logarithm itself has a claim of its own, without its own guard. An
+    existential's binder is quantified over, since the claim is about every
+    point Python may reach.
+    """
+
+    def conditions(term: object) -> list[str]:
+        statement = statement_of(term, "c", mathlib=True)
+        return [condition.proposition for condition in statement.side_conditions]
+
+    def off(argument: str) -> str:
+        return f"0 < Complex.re ({argument}) ∨ Complex.im ({argument}) ≠ 0"
+
+    xy = "x + y * (0 + 1 * Complex.I : ℂ)"
+    assert conditions(exp_log_off_the_cut.term) == [
+        f"∀ x : ℝ, {off('x + (0 + 1 * Complex.I : ℂ)')}"
+    ]
+    hypothesis = Forall(((x, Real), (y, Real)), exp(log(x + y * 1j)) == x + y * 1j, y > 0)
+    assert conditions(hypothesis) == [f"∀ x : ℝ, ∀ y : ℝ, y > 0 → {off(xy)}"]
+    nested = Forall(((x, Real),), Forall(((y, Real),), log(x + y * 1j) == 0, y > 0))
+    assert conditions(nested) == [f"∀ x : ℝ, ∀ y : ℝ, y > 0 → {off(xy)}"]
+    in_the_guard = Forall(((x, Real),), Forall(((y, Real),), y > 0, Abs(log(x + y * 1j)) < 1))
+    assert conditions(in_the_guard) == [f"∀ x : ℝ, ∀ y : ℝ, {off(xy)}"]
+    witness = Exists(((x, Real),), log(x + 1j) == 0)
+    assert conditions(witness) == [f"∀ x : ℝ, {off('x + (0 + 1 * Complex.I : ℂ)')}"]
+    summed = Forall(
+        ((n, Nat),),
+        Sum(((i, Refined(FinType(n), (i > 0,))),), Abs(log(i * 1j)), i % 2 == 0) >= 0,
+    )
+    assert conditions(summed) == [
+        "∀ n : Int, 0 ≤ n → ∀ i : Int, 0 ≤ i → i < n → i > 0 → (i % 2 : ℤ) = 0 → "
+        + off("i * (0 + 1 * Complex.I : ℂ)")
+    ]
+    # one claim per argument, however often it is taken
+    twice = Forall(((x, Real),), log(x + 1j) + sqrt(x + 1j) == log(x + 1j))
+    assert len(conditions(twice)) == 2
+    # a refinement that takes one would have to be claimed before its binder exists
+    refined = Forall(((z, Refined(Complex, (Abs(log(z)) < 1,))),), z == z)
+    with pytest.raises(UnsupportedTerm, match="domain of z"):
+        statement_of(refined, mathlib=True)
+    # and a complex logarithm is a complex number, which Python does not order
+    with pytest.raises(UnsupportedTerm, match="orders complex numbers"):
+        print_lean(Forall(((x, Real),), log(x + 1j) < 1), mathlib=True)
+
+
+def test_a_complex_logarithm_or_square_root_carries_no_note() -> None:
+    """Lean proves one only off the cut and away from zero, where the readings are one (#59)."""
+    assert notes(exp_log_off_the_cut.term, mathlib=True) == ()
+    assert notes(root_squared.term, mathlib=True) == ()
+    assert notes(Forall(((z, Complex),), sqrt(z) * sqrt(z) == z), mathlib=True) == ()
+    # a real one beside it still has its note
+    both = Forall(((x, Real),), log(x + 1j) == log(x) + 0j)
+    assert notes(both, mathlib=True) == (OUTSIDE_THE_DOMAIN,)
+    kinds = [(node.function, kind) for node, kind in elementary_arguments(both)]
+    assert kinds == [("log", "Complex"), ("log", "Real")]
+    summed = Forall(((n, Nat),), Sum(((i, FinType(n)),), log(i + 1j)) == 0)
+    assert [kind for _, kind in elementary_arguments(summed)] == ["Complex"]
 
 
 def test_complex_numbers_are_not_ordered() -> None:
@@ -469,6 +612,15 @@ def test_the_mathlib_ladder_follows_the_core_one() -> None:
     assert "Finset.insert_Ico_right_eq_Ico_add_one" in script
     assert "first | (have hih := ih (by omega)) | (have hih := ih) | skip" in script
     assert tactic_ladder(statement_of(gauss.term, "gauss", mathlib=True))[-1] == script
+    # a complex logarithm or square root gets two more whole-goal attempts (#59),
+    # the second with a discharger that reads the hypotheses
+    ladder = tactic_ladder(statement_of(exp_log_off_the_cut.term, "e", mathlib=True))
+    assert ladder[: len(BASE_TACTICS) + len(MATHLIB_TACTICS)] == [*BASE_TACTICS, *MATHLIB_TACTICS]
+    plain, discharged = ladder[len(BASE_TACTICS) + len(MATHLIB_TACTICS) :]
+    assert plain.startswith("simp [Real.exp_add, ") and plain.endswith(", Complex.ext_iff]")
+    assert "Complex.exp_log, Complex.sqrt" in plain
+    assert discharged.startswith("simp (disch := (simp [Complex.ext_iff] <;> first | positivity")
+    assert discharged.endswith(plain.removeprefix("simp "))
     # a quantified goal is the core induction's, and a sum over no natural bound is nobody's
     assert reduction_scripts(statement_of(scan_monotone.term, "s", mathlib=True)) == []
     constant = Forall(((x, Real),), Sum(((i, FinType(3)),), x) == 3 * x)
@@ -970,6 +1122,14 @@ _REAL, _COMPLEX, _FINSET, _RFL = Var("Real"), Var("Complex"), Var("Finset"), Var
             None,
         ),
         (
+            "log_named_Complex",
+            Forall(
+                ((_COMPLEX, Real),),
+                exp(log(_COMPLEX + complex(0, 1))) == _COMPLEX + complex(0, 1),
+            ),
+            None,
+        ),
+        (
             "gauss_named_rfl",
             Forall(((_RFL, Nat),), 2 * Sum(((i, FinType(_RFL + 1)),), i) == _RFL * (_RFL + 1)),
             "obtain ⟨x, rfl⟩ := Int.eq_ofNat_of_zero_le h0\ninduction x with",
@@ -983,7 +1143,14 @@ _REAL, _COMPLEX, _FINSET, _RFL = Var("Real"), Var("Complex"), Var("Finset"), Var
             "obtain ⟨Finset, rfl⟩ := Int.eq_ofNat_of_zero_le h0",
         ),
     ],
-    ids=["exp_named_Real", "exp_add_named_Real", "named_Complex", "gauss_rfl", "gauss_Finset"],
+    ids=[
+        "exp_named_Real",
+        "exp_add_named_Real",
+        "named_Complex",
+        "log_named_Complex",
+        "gauss_rfl",
+        "gauss_Finset",
+    ],
 )
 def test_names_lean_gives_a_meaning_to_are_kept_apart_in_mathlib(
     mathlib_oracle: LeanOracle, owner: str, term: object, tactic: str | None
@@ -993,9 +1160,11 @@ def test_names_lean_gives_a_meaning_to_are_kept_apart_in_mathlib(
     After a binder named ``Real``, ``Real.exp`` and the lemma ``Real.exp_add``
     are fields of the variable, and so are ``Complex.I`` and ``Finset.Ico``
     and the lemmas the sum's peel names after one named so; they are named
-    from the root. A parameter named ``rfl`` that the reduction's induction
-    trades for a natural is traded under a fresh name, since the ``rcases``
-    pattern ``⟨rfl, rfl⟩`` substitutes twice.
+    from the root, and so are ``Complex.re`` and ``Complex.im`` in the claim
+    that a complex logarithm's argument is off the cut (#59). A parameter
+    named ``rfl`` that the reduction's induction trades for a natural is
+    traded under a fresh name, since the ``rcases`` pattern ``⟨rfl, rfl⟩``
+    substitutes twice.
     """
     fact = Fact(id=owner, kind="theorem", statement=owner, term=term, owner=owner)
     proved = mathlib_oracle.establish(fact)
@@ -1061,11 +1230,21 @@ def test_every_printed_statement_elaborates(mathlib_oracle: LeanOracle) -> None:
         Forall(((n, Nat),), Sum(((i, FinType(n)),), -2) <= 0),
         _CLOSED_ABS,
         _CLOSED_BODY,
+        exp_log_off_the_cut.term,
+        root_squared.term,
+        _ACROSS_THE_CUT,
+        Forall(((z, Complex),), Abs(log(z + 2)) + Abs(sqrt(z)) >= 0),
+        Forall(((n, Nat),), Sum(((i, FinType(n)),), log(i + 1j), i % 2 == 0) == 0),
     ]
     for term in terms:
         source = f"example : Prop := {print_lean(term, mathlib=True)}\n"
         closed, detail = mathlib_oracle.session.run(source)
         assert closed, (source, detail)
+        # and so does every claim that a complex argument is off the cut (#59)
+        for condition in statement_of(term, "t", mathlib=True).side_conditions:
+            source = f"example : Prop := {condition.proposition}\n"
+            closed, detail = mathlib_oracle.session.run(source)
+            assert closed, (source, detail)
 
 
 def test_floor_division_next_to_a_real_is_integer_division(mathlib_oracle: LeanOracle) -> None:
@@ -1168,6 +1347,130 @@ def test_the_quickstarts_mathlib_ledger_is_the_one_check_prints(
         shown.append(line.rstrip())
     assert shown == printed
     assert [line.split()[:2] for line in printed[2:4]] == [["proved", "lean"]] * 2
+
+
+def test_mathlibs_principal_branches_are_pythons_off_the_cut(
+    mathlib_oracle: LeanOracle,
+) -> None:
+    """The conventions the printer relies on, read off the pinned Mathlib (#59).
+
+    ``Complex.log z`` is ``Real.log ‖z‖ + arg z * I``, with the argument in
+    ``(-π, π]``, and ``Complex.sqrt z`` is ``z ^ (2⁻¹ : ℂ)``, which away from
+    zero is ``exp (log z * 2⁻¹)``, the root of half the argument: ``cmath``'s
+    principal branches. On the cut Lean takes the side of ``π``, which
+    ``cmath`` takes for a positive zero imaginary part and not for a negative
+    one, and its logarithm of zero is ``0``, where ``cmath`` has none.
+    """
+    source = (
+        "example (z : ℂ) : Complex.log z = Real.log ‖z‖ + Complex.arg z * Complex.I := rfl\n"
+        "example (z : ℂ) : Complex.arg z ∈ Set.Ioc (-Real.pi) Real.pi := Complex.arg_mem_Ioc z\n"
+        "example (z : ℂ) : Complex.sqrt z = z ^ (2⁻¹ : ℂ) := rfl\n"
+        "example (z : ℂ) (h : z ≠ 0) : z ^ (2⁻¹ : ℂ) = Complex.exp (Complex.log z * 2⁻¹) :=\n"
+        "  Complex.cpow_def_of_ne_zero h _\n"
+        "example : Complex.log (-1) = Real.pi * Complex.I := Complex.log_neg_one\n"
+        "example : Complex.sqrt (-1) = Complex.I := Complex.sqrt_neg_one\n"
+        "example : Complex.log 0 = 0 := Complex.log_zero\n"
+    )
+    closed, detail = mathlib_oracle.session.run(source)
+    assert closed, detail
+    assert cmath.log(complex(-1, 0.0)) == pytest.approx(math.pi * 1j)
+    assert cmath.log(complex(-1, -0.0)) == pytest.approx(-math.pi * 1j)
+    assert cmath.sqrt(complex(-1, -0.0)) == pytest.approx(-1j)
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [exp_log_off_the_cut, root_squared, exp_log_above_the_axis, exp_log_of_a_positive],
+    ids=lambda claim: claim.__name__,
+)
+def test_mathlib_proves_a_complex_logarithm_or_root_off_the_cut(
+    mathlib_oracle: LeanOracle, claim
+) -> None:
+    """Printed, and proved once the claim that its argument is off the cut is (#59).
+
+    The file that replays the proof proves that claim first, under a name of
+    its own, and the provenance lists it. The last two need the ladder's
+    ``simp`` with a discharger: ``Complex.exp_log`` wants the argument
+    nonzero, which takes the hypothesis ``y > 0``, or ``positivity``.
+    """
+    owner = claim.__name__
+    fact = Fact(id=owner, kind="theorem", statement=owner, term=claim.term, owner=owner)
+    proved = mathlib_oracle.establish(fact)
+    assert proved.status is Status.PROVED, (
+        proved.provenance.get("lean_declined") or proved.provenance.get("lean_reason")
+    )
+    source = proved.provenance["lean_source"]
+    assert source.startswith(f"import Mathlib\n\ntheorem Lanky.{owner}_branch_cut_0 ")
+    assert f"\ntheorem Lanky.{owner} " in source
+    (condition,) = statement_of(claim.term, owner, mathlib=True).side_conditions
+    assert proved.provenance["lean_side_conditions"] == [condition.proposition]
+    closed, detail = mathlib_oracle.session.run(source.removeprefix("import Mathlib\n\n"))
+    assert closed, detail
+
+
+def test_a_statement_that_may_reach_the_cut_is_declined(mathlib_oracle: LeanOracle) -> None:
+    """Lean cannot keep the argument off the cut, so it does not prove the statement (#59).
+
+    ``_ACROSS_THE_CUT`` is false in Python and true in Lean, whose ``ℂ`` has
+    no signed zero; the claim that its argument is off the cut is false at
+    every positive ``x``. ``exp(log(z)) == z`` for a nonzero ``z`` is true in
+    both readings, and declined all the same: nothing keeps ``z`` off the cut.
+    """
+    for owner, term in (
+        ("across", _ACROSS_THE_CUT),
+        ("undone", Forall(((z, Complex),), exp(log(z)) == z, z != 0)),
+    ):
+        fact = Fact(id=owner, kind="theorem", statement=owner, term=term, owner=owner)
+        result = mathlib_oracle.establish(fact)
+        assert result.status is Status.ASSUMED
+        declined = result.provenance["lean_declined"]
+        assert declined.startswith("Lean could not prove ∀ "), declined
+        assert "branch cut" in declined
+        assert result.provenance["declined"] == f"lean: {declined}"
+        assert "lean_tried" not in result.provenance
+
+
+def test_a_pinned_tactic_does_not_skip_the_side_conditions(mathlib_oracle: LeanOracle) -> None:
+    """A per-fact tactic proves the statement only after its side conditions (#59).
+
+    ``simp`` proves ``_ACROSS_THE_CUT`` as printed, both sides being one
+    ``Complex.log`` in Lean; pinned to the fact, it is still never tried,
+    because the claim that the argument is off the cut fails first.
+    """
+    statement = statement_of(_ACROSS_THE_CUT, "across", mathlib=True)
+    closed, detail = mathlib_oracle.session.run(statement.source("simp"))
+    assert closed, detail
+    oracle = LeanOracle(session=mathlib_oracle.session)
+    oracle.tactics["across"] = "simp"
+    fact = Fact(id="across", kind="theorem", statement="across", term=_ACROSS_THE_CUT)
+    result = oracle.establish(fact)
+    assert result.status is Status.ASSUMED
+    assert result.provenance["lean_declined"].startswith("Lean could not prove ∀ ")
+
+
+def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOracle) -> None:
+    """The vacuity questions carry the side conditions of the guards they ask about (#59).
+
+    ``log(x * complex(-1, -0.0)) != log(x * complex(-1, 0.0))`` holds at every
+    positive ``x`` in Python, and is false in Lean, where both sides are one
+    ``Complex.log``: ``simp_all`` shows hypotheses with it in them
+    inconsistent, and a goal's guard with it in it empty, which would make
+    the claim vacuous and fail the check. Neither question is answered.
+    """
+    unequal = log(x * complex(-1, -0.0)) != log(x * complex(-1, 0.0))
+    on_the_cut = log(y * complex(-1, -0.0)) != log(y * complex(-1, 0.0))
+    claims = (
+        (Forall(((x, Real),), x == 7, (x > 0) & unequal), hypotheses_fact),
+        (Forall(((x, Real),), Forall(((y, Real),), y == x, on_the_cut), x > 0), goal_guard_fact),
+    )
+    for term, question in claims:
+        fact = question(Fact(id="c", kind="theorem", statement="c", term=term, owner="c"))
+        statement = statement_of(fact.term, "c", mathlib=True)
+        closed, detail = mathlib_oracle.session.run(statement.source("simp_all"))
+        assert closed, detail
+        result = mathlib_oracle.establish(fact)
+        assert result.status is Status.ASSUMED, fact.kind
+        assert result.provenance["lean_declined"].startswith("Lean could not prove ∀ ")
 
 
 # }}}
