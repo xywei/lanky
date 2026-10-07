@@ -332,12 +332,15 @@ def _make_binary(name: str) -> Callable[..., Any]:
     ``Fraction``'s own: ``x ** Fraction(1, 3)`` became ``x **
     0.3333333333333333``, a float every oracle reads as the rational it holds
     and not as a cube root, and ``Fraction(1, 3) * x`` raised. The node is
-    built here instead, as pymbolic builds it for a number.
+    built here instead, as pymbolic builds it for a number. A base the
+    ``Fraction`` made a float of is taken back (see :func:`_fraction_base`).
     """
     base = getattr(prim.ExpressionNode, f"__{name}__")
     build = _BUILDS[name]
 
     def operation(self: Any, other: Any) -> Any:
+        if name == "rpow" and isinstance(other, float):
+            other = _fraction_base(other, sys._getframe(1))
         result = build(self, other) if isinstance(other, Fraction) else base(self, other)
         if result is NotImplemented:
             return NotImplemented
@@ -347,6 +350,25 @@ def _make_binary(name: str) -> Callable[..., Any]:
     operation.__qualname__ = f"SymbolicMixin.__{name}__"
     operation.__doc__ = f"Build the lanky counterpart of pymbolic's ``__{name}__``."
     return operation
+
+
+def _fraction_base(value: float, frame: Any) -> Any:
+    """The ``Fraction`` that ``Fraction.__pow__`` made ``value`` of, or ``value``.
+
+    For ``Fraction(1, 3) ** x`` Python asks the ``Fraction`` first, and
+    before CPython 3.12.5 its ``__pow__`` made itself a float for an exponent
+    it did not know and raised that to the term (CPython gh-119189), so the
+    term's ``__rpow__`` was handed ``0.3333333333333333``. ``frame``, the
+    frame that asked, is then that ``__pow__``, whose first argument is the
+    ``Fraction``, and the base is taken from there. A float written as one
+    is no ``Fraction``'s and is kept.
+    """
+    if frame is None or frame.f_code is not Fraction.__pow__.__code__:
+        return value
+    given = frame.f_locals.get(frame.f_code.co_varnames[0])
+    if isinstance(given, Fraction) and float(given) == value:
+        return given
+    return value
 
 
 def _make_unary(name: str) -> Callable[..., Any]:

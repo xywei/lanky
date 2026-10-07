@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import random
-import sys
 from contextlib import closing
 
 import pymbolic.primitives as prim
@@ -1490,7 +1489,11 @@ def test_a_fraction_is_an_operand_as_an_int_is() -> None:
     which every oracle reads as the rational it holds and not as a third, and
     the product raised ``TypeError``. Every operator builds its node now, as
     pymbolic builds it for a number, on either side of the term, and the node
-    is lanky's, so the next operator is lanky's too.
+    is lanky's, so the next operator is lanky's too. For ``Fraction(1, 3) **
+    x`` Python asks the ``Fraction`` first, and before CPython 3.12.5 its
+    ``__pow__`` handed the term the float ``0.3333333333333333``
+    (gh-119189); the base is the ``Fraction`` on every version, and a float
+    written as one stays a float.
     """
     from fractions import Fraction
 
@@ -1512,17 +1515,16 @@ def test_a_fraction_is_an_operand_as_an_int_is() -> None:
         "x ** 1/3": (x**third, prim.Power(x, third)),
         "1/3 ** x": (third**x, prim.Power(third, x)),
     }
-    if sys.version_info < (3, 12, 5):
-        # Python asks the Fraction first, and before 3.12.5 its __pow__ made
-        # itself a float for an exponent it did not know, so the term was
-        # handed 0.3333333333333333 (CPython gh-119189)
-        built.pop("1/3 ** x")
     for written, (term, expected) in built.items():
         assert structurally_equal(term, expected), (written, render(term))
         # a lanky node, whose comparison builds a proposition
         assert isinstance(term == 0, Comparison), written
     assert render(x**third) == "x**(1/3)"
     assert render(third * x) == "1/3*x"
+    assert render(third**x) == "(1/3)**x"
+    assert render(Fraction(2) ** x) == "2**x"
+    assert structurally_equal(0.5**x, prim.Power(0.5, x))
+    assert structurally_equal(float(third) ** x, prim.Power(float(third), x))
     assert evaluate(third * x, {"x": 6}) == 2
     # a statement over the reals with a cube root, which the float exponent
     # had the tester refute at x = 2

@@ -202,11 +202,12 @@ loopty uses changes, and loopty's floor follows it.
   root, so the tester refuted `(x ** Fraction(1, 3)) ** 3 == x` at `x = 2`;
   and `Fraction(1, 3) * x` raised `TypeError`. A term's arithmetic operators
   build the node for a `Fraction` operand themselves now, on either side,
-  as pymbolic builds it for a number. One case is Python's: for
-  `Fraction(1, 3) ** x` Python asks the `Fraction` first, and before
-  CPython 3.12.5 its `__pow__` turned itself into a float for an exponent it
-  did not know, so the term is handed `0.3333333333333333` there and cannot
-  tell.
+  as pymbolic builds it for a number. For `Fraction(1, 3) ** x` Python asks
+  the `Fraction` first, and before CPython 3.12.5 its `__pow__` turned
+  itself into a float for an exponent it did not know (CPython gh-119189),
+  so the term was handed `0.3333333333333333`; the base is taken back from
+  the `__pow__` that made the float, and is the `Fraction` on every
+  version.
 - **A negation renders as a unary minus** (#69). `render(-x)` was `-1*x`,
   since pymbolic builds a negation as a product whose first factor is `-1`,
   and only a summand was read back as a subtraction: the ledger showed
