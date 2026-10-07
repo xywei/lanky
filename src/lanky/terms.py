@@ -341,7 +341,15 @@ class SymbolicMixin:
     """
 
     def __hash__(self) -> int:
-        """Hash as the underlying pymbolic node does."""
+        """Hash as the underlying pymbolic node does, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the hash is asked for by the code of an annotation
+                being evaluated, as a dict or a set lookup or display there
+                asks for it (see :func:`_refuse_hashing`).
+        """
+        if _ANNOTATION_CODE:
+            _refuse_hashing(self, sys._getframe(1))
         return super().__hash__()  # type: ignore[misc]
 
     # {{{ comparisons build propositions
@@ -651,6 +659,106 @@ def _tests_a_value(listing: tuple[Any, ...], position: int) -> bool:
 # }}}
 
 
+# {{{ where a term was hashed
+
+
+#: The code of each annotation being evaluated, outermost first, by the ``id``
+#: of each code object, which the mapping keeps alive: the annotation compiled,
+#: and every generator expression and lambda in it (see
+#: :func:`evaluate_annotations`).
+_ANNOTATION_CODE: list[dict[int, Any]] = []
+
+
+def _nested_code(code: Any) -> dict[int, Any]:
+    """``code`` and every code object compiled inside it, by ``id``.
+
+    A generator expression and a lambda are code objects of their own, among
+    the constants of the code they are written in; a comprehension of 3.12
+    and later runs in the code around it.
+    """
+    found = {id(code): code}
+    pending = [code]
+    while pending:
+        for constant in pending.pop().co_consts:
+            if isinstance(constant, type(code)) and id(constant) not in found:
+                found[id(constant)] = constant
+                pending.append(constant)
+    return found
+
+
+@contextmanager
+def _reading(code: Any) -> Iterator[None]:
+    """Mark ``code``, an annotation compiled, as the annotation being evaluated."""
+    _ANNOTATION_CODE.append(_nested_code(code))
+    try:
+        yield
+    finally:
+        _ANNOTATION_CODE.pop()
+
+
+def _refuse_hashing(term: Any, frame: Any) -> None:
+    """Refuse a term's hash to the code of an annotation being evaluated (#73).
+
+    An annotation is Python run on terms, and a dict or a set finds a key by
+    its hash before it compares anything. A term's hash is its structure's,
+    so a term used as a key matches no concrete key, and the lookup answers
+    as if the key were absent without asking the term for a truth value,
+    which is where a misuse is otherwise caught (:func:`_asking_context`):
+    ``{0: 1}.get(i, 0)`` was ``0`` while the annotation was read, so ``all(f(i)
+    * 0 == {0: 1}.get(i, 0) for i in Fin[n])`` became ``f(i)*0 == 0``, which
+    Lean proved and which is false at ``i = 0``. ``i in {0, 1}`` was
+    ``False`` the same way.
+
+    So a term is unhashable to the annotation's own code, as a list is: the
+    hash a dict or a set lookup, a dict or set display, or a cache asks for
+    there is refused, naming the fix. ``frame`` is the frame that asked for
+    the hash. A builtin such as ``dict.get`` has no frame of its own, so it
+    is the annotation's. lanky and pymbolic hash terms in their own code, as
+    a type's hash hashes its bound, and their frames are not the
+    annotation's. Neither is a function the annotation calls.
+
+    Raises:
+        TypeError: If ``frame`` runs the code of an annotation being
+            evaluated.
+    """
+    code = frame.f_code if frame is not None else None
+    if not any(id(code) in reading for reading in _ANNOTATION_CODE):
+        return
+    raise TypeError(
+        f"{render(term)} was hashed by the annotation, as a dict or a set lookup "
+        "or display there hashes its keys: a dict or a set finds a key by its "
+        "hash before it compares anything, and a term's hash is its structure's, "
+        "so a term matches no concrete key and the lookup would answer as if it "
+        "were absent, which says something else than what was written. A term is "
+        "no key of a dict and no member of a set in an annotation: write a table "
+        "indexed by a term as a family, a parameter Fn[...] with hypotheses that "
+        "give its values, and a membership test as comparisons joined with |, as "
+        "in (i == 0) | (i == 1)"
+    )
+
+
+def _hashed_unless_annotation(cls: type) -> type:
+    """Give ``cls`` the hash pymbolic generated for it, refused as :func:`_refuse_hashing` says.
+
+    :func:`pymbolic.expr_dataclass` puts a hash of its own on the class it
+    decorates, which takes the place of the one :class:`SymbolicMixin` has.
+    """
+    generated = cls.__hash__
+
+    def __hash__(self: Any) -> int:
+        if _ANNOTATION_CODE:
+            _refuse_hashing(self, sys._getframe(1))
+        return generated(self)
+
+    __hash__.__qualname__ = f"{cls.__qualname__}.__hash__"
+    __hash__.__doc__ = SymbolicMixin.__hash__.__doc__
+    cls.__hash__ = __hash__  # type: ignore[method-assign]
+    return cls
+
+
+# }}}
+
+
 class PropositionMixin(SymbolicMixin):
     """A term whose value is a truth value.
 
@@ -733,6 +841,7 @@ class LogicalNot(PropositionMixin, prim.LogicalNot):
     """Negation."""
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Forall(PropositionMixin, prim.ExpressionNode):
     """Universal quantification over index-type binders.
@@ -749,6 +858,7 @@ class Forall(PropositionMixin, prim.ExpressionNode):
 
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Exists(PropositionMixin, prim.ExpressionNode):
     """Existential quantification, with the same shape as :class:`Forall`."""
@@ -759,6 +869,7 @@ class Exists(PropositionMixin, prim.ExpressionNode):
 
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Sum(SymbolicMixin, prim.ExpressionNode):
     """A reduction over binders: the value of ``lanky.sum(body for i in dom)``.
@@ -775,6 +886,7 @@ class Sum(SymbolicMixin, prim.ExpressionNode):
     mapper_method: ClassVar[str] = "map_lanky_sum"
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Abs(SymbolicMixin, prim.ExpressionNode):
     """Absolute value."""
@@ -786,6 +898,7 @@ class Abs(SymbolicMixin, prim.ExpressionNode):
 ELEMENTARY_FUNCTIONS = ("exp", "log", "sqrt")
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Elementary(SymbolicMixin, prim.ExpressionNode):
     """An elementary function applied to one argument: ``exp(x)``, ``log(x)``, ``sqrt(x)``.
@@ -1355,6 +1468,10 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
 
     ``values`` overrides the proxies, which is how the same annotation is reused
     as a predicate over concrete values.
+
+    While a string is evaluated, a term is unhashable to its code, so that a
+    dict or a set lookup keyed by one is refused rather than answered as if
+    the key were absent (see :func:`_refuse_hashing`).
     """
     raw = inspect.get_annotations(fn, eval_str=False)
     scope = Scope(getattr(fn, "__globals__", {}))
@@ -1366,7 +1483,14 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
 
     out: dict[str, Any] = {}
     for name, annotation in raw.items():
-        out[name] = eval(annotation, scope, None) if isinstance(annotation, str) else annotation
+        if not isinstance(annotation, str):
+            out[name] = annotation
+            continue
+        # eval strips the spaces and tabs a string starts with, and compile
+        # does not
+        code = compile(annotation.lstrip(" \t"), "<string>", "eval")
+        with _reading(code):
+            out[name] = eval(code, scope, None)
     return out
 
 
