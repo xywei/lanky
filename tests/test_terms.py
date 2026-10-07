@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import random
 from contextlib import closing
 
 import pymbolic.primitives as prim
 import pytest
 
-from lanky.prelude import Fin, Fn, Nat, Refined
+from lanky.prelude import Complex, Fin, Fn, Nat, Real, Refined
 from lanky.terms import (
+    BuiltinName,
     Comparison,
     Exists,
     Forall,
@@ -304,6 +306,125 @@ def test_the_ways_the_refusal_names_keep_the_condition() -> None:
     assert render(kept) == "sum(1 for i in Fin(m) if n > 100)"
     assert evaluate(kept, {"m": 3, "n": 3}) == 0
     assert evaluate(kept, {"m": 3, "n": 101}) == 3
+
+
+# }}}
+
+
+# {{{ Python's builtins in an annotation
+
+
+def test_a_builtin_name_is_a_variable_that_calls_the_builtin() -> None:
+    """A builtin's name is a :class:`BuiltinName`: Python's function when called concretely.
+
+    It is still a variable where it is not called, a free name, so a plugin
+    that refuses a sort written as a free name (loopty's ``a: float``) still
+    sees one (#63).
+    """
+    scope = Scope()
+    assert isinstance(scope["min"], BuiltinName)
+    assert isinstance(scope["float"], prim.Variable)
+    assert structurally_equal(scope["float"], Var("float"))
+    assert not isinstance(scope["n"], BuiltinName)
+    assert scope["min"] is scope["min"]
+    assert scope["round"](0.5) == 0
+    assert scope["len"](Fin[3]) == 3
+
+
+def _negative_zero(z: Complex) -> z * complex(-1, -0.0) == -z:
+    """A complex literal with a negative zero imaginary part, written as Python writes one."""
+
+
+def _rounds_half_up() -> round(0.5) == 1:
+    """False in Python, where ``round(0.5)`` is ``0``."""
+
+
+def _named_like_builtins(min: Nat, len: Nat) -> min + len >= min:
+    """Parameters named like builtins, which are the parameters."""
+
+
+def test_a_builtin_at_concrete_arguments_is_pythons() -> None:
+    """``complex(-1, -0.0)`` is the number, and ``round(0.5) == 1`` is answered (#63).
+
+    Both were applications of a free name, ``complex`` or ``round``, which no
+    oracle could read as the file run as a program does: the tester could not
+    evaluate them, and Lean read ``round`` as Mathlib's, which rounds half up
+    (#64).
+    """
+    goal = evaluate_annotations(_negative_zero)["return"]
+    (literal,) = [child for child in goal.left.children if isinstance(child, complex)]
+    assert literal == complex(-1, 0)
+    assert math.copysign(1.0, literal.imag) == -1.0
+    assert evaluate_annotations(_rounds_half_up)["return"] is False
+    # a parameter named like a builtin is the parameter, as it always was
+    goal = evaluate_annotations(_named_like_builtins)["return"]
+    assert render(goal) == "min + len >= min"
+    assert not any(isinstance(var, BuiltinName) for var in goal.left.children)
+
+
+def _uses_min(x: Real, y: Real) -> min(x, y) <= x:
+    """True in Python, and about Lean's ``min`` once printed."""
+
+
+def _uses_complex(x: Real) -> abs(complex(x, 1)) >= 1:
+    """``complex`` of a variable, which Python computes and lanky has no term for."""
+
+
+def _pairwise(n: Nat) -> all(max(i, j) >= i for i in Fin[n] for j in Fin[n]):
+    """A builtin in the body of a quantifier."""
+
+
+def _through_a_generator(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    max(f(i) * k for k in range(3)) >= 0 for i in Fin[n]
+):
+    """A builtin that compares what a generator over a concrete domain yields."""
+
+
+def _over_a_symbolic_domain(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    max(f(k) for k in Fin[n]) >= f(i) for i in Fin[n]
+):
+    """A builtin over a symbolic domain, which would have bound a binder of the quantifier."""
+
+
+def _prints(n: Nat) -> print(n) == 0:
+    """A builtin that is no part of a statement."""
+
+
+def test_a_builtin_of_a_symbolic_value_is_refused() -> None:
+    """``min(x, y)`` is refused, naming ``min``, where it applied a free name (#63)."""
+    with pytest.raises(TypeError, match=r"min\(x, y\) applies Python's min to a symbolic"):
+        evaluate_annotations(_uses_min)
+    with pytest.raises(TypeError, match=r"complex\(x, 1\) applies Python's complex"):
+        evaluate_annotations(_uses_complex)
+    with pytest.raises(TypeError, match=r"max\(i, j\) applies Python's max"):
+        evaluate_annotations(_pairwise)
+    # a generator is not looked into, and what the builtin does with it is
+    # refused where it asks a proposition for its truth value
+    with pytest.raises(SymbolicBoolError, match=r"max\(\(\.\.\. for \.\.\.\)\) asks"):
+        evaluate_annotations(_through_a_generator)
+    # or where it iterates a symbolic domain, which binds no binder of the
+    # quantifier around it
+    with pytest.raises(TypeError, match=r"Python's max raised .*cannot iterate Fin\(n\)"):
+        evaluate_annotations(_over_a_symbolic_domain)
+    with pytest.raises(TypeError, match="calls Python's print, which is no part of a statement"):
+        evaluate_annotations(_prints)
+
+
+def test_a_builtin_that_compares_inside_a_traced_generator_is_refused() -> None:
+    """A truth value a builtin asks for is no guard, though it is asked from the generator's frame.
+
+    A builtin has no frame of its own, so ``min(i, j)``, with Python's own
+    ``min`` (imported, or this module's), asked for ``j < i`` from the
+    generator being traced, and the answer was recorded as its guard: ``all(min(i,
+    j) == j for ...)``, false at ``i = 0, j = 1``, became ``j == j`` wherever
+    ``j < i``, which Lean proves (#63). So did ``i in range(3)``, which asks for
+    ``i == 0`` and stops.
+    """
+    n = Var("n")
+    with pytest.raises(SymbolicBoolError, match="asked for by a function the generator"):
+        forall(min(i, j) == j for i in Fin[n] for j in Fin[n])
+    with pytest.raises(SymbolicBoolError, match="or by an ``in`` test"):
+        forall(i >= 0 for i in Fin[n] if i in range(3))
 
 
 # }}}

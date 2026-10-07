@@ -25,6 +25,7 @@ ledger counts when it says what the theorem is worth (see
 
 from __future__ import annotations
 
+import builtins
 import functools
 import os
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from lanky.ledger import Fact, Status, fact_id
 from lanky.plugins import registry
 from lanky.prelude import FnType
 from lanky.terms import (
+    BuiltinName,
     Forall,
     LogicalAnd,
     Var,
@@ -158,7 +160,9 @@ class Theorem:
             A theorem needs a goal. Without one it used to read as ``True``
             when it was called or tested and as ``assumed`` in the ledger,
             where no oracle takes a fact with no term, so one statement had
-            two answers; it is refused where it is written instead.
+            two answers; it is refused where it is written instead. And if a
+            parameter or the goal is annotated with a builtin of Python's,
+            ``x: int`` (see :func:`_refuse_a_builtin_annotation`).
     """
 
     #: What the statement is called in messages, in its fact's kind and id.
@@ -181,7 +185,9 @@ class Theorem:
             )
         variables: list[tuple[str, Any]] = []
         hypotheses: list[tuple[str, Any]] = []
+        _refuse_a_builtin_annotation(fn, "return", self.goal)
         for name, annotation in annotations.items():
+            _refuse_a_builtin_annotation(fn, name, annotation)
             # A concrete bool is a proposition Python already answered, as in
             # ``h: 1 == 2``, so it is a hypothesis and not a sort: nothing in
             # the prelude is a bool value, and reading it as one used to send
@@ -364,6 +370,53 @@ class Theorem:
     def __repr__(self) -> str:
         """Print the name and the statement."""
         return f"<{self.noun} {self.__name__}: {self.statement}>"
+
+
+#: What to write in place of a builtin type a parameter is annotated with.
+_SORT_HINTS = {
+    "int": "write Int from lanky.prelude, or Nat for a natural",
+    "float": "write Real from lanky.prelude",
+    "complex": "write Complex from lanky.prelude",
+    "bool": "write Bool from lanky.prelude",
+}
+
+
+def _refuse_a_builtin_annotation(fn: Any, name: str, annotation: Any) -> None:
+    """Raise ``TypeError`` for a parameter or a goal annotated with one of Python's builtins.
+
+    Under ``from __future__ import annotations`` an annotation is a string
+    lanky evaluates, where a builtin's name is a variable no parameter binds
+    (:class:`lanky.terms.BuiltinName`), and not the builtin: ``x: int``
+    annotated ``x`` with a proposition, the free name ``int``, so ``x`` was
+    no variable of the statement, its hypotheses were ``int``, and ``x``
+    stood in the goal as a free name too, which Lean bound implicitly as a
+    natural and proved ``x - 1 >= 0`` about (#63, #64). Without that import
+    the annotation is the type ``int``, which is no sort either. Either way
+    the theorem is refused where it is written, naming the lanky sort meant.
+    """
+    if isinstance(annotation, BuiltinName):
+        builtin = annotation.name
+    elif (
+        isinstance(annotation, type)
+        and getattr(builtins, annotation.__name__, None) is annotation
+    ):
+        builtin = annotation.__name__
+    else:
+        return
+    code = fn.__code__
+    where = f"{getattr(fn, '__qualname__', fn.__name__)} at {os.path.basename(code.co_filename)}"
+    where = f"{where}:{code.co_firstlineno}"
+    what = "the goal" if name == "return" else f"the parameter {name}"
+    advice = _SORT_HINTS.get(
+        builtin,
+        "annotate a variable with a sort from lanky.prelude (Nat, Int, Real, "
+        "Complex, Bool, Fin[n], Fn[A, B]) and a hypothesis or the goal with a "
+        "proposition",
+    )
+    raise TypeError(
+        f"{where}: {what} is annotated with {builtin}, which is Python's {builtin} "
+        f"and not a lanky sort or a proposition; {advice}"
+    )
 
 
 class Axiom(Theorem):

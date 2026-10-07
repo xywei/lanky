@@ -62,9 +62,11 @@ __all__ = [
     "Abs",
     "Add",
     "BUILTIN_OVERRIDES",
+    "BuiltinName",
     "Call",
     "Comparison",
     "ELEMENTARY_FUNCTIONS",
+    "EVALUATED_BUILTINS",
     "Elementary",
     "Exists",
     "Forall",
@@ -434,7 +436,22 @@ _MISUSE = {
         "statement inside a function the annotation calls; a proposition becomes "
         "a bool only when it is evaluated at concrete values"
     ),
+    "call": (
+        "the truth value of {prop!r} was asked for by a function the generator "
+        "being traced calls, or by an ``in`` test, and not by its ``if`` clause: "
+        "Python's ``min``, ``max`` and ``sorted`` compare their arguments, and "
+        "``x in range(3)`` compares ``x`` with each number in turn, so reading "
+        "the answer as a guard would keep one comparison of many and say "
+        "something else; a proposition becomes a bool only when it is evaluated "
+        "at concrete values"
+    ),
 }
+
+#: The instructions that run code of the interpreter's own, which can ask a
+#: value for its truth without a frame of its own: a call of a builtin, an
+#: ``in`` test, which compares its operand with each member, and the step of
+#: a loop over an iterator a builtin made, such as ``filter``'s.
+_CALLING = ("CALL", "CALL_KW", "CALL_FUNCTION_EX", "CONTAINS_OP", "FOR_ITER")
 
 
 @functools.lru_cache(maxsize=64)
@@ -465,7 +482,12 @@ def _asking_context(frame: Any, code: Any) -> str:
 
     An ``if`` or a ``while`` inside a function the annotation calls asks from
     another frame entirely, and whatever it records would be attached to the
-    wrong generator.
+    wrong generator. A builtin the generator calls asks from no frame of its
+    own, so the frame is the generator's, stopped at the call: ``min(i, j)``
+    in a body asks for ``j < i``, and recording that as a guard turned
+    ``all(min(i, j) <= i for ...)`` into a statement about the points where
+    ``j < i`` (#63). So does an ``in`` test, ``if i in range(3)``, which asks
+    for ``i == 0`` and stops. Either is a call (:data:`_CALLING`).
 
     An unrecognized layout is read as a guard, which is what every earlier
     CPython did: the check may miss a mistake on an interpreter it does not
@@ -480,6 +502,8 @@ def _asking_context(frame: Any, code: Any) -> str:
     if position is None:
         return "guard"
     current = listing[position]
+    if current.opname in _CALLING:
+        return "call"
     previous = listing[position - 1] if position else None
     if current.opname.startswith("POP_JUMP_IF"):
         # 3.12: the jump itself converts the value it pops.
@@ -1057,22 +1081,154 @@ BUILTIN_OVERRIDES: dict[str, Any] = {
 # {{{ scope and annotation evaluation
 
 
+#: The builtins an annotation may call, at concrete arguments, and get what
+#: Python computes: functions of their arguments alone, which neither read nor
+#: change anything else. The rest (``print``, ``open``, ``eval``, ``input``
+#: and so on) are no part of a statement, and calling one is refused rather
+#: than run while lanky reads the annotation.
+EVALUATED_BUILTINS = frozenset(
+    """
+    bin bool chr complex dict divmod enumerate float frozenset hex int len list
+    max min oct ord pow range reversed round set slice sorted str tuple zip
+    """.split()
+)
+
+
+def _holds_symbolic(value: Any) -> bool:
+    """Whether ``value`` is a term, or a container that holds one.
+
+    A lanky type answers for itself: ``len(Fin[n])`` and iterating ``Nat`` are
+    refused by the type, and ``len(Fin[3])`` is ``3``.
+    """
+    if isinstance(value, prim.ExpressionNode):
+        return True
+    if isinstance(value, tuple | list | set | frozenset):
+        return any(_holds_symbolic(item) for item in value)
+    if isinstance(value, dict):
+        return any(_holds_symbolic(item) for item in (*value.keys(), *value.values()))
+    return False
+
+
+@contextmanager
+def _untraced() -> Iterator[None]:
+    """Suspend binder tracing while the block runs, whatever generator is being traced.
+
+    A builtin called from a generator's body runs while that generator is
+    traced, so a symbolic domain it iterates would bind a binder of the
+    quantifier around it, and a proposition it asks for a truth value would
+    be recorded as that quantifier's guard. With the stack empty both are
+    refused, as they are outside any annotation.
+    """
+    saved = list(_TRACE_STACK)
+    _TRACE_STACK.clear()
+    try:
+        yield
+    finally:
+        _TRACE_STACK[:] = saved
+
+
+class BuiltinName(Var):
+    """A builtin of Python's that an annotation names and nothing in it binds.
+
+    A :class:`Scope` invents a variable for every name it does not have, and
+    Python looks a name up in the globals before the builtins, so ``min``,
+    ``round`` and ``complex`` in an annotation were variables like ``n``:
+    ``min(x, y)`` the application of a free name, as a family is applied, and
+    ``round(0.5) == 1`` a statement about whatever Lean reads ``round`` as
+    (#63, #64). A builtin's name is this instead. Called at concrete
+    arguments it is the builtin, if it is one of :data:`EVALUATED_BUILTINS`:
+    ``round(0.5)`` is ``0`` and ``complex(-1, -0.0)`` the complex number, as
+    in the file run as a program. Called with a term or a lanky type among its
+    arguments it is refused, naming the builtin: lanky has no term for the
+    builtin, and Python would compute it on the term, comparing two
+    propositions where ``min`` compares two numbers. The builtins that mean
+    something else in an annotation (:data:`BUILTIN_OVERRIDES`) are never
+    looked up here.
+
+    Named and not called, it is the variable it always was, a free name, as
+    ``x: int`` is: a theorem refuses a parameter whose annotation is one
+    (:class:`lanky.theory.Theorem`), a plugin can refuse it as loopty refuses
+    a sort that is a free name, and the Lean printer declines a statement
+    that mentions it (:func:`lanky.lean.statement_of`).
+    """
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        """The builtin at concrete arguments; refused at symbolic ones.
+
+        Raises:
+            TypeError: If an argument is a term or a lanky type, or holds one,
+                or if the builtin is not one an annotation may call.
+            SymbolicBoolError: If the builtin asks a proposition for its truth
+                value, as ``max`` does of a generator over a concrete domain
+                whose body is symbolic.
+        """
+        shown = ", ".join(
+            [_shown(arg) for arg in args]
+            + [f"{key}={_shown(value)}" for key, value in kwargs.items()]
+        )
+        if self.name not in EVALUATED_BUILTINS:
+            raise TypeError(
+                f"{self.name}({shown}) calls Python's {self.name}, which is no "
+                "part of a statement: lanky evaluates an annotation, and calls "
+                "only the builtins that compute a value from their arguments "
+                "alone, there and then (EVALUATED_BUILTINS); bind the name as a "
+                "parameter if a variable of that name is meant"
+            )
+        if _holds_symbolic(args) or _holds_symbolic(kwargs):
+            raise TypeError(
+                f"{self.name}({shown}) applies Python's {self.name} to a "
+                "symbolic value, which lanky has no term for: in an annotation "
+                "the builtins all, any, sum and abs build terms, and the others "
+                "are Python's at concrete values only. Write what is meant with "
+                "terms (lanky.exp, lanky.log and lanky.sqrt among them), or bind "
+                f"{self.name} as a parameter if a variable of that name is meant"
+            )
+        function = getattr(builtins, self.name)
+        try:
+            with _untraced():
+                return function(*args, **kwargs)
+        except SymbolicBoolError as exc:
+            raise SymbolicBoolError(
+                f"{self.name}({shown}) asks a symbolic proposition for its truth "
+                f"value, which Python's {self.name} computes with and lanky has "
+                f"no term for: {exc}"
+            ) from exc
+        except TypeError as exc:
+            # a symbolic domain the builtin iterated, which binds nothing here,
+            # or arguments Python's builtin does not take
+            raise TypeError(f"Python's {self.name} raised at {self.name}({shown}): {exc}") from exc
+
+
+def _shown(value: Any) -> str:
+    """An argument of a builtin, as a message names it: a term rendered, a generator elided."""
+    if inspect.isgenerator(value):
+        return "(... for ...)"
+    return render(value) if isinstance(value, prim.ExpressionNode) else repr(value)
+
+
 class Scope(dict):
     """A mapping in which every unknown name is a symbolic variable.
 
     This is the whole of lanky's "parser": used as the globals of ``eval``, it
     lets Python itself read an annotation such as ``Fn[Fin[n], Nat]`` in which
     ``n`` has no value anywhere. Dunder names still raise :exc:`KeyError`, so
-    the interpreter's own bookkeeping (``__builtins__``) is undisturbed.
+    the interpreter's own bookkeeping (``__builtins__``) is undisturbed. The
+    name of one of Python's builtins is a :class:`BuiltinName`, a variable
+    that is the builtin when it is called at concrete values.
     """
 
     def __missing__(self, name: str) -> Any:
         """Invent a variable for ``name``, remembering it for later lookups."""
         if name.startswith("__") and name.endswith("__"):
             raise KeyError(name)
-        var = Var(name)
+        var = BuiltinName(name) if _is_builtin(name) else Var(name)
         self[name] = var
         return var
+
+
+def _is_builtin(name: str) -> bool:
+    """Whether ``name`` names one of Python's builtins, which no annotation defines."""
+    return not name.startswith("_") and hasattr(builtins, name)
 
 
 def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[str, Any]:

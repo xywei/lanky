@@ -6,8 +6,10 @@ import pytest
 
 from lanky import axiom, theorem
 from lanky.ledger import Fact, Status
+from lanky.oracles.test import TestOracle
 from lanky.plugins import registry
 from lanky.prelude import Fin, Fn, Int, Nat
+from lanky.terms import Var
 from lanky.theory import Axiom, Theorem
 
 
@@ -287,3 +289,59 @@ def test_an_axiom_can_rest_on_facts_too() -> None:
 
 
 # }}}
+
+
+def test_a_builtin_answered_at_concrete_values_is_refuted() -> None:
+    """``round(0.5) == 1`` is Python's ``0 == 1``, and the tester refutes it (#63).
+
+    ``round`` was a free name, so the statement applied a variable nobody
+    binds: the tester could not run it, and Mathlib proved it about its own
+    ``round``, which rounds half up (#64).
+    """
+
+    @theorem
+    def rounds_half_up() -> round(0.5) == 1:
+        """False in Python, where round(0.5) is 0."""
+
+    assert rounds_half_up.term is False
+    assert TestOracle().establish(rounds_half_up.fact()).status is Status.REFUTED
+
+
+def test_an_annotation_that_is_a_builtin_is_refused() -> None:
+    """``x: int`` made ``int`` a hypothesis and ``x`` a free name (#63).
+
+    Lean then bound ``x`` implicitly, as a natural, and proved ``x - 1 >= 0``,
+    which is false at ``x = 0`` (#64). The theorem is refused where it is
+    written, naming the sort meant, with ``from __future__ import
+    annotations`` and without it.
+    """
+
+    def as_int(x: int) -> x - 1 >= 0:
+        """False at x = 0."""
+
+    with pytest.raises(
+        TypeError,
+        match=r"as_int at test_theory.py:\d+: the parameter x is annotated with int, "
+        r"which is Python's int and not a lanky sort or a proposition; write Int "
+        r"from lanky.prelude, or Nat for a natural",
+    ):
+        theorem(as_int)
+
+    def as_float(n: Nat, x: float) -> x * n >= 0:
+        """A real number, written as Python's type."""
+
+    with pytest.raises(TypeError, match="the parameter x is annotated with float.*write Real"):
+        theorem(as_float)
+
+    def a_bool(n: Nat) -> bool:
+        """A goal that is a type, and no proposition."""
+
+    with pytest.raises(TypeError, match="the goal is annotated with bool"):
+        theorem(a_bool)
+
+    # without the future import the annotation is the type itself, refused alike
+    namespace: dict = {"x": Var("x")}
+    source = "def eager(x: int) -> x >= 0:\n    pass\n"
+    exec(compile(source, "<eager>", "exec", dont_inherit=True), namespace)
+    with pytest.raises(TypeError, match="the parameter x is annotated with int"):
+        theorem(namespace["eager"])
