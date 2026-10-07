@@ -1141,9 +1141,12 @@ class BuiltinName(Var):
     in the file run as a program. Called with a term among its arguments, or
     a container that holds one, it is refused, naming the builtin: lanky has
     no term for the builtin, and Python would compute it on the term,
-    comparing two propositions where ``min`` compares two numbers. The builtins that mean
-    something else in an annotation (:data:`BUILTIN_OVERRIDES`) are never
-    looked up here.
+    comparing two propositions where ``min`` compares two numbers. A builtin
+    that hands back an iterator, ``zip``, ``enumerate`` or ``reversed``, is
+    run to the end where it is called, so that a symbolic domain it walks is
+    refused there and binds no binder of the generator around it. The
+    builtins that mean something else in an annotation
+    (:data:`BUILTIN_OVERRIDES`) are never looked up here.
 
     Named and not called, it is the variable it always was, a free name, as
     ``x: int`` is: a theorem refuses a parameter whose annotation is one
@@ -1187,7 +1190,17 @@ class BuiltinName(Var):
         function = getattr(builtins, self.name)
         try:
             with _untraced():
-                return function(*args, **kwargs)
+                value = function(*args, **kwargs)
+                if isinstance(value, Iterator):
+                    # zip, enumerate and reversed do their work as they are
+                    # iterated, which is later, while the generator around
+                    # them is traced, and a symbolic domain among their
+                    # arguments would then bind a binder of its quantifier:
+                    # zip(Fin[n], Fin[n]) two independent points where Python
+                    # pairs each point with itself, and enumerate(Fin[n]) one
+                    # point counted 0. So the work is done here, untraced.
+                    value = iter(tuple(value))
+                return value
         except SymbolicBoolError as exc:
             raise SymbolicBoolError(
                 f"{self.name}({shown}) asks a symbolic proposition for its truth "

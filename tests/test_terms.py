@@ -427,6 +427,48 @@ def test_a_builtin_that_compares_inside_a_traced_generator_is_refused() -> None:
         forall(i >= 0 for i in Fin[n] if i in range(3))
 
 
+def _zipped(n: Nat) -> any(i != j for i, j in zip(Fin[n], Fin[n], strict=True)):
+    """False in Python, where zip pairs each point with itself."""
+
+
+def _counted(n: Nat) -> all(k == 0 for k, i in enumerate(Fin[n])):
+    """False in Python wherever ``n > 1``, where the count reaches 1."""
+
+
+def _zipped_generators(n: Nat) -> any(
+    i != j for i, j in zip((a for a in Fin[n]), Fin[n], strict=True)
+):
+    """A generator handed to zip, which zip iterates as lazily as a domain."""
+
+
+def _zipped_concretely() -> all(i == j for i, j in zip(Fin[3], Fin[3], strict=True)):
+    """True: zip over concrete domains, which is Python's."""
+
+
+def _counted_concretely() -> all(k == 2 - i for k, i in enumerate(reversed(range(3)))):
+    """True: Python's enumerate and reversed, which pair ``0`` with ``2``."""
+
+
+def test_a_builtin_that_iterates_does_so_where_it_is_called() -> None:
+    """``zip`` and ``enumerate`` over a symbolic domain are refused, not traced.
+
+    They hand back an iterator that does its work when it is iterated, which
+    was while the generator around it was traced: ``zip(Fin[n], Fin[n])``
+    bound two independent binders, so ``any(i != j ...)``, false in Python,
+    held at ``n = 2``; and ``enumerate(Fin[n])`` bound one point counted
+    ``0``, so ``all(k == 0 ...)``, false wherever ``n > 1``, was proved by
+    ``simp`` (#63's builtins, which an annotation could not call before).
+    """
+    with pytest.raises(TypeError, match=r"Python's zip raised at zip\(Fin\(n\), Fin\(n\), strict"):
+        evaluate_annotations(_zipped)
+    with pytest.raises(TypeError, match=r"Python's enumerate raised .*cannot iterate Fin\(n\)"):
+        evaluate_annotations(_counted)
+    with pytest.raises(TypeError, match=r"Python's zip raised .*cannot iterate Fin\(n\)"):
+        evaluate_annotations(_zipped_generators)
+    assert evaluate_annotations(_zipped_concretely)["return"] is True
+    assert evaluate_annotations(_counted_concretely)["return"] is True
+
+
 # }}}
 
 

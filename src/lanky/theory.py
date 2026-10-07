@@ -36,14 +36,17 @@ import pymbolic.primitives as prim
 from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
 from lanky.plugins import registry
-from lanky.prelude import FnType
+from lanky.prelude import FinType, FnType, Refined, SumType
 from lanky.terms import (
     BuiltinName,
+    Exists,
     Forall,
     LogicalAnd,
+    Sum,
     Var,
     evaluate,
     evaluate_annotations,
+    init_args,
     render,
     truth_value,
 )
@@ -162,7 +165,9 @@ class Theorem:
             where no oracle takes a fact with no term, so one statement had
             two answers; it is refused where it is written instead. And if a
             parameter or the goal is annotated with a builtin of Python's,
-            ``x: int`` (see :func:`_refuse_a_builtin_annotation`).
+            ``x: int``, or names one anywhere in its annotation without
+            calling it, ``f: Fn[Fin[n], float]`` (see
+            :func:`_refuse_a_builtin_annotation`).
     """
 
     #: What the statement is called in messages, in its fact's kind and id.
@@ -393,30 +398,83 @@ def _refuse_a_builtin_annotation(fn: Any, name: str, annotation: Any) -> None:
     natural and proved ``x - 1 >= 0`` about (#63, #64). Without that import
     the annotation is the type ``int``, which is no sort either. Either way
     the theorem is refused where it is written, naming the lanky sort meant.
+
+    So is a builtin named anywhere inside an annotation without being called:
+    as the sort of a family's values, ``f: Fn[Fin[n], float]``, which the
+    tester passed on the draws where the family is empty, and Lean could not
+    print; as its index, as the base of a refinement, or as a value in a
+    proposition, ``n >= int``. Called at concrete values a builtin is
+    Python's, and leaves nothing behind to find; named and not called, it is
+    a free name, which no oracle can read as Python does.
     """
-    if isinstance(annotation, BuiltinName):
-        builtin = annotation.name
-    elif (
-        isinstance(annotation, type)
-        and getattr(builtins, annotation.__name__, None) is annotation
-    ):
-        builtin = annotation.__name__
-    else:
+    builtin = _builtin_in(annotation)
+    if builtin is None:
         return
     code = fn.__code__
     where = f"{getattr(fn, '__qualname__', fn.__name__)} at {os.path.basename(code.co_filename)}"
     where = f"{where}:{code.co_firstlineno}"
     what = "the goal" if name == "return" else f"the parameter {name}"
-    advice = _SORT_HINTS.get(
-        builtin,
-        "annotate a variable with a sort from lanky.prelude (Nat, Int, Real, "
-        "Complex, Bool, Fin[n], Fn[A, B]) and a hypothesis or the goal with a "
-        "proposition",
-    )
+    if builtin in _SORT_HINTS:
+        advice = _SORT_HINTS[builtin]
+    elif isinstance(annotation, BuiltinName | type):
+        advice = (
+            "annotate a variable with a sort from lanky.prelude (Nat, Int, Real, "
+            "Complex, Bool, Fin[n], Fn[A, B]) and a hypothesis or the goal with a "
+            "proposition"
+        )
+    else:
+        advice = (
+            f"a builtin is Python's where it is called at concrete values; bind "
+            f"{builtin} as a parameter if a variable of that name is meant"
+        )
+    if isinstance(annotation, BuiltinName | type):
+        raise TypeError(
+            f"{where}: {what} is annotated with {builtin}, which is Python's {builtin} "
+            f"and not a lanky sort or a proposition; {advice}"
+        )
+    shown = render(annotation) if isinstance(annotation, prim.ExpressionNode) else annotation
     raise TypeError(
-        f"{where}: {what} is annotated with {builtin}, which is Python's {builtin} "
-        f"and not a lanky sort or a proposition; {advice}"
+        f"{where}: {what} is annotated with {shown}, which names Python's {builtin} "
+        f"without calling it, and that is not a lanky sort or a variable of the "
+        f"statement; {advice}"
     )
+
+
+def _builtin_in(annotation: Any) -> str | None:
+    """The name of a builtin of Python's that ``annotation`` names without calling it.
+
+    ``None`` if there is none. A term is walked through its operands and a
+    quantifier through its binders' domains, and a sort through what it is
+    built of: a family's index and values, a refinement's base and
+    propositions, a ``Fin``'s bound and the pieces of a sum. A builtin is the
+    :class:`~lanky.terms.BuiltinName` a :class:`~lanky.terms.Scope` gives its
+    name, or, without ``from __future__ import annotations``, the type itself.
+    """
+    stack = [annotation]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, BuiltinName):
+            return node.name
+        if isinstance(node, type):
+            if getattr(builtins, node.__name__, None) is node:
+                return node.__name__
+            continue
+        if isinstance(node, Forall | Exists | Sum):
+            stack.extend(domain for _var, domain in node.binders)
+            stack.extend(part for part in (node.body, node.guard) if part is not None)
+        elif isinstance(node, Refined):
+            stack.append(node.base)
+            stack.extend(node.props)
+        elif isinstance(node, FinType):
+            stack.append(node.bound)
+        elif isinstance(node, FnType):
+            stack.extend((node.domain, node.codomain))
+        elif isinstance(node, SumType):
+            stack.extend(node.pieces)
+        elif isinstance(node, prim.ExpressionNode):
+            for child in init_args(node):
+                stack.extend(child if isinstance(child, tuple) else (child,))
+    return None
 
 
 class Axiom(Theorem):

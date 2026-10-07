@@ -345,3 +345,66 @@ def test_an_annotation_that_is_a_builtin_is_refused() -> None:
     exec(compile(source, "<eager>", "exec", dont_inherit=True), namespace)
     with pytest.raises(TypeError, match="the parameter x is annotated with int"):
         theorem(namespace["eager"])
+
+
+def test_a_builtin_named_inside_an_annotation_is_refused() -> None:
+    """A builtin named and not called anywhere in an annotation is refused too.
+
+    ``f: Fn[Fin[n], float]`` made ``float``, a free name, the sort of the
+    family's values: the tester could draw no value of it, passed the claim
+    on the draws where ``n`` is ``0`` and the family empty, and so read
+    ``all(f(i) >= 0 for i in Fin[n])`` as tested, which is false for a
+    family of floats. Lean could not print the type. The same holds for a
+    builtin as a family's index, inside a refinement, as a ``Fin`` bound or
+    as a value in a proposition.
+    """
+
+    def floats(n: Nat, f: Fn[Fin[n], float]) -> all(f(i) >= 0 for i in Fin[n]):
+        """False for a family of floats."""
+
+    with pytest.raises(
+        TypeError,
+        match=r"the parameter f is annotated with Fn\[Fin\(n\), float\], which names "
+        r"Python's float without calling it, .*; write Real from lanky.prelude",
+    ):
+        theorem(floats)
+
+    def nested(n: Nat, f: Fn[Fin[n], Fn[Int, int]]) -> all(f(i)(0) >= 0 for i in Fin[n]):
+        """A builtin in a family of families."""
+
+    with pytest.raises(TypeError, match=r"the parameter f is annotated .*Python's int"):
+        theorem(nested)
+
+    def refined(x: int & (x > 0)) -> x >= 1:
+        """A refinement of a builtin, which read as the proposition ``int and x > 0``."""
+
+    with pytest.raises(TypeError, match=r"the parameter x is annotated with int and x > 0"):
+        theorem(refined)
+
+    def bounded(i: Fin[len]) -> i >= 0:
+        """A builtin as a size."""
+
+    with pytest.raises(TypeError, match=r"Python's len without calling it.*bind len as a"):
+        theorem(bounded)
+
+    def compared(n: Nat) -> n >= int:
+        """A builtin as a value."""
+
+    # Python asks the subclass first, BuiltinName, so the comparison is reflected
+    with pytest.raises(TypeError, match=r"the goal is annotated with int <= n, which names"):
+        theorem(compared)
+
+    # without the future import the type is what the family is built of
+    namespace: dict = {"Fn": Fn, "Fin": Fin}
+    source = "def eager(f: Fn[Fin[3], float]) -> True:\n    pass\n"
+    exec(compile(source, "<eager>", "exec", dont_inherit=True), namespace)
+    with pytest.raises(TypeError, match=r"parameter f is annotated with .*, which names Python's"):
+        theorem(namespace["eager"])
+
+    # a builtin called at concrete values leaves nothing behind, and a name
+    # bound by the theorem is the theorem's
+    @theorem
+    def concrete(n: Nat, min: Fn[Fin[n], Nat]) -> all(min(i) >= round(0.4) for i in Fin[n]):
+        """True: round(0.4) is 0, and min is the family."""
+
+    assert concrete.report().ok
