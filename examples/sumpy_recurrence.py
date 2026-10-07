@@ -457,7 +457,15 @@ def main() -> int:
     claim = compressed_taylor
     simplified = claim.simplified()
     largest, found = claim.sampled()
-    rows = [("(a, b)", "reconstructed", "direct derivative of G", "sympy", "mpmath")]
+    rows = [
+        (
+            "(a, b)",
+            "reconstructed",
+            "direct derivative of G",
+            "difference (sympy)",
+            "difference (mpmath)",
+        )
+    ]
     for index, mi in enumerate(claim.identifiers):
         rows.append(
             (
@@ -483,9 +491,10 @@ def main() -> int:
     agree = all(difference == 0 for difference in simplified) and found is None
     if agree:
         print(
-            f"Every reconstructed coefficient is the direct derivative: sympy simplifies each\n"
-            f"difference to 0, and at {claim.points} points mpmath's derivatives agree to within\n"
-            f"{float(claim.tolerance):.0e}, relative, at {claim.digits} digits."
+            "Every reconstructed coefficient is the direct derivative. sympy simplifies each\n"
+            f"difference to 0, and mpmath's derivatives, at {claim.digits} digits, agree to "
+            f"within {float(claim.tolerance):.0e}\n"
+            f"of each other, relative, at {claim.points} points."
         )
     else:
         print("Some reconstructed coefficient is NOT the direct derivative: see the table.")

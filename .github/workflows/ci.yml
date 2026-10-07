@@ -103,8 +103,11 @@ jobs:
           lean --version | tee lean-version.txt
           grep -qF "version ${LANKY_LEAN_VERSION#v}," lean-version.txt
 
-      - name: Sync dependencies, with the lean extra
-        run: uv sync --group dev --extra lean --python 3.13
+      # The cas extra too, so that the CAS oracle's tests run here; the main
+      # job installs no extra, and they skip there. The rest of the suite runs
+      # with the oracle off either way (see tests/conftest.py).
+      - name: Sync dependencies, with the lean and cas extras
+        run: uv sync --group dev --extra lean --extra cas --python 3.13
 
       - name: Read the driver's version
         id: driver
@@ -200,8 +203,8 @@ jobs:
           echo "LANKY_LEAN_CACHE_DIR=${HOME}/.cache/lanky/lean-repl" >> "${GITHUB_ENV}"
           echo "LANKY_LEAN_MATHLIB=${RUNNER_TEMP}/mathlib" >> "${GITHUB_ENV}"
 
-      - name: Sync dependencies, with the lean extra
-        run: uv sync --group dev --extra lean --python 3.13
+      - name: Sync dependencies, with the lean and cas extras
+        run: uv sync --group dev --extra lean --extra cas --python 3.13
 
       - name: Read the driver's version
         id: driver

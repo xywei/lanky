@@ -520,6 +520,128 @@ column it is worth what they are.
   the same rules. pytential is imported inside the demonstration only; it is
   not a dependency of lanky, and `import lanky` does not import it.
 
+## Decide an identity with a computer algebra system
+
+Between a sample and a proof there is a third kind of evidence: a computer
+algebra system that simplifies the difference of two formulas to zero, which
+is how a test of a numerical code usually checks an identity at a fixed size.
+The `cas` extra installs sympy, and with it lanky's oracle `cas`, of the trust
+class `heuristic`:
+
+```sh
+uv add "lanky[cas]"
+```
+
+It takes a statement that asserts equations, alone, in a conjunction or under
+universals whose variables range over numbers, with sides built from
+arithmetic, `abs`, `exp`, `log` and `sqrt`, and asks `sympy.simplify` for the
+difference of the sides of each equation. When every one is `0`, the row
+reads `decided (heuristic)  cas`: `exp(x + y) == exp(x) * exp(y)` over `Real`,
+which the property tester tests and core Lean cannot state, is one. When one
+is not, sympy may only have failed to find the identity, so the fact is
+declined, with the difference in the reason, and the tester, which can refute
+it, is asked next. A variable is a sympy symbol with what its sort grants, real
+for `Real` and an integer that is not negative for `Nat` and `Fin[n]`, so
+`sqrt(x**2) == abs(x)` is decided over `Real` and declined over `Complex`,
+where it is false. The hypotheses are not read, since an identity that holds
+everywhere holds wherever they do. And a fact sympy decided is sampled all the
+same: a counterexample overrules it, as it overrules any heuristic.
+`LANKY_CAS_DISABLE=1` turns the oracle off, and `LANKY_CAS_TIMEOUT` caps the
+seconds sympy may take over one fact (60).
+
+`examples/sumpy_recurrence.py` is the worked case, and a consumer of the kind
+the pytential demonstration is. sumpy's `LinearPDEBasedExpansionTermsWrangler`
+stores only the Taylor coefficients of a kernel that the kernel's PDE does not
+determine, and reconstructs the rest by a recurrence: the 2-D Laplace kernel
+`log r` is harmonic, so a derivative with two or more `x`'s is minus the one
+with two `x`'s fewer and two `y`'s more. The claim is that every coefficient
+through order 6 it reconstructs is the derivative it stands for. The
+recurrence is read off the wrangler, which is handed a symbol for each stored
+derivative and gives back each coefficient as a combination of them, so the
+claim is about sumpy's code and not a transcription of it. sumpy, and sympy
+and mpmath through it, are imported inside the file; none of them is a
+dependency of lanky, and `uv pip install sumpy` puts sumpy in the environment.
+
+```console
+$ uv run python examples/sumpy_recurrence.py
+sumpy's compressed Taylor wrangler for G = log(sqrt(x**2 + y**2)), the 2-D Laplace
+kernel, stores 13 of the 28 derivatives through order 6 and reconstructs the rest:
+
+(a, b)  reconstructed  direct derivative of G                                                             difference (sympy)  difference (mpmath)
+------  -------------  ---------------------------------------------------------------------------------  ------------------  -------------------
+(0, 0)  stored         log(x**2 + y**2)/2                                                                 0                   within 1e-20
+(0, 1)  stored         y/(x**2 + y**2)                                                                    0                   within 1e-20
+(1, 0)  stored         x/(x**2 + y**2)                                                                    0                   within 1e-20
+(0, 2)  stored         (x - y)*(x + y)/(x**2 + y**2)**2                                                   0                   within 1e-20
+(1, 1)  stored         -2*x*y/(x**2 + y**2)**2                                                            0                   within 1e-20
+(2, 0)  -(0, 2)        -(x - y)*(x + y)/(x**2 + y**2)**2                                                  0                   within 1e-20
+(0, 3)  stored         -2*y*(3*x**2 - y**2)/(x**2 + y**2)**3                                              0                   within 1e-20
+(1, 2)  stored         -2*x*(x**2 - 3*y**2)/(x**2 + y**2)**3                                              0                   within 1e-20
+(2, 1)  -(0, 3)        2*y*(3*x**2 - y**2)/(x**2 + y**2)**3                                               0                   within 1e-20
+(3, 0)  -(1, 2)        2*x*(x**2 - 3*y**2)/(x**2 + y**2)**3                                               0                   within 1e-20
+(0, 4)  stored         -6*(x**2 - 2*x*y - y**2)*(x**2 + 2*x*y - y**2)/(x**2 + y**2)**4                    0                   within 1e-20
+(1, 3)  stored         24*x*y*(x - y)*(x + y)/(x**2 + y**2)**4                                            0                   within 1e-20
+(2, 2)  -(0, 4)        6*(x**2 - 2*x*y - y**2)*(x**2 + 2*x*y - y**2)/(x**2 + y**2)**4                     0                   within 1e-20
+(3, 1)  -(1, 3)        -24*x*y*(x - y)*(x + y)/(x**2 + y**2)**4                                           0                   within 1e-20
+(4, 0)  (0, 4)         -6*(x**2 - 2*x*y - y**2)*(x**2 + 2*x*y - y**2)/(x**2 + y**2)**4                    0                   within 1e-20
+(0, 5)  stored         24*y*(5*x**4 - 10*x**2*y**2 + y**4)/(x**2 + y**2)**5                               0                   within 1e-20
+(1, 4)  stored         24*x*(x**4 - 10*x**2*y**2 + 5*y**4)/(x**2 + y**2)**5                               0                   within 1e-20
+(2, 3)  -(0, 5)        -24*y*(5*x**4 - 10*x**2*y**2 + y**4)/(x**2 + y**2)**5                              0                   within 1e-20
+(3, 2)  -(1, 4)        -24*x*(x**4 - 10*x**2*y**2 + 5*y**4)/(x**2 + y**2)**5                              0                   within 1e-20
+(4, 1)  (0, 5)         24*y*(5*x**4 - 10*x**2*y**2 + y**4)/(x**2 + y**2)**5                               0                   within 1e-20
+(5, 0)  (1, 4)         24*x*(x**4 - 10*x**2*y**2 + 5*y**4)/(x**2 + y**2)**5                               0                   within 1e-20
+(0, 6)  stored         120*(x - y)*(x + y)*(x**2 - 4*x*y + y**2)*(x**2 + 4*x*y + y**2)/(x**2 + y**2)**6   0                   within 1e-20
+(1, 5)  stored         -240*x*y*(x**2 - 3*y**2)*(3*x**2 - y**2)/(x**2 + y**2)**6                          0                   within 1e-20
+(2, 4)  -(0, 6)        -120*(x - y)*(x + y)*(x**2 - 4*x*y + y**2)*(x**2 + 4*x*y + y**2)/(x**2 + y**2)**6  0                   within 1e-20
+(3, 3)  -(1, 5)        240*x*y*(x**2 - 3*y**2)*(3*x**2 - y**2)/(x**2 + y**2)**6                           0                   within 1e-20
+(4, 2)  (0, 6)         120*(x - y)*(x + y)*(x**2 - 4*x*y + y**2)*(x**2 + 4*x*y + y**2)/(x**2 + y**2)**6   0                   within 1e-20
+(5, 1)  (1, 5)         -240*x*y*(x**2 - 3*y**2)*(3*x**2 - y**2)/(x**2 + y**2)**6                          0                   within 1e-20
+(6, 0)  -(0, 6)        -120*(x - y)*(x + y)*(x**2 - 4*x*y + y**2)*(x**2 + 4*x*y + y**2)/(x**2 + y**2)**6  0                   within 1e-20
+
+Every reconstructed coefficient is the direct derivative. sympy simplifies each
+difference to 0, and mpmath's derivatives, at 30 digits, agree to within 1e-20
+of each other, relative, at 20 points.
+
+`lanky check examples/sumpy_recurrence.py` puts the claim in the ledger: tested by
+mpmath, and decided by the CAS oracle where sympy is installed.
+```
+
+The ledger has the one claim twice, with the evidence for each:
+
+```console
+$ uv run lanky check examples/sumpy_recurrence.py
+STATUS               BY      WHERE                    OWNER              STATEMENT
+-------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
+tested               mpmath  sumpy_recurrence.py:417  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)  cas     sumpy_recurrence.py:417  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+
+2 facts: 1 decided, 1 tested
+```
+
+- **The claim at points.** mpmath takes every derivative numerically, by
+  finite differences at 30 digits, at 20 points away from the origin, and
+  finds each reconstructed one within `1e-20` of the derivative it stands
+  for. The oracle that does it, `mpmath`, of the trust class `test`, is the
+  file's own, as a plugin's would be.
+- **The claim as formulas.** One statement over real `x` and `y`, with
+  `x**2 + y**2 > 0` as its hypothesis and an equation per coefficient, between
+  the wrangler's combination of sympy's derivatives and sympy's derivative.
+  The CAS oracle simplifies each of the 28 differences to `0`, and the
+  property tester samples the statement afterwards and finds nothing against
+  it. The two rows share the recurrence and no other computation.
+- **Without the oracle**, `LANKY_CAS_DISABLE=1`, the second row reads
+  `tested  property-test`: the tester evaluates the same 28 equations exactly,
+  in rational arithmetic, at each of its draws.
+- **A wrong recurrence fails the check.** Flip the sign of one reconstructed
+  coefficient in the wrangler and both rows are refuted: mpmath names the
+  coefficient and the point, sympy declines with the difference it is left
+  with, twice a stored derivative, and the tester finds a point of its own.
+  `lanky check` exits 1.
+
+A third row, the claim for every order proved by Lean with Mathlib under the
+kernel's harmonicity as an axiom, needs an induction over the order, which the
+ladder does not do yet.
+
 ## Prove it with Mathlib
 
 Core Lean cannot state `gauss`: a sum is Mathlib's `Finset.sum`. Mathlib mode is
@@ -779,3 +901,5 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |
 | the pytential demonstration, and its rule engine | `examples/pytential_skie.py`, `examples/layer_potentials.py` |
+| the bridge to sympy, and the CAS oracle | `src/lanky/cas.py`, `src/lanky/oracles/cas.py` |
+| the sumpy demonstration, and its `mpmath` oracle | `examples/sumpy_recurrence.py` |

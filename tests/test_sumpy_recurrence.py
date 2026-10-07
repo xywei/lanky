@@ -149,6 +149,48 @@ def test_the_ledger_records_what_each_oracle_did(cas) -> None:
     assert symbolic.provenance["trust_class"] == "heuristic"
 
 
+def _shown(command: str) -> list[str]:
+    """The lines the quickstart shows under ``$ command``, up to the end of its block."""
+    lines = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
+    start = lines.index(f"$ {command}")
+    shown = []
+    for line in lines[start + 1 :]:
+        if line.startswith(("$ ", "```")):
+            break
+        shown.append(line)
+    return shown
+
+
+def _cells(line: str) -> list[str]:
+    return re.split(r"\s{2,}", line.rstrip())
+
+
+def test_the_quickstart_shows_what_python_prints() -> None:
+    """The quickstart's run of the demonstration is a real one, line for line."""
+    run = subprocess.run(
+        [sys.executable, str(DEMO)], capture_output=True, text=True, cwd=ROOT, timeout=600
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    printed = [line.rstrip() for line in run.stdout.splitlines()]
+    assert printed == _shown("uv run python examples/sumpy_recurrence.py")
+
+
+def test_the_quickstart_shows_the_ledger_the_demo_prints(cas, capsys) -> None:
+    """The quickstart's table for the demonstration is the real one, with the CAS oracle on.
+
+    Every column is sized to what it holds, so the rows are compared cell by cell.
+    """
+    shown = _shown("uv run lanky check examples/sumpy_recurrence.py")
+    assert cli.main(["check", str(DEMO)]) == 0
+    printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+    assert len(shown) == len(printed)
+    for doc, real in zip(shown, printed, strict=True):
+        if doc and set(doc) <= {"-", " "}:
+            assert len(_cells(doc)) == len(_cells(real))
+        else:
+            assert _cells(doc) == _cells(real)
+
+
 # }}}
 
 

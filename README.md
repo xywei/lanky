@@ -81,7 +81,11 @@ says how much the claim is worth, and nothing else changes.
   lanky never imports loopty. It finds it through entry points and asks it what
   it can do. `examples/pytential_skie.py` is a second consumer in miniature: a
   rule engine decides, under eight cited axioms, which of five integral
-  representations give a boundary equation of the second kind.
+  representations give a boundary equation of the second kind. And
+  `examples/sumpy_recurrence.py` is a third: sumpy's compressed Taylor
+  wrangler for the 2-D Laplace kernel claims that its recurrence reconstructs
+  every derivative through order 6, and the ledger has the claim `tested` by
+  mpmath and `decided (heuristic)` by sympy.
 
 ## Status
 
@@ -142,6 +146,19 @@ lanky's `main`.
   finds overrules it. What rests on such a fact is worth `decided (heuristic)`
   at most, in the `EFFECTIVE` column and as `effective_heuristic` in the JSON.
   The oracle that settles a fact leaves its trust class in the provenance.
+- The CAS oracle, `cas`, a `heuristic`, where sympy is installed (the `cas`
+  extra). It decides a statement that asserts equations, alone, in a
+  conjunction or under universals over numbers, with sides built from
+  arithmetic, `abs`, `exp`, `log` and `sqrt`, when `sympy.simplify` takes
+  the difference of the sides of every equation to `0`, and it declines
+  everything else, a difference left over included, with the reason: what
+  sympy cannot simplify away is no counterexample, and the property tester
+  is asked next. A variable is a symbol with what its sort grants, so
+  `sqrt(x**2) == abs(x)` is decided for a real `x` and declined for a
+  complex one, and the hypotheses are not read. `lanky.cas` is the bridge,
+  both ways, and refuses what it cannot translate faithfully: a family, a
+  reduction, a floor division, a variable whose sort is not a set of
+  numbers. sympy is imported on the first fact, never with lanky.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Complex`, `Bool`, `Prop`, `Fin[n]`,
   `Fn[A, B]`, refinement by `T & prop`, the sum `Fin[n] + Fin[m]` of index
@@ -326,6 +343,17 @@ uv add lanky
 pip install lanky
 ```
 
+The CAS oracle is an extra, which installs sympy:
+
+```sh
+uv add "lanky[cas]"
+```
+
+Where sympy imports, the oracle is on: an identity sympy simplifies reads
+`decided (heuristic)  cas` rather than `tested  property-test`.
+`LANKY_CAS_DISABLE=1` turns it off, and `LANKY_CAS_TIMEOUT` caps the seconds
+sympy may take over one fact (60).
+
 The Lean oracle is an extra, because it pulls a sizable dependency tree and needs
 a Lean toolchain on `PATH`:
 
@@ -373,17 +401,23 @@ tactic attempt, `LANKY_LEAN_MATHLIB` turns Mathlib mode on, and
 For work on lanky itself:
 
 ```sh
-uv sync --group dev --extra lean
+uv sync --group dev --extra lean --extra cas
 uv run pytest -q
 uv run ruff check .
 ```
 
+The suite runs with the CAS oracle off, as it runs without Mathlib, and turns
+it on in the tests that are about it, which skip without sympy.
+`tests/test_sumpy_recurrence.py` skips without sumpy, which no extra
+installs: `uv pip install sumpy` puts it in the environment.
+
 CI runs the suite twice. The main job, on Python 3.12 and 3.13, installs no
-Lean and sets `LANKY_LEAN_DISABLE=1`, so it sees what a user without the extra
-sees. The job named `test with Lean` installs elan, Lean v4.29.1 and the `lean`
-extra, caches the toolchain and the built REPL between runs, and runs the same
-suite with the oracle on and `LANKY_LEAN_TEST_REQUIRED=1`, under which a Lean
-test that cannot get a Lean session fails instead of skipping. It then runs
+Lean and sets `LANKY_LEAN_DISABLE=1`, so it sees what a user without the
+extras sees. The job named `test with Lean` installs elan, Lean v4.29.1 and
+the `lean` and `cas` extras, caches the toolchain and the built REPL between
+runs, and runs the same suite with the Lean oracle on and
+`LANKY_LEAN_TEST_REQUIRED=1`, under which a Lean test that cannot get a Lean
+session fails instead of skipping. It then runs
 `lanky check examples/gauss.py` and checks that the `proved lean` row at the top
 of this page is a row the check printed. The suite compares the rest of that
 table, and the quickstart's, with the real output in both jobs, reading the
@@ -430,8 +464,8 @@ object. *Verbs* are CLI subcommands. Each is an entry-point group:
 **Oracles strongest first.** Each plugin is installed once per name, so a
 theory that arrives both in process and through an entry point does its work
 once. Trust classes are ordered `kernel` (Lean) >
-`decision-procedure` (isl) > `heuristic` (a simplifier) > `test` (property
-test). Each oracle answers
+`decision-procedure` (isl) > `heuristic` (a simplifier: sympy, the `cas`
+oracle) > `test` (property test). Each oracle answers
 `can_establish(fact)`; `check_path` offers each fact to the strongest one that
 says yes and stops at the first answer. A fact nobody establishes is `ASSUMED`,
 which is not a failure. An oracle that cannot answer declines, so a timeout is
@@ -464,9 +498,10 @@ changes what the code means.
 ## Documentation
 
 - [docs/quickstart.md](docs/quickstart.md): the worked file, end to end, with
-  the output the commands actually print, a second one with an axiom, and the
+  the output the commands actually print, a second one with an axiom, the
   pytential demonstration, where a rule engine checks a derivation under the
-  axioms it rests on.
+  axioms it rests on, and the sumpy demonstration, where a recurrence is
+  tested by mpmath and decided by sympy.
 - [CHANGELOG.md](CHANGELOG.md).
 - [loopty](https://github.com/xywei/loopty): the sister project and lanky's
   first plugin: a typed polyhedral layer over loopy, where the facts are about
