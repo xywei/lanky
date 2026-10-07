@@ -94,10 +94,12 @@ __all__ = [
     "exists",
     "exp",
     "forall",
-    "init_args",
+    "free_names",
     "free_variables",
+    "init_args",
     "log",
     "render",
+    "sort_free_names",
     "sqrt",
     "structurally_equal",
     "sum_",
@@ -2436,6 +2438,67 @@ def free_variables(expr: Any) -> frozenset[str]:
         for item in expr:
             out |= free_variables(item)
         return out
+    return frozenset()
+
+
+def free_names(expr: Any) -> frozenset[str]:
+    """Every name ``expr`` mentions that no binder of it binds, wherever it stands.
+
+    :func:`free_variables`, reading three more places, since what an oracle is
+    handed has to be closed: a plain pymbolic ``Variable``, which a term built
+    node by node can hold; a family's domain and codomain, which the Lean
+    erasure prints as ``Int → Nat`` but which the statement still sizes by its
+    bound; and a sort that is itself a term, a name nothing defines, such as
+    the misspelt ``Flaot`` of ``Fn[Fin[n], Flaot]`` (see :func:`sort_free_names`).
+    The Lean printer declines a statement with a free name
+    (:func:`lanky.lean.statement_of`), and so does the property tester
+    (:func:`lanky.testing.check`). :func:`free_variables` is what a plugin
+    sizes a kernel with, and is left as it is.
+    """
+    if isinstance(expr, prim.Variable):
+        return frozenset({expr.name})
+    if isinstance(expr, Forall | Exists | Sum):
+        bound: set[str] = set()
+        found: set[str] = set()
+        for var, domain in expr.binders:
+            # a domain is evaluated before its own binder exists
+            found |= sort_free_names(domain, var.name) - bound
+            bound.add(var.name)
+        for part in (expr.body, expr.guard):
+            found |= free_names(part) - bound
+        return frozenset(found)
+    if isinstance(expr, prim.ExpressionNode):
+        found = set()
+        for child in init_args(expr):
+            for item in child if isinstance(child, tuple) else (child,):
+                found |= free_names(item)
+        return frozenset(found)
+    return frozenset()
+
+
+def sort_free_names(sort: Any, own: str | None = None) -> frozenset[str]:
+    """The free names of what a sort carries (see :func:`free_names`).
+
+    A ``Fin`` bound, the pieces of a sum, a family's domain and codomain, and
+    a refinement's propositions are read, and a sort that is a term is read as
+    one, so a name standing where a sort should is free. A refinement is about
+    the variable it refines, ``own``, which is not free in it. One inside a
+    family's type refines the family's index, which has no name, so ``own`` is
+    ``None`` there.
+    """
+    from lanky.prelude import FinType, FnType, Refined, SumType
+
+    if isinstance(sort, Refined):
+        props: frozenset[str] = frozenset().union(*(free_names(p) for p in sort.props))
+        return sort_free_names(sort.base, own) | (props - {own})
+    if isinstance(sort, FinType):
+        return free_names(sort.bound)
+    if isinstance(sort, FnType):
+        return sort_free_names(sort.domain) | sort_free_names(sort.codomain)
+    if isinstance(sort, SumType):
+        return frozenset().union(*(sort_free_names(piece) for piece in sort.pieces))
+    if isinstance(sort, prim.ExpressionNode):
+        return free_names(sort)
     return frozenset()
 
 

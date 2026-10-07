@@ -240,6 +240,7 @@ from lanky.terms import (
     Sum,
     Var,
     conjuncts,
+    free_names,
     free_variables,
     init_args,
     render,
@@ -1577,55 +1578,6 @@ def _free_scope(term: Any) -> dict[str, Any]:
     return dict.fromkeys(sorted(free_variables(term)))
 
 
-def _free_names(expr: Any) -> frozenset[str]:
-    """Every name ``expr`` mentions that no binder of it binds, wherever it stands.
-
-    :func:`lanky.terms.free_variables`, reading two more places, since what is
-    handed to Lean has to be closed (see :func:`statement_of`): a plain
-    pymbolic ``Variable``, which a term built node by node can hold, and a
-    family's domain and codomain, which the erasure prints as ``Int → Nat``
-    but which the lanky statement still sizes by its bound.
-    """
-    if isinstance(expr, prim.Variable):
-        return frozenset({expr.name})
-    if isinstance(expr, Forall | Exists | Sum):
-        bound: set[str] = set()
-        found: set[str] = set()
-        for var, domain in expr.binders:
-            # a domain is evaluated before its own binder exists
-            found |= _domain_free_names(var.name, domain) - bound
-            bound.add(var.name)
-        for part in (expr.body, expr.guard):
-            found |= _free_names(part) - bound
-        return frozenset(found)
-    if isinstance(expr, prim.ExpressionNode):
-        found = set()
-        for child in init_args(expr):
-            for item in child if isinstance(child, tuple) else (child,):
-                found |= _free_names(item)
-        return frozenset(found)
-    return frozenset()
-
-
-def _domain_free_names(own: str | None, domain: Any) -> frozenset[str]:
-    """The free names of what a binder's domain carries.
-
-    A refinement's propositions are about the variable the binder binds,
-    ``own``, which is not free in them. One inside a family's type refines the
-    family's index, which has no name, so ``own`` is ``None`` there.
-    """
-    if isinstance(domain, Refined):
-        props: frozenset[str] = frozenset().union(*(_free_names(p) for p in domain.props))
-        return _domain_free_names(own, domain.base) | (props - {own})
-    if isinstance(domain, FinType):
-        return _free_names(domain.bound)
-    if isinstance(domain, FnType):
-        return _domain_free_names(None, domain.domain) | _domain_free_names(
-            None, domain.codomain
-        )
-    return frozenset()
-
-
 # }}}
 
 
@@ -2270,7 +2222,7 @@ def _refuse_free_names(term: Any) -> None:
     Raises:
         UnsupportedTerm: Naming every such name.
     """
-    names = sorted(_free_names(term))
+    names = sorted(free_names(term))
     if not names:
         return
     listing = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"

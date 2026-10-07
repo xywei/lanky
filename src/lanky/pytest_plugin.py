@@ -9,7 +9,9 @@ rather than passed: a vacuous pass is not evidence and must not read like one.
 Nor is a pass of a goal whose quantifier's guard held at no draw, which is
 skipped as well, with the guard in the reason.
 A theorem bound to a name starting with an underscore is not collected, which
-is how a module keeps a statement it does not want run.
+is how a module keeps a statement it does not want run. A theorem that
+mentions a name nothing in it binds fails, naming it, since no draw gives the
+name a value.
 
 An axiom is collected too. The ledger takes it on its citation, and a
 counterexample to the statement as written is how a citation copied down wrong
@@ -25,13 +27,14 @@ from typing import Any
 
 import pytest
 
+from lanky.testing import OpenStatement
 from lanky.theory import Theorem
 
 __all__ = ["TheoremItem", "pytest_pycollect_makeitem"]
 
 
 class TheoremFailure(AssertionError):
-    """A theorem was refuted by a draw."""
+    """A theorem was refuted by a draw, or mentions a name nothing in it binds."""
 
 
 class TheoremItem(pytest.Item):
@@ -42,8 +45,17 @@ class TheoremItem(pytest.Item):
         self.theorem = theorem
 
     def runtest(self) -> None:
-        """Sample the statement; fail on a counterexample, skip on a vacuous pass."""
-        report = self.theorem.report()
+        """Sample the statement; fail on a counterexample, skip on a vacuous pass.
+
+        A statement that mentions a name nothing in it binds, a misspelt
+        parameter or sort, fails without a draw (see
+        :class:`lanky.testing.OpenStatement`): it passed when the name was
+        never evaluated, as in ``(n >= 0) | (m > 0)``.
+        """
+        try:
+            report = self.theorem.report()
+        except OpenStatement as exc:
+            raise TheoremFailure(f"{self.theorem.statement}\n{exc}") from None
         if not report.ok:
             raise TheoremFailure(
                 f"{self.theorem.statement}\n"

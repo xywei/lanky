@@ -126,6 +126,7 @@ counterexample.
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -146,12 +147,15 @@ from lanky.terms import (
     conjoin,
     evaluate,
     exact_reading,
+    free_names,
     free_variables,
     render,
+    sort_free_names,
     truth_value,
 )
 
 __all__ = [
+    "OpenStatement",
     "SkipSample",
     "Table",
     "TestReport",
@@ -160,8 +164,10 @@ __all__ = [
     "check",
     "goal_unreached_reason",
     "in_sort",
+    "no_sampler",
     "sample_value",
     "sampling_order",
+    "statement_free_names",
     "thin_pass_reason",
     "truth_value",
 ]
@@ -171,6 +177,9 @@ MAX_NAT = 5
 
 #: How many values a quantifier over an unbounded sort draws.
 SORT_SAMPLE_POINTS = 4
+
+#: The sorts of :mod:`lanky.prelude` the tester draws values of.
+SAMPLED_SORTS = ("Nat", "Int", "Bool", "Prop", "Real", "Complex")
 
 #: How many draws per requested sample before giving up on the hypotheses.
 REJECTION_FACTOR = 20
@@ -187,6 +196,39 @@ _NAMED_ASSIGNMENTS = 3
 #: total one does: a division by zero, and an elementary function outside its
 #: Python domain. A draw that raises one decides nothing.
 _GAPS = (ZeroDivisionError, UndefinedValue)
+
+
+class OpenStatement(TypeError):
+    """A statement mentions a name nothing in it binds, so no draw gives it a value (#67).
+
+    A misspelt parameter, ``n + m >= n`` with only ``n`` a parameter, or a
+    misspelt sort, ``f: Fn[Fin[n], Flaot]``, is such a name. A draw has no
+    value for it, so the statement cannot be tested: the evaluation of ``m``
+    raised at the first draw, and ``(n >= 0) | (m > 0)``, which never asks
+    for ``m``, passed. A family whose values are of a misspelt sort was drawn
+    empty where its domain is, and the statement passed on those draws alone
+    (#74). The tester refuses the statement before it draws anything
+    (:func:`check`), naming the names, and the property-test oracle records
+    that as why it declined (:class:`lanky.oracles.test.TestOracle`).
+
+    Attributes:
+        names: The free names, sorted.
+    """
+
+    def __init__(self, names: Sequence[str]) -> None:
+        self.names = tuple(names)
+        listing = (
+            self.names[0]
+            if len(self.names) == 1
+            else f"{', '.join(self.names[:-1])} and {self.names[-1]}"
+        )
+        them = "it" if len(self.names) == 1 else "them"
+        super().__init__(
+            f"the statement mentions {listing}, which no parameter or binder of it "
+            f"binds, so a draw gives {them} no value and the statement cannot be "
+            "tested: bind a variable as a parameter, and import a sort or spell it "
+            "as lanky.prelude does"
+        )
 
 
 class SkipSample(Exception):
@@ -311,20 +353,24 @@ def sample_value(
             raise SkipSample(f"{sort} is empty")
         return rng.randrange(bound)
     if isinstance(sort, FnType):
+        missing = no_sampler(sort)
+        if missing is not None:
+            # At every size, the empty domain included: a family over an empty
+            # domain exists whatever its codomain is, but drawn there and
+            # nowhere else it made a test of the empty draws alone (#74).
+            raise Unsampleable(missing)
         domain = sort.domain
-        if not isinstance(domain, FinType):
-            raise Unsampleable(f"cannot tabulate a family over {domain}")
         bound = int(evaluate(domain.bound, context))
         if bound < 0:
             raise SkipSample(f"{domain} has a negative size")
         # A family over an empty domain exists whatever its codomain is, so the
-        # codomain is only consulted when there is an entry to draw.
+        # codomain's refinement is only consulted when there is an entry to draw.
         codomain = _entry_sort(sort.codomain, context, rng) if bound else sort.codomain
         return Table(
             (sample_value(codomain, rng, context) for _ in range(bound)),
             name=name or "a family",
         )
-    if isinstance(sort, Sort):
+    if isinstance(sort, Sort) and sort.name in SAMPLED_SORTS:
         if sort.name == "Nat":
             return rng.randrange(MAX_NAT + 1)
         if sort.name == "Int":
@@ -344,6 +390,34 @@ def sample_value(
     if sort is bool:
         return rng.random() < 0.5
     raise Unsampleable(f"no sampler for {sort!r}")
+
+
+def no_sampler(sort: Any) -> str | None:
+    """Why no value of ``sort`` can be drawn at any size, or ``None`` when one can.
+
+    :func:`sample_value` draws a value of a sort in :data:`SAMPLED_SORTS`, a
+    point of a ``Fin``, a refinement of either, and a family over a ``Fin``
+    into any of them. A family over a sort, ``Fn[Nat, Nat]``, cannot be
+    tabulated, and a sort nothing here knows has no sampler. That does not
+    depend on the values drawn, so a family whose values cannot be drawn is
+    refused at every size, its empty domain included (#74).
+    """
+    if isinstance(sort, Refined):
+        return no_sampler(sort.base)
+    if isinstance(sort, FinType):
+        return None
+    if isinstance(sort, FnType):
+        if not isinstance(sort.domain, FinType):
+            return f"cannot tabulate a family over {sort.domain}"
+        missing = no_sampler(sort.codomain)
+        if missing is None:
+            return None
+        return f"cannot draw the values of {sort}: {missing}"
+    if isinstance(sort, Sort) and sort.name in SAMPLED_SORTS:
+        return None
+    if sort is int or sort is float or sort is bool:
+        return None
+    return f"no sampler for {sort!r}"
 
 
 def _fraction(rng: random.Random) -> Fraction:
@@ -777,13 +851,39 @@ def check(
     (:func:`~lanky.terms.exact_reading`), so the reals are the rationals and
     their enclosures of :mod:`lanky.intervals`, and a comparison is refuted
     only where the enclosures exclude it.
+
+    Raises:
+        OpenStatement: Before anything is drawn, if the statement mentions a
+            name that is not a variable and that nothing in it binds
+            (:func:`statement_free_names`), in a hypothesis, the goal or a
+            variable's sort.
     """
     if goal is None:
         goal = True
     if not variables and not hypotheses and not isinstance(goal, prim.ExpressionNode):
         return _constant_report(goal)
+    free = statement_free_names(variables, hypotheses, goal)
+    if free:
+        raise OpenStatement(free)
     with exact_reading():
         return _sample(variables, hypotheses, goal, samples, seed)
+
+
+def statement_free_names(variables: Any, hypotheses: Any, goal: Any) -> list[str]:
+    """The names a statement mentions that are not its variables and that nothing binds, sorted.
+
+    The variables are ``(name, sort)`` pairs, and each of them binds its name
+    in every sort, whatever the order they were written in, since the tester
+    draws a size before what it sizes (:func:`sampling_order`). A sort's own
+    names are read as :func:`~lanky.terms.sort_free_names` reads them, so a
+    sort that is a name nothing defines is one.
+    """
+    found: set[str] = set()
+    for name, sort in variables:
+        found |= sort_free_names(sort, name)
+    for prop in (*hypotheses, goal):
+        found |= free_names(prop)
+    return sorted(found - {name for name, _ in variables})
 
 
 def _sample(

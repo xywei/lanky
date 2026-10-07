@@ -29,6 +29,12 @@ A pass whose draws mostly decided nothing, or whose valid draws are all at a
 few assignments, is still ``TESTED``, and its ``reason`` says that the
 evidence is thin (:func:`lanky.testing.thin_pass_reason`); ``lanky check``
 prints it under the table.
+
+A statement that mentions a name nothing in it binds, a misspelt parameter or
+sort, has no value for it at any draw, so it is not sampled (#67, #74): the
+fact keeps its status, and the reason is recorded as ``declined``, which
+``lanky check`` prints in a ``DECLINED`` line naming the names
+(:class:`lanky.testing.OpenStatement`).
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ import pymbolic.primitives as prim
 
 from lanky.ledger import Fact, Status
 from lanky.terms import Forall, conjuncts
-from lanky.testing import check
+from lanky.testing import OpenStatement, check
 
 __all__ = ["TestOracle"]
 
@@ -79,6 +85,10 @@ class TestOracle:
             variables, hypotheses, goal = [], [], term
         try:
             report = check(variables, hypotheses, goal, self.samples, self.seed)
+        except OpenStatement as exc:
+            # A name nothing binds has no value at a draw (#67): say which, as
+            # the reason the tester declined, which `lanky check` prints.
+            return fact.with_status(fact.status, declined=f"{self.name}: {exc}")
         except Exception as exc:  # noqa: BLE001 - an oracle that cannot run declines
             return fact.with_status(
                 fact.status, reason=f"{self.name} could not run: {exc}"

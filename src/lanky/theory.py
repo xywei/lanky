@@ -309,7 +309,13 @@ class Theorem:
     # {{{ property testing
 
     def report(self, n: int = 200, seed: int = 0) -> TestReport:
-        """Sample the statement and report what the draws found."""
+        """Sample the statement and report what the draws found.
+
+        Raises:
+            lanky.testing.OpenStatement: If the statement mentions a name
+                nothing in it binds, a misspelt parameter or sort, which no
+                draw gives a value.
+        """
         return check(self.variables, [p for _, p in self.hypotheses], self.goal, n, seed)
 
     def test(self, n: int = 200, seed: int = 0) -> tuple[bool, dict | None]:
