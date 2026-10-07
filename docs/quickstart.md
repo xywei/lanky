@@ -640,7 +640,10 @@ decided (heuristic)  cas     sumpy_recurrence.py:417  compressed_taylor  x : Rea
 
 A third row, the claim for every order proved by Lean with Mathlib under the
 kernel's harmonicity as an axiom, needs an induction over the order, which the
-ladder does not do yet.
+ladder does not do yet. In Mathlib mode Lean is asked about the second row
+before the CAS oracle, and its ladder, which has no strategy for 28 equations
+at once, takes minutes to give up on it; the row is the same, and so is the
+table.
 
 ## Prove it with Mathlib
 
