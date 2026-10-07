@@ -69,6 +69,17 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky import mathlib as mathlib_mode
+from lanky.induction import (
+    Case,
+    Finder,
+    Lemma,
+    Use,
+    domain_conditions,
+    find_certificate,
+    lemma_of,
+    substitute,
+    substitute_domain,
+)
 from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
@@ -76,20 +87,35 @@ from lanky.lean import (
     domain_guards,
     is_natural,
     lean_identifier,
+    number_type,
+    render_term,
     statement_of,
 )
 from lanky.ledger import Fact, Status
-from lanky.prelude import FinType, Refined
-from lanky.terms import Exists, Forall, Sum, Var, conjuncts, free_variables, init_args
+from lanky.prelude import FinType, FnType, Nat, Refined
+from lanky.terms import (
+    Comparison,
+    Exists,
+    Forall,
+    Sum,
+    Var,
+    conjuncts,
+    free_variables,
+    init_args,
+)
 
 __all__ = [
+    "COMBINATION_NORM",
     "LeanOracle",
     "LeanSession",
+    "decline",
     "default_cache_dir",
+    "family_induction_scripts",
     "induction_scripts",
     "kill_servers",
     "reduction_scripts",
     "tactic_ladder",
+    "use_certificate",
     "use_tactic",
 ]
 
@@ -1179,7 +1205,410 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
     return scripts
 
 
-def tactic_ladder(statement: LeanStatement) -> list[str]:
+#: How a linear combination is checked once it is moved to one side. The casts
+#: are pushed down to the variables first, since the order a step is at is a
+#: ``Nat`` inside an ``Int`` inside a ``ℝ``. Then ``ring``; ``ring_nf``, which
+#: normalizes the arguments of the families too, where two uses write one
+#: point differently (``R k (b + 2)`` and ``R k (2 + b)`` are different atoms
+#: to ``ring``); and ``field_simp`` before ``ring`` where the multipliers or
+#: the equations have denominators, on the goal as it is first, whose factored
+#: denominators it knows are not zero, and then normalized.
+COMBINATION_NORM = (
+    "(first | ((try push_cast) <;> ring1) | ((try push_cast) <;> ring_nf <;> done) "
+    "| ((try push_cast) <;> field_simp <;> ring1) "
+    "| ((try push_cast) <;> ring_nf <;> field_simp <;> ring1))"
+)
+
+#: What discharges a guard of a hypothesis a certificate applies: the search
+#: proposes a use only where the case's bounds show its guards as linear
+#: arithmetic over the integers (see :mod:`lanky.induction`), which is
+#: ``omega``'s.
+_GUARD_DISCHARGER = "(by omega)"
+
+#: The largest step a family induction is tried with: the order the goal is
+#: at is ``k + step``, and the cases below it are the base.
+_MAX_STEP = 4
+
+
+def _family_names(statement: LeanStatement) -> frozenset[str]:
+    """The statement's binders that are families, whose applications a certificate combines."""
+    names = set()
+    for name, sort in statement.types.items():
+        while isinstance(sort, Refined):
+            sort = sort.base
+        if isinstance(sort, FnType):
+            names.add(name)
+    return frozenset(names)
+
+
+def _applications(term: Any) -> list[tuple[str, tuple[Any, ...]]]:
+    """Every chain of applications of a variable in ``term``, as ``(name, arguments)``."""
+    found = []
+    stack = [term]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, prim.Call | prim.Subscript):
+            arguments: tuple[Any, ...] = ()
+            head: Any = node
+            while isinstance(head, prim.Call | prim.Subscript):
+                if isinstance(head, prim.Call):
+                    arguments = (*head.parameters, *arguments)
+                    head = head.function
+                else:
+                    index = head.index if isinstance(head.index, tuple) else (head.index,)
+                    arguments = (*index, *arguments)
+                    head = head.aggregate
+            if isinstance(head, prim.Variable):
+                found.append((head.name, arguments))
+            stack.extend(arguments)
+            continue
+        if isinstance(node, Forall | Exists | Sum):
+            stack.extend(part for part in (node.body, node.guard) if part is not None)
+        elif isinstance(node, prim.ExpressionNode):
+            for child in init_args(node):
+                stack.extend(child if isinstance(child, tuple) else (child,))
+    return found
+
+
+def _offset(argument: Any) -> tuple[str, int] | None:
+    """``("a", 2)`` for the argument ``a + 2``, ``("a", 0)`` for ``a``, and ``None`` otherwise."""
+    if isinstance(argument, prim.Variable):
+        return argument.name, 0
+    if isinstance(argument, prim.Sum):
+        names = [child for child in argument.children if isinstance(child, prim.Variable)]
+        constants = [
+            child
+            for child in argument.children
+            if isinstance(child, int) and not isinstance(child, bool)
+        ]
+        if len(names) == 1 and len(names) + len(constants) == len(argument.children):
+            return names[0].name, sum(constants)
+    return None
+
+
+def _steps(target: Var, goal: Forall, lemmas: list[Lemma]) -> list[int]:
+    """The steps a family induction on ``target`` is tried with, smallest first.
+
+    Read off the hypotheses: where the goal applies a family with the target
+    in an argument, a hypothesis that applies the same family there at ``a +
+    2`` and at ``a`` relates orders two apart, and the step is ``2``. One is
+    always tried.
+    """
+    positions = {
+        (name, index)
+        for name, arguments in _applications(goal.body)
+        for index, argument in enumerate(arguments)
+        if target.name in free_variables(argument)
+    }
+    steps = {1}
+    for lemma in lemmas:
+        offsets: dict[str, list[int]] = {}
+        for name, arguments in _applications(lemma.equation):
+            for index, argument in enumerate(arguments):
+                found = _offset(argument)
+                if (name, index) in positions and found is not None:
+                    offsets.setdefault(found[0], []).append(found[1])
+        for values in offsets.values():
+            spread = max(values) - min(values)
+            if 0 < spread <= _MAX_STEP:
+                steps.add(spread)
+    return sorted(steps)
+
+
+def _bounds_of(domain: Any) -> tuple[Any, Any] | None:
+    """A domain's bounds on its variable, as :attr:`lanky.induction.Case.bounds` keeps them."""
+    while isinstance(domain, Refined):
+        domain = domain.base
+    if isinstance(domain, FinType):
+        return 0, domain.bound - 1
+    if is_natural(domain):
+        return 0, None
+    return None
+
+
+def family_induction_scripts(
+    statement: LeanStatement, finder: Finder | None = None
+) -> list[str]:
+    """Induction on an order, with each case closed by a certificate a finder gives.
+
+    Mathlib mode only, and the shape of a claim about every order: the goal is
+    a universal over naturals whose body is an equation between applications
+    of the statement's families, and the hypotheses that are equations, under
+    universals of their own, are what may be combined (see
+    :mod:`lanky.induction`). The order, a natural variable of the goal, is
+    traded for the ``Nat`` it is, as in :func:`induction_scripts`, and induced
+    on strongly, with the goal's later variables and guards generalized, so
+    the induction hypothesis holds at every lower order and at any values of
+    the others. The step size is read off the hypotheses (:func:`_steps`). A
+    case below the step is the base, closed by one certificate for every
+    order there, or else by one for each order, after ``interval_cases``; the
+    order ``k + step`` is the step, where the induction hypothesis may be
+    used too. Each certificate is checked by ``linear_combination``, normalized
+    by :data:`COMBINATION_NORM`, and every guard of a hypothesis it applies is
+    discharged by ``omega``.
+
+    ``finder`` is the certificate hook (:data:`lanky.induction.Finder`),
+    lanky's search (:func:`lanky.induction.find_certificate`) by default. A
+    script is written only where it gives a certificate for every case, and
+    the first such order and step make the one script returned.
+    """
+    if not statement.mathlib:
+        return []
+    goal = statement.goal_term
+    if not isinstance(goal, Forall) or not (
+        isinstance(goal.body, prim.Comparison) and goal.body.operator == "=="
+    ):
+        return []
+    families = _family_names(statement)
+    if not families:
+        return []
+    terms = statement.hypothesis_terms or (None,) * len(statement.hypotheses)
+    lemmas = [
+        lemma
+        for (name, _), term in zip(statement.hypotheses, terms, strict=True)
+        if term is not None
+        for lemma in (lemma_of(name, term),)
+        if lemma is not None
+    ]
+    if not lemmas:
+        return []
+    with dialect(statement.mathlib):
+        names, variables, _, naturals, introduced = _goal_intro(statement)
+    for target in variables:
+        if target.name not in naturals:
+            continue
+        for step in _steps(target, goal, lemmas):
+            script = _family_induction(
+                statement,
+                _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced),
+                target,
+                step,
+                finder or find_certificate,
+            )
+            if script is not None:
+                return [script]
+    return []
+
+
+class _FamilyGoal:
+    """What every case of one family induction shares, read off the statement once."""
+
+    def __init__(
+        self,
+        goal: Forall,
+        families: frozenset[str],
+        lemmas: list[Lemma],
+        names: list[str],
+        variables: list[Var],
+        naturals: dict[str, str],
+        introduced: dict[str, str],
+    ) -> None:
+        self.goal = goal
+        self.families = families
+        self.lemmas = lemmas
+        self.names = names
+        self.variables = variables
+        self.naturals = naturals
+        self.introduced = introduced
+        # a variable introduced under another name than its own is written so
+        self.renaming = {
+            var.name: Var(introduced[var.name])
+            for var in variables
+            if introduced[var.name] != lean_identifier(var.name)
+        }
+
+
+def _family_induction(
+    statement: LeanStatement, shared: _FamilyGoal, target: Var, step: int, finder: Finder
+) -> str | None:
+    """The script for an induction on ``target`` with this step; ``None`` if a case has none."""
+    goal, renaming = shared.goal, shared.renaming
+    order = shared.introduced[target.name]
+    # the order as the cases name it: the name it is introduced under (see _goal_intro)
+    name = renaming.get(target.name, target).name
+    position = shared.names.index(order)
+    natural_guard = shared.naturals[target.name]
+    if shared.names[position + 1] != natural_guard:
+        return None
+    later = shared.names[position + 2 :]
+    used = set(shared.names) | {binder for binder, _ in statement.binders}
+    used |= {hypothesis for hypothesis, _ in statement.hypotheses}
+    induction_name = _fresh("ih", used)
+    below = _fresh("hbase", used)
+    successor = _fresh("k", used)
+    smaller = _fresh("m", used)
+    body = substitute(goal.body, renaming)
+    domains = {var.name: domain for var, domain in goal.binders}
+    index = [var.name for var, _ in goal.binders].index(target.name)
+
+    # the names every case has in scope, and what is known of their values
+    types: dict[str, Any] = dict(statement.types)
+    bounds: dict[str, tuple[Any, Any]] = {}
+    for variable, sort in statement.types.items():
+        found = _bounds_of(sort)
+        if found is not None:
+            bounds[variable] = found
+    for var, domain in goal.binders:
+        if var.name == target.name:
+            continue
+        renamed = renaming.get(var.name, var).name
+        types[renamed] = substitute_domain(domain, renaming)
+        found = _bounds_of(types[renamed])
+        if found is not None:
+            bounds[renamed] = found
+
+    def induction_hypothesis(below_this: Any) -> Lemma | None:
+        """The induction hypothesis, at every order below ``below_this``."""
+        m = Var(smaller)
+        values = {**renaming, target.name: m}
+        premises: list[tuple[str, Any]] = [
+            ("value", smaller),
+            ("proof", Comparison(m, "<", below_this)),
+        ]
+        own = domain_conditions(target, domains[target.name])[1:]
+        premises += [("proof", substitute(guard, values)) for guard in own]
+        binders: list[tuple[Var, Any]] = [(m, Nat)]
+        for var, domain in goal.binders[index + 1 :]:
+            renamed = renaming.get(var.name, var)
+            binders.append((renamed, substitute_domain(domain, values)))
+            premises.append(("value", renamed.name))
+            premises += [
+                ("proof", substitute(guard, values)) for guard in domain_conditions(var, domain)
+            ]
+        premises += [("proof", substitute(guard, values)) for guard in conjuncts(goal.guard)]
+        if len(premises) - 2 != len(later):
+            return None
+        return Lemma(
+            induction_name,
+            tuple(binders),
+            tuple(premises),
+            substitute(goal.body, values),
+            conditions=(Comparison(0, "<=", m),),
+        )
+
+    def case(label: str, value: Any, own: dict[str, Any], inductive: bool) -> Case | None:
+        """The case where the order is ``value``; ``own`` maps its new name to its bounds."""
+        lemmas = list(shared.lemmas)
+        if inductive:
+            hypothesis = induction_hypothesis(value)
+            if hypothesis is None:
+                return None
+            lemmas.append(hypothesis)
+        return Case(
+            name=label,
+            goal=substitute(body, {name: value}),
+            lemmas=tuple(lemmas),
+            variables={**types, **dict.fromkeys(own, Nat)},
+            bounds={**bounds, **own},
+            families=shared.families,
+        )
+
+    printing = {**types, name: Nat, successor: Nat}
+    ring = number_type(body.left, printing, mathlib=True)
+
+    def closing(this: Case | None) -> str | None:
+        """The ``linear_combination`` that checks the certificate the finder gives for a case."""
+        if this is None:
+            return None
+        try:
+            uses = finder(this)
+        except Exception:  # noqa: BLE001 - a hook that fails finds nothing
+            return None
+        if not uses:
+            return None
+        try:
+            return _combination(statement, tuple(uses), this.lemmas, printing, ring)
+        except UnsupportedTerm:
+            return None
+
+    base = closing(case("base", Var(name), {name: (0, step - 1)}, inductive=False))
+    if base is not None:
+        base_lines = [base]
+    else:
+        base_lines = [f"interval_cases {order}"]
+        for value in range(step):
+            closed = closing(case(str(value), value, {}, inductive=True))
+            if closed is None:
+                return None
+            base_lines.append(f"· {closed}")
+    successive = closing(
+        case("step", Var(successor) + step, {successor: (0, None)}, inductive=True)
+    )
+    if successive is None:
+        return None
+    lines = [
+        f"intro {' '.join(shared.names)}",
+        f"obtain ⟨{order}, rfl⟩ := {statement.qualified('Int.eq_ofNat_of_zero_le')} "
+        f"{natural_guard}",
+        f"clear {natural_guard}",
+    ]
+    if later:
+        lines.append(f"revert {' '.join(later)}")
+    lines += [
+        f"induction {order} using {statement.qualified('Nat.strong_induction_on')} with",
+        f"| _ {order} {induction_name} =>",
+    ]
+    if later:
+        lines.append(f"  intro {' '.join(later)}")
+    lines += [
+        f"  by_cases {below} : {order} < {step}",
+        f"  · {base_lines[0]}",
+        *(f"    {line}" for line in base_lines[1:]),
+        f"  · obtain ⟨{successor}, rfl⟩ : ∃ {successor} : {statement.qualified('Nat')}, "
+        f"{order} = {successor} + {step} := ⟨{order} - {step}, by omega⟩",
+        f"    {successive}",
+    ]
+    return "\n".join(lines)
+
+
+def _combination(
+    statement: LeanStatement,
+    uses: tuple[Use, ...],
+    lemmas: tuple[Lemma, ...],
+    types: dict[str, Any],
+    ring: str,
+) -> str | None:
+    """The ``linear_combination`` that checks a certificate; ``None`` if it names no lemma here.
+
+    Each use is its lemma applied to its values, with every guard discharged
+    by :data:`_GUARD_DISCHARGER`, and multiplied by its multiplier, which is
+    ascribed the ring the goal is in so that Lean elaborates it there.
+    """
+    by_name = {lemma.name: lemma for lemma in lemmas}
+    parts: list[str] = []
+    for use in uses:
+        lemma = by_name.get(use.lemma)
+        if lemma is None or len(use.arguments) != len(lemma.binders):
+            return None
+        values = dict(zip((var.name for var, _ in lemma.binders), use.arguments, strict=True))
+        arguments = [
+            render_term(values[item], types, True, statement.shadowed, atomic=True)
+            if kind == "value"
+            else _GUARD_DISCHARGER
+            for kind, item in lemma.premises
+        ]
+        proof = " ".join([lemma.name, *arguments])
+        multiplier = use.multiplier
+        if _is_number(multiplier, 1):
+            term = proof
+        elif _is_number(multiplier, -1) and parts:
+            parts.append(f"- {proof}")
+            continue
+        else:
+            factor = render_term(multiplier, types, True, statement.shadowed)
+            term = f"({factor} : {ring}) * ({proof})"
+        parts.append(f"+ {term}" if parts else term)
+    if not parts:
+        return None
+    return f"linear_combination (norm := {COMBINATION_NORM}) {' '.join(parts)}"
+
+
+def _is_number(value: Any, number: int) -> bool:
+    """Whether a multiplier is the plain number ``number``, and not a term that equals it."""
+    return not isinstance(value, bool | prim.ExpressionNode) and value == number
+
+
+def tactic_ladder(statement: LeanStatement, finder: Finder | None = None) -> list[str]:
     """Every script the oracle tries, cheapest and most general first.
 
     A statement printed in the Mathlib dialect gets the core ladder first, as
@@ -1199,6 +1628,7 @@ def tactic_ladder(statement: LeanStatement) -> list[str]:
         names, _, _, _, _ = _goal_intro(statement)
     ladder = list(BASE_TACTICS)
     if statement.mathlib:
+        ladder += family_induction_scripts(statement, finder)
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
         ladder += _mathlib_tactics(lemmas)
         if statement.side_conditions:
@@ -1249,6 +1679,12 @@ class LeanOracle:
         self._sessions: dict[str | None, LeanSession] = {}
         #: ``fact id -> tactic script``, consulted before the ladder.
         self.tactics: dict[str, str] = {}
+        #: ``fact id -> certificate hook``, asked by the family induction in
+        #: place of lanky's search (see :func:`use_certificate`).
+        self.certificates: dict[str, Finder] = {}
+        #: ``fact id -> reason``, for the facts this oracle leaves to the
+        #: oracles after it without trying them (see :func:`decline`).
+        self.declines: dict[str, str] = {}
 
     @property
     def session(self) -> LeanSession:
@@ -1353,6 +1789,11 @@ class LeanOracle:
         Mathlib mode. The propositions the side conditions proved are listed
         as ``lean_side_conditions``.
         """
+        declined = self.declines.get(fact.id)
+        if declined is not None:
+            return fact.with_status(
+                fact.status, lean_declined=declined, declined=f"{self.name}: {declined}"
+            )
         session = self.session
         mathlib = session.mathlib is not None
         try:
@@ -1374,7 +1815,10 @@ class LeanOracle:
                 fact.status, lean_declined=declined, declined=f"{self.name}: {declined}"
             )
         override = self.tactics.get(fact.id)
-        ladder = [override] if override is not None else tactic_ladder(statement)
+        if override is not None:
+            ladder = [override]
+        else:
+            ladder = tactic_ladder(statement, self.certificates.get(fact.id))
         last = ""
         for tactic in ladder:
             source = statement.source(tactic)
@@ -1467,16 +1911,65 @@ def use_tactic(claim: Any, script: str) -> None:
     inducing. The ledger still records which script closed the goal, so a
     pinned proof is as visible as a found one.
     """
-    import lanky.oracles  # noqa: F401 - importing registers the built-in oracles
-    from lanky.plugins import registry
+    fact_id = _claim_id(claim)
+    for oracle in _lean_oracles():
+        oracle.tactics[fact_id] = script
 
+
+def use_certificate(claim: Any, finder: Finder) -> None:
+    """Have the family induction ask ``finder`` for one claim's certificates.
+
+    The certificate hook (see :mod:`lanky.induction`). A claim about every
+    order is proved by :func:`family_induction_scripts`, whose cases are each
+    closed by a linear combination of the hypotheses, and lanky's search
+    (:func:`lanky.induction.find_certificate`) finds the combination where it
+    can. A plugin that knows it, the multipliers a PDE's coefficients give,
+    say, hands it over here: ``finder`` takes a :class:`~lanky.induction.Case`
+    and returns the :class:`~lanky.induction.Use` of each lemma, or ``None``.
+    Lean checks whatever it returns, so a wrong certificate costs an attempt
+    and never a wrong proof.
+
+    ``claim`` is named as for :func:`use_tactic`, and the finder applies to
+    every Lean oracle in the registry.
+    """
+    fact_id = _claim_id(claim)
+    for oracle in _lean_oracles():
+        oracle.certificates[fact_id] = finder
+
+
+def decline(claim: Any, reason: str) -> None:
+    """Have the Lean oracle leave one claim to the oracles after it, saying why.
+
+    For a claim that is some other oracle's to settle, such as the row of a
+    demonstration that shows what a computer algebra system decides, where a
+    proof would take Lean minutes and be beside the point (#71). The fact is
+    returned with ``reason`` as its ``declined`` entry, as for one the printer
+    declines, and the oracles after Lean are asked as they always are.
+
+    ``claim`` is named as for :func:`use_tactic`, and the decline applies to
+    every Lean oracle in the registry.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise TypeError("decline() needs the reason, which the ledger records")
+    fact_id = _claim_id(claim)
+    for oracle in _lean_oracles():
+        oracle.declines[fact_id] = reason
+
+
+def _claim_id(claim: Any) -> str:
+    """The fact id a theorem, a fact or an id names."""
     fact_id = getattr(claim, "id", None)
     if fact_id is None and hasattr(claim, "fact"):
         fact_id = claim.fact().id
-    if fact_id is None:
-        fact_id = str(claim)
+    return str(claim) if fact_id is None else fact_id
+
+
+def _lean_oracles() -> list[LeanOracle]:
+    """Every Lean oracle in the registry; ``LookupError`` when there is none."""
+    import lanky.oracles  # noqa: F401 - importing registers the built-in oracles
+    from lanky.plugins import registry
+
     oracles = [oracle for oracle in registry.oracles if isinstance(oracle, LeanOracle)]
     if not oracles:
         raise LookupError("no Lean oracle is registered")
-    for oracle in oracles:
-        oracle.tactics[fact_id] = script
+    return oracles

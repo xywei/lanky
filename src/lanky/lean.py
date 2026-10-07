@@ -258,7 +258,9 @@ __all__ = [
     "is_natural",
     "lean_identifier",
     "lean_type",
+    "number_type",
     "print_lean",
+    "render_term",
     "statement_of",
 ]
 
@@ -1564,6 +1566,45 @@ def print_lean(expr: Any, mathlib: bool | None = None) -> str:
     with dialect(mathlib), _shadowing(_shadowed_roots(expr)):
         check_applications(expr)
         return _render_prop(expr, _QUANT, _free_scope(expr))
+
+
+def render_term(
+    expr: Any,
+    types: Mapping[str, Any],
+    mathlib: bool | None = None,
+    shadowed: Collection[str] = frozenset(),
+    atomic: bool = False,
+) -> str:
+    """Print one term as it stands inside a proof, with the names around it typed.
+
+    :func:`print_lean` prints a statement, whose names it binds itself. A
+    tactic script also writes terms, the arguments a hypothesis is applied to
+    and the multipliers of a linear combination (see :mod:`lanky.induction`),
+    in a context whose names a statement bound: ``types`` gives the lanky type
+    of each, as a statement's scope would, and ``shadowed`` the root names a
+    variable of the statement is named like (:attr:`LeanStatement.shadowed`).
+    ``atomic`` brackets anything but a name or a literal, as the argument of
+    an application needs.
+
+    Raises:
+        UnsupportedTerm: If the term leaves the fragment of the dialect.
+    """
+    with dialect(mathlib), _shadowing(shadowed):
+        return _render(expr, _ATOM if atomic else _QUANT, dict(types))
+
+
+def number_type(expr: Any, types: Mapping[str, Any], mathlib: bool | None = None) -> str:
+    """The Lean type a term's value is in: ``Int``, ``ℝ`` or ``ℂ``.
+
+    What the printer reads a subterm as (see the module docstring), and what
+    a multiplier of a linear combination is ascribed, so that Lean elaborates
+    it in the ring the equation it multiplies is in. A truth value, which is
+    no number, is read as an integer, as :func:`_kind` reads what it cannot
+    place.
+    """
+    with dialect(mathlib):
+        kind = _kind(expr, dict(types))
+        return _MATHLIB_SORT_NAMES.get(kind) or global_name("Int")
 
 
 def _free_scope(term: Any) -> dict[str, Any]:
