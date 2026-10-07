@@ -121,6 +121,13 @@ A statement that is already a concrete ``True`` or ``False``, because it binds
 no variable and assumes nothing, is not sampled at all: there is nothing to
 draw, so it is reported once, as a pass or as a refutation with an empty
 counterexample.
+
+Nor is a statement that mentions a name nothing in it binds, a misspelt
+parameter or sort (:class:`OpenStatement`, #67): no draw gives the name a
+value, and a statement that never evaluates it, ``(n >= 0) | (m > 0)``,
+passed. And a family whose values the tester has no sampler for is refused at
+every size, its empty domain included (:func:`no_sampler`, #74): drawn only
+where its domain was empty, it passed a claim on those draws alone.
 """
 
 from __future__ import annotations

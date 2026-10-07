@@ -83,6 +83,20 @@ loopty uses changes, and loopty's floor follows it.
   one of Python's builtins in an annotation, which is a variable where it is
   named and the builtin where it is called at concrete arguments, and the
   builtins that are (#63).
+- `lanky.terms.free_names(term)` and `lanky.terms.sort_free_names(sort,
+  own)`: every name a term or a sort mentions that nothing in it binds,
+  wherever it stands, a family's type and a sort that is itself a name
+  included. They are the walk the Lean printer declines a statement for,
+  which was private to it, and the tester uses it too (#67, #74).
+  `free_variables`, which a plugin sizes a kernel with, is unchanged.
+- `lanky.testing.OpenStatement`, a `TypeError` that names the free names of
+  a statement the tester refuses to sample, and
+  `lanky.testing.statement_free_names(variables, hypotheses, goal)`, which
+  finds them (#67). `lanky.testing.no_sampler(sort)` says why no value of a
+  sort can be drawn at any size, and `SAMPLED_SORTS` are the sorts the
+  tester draws (#74).
+- `lanky.lean.ELABORATION_OPTIONS`: what every declaration the Lean oracle
+  sends is elaborated under, `set_option autoImplicit false in` (#68).
 
 ### Changed
 
@@ -116,10 +130,88 @@ loopty uses changes, and loopty's floor follows it.
     it: in a body, a guard or a binder's domain, in a family's type, and a
     plain pymbolic `Variable` that a term built by hand holds. `print_lean`,
     which shows a term, still prints an open one as it stands. Such a
-    statement reads `assumed`, since the tester cannot evaluate it either;
-    that nothing under the table says why is #67. Elaborating every
-    declaration with `autoImplicit` off, which would make Lean refuse a free
-    name the printer let through, is #68.
+    statement reads `assumed`, and the tester's `DECLINED` line names the
+    name (#67, below); and Lean elaborates every declaration with
+    `autoImplicit` off, so that it would refuse a free name the printer let
+    through (#68, below).
+  - *A dict or a set lookup keyed by a term is refused in an annotation*
+    (#73). A dict or a set finds a key by its hash before it compares
+    anything, and a term's hash is its structure's, so a term used as a key
+    matched no concrete key and the lookup answered as if it were absent,
+    without asking the term for a truth value lanky could refuse:
+    `{0: 1}.get(i, 0)` was `0` while the annotation was read, and `all(f(i)
+    * 0 == {0: 1}.get(i, 0) for i in Fin[n])` became `f(i)*0 == 0`, which
+    Lean proved with `omega`, in core and in Mathlib mode, and which is
+    false at `i = 0`. `i in {0, 1}` was `False` the same way, and `{0:
+    1}[i]` raised `KeyError`. While an annotation is evaluated, a term's
+    hash is refused with `TypeError` when it is asked for by the
+    annotation's own code, as a dict or a set lookup or display there asks
+    for it (a builtin such as `dict.get` has no frame of its own), and the
+    message names the fix: a family for a table indexed by a term, and
+    comparisons joined with `|` for a membership test. lanky's and
+    pymbolic's own hashing runs in their frames and is unaffected. This is
+    the frame-based reading the `if` clause check uses (#63). A function the
+    annotation calls is not the annotation's code, and a lookup there is
+    not refused.
+  - *Every declaration is elaborated with `autoImplicit` off* (#68). Lean
+    binds a name a declaration's signature does not know as an implicit
+    argument, at a type it infers, which is how `theorem Lanky.free_goal :
+    x - 1 ≥ 0` became a statement about a natural `x` (#64). Every
+    declaration the oracle sends, and every side condition of a complex
+    logarithm or square root, is preceded by `set_option autoImplicit false
+    in` now (`lanky.lean.ELABORATION_OPTIONS`), so that a name the printer
+    let through would be an unknown identifier to Lean rather than a
+    variable. The printer still declines such a statement first, so no
+    status changes, but every `lean_source` a proof records starts with the
+    line.
+- **The tester declines a statement with a free name, and `lanky check`
+  says which** (#67). A name nothing in a statement binds, a misspelt
+  parameter, has no value at a draw. `n + m >= n` raised at the first draw,
+  and the fact read `assumed` with the reason in its provenance alone, where
+  `lanky check` does not print it, while Lean declined it without a word.
+  `(n >= 0) | (m > 0)`, which never asks for `m`, read `tested`.
+  `lanky.testing.check` refuses such a statement before it draws anything
+  now, raising `OpenStatement` with the names, and the property-test oracle
+  records that as `declined`, so `lanky check` prints a `DECLINED` line:
+  `property-test: the statement mentions m, which no parameter or binder of
+  it binds, ...`. The names are the ones the Lean printer declines a
+  statement for, read from its sorts too, so a misspelt sort is one; a
+  variable binds its name in every sort, whatever order the parameters are
+  written in. `Theorem.report` and `Theorem.test` raise, and the pytest
+  plugin fails such a theorem, naming the names. A plugin's facts that
+  mention names on purpose get the line as well: loopty's postconditions
+  in `examples/spmv.py`, which the tester could not run before either.
+- **A family whose values the tester cannot draw is not passed on its empty
+  draws** (#74). `f: Fn[Fin[n], Flaot]`, with a misspelt sort, or `f:
+  Fn[Fin[n], Fn[Nat, Nat]]`, whose values are families over `Nat` and
+  cannot be tabulated, could be drawn only where `n` is `0`, as the empty
+  table, where `all(f(i) >= 0 for i in Fin[n])` holds; every other draw
+  was unsampleable, and the claim read `tested` on the draws at `n = 0`
+  alone. A misspelt sort is a free name now (above). A family whose values
+  have no sampler is refused at every size, its empty domain included
+  (`lanky.testing.no_sampler`), so no draw is completed and the fact stays
+  `assumed`, with `no draw could be completed: cannot draw the values of
+  ...` in its provenance.
+- **A `Fraction` is an operand, as an `int` or a `float` is** (#76).
+  pymbolic's operators take no `Fraction`, so Python fell back on the
+  `Fraction`'s own: `x ** Fraction(1, 3)` became `x ** 0.3333333333333333`,
+  a float every oracle reads as the rational it holds and not as a cube
+  root, so the tester refuted `(x ** Fraction(1, 3)) ** 3 == x` at `x = 2`;
+  and `Fraction(1, 3) * x` raised `TypeError`. A term's arithmetic operators
+  build the node for a `Fraction` operand themselves now, on either side,
+  as pymbolic builds it for a number.
+- **A negation renders as a unary minus** (#69). `render(-x)` was `-1*x`,
+  since pymbolic builds a negation as a product whose first factor is `-1`,
+  and only a summand was read back as a subtraction: the ledger showed
+  `-1*x == -1*x` for `-x == -x`. A negation is a unary minus wherever it
+  stands now, `-x`, `-x*y` and `(-x)**2`, at the precedence Python gives
+  one. Five more places where the text read as another number than the
+  term are bracketed: a negated floor division as the first summand,
+  `-(n // 2) + 1`, which printed as `-n // 2 + 1`, Python's `(-n) // 2 +
+  1`; a factor after the first that is a product or a division itself,
+  `a*(b // c)`; a negative literal as a base, `(-2)**n`; a power as a base,
+  `(x**y)**2`; and a `Fraction`, which prints with a slash, as an exponent
+  or a divisor, `x**(1/3)`. Only the text changes.
 - **A builtin in an annotation is Python's, or refused** (#63). An annotation
   is evaluated in a `Scope`, which invents a variable for every name it does
   not have, and Python looks a name up there before it looks at the
