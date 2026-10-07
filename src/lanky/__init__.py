@@ -16,10 +16,11 @@ plugin interfaces (theories, oracles, executors, CLI verbs) discovered through
 entry points. Lean is an oracle, sympy is one where it is installed, a
 simplifier whose answers the ledger marks as a heuristic's, and the property
 tester is one; a polyhedral plugin such as loopty registers its own theory,
-its own decision procedure, and its own verbs, and lanky never imports it. A result lanky cannot
-establish enters on a citation, through ``@axiom``, and a transformation some
-other tool made enters as a rewrite, through ``@rewrite``: a source, a target,
-and the obligation between them that an oracle discharges.
+its own decision procedure, and its own verbs, and lanky never imports it. A
+result lanky cannot establish enters on a citation, through ``@axiom``, and a
+transformation some other tool made enters as a rewrite, through
+``@rewrite``: a source, a target, and the obligation between them that an
+oracle discharges.
 
 Three commands over one file: ``python file.py`` runs it, ``pytest`` tests the
 theorems, ``lanky check file.py`` prints the ledger of every claim and who
