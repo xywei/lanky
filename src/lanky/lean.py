@@ -640,13 +640,25 @@ def domain_guards(
     :func:`_render`). A ``Fin`` bound is read with those names, and a
     refinement's propositions with the variable itself added, since they are
     about that variable. ``mathlib`` picks the dialect they are printed in.
+
+    Each proposition is printed to stand to the left of an arrow, as a
+    universal's guard and a theorem's hypothesis do, which needs no brackets
+    around a disjunction.
     """
     with dialect(mathlib):
         return _domain_guards(var, domain, types or {})
 
 
-def _domain_guards(var: Var, domain: Any, types: _Types) -> list[str]:
-    """:func:`domain_guards`, in the dialect in effect."""
+def _domain_guards(
+    var: Var, domain: Any, types: _Types, outer: int = _ARROW + 1
+) -> list[str]:
+    """:func:`domain_guards`, in the dialect in effect.
+
+    ``outer`` is the precedence a refinement's proposition is printed at: the
+    left of an arrow by default, and a conjunct (``_AND + 1``) for an
+    existential, whose conditions are joined to its body with ``∧``, which
+    binds more tightly than the ``∨`` of a disjunction (#61).
+    """
     name = _render(var, _CMP + 1, types)
     if isinstance(domain, Sort) and domain.name == "Nat":
         return [f"0 ≤ {name}"]
@@ -656,8 +668,8 @@ def _domain_guards(var: Var, domain: Any, types: _Types) -> list[str]:
         return [f"0 ≤ {name}", f"{name} < {_render(domain.bound, _CMP + 1, types)}"]
     if isinstance(domain, Refined):
         inner = {**types, var.name: domain}
-        return _domain_guards(var, domain.base, types) + [
-            _render_prop(p, _ARROW + 1, inner) for p in domain.props
+        return _domain_guards(var, domain.base, types, outer) + [
+            _render_prop(p, outer, inner) for p in domain.props
         ]
     return []
 
@@ -1341,9 +1353,20 @@ def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
     oracle's ``intro`` list lines up with the statement. Each binder's guards
     are printed with the binders before it in scope, and the body and the
     generator's guard with all of them.
+
+    A universal's conditions are joined to its body with ``→``, which binds
+    more loosely than any connective, and an existential's with ``∧``, which
+    binds more tightly than ``∨``. So an existential's conditions are printed
+    as conjuncts: a guard or a refinement that is a disjunction is bracketed.
+    Printed at an arrow's antecedent, as a universal's are, ``any(x == -1 for
+    x in Fin[3] if (x > 5) | (x < 1))`` read ``∃ x : Int, 0 ≤ x ∧ x < 3 ∧ x >
+    5 ∨ x < 1 ∧ x = -1``, which Lean reads as a disjunction that ``x = -1``
+    satisfies, and proved a statement Python refutes (#61).
     """
     universal = isinstance(expr, Forall)
     word = "∀" if universal else "∃"
+    # where a condition stands: an arrow's antecedent, or a conjunct
+    condition_outer = _ARROW + 1 if universal else _AND + 1
     guards = list(conjuncts(expr.guard))
     layers = [dict(types)]
     for var, domain in expr.binders:
@@ -1356,7 +1379,7 @@ def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
         text = _render_prop(expr.body, _ARROW if universal else _AND + 1, inner)
         for guard in reversed(guards):
             joiner = "→" if universal else "∧"
-            text = f"{_render_prop(guard, _ARROW + 1, inner)} {joiner} {text}"
+            text = f"{_render_prop(guard, condition_outer, inner)} {joiner} {text}"
         if not guards:
             return _render_prop(expr.body, outer, inner)
         return _parens(text, _ARROW if universal else _AND, outer)
@@ -1366,9 +1389,9 @@ def _render_quantifier(expr: Forall | Exists, outer: int, types: _Types) -> str:
     text = _render_prop(expr.body, _QUANT if universal else _AND + 1, inner)
     for position in reversed(range(len(expr.binders))):
         var, domain = expr.binders[position]
-        conditions = _domain_guards(var, domain, layers[position])
+        conditions = _domain_guards(var, domain, layers[position], condition_outer)
         if position == len(expr.binders) - 1:
-            conditions += [_render_prop(guard, _ARROW + 1, inner) for guard in guards]
+            conditions += [_render_prop(guard, condition_outer, inner) for guard in guards]
         if universal:
             for condition in reversed(conditions):
                 text = f"{condition} → {text}"
@@ -1551,6 +1574,55 @@ def _free_scope(term: Any) -> dict[str, Any]:
     the Boolean literal (see :func:`_render`).
     """
     return dict.fromkeys(sorted(free_variables(term)))
+
+
+def _free_names(expr: Any) -> frozenset[str]:
+    """Every name ``expr`` mentions that no binder of it binds, wherever it stands.
+
+    :func:`lanky.terms.free_variables`, reading two more places, since what is
+    handed to Lean has to be closed (see :func:`statement_of`): a plain
+    pymbolic ``Variable``, which a term built node by node can hold, and a
+    family's domain and codomain, which the erasure prints as ``Int → Nat``
+    but which the lanky statement still sizes by its bound.
+    """
+    if isinstance(expr, prim.Variable):
+        return frozenset({expr.name})
+    if isinstance(expr, Forall | Exists | Sum):
+        bound: set[str] = set()
+        found: set[str] = set()
+        for var, domain in expr.binders:
+            # a domain is evaluated before its own binder exists
+            found |= _domain_free_names(var.name, domain) - bound
+            bound.add(var.name)
+        for part in (expr.body, expr.guard):
+            found |= _free_names(part) - bound
+        return frozenset(found)
+    if isinstance(expr, prim.ExpressionNode):
+        found = set()
+        for child in init_args(expr):
+            for item in child if isinstance(child, tuple) else (child,):
+                found |= _free_names(item)
+        return frozenset(found)
+    return frozenset()
+
+
+def _domain_free_names(own: str | None, domain: Any) -> frozenset[str]:
+    """The free names of what a binder's domain carries.
+
+    A refinement's propositions are about the variable the binder binds,
+    ``own``, which is not free in them. One inside a family's type refines the
+    family's index, which has no name, so ``own`` is ``None`` there.
+    """
+    if isinstance(domain, Refined):
+        props: frozenset[str] = frozenset().union(*(_free_names(p) for p in domain.props))
+        return _domain_free_names(own, domain.base) | (props - {own})
+    if isinstance(domain, FinType):
+        return _free_names(domain.bound)
+    if isinstance(domain, FnType):
+        return _domain_free_names(None, domain.domain) | _domain_free_names(
+            None, domain.codomain
+        )
+    return frozenset()
 
 
 # }}}
@@ -2156,10 +2228,18 @@ def statement_of(
     it off the branch cut as :attr:`LeanStatement.side_conditions`, each a
     statement of its own named after this one, ``name_branch_cut_0`` and on.
 
+    The term has to be closed: a name that no parameter or binder of it binds
+    is declined (#64). :func:`print_lean` prints such a name as it stands,
+    which is fine for showing an open term and wrong for proving one, since
+    Lean reads the name as whatever it or Mathlib declares under it, Mathlib's
+    ``round``, which rounds half up where Python's rounds half to even, and
+    otherwise binds it implicitly, at a type it infers: ``x - 1 ≥ 0`` with a
+    free ``x`` is a statement about a natural ``x``, which ``omega`` proves.
+
     Raises:
-        UnsupportedTerm: If any part of the statement leaves the fragment, or
+        UnsupportedTerm: If any part of the statement leaves the fragment,
             applies a family outside the domain it declares
-            (:func:`check_applications`).
+            (:func:`check_applications`), or mentions a free name.
     """
     with dialect(mathlib), _shadowing(_shadowed_roots(term)):
         statement = _statement_of(term, name)
@@ -2172,11 +2252,30 @@ def statement_of(
         return statement
 
 
+def _refuse_free_names(term: Any) -> None:
+    """Decline a statement that mentions a name nothing in it binds (see :func:`statement_of`).
+
+    Raises:
+        UnsupportedTerm: Naming every such name.
+    """
+    names = sorted(_free_names(term))
+    if not names:
+        return
+    listing = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    raise UnsupportedTerm(
+        f"the statement mentions {listing}, which no parameter or binder of it "
+        "binds: Lean would read a free name as whatever Lean or Mathlib declares "
+        "under it, and otherwise bind it implicitly at a type Lean infers, so a "
+        "proof would be of another statement than the one lanky holds"
+    )
+
+
 def _statement_of(term: Any, name: str) -> LeanStatement:
     """:func:`statement_of`, in the dialect in effect, with no side condition."""
     lean_name = _lean_name(name)
     mathlib = _in_mathlib()
     shadowed = _SHADOWED.get()
+    _refuse_free_names(term)
     check_applications(term)
     if not isinstance(term, Forall):
         return LeanStatement(
