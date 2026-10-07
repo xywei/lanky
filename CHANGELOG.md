@@ -376,8 +376,8 @@ loopty uses changes, and loopty's floor follows it.
   the oracle on, thirteen tests read `decided (heuristic)` where they pin
   `tested` on an identity such as `n + 0 == n`, and nothing else changes,
   the documented ledgers included. CI's `test with Lean` job installs the
-  `cas` extra, so the oracle's tests run there; the main job installs no
-  extra, as before.
+  `cas` extra, so the oracle's tests run there, and sumpy from PyPI, so the
+  sumpy demonstration's do (#75); the main job installs no extra, as before.
 
 ## [0.1.0.dev0] - 2026-09-18
 

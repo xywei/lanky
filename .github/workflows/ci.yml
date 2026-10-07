@@ -109,6 +109,14 @@ jobs:
       - name: Sync dependencies, with the lean and cas extras
         run: uv sync --group dev --extra lean --extra cas --python 3.13
 
+      # sumpy as well, which is no dependency of lanky and in no extra, so that
+      # the sumpy demonstration's tests run here instead of skipping
+      # (tests/test_sumpy_recurrence.py, #75). It is sumpy's release on PyPI,
+      # as a user would install it, and `uv run` keeps it, since its sync of
+      # the project does not remove what the project does not name.
+      - name: Install sumpy, for the sumpy demonstration
+        run: uv pip install --python .venv/bin/python sumpy
+
       - name: Read the driver's version
         id: driver
         run: |

@@ -416,9 +416,9 @@ installs: `uv pip install sumpy` puts it in the environment.
 
 CI runs the suite twice. The main job, on Python 3.12 and 3.13, installs no
 Lean and sets `LANKY_LEAN_DISABLE=1`, so it sees what a user without the
-extras sees. The job named `test with Lean` installs elan, Lean v4.29.1 and
-the `lean` and `cas` extras, caches the toolchain and the built REPL between
-runs, and runs the same suite with the Lean oracle on and
+extras sees. The job named `test with Lean` installs elan, Lean v4.29.1, the
+`lean` and `cas` extras and sumpy, caches the toolchain and the built REPL
+between runs, and runs the same suite with the Lean oracle on and
 `LANKY_LEAN_TEST_REQUIRED=1`, under which a Lean test that cannot get a Lean
 session fails instead of skipping. It then runs
 `lanky check examples/gauss.py` and checks that the `proved lean` row at the top
