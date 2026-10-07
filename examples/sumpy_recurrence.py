@@ -16,7 +16,8 @@ Run it as ``gauss.py`` and ``pytential_skie.py`` are run, where sumpy imports.
     (heuristic)`` by the CAS oracle, which simplifies the difference of the
     two sides of each equation to zero with sympy (the ``cas`` extra). Without
     the oracle the second row reads ``tested`` by the property tester, which
-    evaluates the same equations exactly, in rational arithmetic.
+    evaluates the same equations exactly, in rational arithmetic. Above them
+    is the kernel's harmonicity, ``assumed`` on its citation.
 
 The mathematics. A Taylor expansion of a kernel ``G`` needs every derivative
 ``d^(a+b) G / dx^a dy^b`` with ``a + b`` up to the order. When ``G`` satisfies a
@@ -29,6 +30,12 @@ rest by that recurrence. The claim is that the reconstruction is right: for
 every ``a + b <= p``, the wrangler's combination of the stored derivatives
 equals the derivative it stands for. The constant factor ``-1/(2 pi)`` of the
 kernel is left out, since the reconstruction is linear.
+
+The harmonicity is an axiom here, ``harmonic``, taken on its citation and
+sampled for a counterexample. Neither row rests on it: each checks the
+reconstruction against the derivatives themselves, one order at a time. A
+proof for every order would rest on it, since the recurrence is the PDE
+differentiated, and that is the row the ledger does not have yet.
 
 The recurrence is read off the wrangler, not written here: it is handed
 symbols for the stored derivatives and returns, for each coefficient, the
@@ -52,6 +59,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
+from lanky import axiom
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
@@ -65,6 +73,11 @@ ORDER = 6
 #: How many points mpmath takes the derivatives at, and to how many digits.
 POINTS, DIGITS = 20, 30
 
+#: Where the kernel's harmonicity is taken from: the fundamental solution of
+#: Laplace's equation, of which ``log r`` is a multiple, is harmonic away from
+#: its source.
+KRESS = "R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6"
+
 
 def log_r(x: Any, y: Any, functions: Any) -> Any:
     """The 2-D Laplace kernel without its constant factor: ``log r``.
@@ -73,6 +86,24 @@ def log_r(x: Any, y: Any, functions: Any) -> Any:
     for the derivatives as formulas and mpmath's for them as numbers.
     """
     return functions.log(functions.sqrt(x**2 + y**2))
+
+
+def laplacian(kernel: Any, x: Var, y: Var) -> Any:
+    """``G_xx + G_yy`` of ``kernel``, as sympy differentiates it, over lanky's ``x`` and ``y``."""
+    import sympy
+
+    sx, sy = sympy.symbols("x y", real=True)
+    kernel_term = kernel(sx, sy, sympy)
+    return from_sympy(kernel_term.diff(sx, 2) + kernel_term.diff(sy, 2), {"x": x, "y": y})
+
+
+@axiom(cite=KRESS)
+def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) == 0:
+    """The 2-D Laplace kernel is harmonic away from the origin: ``G_xx + G_yy == 0``.
+
+    The PDE the wrangler reconstructs by, and what a proof of the claim for
+    every order would rest on.
+    """
 
 
 # {{{ the claim
@@ -262,6 +293,7 @@ class Reconstruction:
                             "b": mi[1],
                             "reconstructed": mpmath.nstr(reconstructed, 12),
                             "derivative": mpmath.nstr(values[index], 12),
+                            "difference": mpmath.nstr(gap, 3),
                         }
         return largest, found
 
@@ -374,7 +406,8 @@ class Mpmath:
                 counterexample=found,
                 reason=(
                     f"the reconstructed coefficient ({found['a']}, {found['b']}) is "
-                    f"{found['reconstructed']} and the derivative {found['derivative']}"
+                    f"{found['reconstructed']} and the derivative {found['derivative']}, "
+                    f"{found['difference']} apart relative to it"
                 ),
                 **common,
             )

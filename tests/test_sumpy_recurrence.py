@@ -100,6 +100,29 @@ def test_the_claim_is_one_statement_with_an_equation_per_coefficient(demo) -> No
     assert sampled.id.endswith(":sampled") and symbolic.id.endswith(":symbolic")
 
 
+def test_the_formulas_are_sympys_derivatives_as_the_bridge_reads_them(cas, demo) -> None:
+    """Each equation is the wrangler's combination of sympy's derivatives, and sympy's derivative.
+
+    The decided row is about the lanky terms ``from_sympy`` built, and the
+    tester evaluates those same terms, so a sign lost in translating sympy's
+    output would make both rows a claim about another kernel. Read back
+    through the bridge, each side is the expression it was made from, up to
+    how sympy groups it, which ``cancel``, a normal form for rational
+    functions, confirms without asking ``simplify``.
+    """
+    from lanky.cas import equations
+
+    sympy = cas
+    claim = demo.compressed_taylor
+    _, symbolic = claim.facts()
+    stored = [claim.derivatives[claim.identifiers.index(mi)] for mi in claim.stored]
+    found = equations(symbolic.term)
+    assert len(found) == len(claim.identifiers) == 28
+    for index, equation in enumerate(found):
+        assert sympy.cancel(equation.right - claim.derivatives[index]) == 0
+        assert sympy.cancel(equation.left - claim.combination(index, stored)) == 0
+
+
 # }}}
 
 
@@ -122,25 +145,53 @@ def test_python_runs_the_demo_and_every_coefficient_agrees() -> None:
 
 
 def test_lanky_check_prints_the_claim_tested_and_decided(cas, capsys) -> None:
-    """One owner, two rows: ``tested`` by mpmath, ``decided (heuristic)`` by the CAS oracle."""
+    """One owner, two rows: ``tested`` by mpmath, ``decided (heuristic)`` by the CAS oracle.
+
+    Above them the kernel's harmonicity, ``assumed`` on its citation.
+    """
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
     rows = [line for line in printed.splitlines() if "compressed_taylor" in line]
     assert rows[0].startswith("tested               mpmath  sumpy_recurrence.py:")
     assert rows[1].startswith("decided (heuristic)  cas     sumpy_recurrence.py:")
-    assert "2 facts: 1 decided, 1 tested" in printed
+    (axiom_row,) = [line for line in printed.splitlines() if "  harmonic  " in line]
+    assert axiom_row.startswith("assumed (axiom)      -       sumpy_recurrence.py:")
+    assert "3 facts: 1 assumed, 1 decided, 1 tested" in printed
+    assert re.search(r"^CITED harmonic at sumpy_recurrence\.py:\d+: R\. Kress, ", printed, re.M)
+
+
+def _by_owner() -> tuple:
+    """The demonstration's ledger: the axiom, then the claim at points and as formulas."""
+    harmonic, sampled, symbolic = check_path(DEMO)
+    assert harmonic.owner == "harmonic"
+    assert sampled.owner == symbolic.owner == "compressed_taylor"
+    return harmonic, sampled, symbolic
 
 
 def test_without_the_cas_oracle_the_formulas_are_tested_exactly(capsys) -> None:
     """The property tester evaluates the same 28 equations in rational arithmetic."""
-    sampled, symbolic = check_path(DEMO)
+    _, sampled, symbolic = _by_owner()
     assert (sampled.status, sampled.decided_by) == (Status.TESTED, "mpmath")
     assert (symbolic.status, symbolic.decided_by) == (Status.TESTED, "property-test")
     assert symbolic.provenance["valid"] > 0
 
 
+def test_the_harmonicity_is_assumed_on_its_citation_and_nothing_rests_on_it(cas) -> None:
+    """Sampled and not refuted; neither row rests on it, since each checks every order directly.
+
+    A proof for every order would rest on it, and that row is not there yet.
+    """
+    harmonic, sampled, symbolic = _by_owner()
+    assert harmonic.is_axiom
+    assert (harmonic.status, harmonic.decided_by) == (Status.ASSUMED, None)
+    assert harmonic.provenance["cite"].startswith("R. Kress, Linear Integral Equations")
+    assert harmonic.statement.startswith("x : Real, y : Real | x**2 + y**2 > 0 |- ")
+    assert harmonic.statement.endswith(" == 0")
+    assert sampled.rests_on == symbolic.rests_on == ()
+
+
 def test_the_ledger_records_what_each_oracle_did(cas) -> None:
-    sampled, symbolic = check_path(DEMO)
+    _, sampled, symbolic = _by_owner()
     assert sampled.provenance["samples"] == 20
     assert sampled.provenance["digits"] == 30
     assert sampled.provenance["largest_difference"] <= 1e-20
@@ -251,6 +302,25 @@ def test_a_wrong_recurrence_is_refuted_on_both_rows(cas, tmp_path, capsys) -> No
     assert cli.main(["check", str(path)]) == 1
     printed = capsys.readouterr().out
     assert "the reconstructed coefficient (2, 1) is" in printed
+
+
+def test_a_weight_off_by_one_part_in_a_quadrillion_is_refuted_on_both_rows(cas, tmp_path) -> None:
+    """Neither row is a comparison of floats: a weight of ``-(1 + 10**-15)`` fails both.
+
+    mpmath works at 30 digits, and says how far apart the two sides are, and
+    the tester evaluates the formulas exactly; sympy declines first.
+    """
+    text = FLIPPED.replace(
+        "rows[place] = -rows[place]", "rows[place] = rows[place] + rows[place] / 10**15"
+    )
+    path = tmp_path / "nearly.py"
+    path.write_text(text, encoding="utf-8")
+    sampled, symbolic = check_path(path)
+    assert (sampled.status, sampled.decided_by) == (Status.REFUTED, "mpmath")
+    assert sampled.provenance["reason"].endswith("apart relative to it")
+    assert 0 < float(sampled.provenance["counterexample"]["difference"]) < 1e-14
+    assert (symbolic.status, symbolic.decided_by) == (Status.REFUTED, "property-test")
+    assert symbolic.provenance["declined"].startswith("cas: sympy simplifies the difference")
 
 
 def test_a_recurrence_that_is_not_linear_is_refused_where_it_is_written(tmp_path) -> None:

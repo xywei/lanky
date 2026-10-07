@@ -85,7 +85,8 @@ says how much the claim is worth, and nothing else changes.
   `examples/sumpy_recurrence.py` is a third: sumpy's compressed Taylor
   wrangler for the 2-D Laplace kernel claims that its recurrence reconstructs
   every derivative through order 6, and the ledger has the claim `tested` by
-  mpmath and `decided (heuristic)` by sympy.
+  mpmath and `decided (heuristic)` by sympy, under the kernel's harmonicity,
+  `assumed` on its citation.
 
 ## Status
 

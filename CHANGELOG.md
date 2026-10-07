@@ -74,9 +74,11 @@ loopty uses changes, and loopty's floor follows it.
   recurrence read off the wrangler, and checks the claim twice in one
   ledger: `tested` by mpmath, which takes the derivatives numerically at 20
   points, and `decided (heuristic)` by the CAS oracle, which simplifies the
-  28 equations sympy's derivatives give. sumpy, sympy and mpmath are
-  imported inside the script, and its tests skip where sumpy is not
-  importable.
+  28 equations sympy's derivatives give. Above them is the kernel's
+  harmonicity, `G_xx + G_yy == 0` away from the origin, an axiom taken on
+  its citation, which neither row rests on and a proof for every order
+  would. sumpy, sympy and mpmath are imported inside the script, and its
+  tests skip where sumpy is not importable.
 
 ### Changed
 

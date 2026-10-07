@@ -610,18 +610,28 @@ of each other, relative, at 20 points.
 mpmath, and decided by the CAS oracle where sympy is installed.
 ```
 
-The ledger has the one claim twice, with the evidence for each:
+The ledger has the one claim twice, with the evidence for each, under the
+kernel's harmonicity:
 
 ```console
 $ uv run lanky check examples/sumpy_recurrence.py
 STATUS               BY      WHERE                    OWNER              STATEMENT
 -------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
-tested               mpmath  sumpy_recurrence.py:417  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
-decided (heuristic)  cas     sumpy_recurrence.py:417  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+assumed (axiom)      -       sumpy_recurrence.py:100  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested               mpmath  sumpy_recurrence.py:450  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)  cas     sumpy_recurrence.py:450  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
 
-2 facts: 1 decided, 1 tested
+3 facts: 1 assumed, 1 decided, 1 tested
+
+CITED harmonic at sumpy_recurrence.py:100: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
 
+- **The harmonicity.** `harmonic` is an axiom: `G_xx + G_yy == 0` away from
+  the origin, with the second derivatives sympy's, taken on its citation and
+  sampled for a counterexample. It is the PDE the wrangler's recurrence comes
+  from. Neither row below rests on it, since each checks the reconstruction
+  against the derivatives themselves, one order at a time; a proof for every
+  order would.
 - **The claim at points.** mpmath takes every derivative numerically, by
   finite differences at 30 digits, at 20 points away from the origin, and
   finds each reconstructed one within `1e-20` of the derivative it stands
@@ -642,9 +652,9 @@ decided (heuristic)  cas     sumpy_recurrence.py:417  compressed_taylor  x : Rea
   with, twice a stored derivative, and the tester finds a point of its own.
   `lanky check` exits 1.
 
-A third row, the claim for every order proved by Lean with Mathlib under the
-kernel's harmonicity as an axiom, needs an induction over the order, which the
-ladder does not do yet. In Mathlib mode Lean is asked about the second row
+A third row, the claim for every order proved by Lean with Mathlib under
+`harmonic`, needs an induction over the order, which the ladder does not do
+yet. In Mathlib mode Lean is asked about the second row
 before the CAS oracle, and its ladder, which has no strategy for 28 equations
 at once, takes minutes to give up on it; the row is the same, and so is the
 table.
