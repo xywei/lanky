@@ -164,13 +164,18 @@ lanky's `main`.
   a `not` in a guard, an `if` statement inside a function an annotation
   calls, and a symbolic guard over a concrete domain (`if n > 100` in a sum
   over `Fin[3]`), which a walk of the domain would drop. The connectives are
-  `&`, `|` and `~`. A builtin of Python's in an annotation is Python's at
-  concrete arguments (`round(0.5)` is `0`, and `complex(-1, -0.0)` keeps its
-  negative zero) and refused at a variable, naming it (`min(x, y)`), where
-  it used to be a free name; so is a truth value a builtin asks for inside a
-  quantifier (`min(i, j)`, `i in range(3)`), which used to be recorded as the
-  quantifier's guard, and a theorem parameter annotated with a builtin type,
-  `x: int`, naming the sort meant.
+  `&`, `|` and `~`. Only a generator's `if` clause records a guard: a
+  conditional expression (`a if i < 3 else b`), a `not` in a body and a
+  comparison of two tuples or lists, which compares their items, are refused
+  inside a quantifier, where each used to be read as its guard. A builtin of
+  Python's in an annotation is Python's at concrete arguments (`round(0.5)`
+  is `0`, and `complex(-1, -0.0)` keeps its negative zero) and refused at a
+  variable, naming it (`min(x, y)`), where it used to be a free name; so is
+  a truth value a builtin asks for inside a quantifier (`min(i, j)`, `i in
+  range(3)`), which used to be recorded as the quantifier's guard, and a
+  symbolic domain `zip` or `enumerate` walks. A theorem refuses a parameter
+  annotated with a builtin type, `x: int`, or naming one anywhere in its
+  annotation, `f: Fn[Fin[n], float]`, and names the sort meant.
 - One reading of arithmetic for every oracle. `Nat` means an integer that is
   not negative, and the Lean printer says so: a natural is an `Int` with
   `0 ≤ n` as a hypothesis, and `//` and `%` are `Int.fdiv` and `Int.fmod`,

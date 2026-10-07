@@ -97,13 +97,37 @@ loopty uses changes, and loopty's floor follows it.
   #66. A builtin a statement calls runs with binder tracing suspended, so a
   symbolic domain it would iterate, `max(f(k) for k in Fin[n])`, and a
   proposition it would ask for a truth value are refused rather than read
-  as a binder or a guard of the quantifier around it. Named and not called,
-  a builtin is the free name it was, which a plugin can refuse, as loopty
-  refuses a kernel's `a: float`; a theorem refuses a parameter or a goal
-  annotated with one, `x: int`, which made `int` a hypothesis and `x` a
-  free name that Lean bound as a natural, and the type itself, which the
-  annotation is without `from __future__ import annotations`, naming the
-  lanky sort meant (`Int` or `Nat`, `Real`, `Complex`, `Bool`).
+  as a binder or a guard of the quantifier around it. A builtin that hands
+  back an iterator, `zip`, `enumerate` or `reversed`, is run to the end
+  where it is called, for the same reason: its iterator did its work later,
+  while the generator around it was traced, so `zip(Fin[n], Fin[n])` bound
+  two independent binders where Python pairs each point with itself, and
+  `all(k == 0 for k, i in enumerate(Fin[n]))`, false wherever `n > 1`, was
+  proved. Named and not called, a builtin is the free name it was, which a
+  plugin can refuse, as loopty refuses a kernel's `a: float`; a theorem
+  refuses a parameter or a goal annotated with one, `x: int`, which made
+  `int` a hypothesis and `x` a free name that Lean bound as a natural, and
+  the type itself, which the annotation is without `from __future__ import
+  annotations`, naming the lanky sort meant (`Int` or `Nat`, `Real`,
+  `Complex`, `Bool`). So it does a builtin named anywhere inside an
+  annotation: `f: Fn[Fin[n], float]` made `float` the sort of the family's
+  values, which the tester could not draw, and passed on the draws where the
+  family is empty, so `all(f(i) >= 0 for i in Fin[n])` read `tested`.
+- **Only a generator's `if` clause records a guard** (#63). Three more ways
+  of asking for a truth value inside a quantifier were read as its `if`
+  clause, and Lean proved what they made of the statement, which Python
+  refutes. A conditional expression picks a branch by its condition, so
+  `all((f(i) if i < 3 else -1) >= 0 for i in Fin[n])` became `f(i) >= 0` for
+  `i < 3`, false in Python wherever `n > 3`. `not c` in a body became the
+  guard `c` and the body `False`, so `~any(not (i < k) for ...)` held. And
+  a comparison of two tuples or lists compares their items with `==` until
+  two differ, so `all((i, 0) == (k, 0) for ...)` was `True` wherever `i ==
+  k`, and so was `all(i == k for ... if (i, 0) <= (k, 0))`. The check used to
+  read any layout it did not know as a guard; it now recognizes the `if`
+  clause by what it does with a point it rejects, going back to the loop for
+  the next one, and refuses everything else, naming the three. Two tuples
+  compared with `==` in an `if` clause are still read, item by item, which
+  is what their equality means.
 - **A truth value a builtin asks for while a generator is traced is refused**
   (#63). The one place Python may ask for the truth value of a proposition
   is a generator's `if` clause, and lanky reads the frame that asked to tell
