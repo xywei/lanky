@@ -63,8 +63,10 @@ loopty uses changes, and loopty's floor follows it.
   nodes back, a rational as a `Fraction`, a negative power as a quotient
   and a half power as `lanky.sqrt`. Both are strict: a family, a
   subscript, a reduction, a floor division, a variable whose sort is not a
-  set of numbers or that no quantifier binds, a sympy float and `pi` raise
-  `lanky.cas.Untranslatable` with the reason.
+  set of numbers or that no quantifier binds, a real `log` or `sqrt` of an
+  argument sympy cannot show is not negative (below zero sympy's value is
+  complex, Python's `math` raises and Mathlib's is real), a sympy float and
+  `pi` raise `lanky.cas.Untranslatable` with the reason.
 - `examples/sumpy_recurrence.py`, a second worked case of a consumer (#3).
   It claims that sumpy's compressed Taylor wrangler for the 2-D Laplace
   kernel (`LinearPDEBasedExpansionTermsWrangler`) reconstructs every

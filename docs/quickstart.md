@@ -543,8 +543,12 @@ declined, with the difference in the reason, and the tester, which can refute
 it, is asked next. A variable is a sympy symbol with what its sort grants, real
 for `Real` and an integer that is not negative for `Nat` and `Fin[n]`, so
 `sqrt(x**2) == abs(x)` is decided over `Real` and declined over `Complex`,
-where it is false. The hypotheses are not read, since an identity that holds
-everywhere holds wherever they do. And a fact sympy decided is sampled all the
+where it is false. A logarithm or a square root of a real argument is taken
+only where sympy can show the argument is not negative: below zero sympy's
+value is complex, where Python's `math` raises and Mathlib's is real, so
+`sqrt(x)**2 == x` over `Real` is left to the tester, and over `Nat` decided.
+The hypotheses are not read, since an identity that holds everywhere holds
+wherever they do. And a fact sympy decided is sampled all the
 same: a counterexample overrules it, as it overrules any heuristic.
 `LANKY_CAS_DISABLE=1` turns the oracle off, and `LANKY_CAS_TIMEOUT` caps the
 seconds sympy may take over one fact (60).

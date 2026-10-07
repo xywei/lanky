@@ -158,7 +158,9 @@ lanky's `main`.
   complex one, and the hypotheses are not read. `lanky.cas` is the bridge,
   both ways, and refuses what it cannot translate faithfully: a family, a
   reduction, a floor division, a variable whose sort is not a set of
-  numbers. sympy is imported on the first fact, never with lanky.
+  numbers, a real `log` or `sqrt` of what sympy cannot show is not
+  negative, where sympy's value is complex and Python's `math` raises.
+  sympy is imported on the first fact, never with lanky.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Complex`, `Bool`, `Prop`, `Fin[n]`,
   `Fn[A, B]`, refinement by `T & prop`, the sum `Fin[n] + Fin[m]` of index

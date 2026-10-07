@@ -24,10 +24,12 @@ identity, so the fact is declined with the difference in the reason, and the
 property tester, which can refute, is asked next.
 
 The hypotheses are not read: an identity that holds for every value of its
-variables holds wherever they do. And a simplification is made where each side
-has a value, the points Python evaluates a statement at; where a denominator
-vanishes or a logarithm leaves its domain, Python raises and the readings are
-not compared (see :mod:`lanky.cas`).
+variables holds wherever they do. And what sympy decides is read at the points
+Python evaluates a statement at. A real logarithm or square root is taken only
+where sympy can show that its argument is not negative, so neither is read as
+a complex number Python never computes, and where a denominator or a
+logarithm's argument is zero Python raises and the readings are not compared
+(see :mod:`lanky.cas`).
 
 Simplification can take long on a large expression. Each fact gets
 ``LANKY_CAS_TIMEOUT`` seconds (60 by default), after which it is declined, as a

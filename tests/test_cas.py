@@ -168,10 +168,36 @@ def test_numbers_cross_exactly(cas) -> None:
 def test_arithmetic_and_the_elementary_functions_cross(cas) -> None:
     sympy = cas
     sx = symbol_for("x", Real)
-    term = abs_(x) + exp(x) * log(x) / sqrt(x) - x**3
+    term = abs_(x) + exp(x) * log(x**2 + 1) / sqrt(abs_(x)) - x**3
     assert to_sympy(term, {"x": sx}) == (
-        sympy.Abs(sx) + sympy.exp(sx) * sympy.log(sx) / sympy.sqrt(sx) - sx**3
+        sympy.Abs(sx) + sympy.exp(sx) * sympy.log(sx**2 + 1) / sympy.sqrt(sympy.Abs(sx)) - sx**3
     )
+
+
+@pytest.mark.parametrize(
+    "term",
+    [log(x), sqrt(x), sqrt(x - 1), log(-1 + 0 * x), sqrt(abs_(x) - 1), sqrt(sqrt(x**2) - x)],
+)
+def test_a_real_logarithm_or_square_root_of_what_may_be_negative_is_refused(cas, term) -> None:
+    """Below zero sympy's value is complex, Python's math raises and Mathlib's is real.
+
+    So the argument has to be one sympy can show is not negative, under what
+    the sorts grant: ``x**2 + 1``, ``abs(x)``, a natural.
+    """
+    with pytest.raises(Untranslatable, match="sympy cannot show is not negative"):
+        to_sympy(term, {"x": symbol_for("x", Real)})
+
+
+def test_a_logarithm_or_square_root_crosses_where_its_argument_is_not_negative(cas) -> None:
+    """A real argument sympy sees is not negative, and any complex one, which is ``cmath``'s."""
+    sympy = cas
+    sx, sn, sz = symbol_for("x", Real), symbol_for("n", Nat), symbol_for("z", Complex)
+    symbols = {"x": sx, "n": sn, "z": sz}
+    assert to_sympy(sqrt(x**2), symbols) == sympy.Abs(sx)
+    assert to_sympy(log(exp(x)), symbols) == sx
+    assert to_sympy(sqrt(n) + log(n), symbols) == sympy.sqrt(sn) + sympy.log(sn)
+    assert to_sympy(log(sqrt(x**2 + 1)), symbols) == sympy.log(sympy.sqrt(sx**2 + 1))
+    assert to_sympy(sqrt(z) + log(z), symbols) == sympy.sqrt(sz) + sympy.log(sz)
 
 
 @pytest.mark.parametrize(
@@ -317,6 +343,25 @@ def test_a_variable_is_read_with_its_sort(cas) -> None:
     assert complex_.provenance["declined"].startswith("cas: sympy simplifies the difference")
 
 
+def test_a_statement_with_no_value_in_python_is_not_decided(cas) -> None:
+    """``x * sqrt(-1) == x * 1j`` holds to sympy, has no value in Python, and is false in Lean.
+
+    ``sqrt(x)**2 == x`` over ``Real`` holds where Python gives it a value, and
+    to sympy, and is false in Lean below zero. Neither is taken: the decision
+    would be made in a reading of sympy's own.
+    """
+    oracle = CasOracle()
+    for term in (
+        Forall(((x, Real),), x * sqrt(-1 + 0 * x) == x * 1j),
+        Forall(((x, Real),), sqrt(x) ** 2 == x),
+        Forall(((x, Real),), exp(log(x)) == x),
+        Forall(((x, Real), (y, Real)), sqrt(x) * sqrt(y) == sqrt(x * y)),
+    ):
+        assert not oracle.can_establish(fact_of(term))
+    natural = oracle.establish(fact_of(Forall(((n, Nat),), sqrt(n) ** 2 == n)))
+    assert (natural.status, natural.decided_by) == (Status.DECIDED, "cas")
+
+
 def test_the_hypotheses_are_not_read(cas) -> None:
     """``sqrt(x**2) == x`` holds where ``x > 0``, and is declined: an identity is asked for."""
     oracle = CasOracle()
@@ -430,6 +475,31 @@ def test_a_check_decides_an_identity_and_says_it_is_a_heuristic(
     assert f"cas (heuristic): available (sympy {cas.__version__})" in printed
     rows = [line for line in printed.splitlines() if "product" in line and "|-" in line]
     assert rows[-1].startswith("decided (heuristic)  cas ")
+
+
+def test_a_check_leaves_a_square_root_of_what_may_be_negative_to_the_tester(
+    cas, tmp_path, monkeypatch
+) -> None:
+    """Over ``Real`` the row is the tester's, as without the oracle; over ``Nat``, sympy's."""
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = write(
+        tmp_path,
+        "@theorem\n"
+        "def real(x: Real) -> sqrt(x) ** 2 == x:\n"
+        "    pass\n\n\n"
+        "@theorem\n"
+        "def nowhere(x: Real) -> x * sqrt(-1 + 0 * x) == x * 1j:\n"
+        "    pass\n\n\n"
+        "@theorem\n"
+        "def natural(n: Nat) -> sqrt(n) ** 2 == n:\n"
+        "    pass\n",
+    )
+    real, nowhere, natural = check_path(path)
+    assert (real.status, real.decided_by) == (Status.TESTED, "property-test")
+    assert (nowhere.status, nowhere.decided_by) == (Status.ASSUMED, None)
+    for fact in (real, nowhere):
+        assert "declined" not in fact.provenance
+    assert (natural.status, natural.decided_by) == (Status.DECIDED, "cas")
 
 
 def test_a_check_with_the_oracle_off_says_so(tmp_path, monkeypatch, capsys) -> None:

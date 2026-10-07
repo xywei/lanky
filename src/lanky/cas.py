@@ -23,22 +23,30 @@ sides read alike crosses:
 - addition, multiplication, true division and powers, ``abs``, and
   ``lanky.exp``, ``lanky.log`` and ``lanky.sqrt``, which are sympy's ``exp``,
   ``log`` and ``sqrt``: Python's principal branches, where Python gives them a
-  value.
+  value. A logarithm or a square root of a real argument crosses only where
+  sympy can show that the argument is not negative. Below zero sympy's
+  functions are complex, Python's ``math`` raises and Mathlib's are real, so a
+  statement read there would be decided in a reading of its own:
+  ``x * sqrt(-1) == x * 1j`` holds to sympy, has no value in Python at any
+  ``x``, and is false in Lean.
 
 Everything else is :class:`Untranslatable`, with the reason: a family applied to
 an argument, a subscript, a reduction, a floor division or a remainder, a
 variable whose sort is not a set of numbers (an operator does not commute, and a
 boundary is not a number), a free variable nobody gave a sort to, a truth value
-used as a number. A float sympy holds to a precision of its own, ``pi``, and an
-infinity have no counterpart on the way back.
+used as a number, and a real logarithm or square root of what may be negative.
+A float sympy holds to a precision of its own, ``pi``, and an infinity have no
+counterpart on the way back.
 
 Where Python gives a statement no value, the readings are not compared. sympy
 simplifies a rational function as the function it is wherever its denominator
-is not zero, and a logarithm or a square root as the principal branch it is
-wherever Python's function has a value. At the other points Python raises, so
-the property tester leaves a draw there undecided, while Lean's functions are
-total there; that gap is :mod:`lanky.semantics`'s, which notes it on the fact
-whichever oracle settles it.
+is not zero, so ``x / x`` is ``1`` to it, and an identity it finds holds at
+every point where Python gives both sides a value. Where a denominator is zero,
+or a logarithm's argument is, Python raises and the property tester leaves the
+draw undecided. Lean's division and logarithm are total and give those points
+values of their own; that gap is :mod:`lanky.semantics`'s, which notes it on
+the fact in Mathlib mode, the one reading in which Lean states such a
+statement, whichever oracle settles it.
 
 sympy is an optional dependency, the ``cas`` extra, and is imported when a
 translation is asked for, not when this module is: ``import lanky`` does not
@@ -165,6 +173,10 @@ def _number(value: Any) -> Any:
 
 _ELEMENTARY_NAMES = {"exp": "exp", "log": "log", "sqrt": "sqrt"}
 
+#: The functions whose real argument has to be seen not to be negative, by
+#: what a message calls their value.
+_REAL_DOMAIN = {"log": "logarithm", "sqrt": "square root"}
+
 
 def to_sympy(expr: Any, symbols: Mapping[str, Any]) -> Any:
     """The sympy expression a lanky arithmetic term is.
@@ -200,8 +212,19 @@ def to_sympy(expr: Any, symbols: Mapping[str, Any]) -> Any:
     if isinstance(expr, prim.Power):
         return sympy.Pow(to_sympy(expr.base, symbols), to_sympy(expr.exponent, symbols))
     if isinstance(expr, Elementary):
+        argument = to_sympy(expr.argument, symbols)
+        if (
+            expr.function in _REAL_DOMAIN
+            and argument.is_extended_real
+            and not argument.is_nonnegative
+        ):
+            raise Untranslatable(
+                f"{render(expr)} is the {_REAL_DOMAIN[expr.function]} of a real number "
+                "sympy cannot show is not negative, where sympy's value is complex, "
+                "Python's math raises and Mathlib's value is real"
+            )
         function = getattr(sympy, _ELEMENTARY_NAMES[expr.function])
-        return function(to_sympy(expr.argument, symbols))
+        return function(argument)
     if isinstance(expr, Abs):
         return sympy.Abs(to_sympy(expr.operand, symbols))
     if isinstance(expr, prim.Call):
