@@ -247,6 +247,7 @@ from lanky.terms import (
 )
 
 __all__ = [
+    "ELABORATION_OPTIONS",
     "ROOT_NAMES",
     "LeanStatement",
     "UnsupportedTerm",
@@ -2046,6 +2047,16 @@ def check_applications(term: Any) -> None:
 
 # {{{ a term as a Lean theorem
 
+#: What every declaration lanky sends Lean is elaborated under (#68). Lean binds
+#: a name a declaration's signature does not know as an implicit argument, at
+#: a type it infers, unless ``autoImplicit`` is off: ``theorem
+#: Lanky.free_goal : x - 1 ≥ 0`` was a statement about a natural ``x``, which
+#: ``omega`` proved, and ``(h0 : int)`` bound ``int`` as a type (#64). The
+#: printer declines a statement with a free name (:func:`statement_of`); with
+#: the option off, Lean would refuse one the printer let through as an unknown
+#: identifier rather than read it as a variable.
+ELABORATION_OPTIONS = "set_option autoImplicit false in"
+
 
 @dataclass(eq=False)
 class LeanStatement:
@@ -2185,13 +2196,14 @@ class LeanStatement:
 
         The tactic block is indented as a block, so a multi-line script can be
         passed in as written. The theorem is declared under
-        :attr:`declared_name`.
+        :attr:`declared_name`, with auto-bound implicits off
+        (:data:`ELABORATION_OPTIONS`).
         """
         head = f"theorem {self.declared_name}"
         if self.parameters:
             head = f"{head} {self.parameters}"
         body = "\n".join("  " + line if line.strip() else line for line in tactic.splitlines())
-        return f"{head} : {self.goal} := by\n{body}\n"
+        return f"{ELABORATION_OPTIONS}\n{head} : {self.goal} := by\n{body}\n"
 
 
 def _lean_name(name: str) -> str:
