@@ -2568,21 +2568,19 @@ def _sum_text(children: Sequence[Any]) -> str:
 def _product_text(children: Sequence[Any], negated: bool = False) -> str:
     """Render the factors of a product, the first behind a unary minus if ``negated``.
 
-    Python reads ``a*b // c`` as ``(a*b) // c``, so a floor division or a
-    remainder after the first factor is bracketed: ``a*(b // c)``. A true
-    division is not, since ``a*b / c`` is the same number either way. A
-    first factor behind a minus is rendered as a unary minus's operand (see
+    Python reads ``*``, ``/``, ``//`` and ``%`` from the left, so a factor
+    after the first one that is a product or a division itself is bracketed,
+    as the right operand of a left-associative operator has to be:
+    ``a*(b // c)`` is not ``a*b // c``, which is ``(a*b) // c``. A first
+    factor behind a minus is rendered as a unary minus's operand (see
     :func:`_render`).
     """
     parts = []
     for position, child in enumerate(children):
         if position == 0:
             parts.append(f"-{_render(child, _NEG)}" if negated else _render(child, _MUL))
-            continue
-        text = _render(child, _MUL)
-        if isinstance(child, prim.FloorDiv | prim.Remainder):
-            text = f"({text})"
-        parts.append(text)
+        else:
+            parts.append(_render(child, _MUL + 1))
     return "*".join(parts)
 
 
