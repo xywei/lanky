@@ -290,6 +290,23 @@ def test_a_hypothesis_is_not_used_outside_the_domain_it_quantifies(searching) ->
     assert find_certificate(case) is None
 
 
+def test_a_lemmas_binder_is_never_taken_for_a_name_of_the_case(searching) -> None:
+    """The binder ``n`` and a variable of the case named ``n__0`` are two things."""
+    f, n, k = Var("f"), Var("n"), Var("n__0")
+    step = lemma_of("h0", Forall(((n, Nat),), Comparison(f(n + 1), "==", f(n))))
+    case = Case(
+        name="step",
+        goal=Comparison(f(k + 1), "==", f(k)),
+        lemmas=(step,),
+        variables={"f": Fn[Nat, Real], "n__0": Nat},
+        bounds={"n__0": (0, None)},
+        families=frozenset({"f"}),
+    )
+    (use,) = find_certificate(case)
+    assert use.lemma == "h0"
+    assert render(use.arguments[0]) == "n__0"
+
+
 def test_without_sympy_the_search_finds_nothing(monkeypatch) -> None:
     import lanky.induction
 

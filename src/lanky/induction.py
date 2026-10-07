@@ -46,7 +46,6 @@ the certificate.
 
 from __future__ import annotations
 
-import itertools
 import numbers
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -297,38 +296,35 @@ class _Algebra:
         self.case = case
         self.symbols: dict[str, Any] = {}
         self.functions: dict[str, Any] = {}
-        self.names: dict[Any, str] = {}
-        self._fresh = itertools.count()
 
     def symbol(self, name: str, sort: Any = None) -> Any:
         """The sympy symbol of a variable of the case, made the first time it is asked for."""
         found = self.symbols.get(name)
         if found is None:
             found = self.symbols[name] = self._make(name, sort or self.case.variables.get(name))
-            self.names[found] = name
         return found
 
     def bound_symbol(self, var: Var, sort: Any) -> Any:
-        """A fresh symbol for a lemma's binder, which no name of the case can be confused with."""
-        symbol = self._make(f"{var.name}__{next(self._fresh)}", sort)
-        self.names[symbol] = var.name
-        return symbol
+        """A fresh symbol for a lemma's binder, which no name of the case can be confused with.
 
-    def _make(self, name: str, sort: Any) -> Any:
+        A sympy ``Dummy``, which equals no other symbol whatever its name, so
+        a variable of the case named like the binder, or like any name made
+        from it, is never taken for it.
+        """
+        return self._make(var.name, sort, dummy=True)
+
+    def _make(self, name: str, sort: Any, dummy: bool = False) -> Any:
+        make = self.sympy.Dummy if dummy else self.sympy.Symbol
         base = sort
         while isinstance(base, Refined):
             base = base.base
         if isinstance(base, FinType) or (
             isinstance(base, Sort) and base.name in ("Nat", "Int")
         ):
-            return self.sympy.Symbol(name, integer=True)
+            return make(name, integer=True)
         if isinstance(base, Sort) and base.name == "Real":
-            return self.sympy.Symbol(name, real=True)
-        return self.sympy.Symbol(name)
-
-    def is_integer(self, symbol: Any) -> bool:
-        """Whether a symbol stands for an integer: the variables bounds are kept for."""
-        return bool(symbol.is_integer)
+            return make(name, real=True)
+        return make(name)
 
     def convert(self, expr: Any, scope: Mapping[str, Any]) -> Any:
         """A lanky term as a sympy expression; ``scope`` maps a name to its symbol first.
