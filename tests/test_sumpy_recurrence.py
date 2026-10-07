@@ -1,14 +1,17 @@
-"""The sumpy demonstration: one claim about a wrangler's recurrence, tested and decided.
+"""The sumpy demonstration: one claim about a wrangler's recurrence, tested, decided and proved.
 
 The demonstration checks sumpy's own wrangler, so it needs sumpy, and sumpy is
 never a dependency of lanky: every test here skips where it is not
 importable. The decided row needs the CAS oracle, and so sympy, which sumpy
-brings; the tests that read it ask for the ``cas`` fixture.
+brings; the tests that read it ask for the ``cas`` fixture. The proved row
+needs Lean with Mathlib, and its test skips without a Mathlib project, as the
+tests in ``test_mathlib.py`` do.
 """
 
 from __future__ import annotations
 
 import importlib
+import os
 import re
 import subprocess
 import sys
@@ -84,7 +87,7 @@ def test_the_claim_is_one_statement_with_an_equation_per_coefficient(demo) -> No
     from lanky.prelude import Real
     from lanky.terms import Forall, render
 
-    sampled, symbolic = demo.compressed_taylor.facts()
+    sampled, symbolic, _every_order = demo.compressed_taylor.facts()
     term = symbolic.term
     assert isinstance(term, Forall)
     assert [(var.name, domain) for var, domain in term.binders] == [("x", Real), ("y", Real)]
@@ -114,13 +117,59 @@ def test_the_formulas_are_sympys_derivatives_as_the_bridge_reads_them(cas, demo)
 
     sympy = cas
     claim = demo.compressed_taylor
-    _, symbolic = claim.facts()
+    _, symbolic, _ = claim.facts()
     stored = [claim.derivatives[claim.identifiers.index(mi)] for mi in claim.stored]
     found = equations(symbolic.term)
     assert len(found) == len(claim.identifiers) == 28
     for index, equation in enumerate(found):
         assert sympy.cancel(equation.right - claim.derivatives[index]) == 0
         assert sympy.cancel(equation.left - claim.combination(index, stored)) == 0
+
+
+def test_the_claim_for_every_order_is_the_recurrence_sumpys_pde_gives(demo) -> None:
+    """Laplace's PDE, solved for ``G_xx``: the derivatives with ``a >= 2`` are not stored.
+
+    The term is over two tables, the derivatives ``D`` and the reconstruction
+    ``R``: if ``D`` satisfies the PDE at every order, and ``R`` is ``D`` where
+    the wrangler stores and follows the recurrence elsewhere, ``R`` is ``D``.
+    """
+    from lanky.prelude import Fn, Nat, Real
+    from lanky.terms import render
+
+    claim = demo.compressed_taylor
+    assert claim.pde == {(2, 0): 1, (0, 2): 1}
+    assert claim.leading == (2, 0)
+    assert claim.recurrence_text() == "reconstructed(a + 2, b) == -reconstructed(a, b + 2)"
+    assert claim.pde_text() == "G_xx + G_yy == 0"
+    *_, every_order = claim.facts()
+    assert every_order.id.endswith(":every-order")
+    assert every_order.statement.startswith("every order: reconstructed(a, b) == diff(")
+    assert every_order.rests_on == (demo.harmonic.fact_id,)
+    term = every_order.term
+    table = Fn[Nat, Fn[Nat, Real]]
+    assert [(var.name, sort) for var, sort in term.binders] == [("D", table), ("R", table)]
+    pde, stored, recurrence = (render(hypothesis) for hypothesis in term.guard.children)
+    assert pde == "forall a in Nat, b in Nat. D(a + 2)(b) + D(a)(b + 2) == 0"
+    assert stored == "forall a in Nat, b in Nat where a < 2. R(a)(b) == D(a)(b)"
+    assert recurrence == "forall a in Nat, b in Nat. R(a + 2)(b) == -1*R(a)(b + 2)"
+    assert render(term.body) == "forall a in Nat, b in Nat. R(a)(b) == D(a)(b)"
+
+
+def test_lean_is_left_the_claim_for_every_order_and_not_the_one_through_the_order(demo) -> None:
+    """The CAS oracle decides the 28 equations in a second; Lean's row is the one for every order.
+
+    Asked first, Lean spent minutes on the conjunction before the CAS oracle
+    decided it (#71), so the demonstration declines it for Lean.
+    """
+    from lanky.oracles.lean import LeanOracle
+
+    oracles = [oracle for oracle in registry.oracles if isinstance(oracle, LeanOracle)]
+    assert oracles
+    claim = demo.compressed_taylor
+    for oracle in oracles:
+        assert oracle.declines[claim.fact_id("symbolic")] == demo.FOR_THE_CAS
+        assert claim.fact_id("every-order") not in oracle.declines
+        assert claim.fact_id("sampled") not in oracle.declines
 
 
 # }}}
@@ -144,54 +193,70 @@ def test_python_runs_the_demo_and_every_coefficient_agrees() -> None:
     assert "Every reconstructed coefficient is the direct derivative" in run.stdout
 
 
-def test_lanky_check_prints_the_claim_tested_and_decided(cas, capsys) -> None:
-    """One owner, two rows: ``tested`` by mpmath, ``decided (heuristic)`` by the CAS oracle.
+def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order(
+    cas, capsys
+) -> None:
+    """One owner, three rows: ``tested`` by mpmath, ``decided (heuristic)`` by the CAS oracle.
 
-    Above them the kernel's harmonicity, ``assumed`` on its citation.
+    And the claim for every order, ``assumed under harmonic`` where Lean has
+    no Mathlib to state it in. Above them the kernel's harmonicity, ``assumed``
+    on its citation.
     """
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
     rows = [line for line in printed.splitlines() if "compressed_taylor" in line]
-    assert rows[0].startswith("tested               mpmath  sumpy_recurrence.py:")
-    assert rows[1].startswith("decided (heuristic)  cas     sumpy_recurrence.py:")
+    assert rows[0].startswith("tested                  mpmath  sumpy_recurrence.py:")
+    assert rows[1].startswith("decided (heuristic)     cas     sumpy_recurrence.py:")
+    assert rows[2].startswith("assumed under harmonic  -       sumpy_recurrence.py:")
+    assert "every order: reconstructed(a, b) == diff(" in rows[2]
     (axiom_row,) = [line for line in printed.splitlines() if "  harmonic  " in line]
-    assert axiom_row.startswith("assumed (axiom)      -       sumpy_recurrence.py:")
-    assert "3 facts: 1 assumed, 1 decided, 1 tested" in printed
+    assert axiom_row.startswith("assumed (axiom)         -       sumpy_recurrence.py:")
+    assert "4 facts: 2 assumed, 1 decided, 1 tested" in printed
     assert re.search(r"^CITED harmonic at sumpy_recurrence\.py:\d+: R\. Kress, ", printed, re.M)
 
 
 def _by_owner() -> tuple:
-    """The demonstration's ledger: the axiom, then the claim at points and as formulas."""
-    harmonic, sampled, symbolic = check_path(DEMO)
+    """The demonstration's ledger: the axiom, then the claim at points, as formulas, every order."""
+    harmonic, sampled, symbolic, every_order = check_path(DEMO)
     assert harmonic.owner == "harmonic"
-    assert sampled.owner == symbolic.owner == "compressed_taylor"
-    return harmonic, sampled, symbolic
+    assert sampled.owner == symbolic.owner == every_order.owner == "compressed_taylor"
+    return harmonic, sampled, symbolic, every_order
 
 
 def test_without_the_cas_oracle_the_formulas_are_tested_exactly(capsys) -> None:
     """The property tester evaluates the same 28 equations in rational arithmetic."""
-    _, sampled, symbolic = _by_owner()
+    _, sampled, symbolic, _ = _by_owner()
     assert (sampled.status, sampled.decided_by) == (Status.TESTED, "mpmath")
     assert (symbolic.status, symbolic.decided_by) == (Status.TESTED, "property-test")
     assert symbolic.provenance["valid"] > 0
 
 
-def test_the_harmonicity_is_assumed_on_its_citation_and_nothing_rests_on_it(cas) -> None:
-    """Sampled and not refuted; neither row rests on it, since each checks every order directly.
+def test_the_harmonicity_is_assumed_and_the_claim_for_every_order_rests_on_it(cas) -> None:
+    """Sampled and not refuted; the rows through the order do not rest on it, and the third does.
 
-    A proof for every order would rest on it, and that row is not there yet.
+    Each of the first two checks the reconstruction against the derivatives
+    themselves; the proof for every order takes the PDE at every order as its
+    hypothesis, which is what the harmonicity gives. Without Mathlib that row
+    is ``assumed``: Lean cannot state it in core, and the tester has no table
+    over ``Nat`` to draw.
     """
-    harmonic, sampled, symbolic = _by_owner()
+    from lanky.ledger import Ledger
+
+    harmonic, sampled, symbolic, every_order = _by_owner()
     assert harmonic.is_axiom
     assert (harmonic.status, harmonic.decided_by) == (Status.ASSUMED, None)
     assert harmonic.provenance["cite"].startswith("R. Kress, Linear Integral Equations")
     assert harmonic.statement.startswith("x : Real, y : Real | x**2 + y**2 > 0 |- ")
     assert harmonic.statement.endswith(" == 0")
     assert sampled.rests_on == symbolic.rests_on == ()
+    assert every_order.rests_on == (harmonic.id,)
+    assert every_order.status is Status.ASSUMED
+    ledger = Ledger([harmonic, sampled, symbolic, every_order])
+    assert ledger.support(every_order).under == (harmonic.id,)
 
 
 def test_the_ledger_records_what_each_oracle_did(cas) -> None:
-    _, sampled, symbolic = _by_owner()
+    _, sampled, symbolic, _ = _by_owner()
     assert sampled.provenance["samples"] == 20
     assert sampled.provenance["digits"] == 30
     assert sampled.provenance["largest_difference"] <= 1e-20
@@ -323,12 +388,85 @@ def test_a_weight_off_by_one_part_in_a_quadrillion_is_refuted_on_both_rows(cas, 
     assert symbolic.provenance["declined"].startswith("cas: sympy simplifies the difference")
 
 
+def test_a_wrangler_off_its_pdes_recurrence_makes_no_claim_for_every_order(tmp_path) -> None:
+    """With its kernel to read the PDE off, the flipped wrangler still claims only through order 4.
+
+    Its weights at ``(2, 1)`` are not what the PDE's recurrence gives, so the
+    claim for every order would be about a recurrence it does not follow;
+    the rows at points and as formulas refute it.
+    """
+    text = FLIPPED.replace(
+        "        self.wrangler = wrangler\n",
+        "        self.wrangler = wrangler\n        self.knl = wrangler.knl\n",
+    )
+    path = tmp_path / "flipped_with_kernel.py"
+    path.write_text(text, encoding="utf-8")
+    facts = check_path(path)
+    assert [fact.id.rsplit(":", 1)[-1] for fact in facts] == ["sampled", "symbolic"]
+    assert all(fact.status is Status.REFUTED for fact in facts)
+
+
 def test_a_recurrence_that_is_not_linear_is_refused_where_it_is_written(tmp_path) -> None:
     text = FLIPPED.replace("rows[place] = -rows[place]", "rows[place] = rows[place] ** 2")
     path = tmp_path / "squared.py"
     path.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=r"reconstructs \(2, 1\) by .*, which is not linear"):
         check_path(path)
+
+
+# }}}
+
+
+# {{{ with Mathlib, the claim for every order is proved
+
+
+def test_with_mathlib_the_claim_for_every_order_is_proved_under_harmonic(
+    cas, mathlib_project, monkeypatch, capsys
+) -> None:
+    """The ledger #3 asks for: tested, decided by the CAS oracle, proved by Lean under harmonic.
+
+    Lean proves the claim for every order by induction on ``a``, with the step
+    a linear combination of the recurrence, the PDE and the induction
+    hypothesis that Python found; the CAS oracle still decides the claim
+    through the order, which the demonstration declines for Lean.
+    """
+    pytest.importorskip("lean_interact", reason="the Lean oracle needs lean-interact")
+    if mathlib_project is None:
+        if os.environ.get("LANKY_LEAN_MATHLIB_TEST_REQUIRED"):
+            pytest.fail("LANKY_LEAN_MATHLIB_TEST_REQUIRED is set, but no project is named")
+        pytest.skip("LANKY_LEAN_MATHLIB names no Lake project with Mathlib")
+    if os.environ.get("LANKY_LEAN_DISABLE"):
+        pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
+    monkeypatch.setenv("LANKY_LEAN_MATHLIB", mathlib_project)
+    harmonic, sampled, symbolic, every_order = _by_owner()
+    assert (sampled.status, sampled.decided_by) == (Status.TESTED, "mpmath")
+    assert (symbolic.status, symbolic.decided_by) == (Status.DECIDED, "cas")
+    declined = symbolic.provenance["declined"]
+    reasons = declined if isinstance(declined, list | tuple) else [declined]
+    assert reasons[0].startswith("lean: the claim through the order checked is the CAS")
+    assert (every_order.status, every_order.decided_by) == (Status.PROVED, "lean")
+    tactic = every_order.provenance["tactic"]
+    assert "induction a using Nat.strong_induction_on with" in tactic
+    assert "linear_combination" in tactic
+    assert every_order.provenance["lean_mathlib"]
+    assert cli.main(["check", str(DEMO)]) == 0
+    printed = capsys.readouterr().out
+    rows = [line for line in printed.splitlines() if "compressed_taylor" in line]
+    assert [re.split(r"\s{2,}", row)[:3] for row in rows] == [
+        ["tested", "tested", "mpmath"],
+        ["decided (heuristic)", "decided (heuristic)", "cas"],
+        ["proved under harmonic", "assumed", "lean"],
+    ]
+    assert "4 facts: 1 assumed, 1 decided, 1 proved, 1 tested" in printed
+    # and that is the table the quickstart shows
+    shown = _shown("LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py")
+    printed_lines = [line.rstrip() for line in printed.splitlines()]
+    assert len(shown) == len(printed_lines)
+    for doc, real in zip(shown, printed_lines, strict=True):
+        if doc and set(doc) <= {"-", " "}:
+            assert len(_cells(doc)) == len(_cells(real))
+        else:
+            assert _cells(doc) == _cells(real)
 
 
 # }}}

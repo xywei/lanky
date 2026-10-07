@@ -606,32 +606,38 @@ Every reconstructed coefficient is the direct derivative. sympy simplifies each
 difference to 0, and mpmath's derivatives, at 30 digits, agree to within 1e-20
 of each other, relative, at 20 points.
 
+Through order 6 the wrangler follows the recurrence
+reconstructed(a + 2, b) == -reconstructed(a, b + 2), which is the PDE sumpy
+declares for the kernel, G_xx + G_yy == 0, solved for G_xx.
+
 `lanky check examples/sumpy_recurrence.py` puts the claim in the ledger: tested by
-mpmath, and decided by the CAS oracle where sympy is installed.
+mpmath, decided by the CAS oracle where sympy is installed, and proved for every
+order by Lean where Mathlib is, under the kernel's harmonicity.
 ```
 
-The ledger has the one claim twice, with the evidence for each, under the
+The ledger has the one claim three times, with the evidence for each, under the
 kernel's harmonicity:
 
 ```console
 $ uv run lanky check examples/sumpy_recurrence.py
-STATUS               BY      WHERE                    OWNER              STATEMENT
--------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
-assumed (axiom)      -       sumpy_recurrence.py:100  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
-tested               mpmath  sumpy_recurrence.py:450  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
-decided (heuristic)  cas     sumpy_recurrence.py:450  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+STATUS                  BY      WHERE                    OWNER              STATEMENT
+----------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
+assumed (axiom)         -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested                  mpmath  sumpy_recurrence.py:712  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)     cas     sumpy_recurrence.py:712  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+assumed under harmonic  -       sumpy_recurrence.py:712  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
 
-3 facts: 1 assumed, 1 decided, 1 tested
+4 facts: 2 assumed, 1 decided, 1 tested
 
-CITED harmonic at sumpy_recurrence.py:100: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
 
 - **The harmonicity.** `harmonic` is an axiom: `G_xx + G_yy == 0` away from
   the origin, with the second derivatives sympy's, taken on its citation and
   sampled for a counterexample. It is the PDE the wrangler's recurrence comes
-  from. Neither row below rests on it, since each checks the reconstruction
-  against the derivatives themselves, one order at a time; a proof for every
-  order would.
+  from. The first two rows below do not rest on it, since each checks the
+  reconstruction against the derivatives themselves, one order at a time; the
+  third, the claim for every order, does.
 - **The claim at points.** mpmath takes every derivative numerically, by
   finite differences at 30 digits, at 20 points away from the origin, and
   finds each reconstructed one within `1e-20` of the derivative it stands
@@ -646,18 +652,26 @@ CITED harmonic at sumpy_recurrence.py:100: R. Kress, Linear Integral Equations, 
 - **Without the oracle**, `LANKY_CAS_DISABLE=1`, the second row reads
   `tested  property-test`: the tester evaluates the same 28 equations exactly,
   in rational arithmetic, at each of its draws.
+- **The claim for every order.** Over two tables of reals indexed by `(a,
+  b)`, the derivatives `D` and the reconstruction `R`: if `D` satisfies the
+  PDE at every order, `D(a + 2)(b) + D(a)(b + 2) == 0`, and `R` is `D` where
+  the wrangler stores (`a < 2`) and follows the recurrence `R(a + 2)(b) ==
+  -R(a)(b + 2)` everywhere else, then `R` is `D`. The derivatives of `log r`
+  at a point are such a `D`, by `harmonic`, which is why the row reads
+  `under harmonic`, and the wrangler's reconstruction is such an `R`: the
+  recurrence is read off the PDE sumpy declares for the kernel, as the
+  wrangler reads it, and the wrangler's weights through order 6 are checked
+  against it, as the Python run above says. Core Lean cannot state the row,
+  since it is over the reals, and the tester cannot draw a table over `Nat`,
+  so it is `assumed` here; Lean proves it with Mathlib (see
+  [Prove it with Mathlib](#prove-it-with-mathlib)).
 - **A wrong recurrence fails the check.** Flip the sign of one reconstructed
-  coefficient in the wrangler and both rows are refuted: mpmath names the
-  coefficient and the point, sympy declines with the difference it is left
-  with, twice a stored derivative, and the tester finds a point of its own.
-  `lanky check` exits 1.
-
-A third row, the claim for every order proved by Lean with Mathlib under
-`harmonic`, needs an induction over the order, which the ladder does not do
-yet. In Mathlib mode Lean is asked about the second row
-before the CAS oracle, and its ladder, which has no strategy for 28 equations
-at once, takes minutes to give up on it; the row is the same, and so is the
-table.
+  coefficient in the wrangler and the first two rows are refuted: mpmath
+  names the coefficient and the point, sympy declines with the difference it
+  is left with, twice a stored derivative, and the tester finds a point of
+  its own. `lanky check` exits 1. The third row is not there: the wrangler's
+  weights no longer follow its PDE's recurrence, so it makes no claim for
+  every order.
 
 ## Prove it with Mathlib
 
@@ -779,6 +793,88 @@ division by something that may be zero, and a logarithm or square root of
 something that may leave its Python domain.
 `def neg(x: Real & (x < 0)) -> sqrt(x) == 0` is proved with Mathlib, whose
 square root of a negative number is `0`, and no draw can evaluate it in Python.
+
+### A claim for every order
+
+With the same variable, the sumpy demonstration's third row is proved:
+
+```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py
+STATUS                 EFFECTIVE            BY      WHERE                    OWNER              STATEMENT
+---------------------  -------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
+assumed (axiom)        assumed              -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested                 tested               mpmath  sumpy_recurrence.py:712  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:712  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+proved under harmonic  assumed              lean    sumpy_recurrence.py:712  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
+
+4 facts: 1 assumed, 1 decided, 1 proved, 1 tested
+
+CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+```
+
+The claim is over two tables, `D` and `R` (see the
+[demonstration](#decide-an-identity-with-a-computer-algebra-system)), and Lean
+proves it by strong induction on `a`, with `b` free in the induction
+hypothesis:
+
+```text
+theorem Lanky.compressed_taylor (D : Int → Int → ℝ) (R : Int → Int → ℝ)
+    (h0 : ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → D (a + 2) b + D a (b + 2) = 0)
+    (h1 : ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → a < 2 → R a b = D a b)
+    (h2 : ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → R (a + 2) b = (-1) * R a (b + 2)) :
+    ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → R a b = D a b := by
+  intro a hd b hd_1
+  obtain ⟨a, rfl⟩ := Int.eq_ofNat_of_zero_le hd
+  clear hd
+  revert b hd_1
+  induction a using Nat.strong_induction_on with
+  | _ a ih =>
+    intro b hd_1
+    by_cases hbase : a < 2
+    · linear_combination (norm := ...) h1 a (by omega) b (by omega) (by omega)
+    · obtain ⟨k, rfl⟩ : ∃ k : Nat, a = k + 2 := ⟨a - 2, by omega⟩
+      linear_combination (norm := ...) h2 k (by omega) b (by omega)
+        - h0 k (by omega) b (by omega) - ih k (by omega) (b + 2) (by omega)
+```
+
+(the `norm` is `ring`, after the casts are pushed down to the variables, with
+`ring_nf` and `field_simp` to fall back on; it is spelled out as
+`lanky.oracles.lean.COMBINATION_NORM`). Below the step, `a < 2`, the stored
+coefficient is the derivative, by `h1`. At `a = k + 2`, the goal `R (k + 2) b
+= D (k + 2) b` is the recurrence at `(k, b)`, less the PDE at `(k, b)`, less
+the induction hypothesis at `(k, b + 2)`: `linear_combination` moves
+everything to one side and `ring` checks that what is left is `0`. Lean does
+not find that combination, and lanky does not ask it to. Python does
+(`lanky.induction`): the applications of the families in the goal are atoms,
+each hypothesis is instantiated where one of its applications is an atom, the
+instances bring in atoms of their own, and once the goal is a combination of
+the instances the multipliers solve a linear system over the rational
+functions of the statement's other variables, with sympy (the `cas` extra).
+Each use has to satisfy its hypothesis's guards, which the search reads as
+affine inequalities, so the induction hypothesis is only ever used below the
+order it is proving. Python searches, Lean checks: a wrong certificate is one
+failed attempt, never a wrong proof.
+
+The search is lanky's default certificate hook. A plugin that knows its
+multipliers, from the coefficients of a PDE say, can hand them over with
+`lanky.oracles.lean.use_certificate(claim, finder)`, where `finder` takes a
+`lanky.induction.Case` and returns the uses of its lemmas. A multiplier can be
+an expression: for Helmholtz's PDE, `D(a + 2)(b) + D(a)(b + 2) + k**2 *
+D(a)(b) == 0`, the step also takes the induction hypothesis at `(k, b)`,
+times `-k**2`; and a step that is a rational-function identity, such as
+`f(n + 1) == f(n) + 1 / ((n + 1) * (n + 2))` with `f(n) == n / (n + 1)`, is
+closed by `field_simp` and `ring`. The strategy is Mathlib's, since
+`linear_combination` is, and it takes a goal that is a universal over
+naturals whose body is an equation between applications of the statement's
+families.
+
+The CAS's row is the claim through order 6, and Lean is not asked about it:
+the demonstration declines it for Lean
+(`lanky.oracles.lean.decline(claim, reason)`), since Lean's row is the one
+for every order, and the ladder spent minutes on 28 equations at once before
+the CAS oracle decided them in a second. The check takes about a minute, most
+of it importing Mathlib and asking Lean whether the third row's hypotheses
+are inconsistent and its goal's domain empty, which they are not.
 
 ## What to try next
 
@@ -931,6 +1027,7 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
 | where the readings still differ: division by zero, `log`, `sqrt` | `src/lanky/semantics.py` |
 | the Lean printer, core Lean's dialect and Mathlib's | `src/lanky/lean.py` |
 | Mathlib mode: the pinned project and its setup | `src/lanky/mathlib.py`, `src/lanky/mathlib-project/` |
+| induction over families: the search for a certificate, and the script Lean checks | `src/lanky/induction.py`, `src/lanky/oracles/lean.py` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |
 | the pytential demonstration, and its rule engine | `examples/pytential_skie.py`, `examples/layer_potentials.py` |

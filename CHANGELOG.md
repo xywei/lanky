@@ -83,8 +83,76 @@ loopty uses changes, and loopty's floor follows it.
   one of Python's builtins in an annotation, which is a variable where it is
   named and the builtin where it is called at concrete arguments, and the
   builtins that are (#63).
+- **Induction over families of expressions, in Mathlib mode** (#3). A claim
+  about every order, a universal over naturals whose body is an equation
+  between applications of the statement's families, under hypotheses that
+  are equations under universals of their own (a recurrence, a PDE, what
+  holds at the lowest orders), is proved by strong induction on the order,
+  with the goal's other variables free in the induction hypothesis
+  (`lanky.oracles.lean.family_induction_scripts`, in the ladder after the
+  core attempts). The step size is read off the hypotheses: one that relates
+  `R(a + 2)` to `R(a)` makes it 2. The orders below the step are the base,
+  closed for all of them at once or one at a time after `interval_cases`,
+  and the order `k + step` is the step. Each case is closed by
+  `linear_combination` over the hypotheses and the induction hypothesis,
+  normalized by `ring`, by `ring_nf` where two uses write one point
+  differently, or by `field_simp` and `ring` where there are denominators
+  (`lanky.oracles.lean.COMBINATION_NORM`), and every guard of a hypothesis
+  it applies is discharged by `omega`. Python searches and Lean checks: the
+  combination, which hypothesis at which point and with which multiplier,
+  is found by `lanky.induction.find_certificate`, and a wrong one costs an
+  attempt, never a proof.
+- `lanky.induction`: the search. A `Case` is one case of the induction, its
+  goal and the `Lemma`s it may use; a finder takes a case and returns the
+  `Use` of each lemma, at the values it is applied at and with its
+  multiplier. lanky's finder instantiates a lemma where one of its
+  applications of a family is an atom of the goal, by solving the affine
+  equations between their arguments, and the instances' atoms in turn, for
+  a few rounds; proposes an instance only where the case's bounds show its
+  guards as affine inequalities over the integers, so the induction
+  hypothesis is used only below the order being proved and a hypothesis
+  only inside the domain it quantifies; and solves for the multipliers over
+  the rational functions of the statement's other variables, so that
+  Helmholtz's step takes the induction hypothesis times `-k**2`. It is
+  sympy's (the `cas` extra), and finds nothing without it. Also
+  `lemma_of(name, term)`, `domain_conditions(var, domain)`, `substitute` and
+  `substitute_domain`.
+- The certificate hook: `lanky.oracles.lean.use_certificate(claim, finder)`
+  has the induction ask `finder` instead of lanky's search, for a plugin
+  that knows its multipliers; and `LeanOracle.certificates`, where it is
+  kept. `tactic_ladder(statement, finder)` takes one too.
+- `lanky.oracles.lean.decline(claim, reason)`: the Lean oracle leaves one
+  claim to the oracles after it, recording the reason as `declined`, without
+  opening a session; kept in `LeanOracle.declines`.
+- `lanky.lean.render_term(expr, types, ...)` and `lanky.lean.number_type`:
+  a term printed inside a proof, with the names a statement bound around it
+  typed, and the ring its value is in, which a multiplier is ascribed.
+- The sumpy demonstration's third row, the claim for every order (#3). Over
+  two tables of reals indexed by `(a, b)`, the derivatives `D` and the
+  reconstruction `R`: if `D` satisfies the PDE at every order, and `R` is
+  `D` where the wrangler stores and follows the recurrence everywhere else,
+  then `R` is `D`. The recurrence is read off the PDE sumpy declares for the
+  kernel, as the wrangler reads it, and the wrangler's weights through the
+  order are checked against it exactly; a wrangler whose weights do not
+  follow it makes no claim for every order. The row rests on `harmonic`,
+  through `@reconstructs(..., uses=harmonic)`. With Mathlib, Lean proves it,
+  and the ledger reads `tested`, `decided (heuristic)` and `proved under
+  harmonic`; without, it is `assumed under harmonic`. Running the file
+  prints the recurrence and the PDE it comes from.
 
 ### Changed
+
+- **Mathlib mode no longer spends minutes on the sumpy demonstration** (#71).
+  The CAS's row, 28 equations through order 6, is declined for Lean
+  (`decline`), since Lean's row is the claim for every order, and the ladder
+  has no strategy for a conjunction that size: `lanky check
+  examples/sumpy_recurrence.py` took 491 s with Mathlib, and takes about a
+  minute now, most of it importing Mathlib and asking whether the third
+  row's hypotheses are inconsistent and its goal's domain empty.
+- The optional `test with Lean and Mathlib` CI job installs sumpy, runs
+  `tests/test_sumpy_recurrence.py` with `tests/test_mathlib.py`, and checks
+  that the demonstration's claim for every order is `proved under
+  harmonic`.
 
 - **Lean proved two kinds of false statement, and does not now** (#61, #64).
   A wrong proof is the worst thing a proof host can report, so these lead.

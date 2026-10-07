@@ -1576,7 +1576,8 @@ def _combination(
     """
     by_name = {lemma.name: lemma for lemma in lemmas}
     parts: list[str] = []
-    for use in uses:
+    # a use taken once is written first, so the combination does not open with a sign
+    for use in sorted(uses, key=lambda use: not _is_number(use.multiplier, 1)):
         lemma = by_name.get(use.lemma)
         if lemma is None or len(use.arguments) != len(lemma.binders):
             return None

@@ -252,8 +252,17 @@ jobs:
           du -sh "${LANKY_LEAN_MATHLIB}/.lake"
           df -h "${RUNNER_TEMP}" | tail -1
 
+      # sumpy, as in the `lean` job, for the sumpy demonstration, whose claim
+      # for every order only Mathlib mode proves.
+      - name: Install sumpy, for the sumpy demonstration
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ocl-icd-opencl-dev opencl-headers
+          uv pip install --python .venv/bin/python sumpy
+
       - name: Test Mathlib mode
-        run: uv run pytest -q tests/test_mathlib.py
+        run: uv run pytest -q tests/test_mathlib.py tests/test_sumpy_recurrence.py
 
       # The row the README shows as `tested property-test` reads `proved lean`
       # here, next to the scan: both rows of the table are proved.
@@ -266,3 +275,14 @@ jobs:
             echo "expected both rows proved by lean, found ${proved}" >&2
             exit 1
           fi
+
+      # The ledger #3 asks for: the claim tested by mpmath, decided by the CAS
+      # oracle through the order, and proved by Lean for every order, under the
+      # kernel's harmonicity.
+      - name: Check the sumpy demonstration with Mathlib
+        run: |
+          set -euo pipefail
+          uv run lanky check examples/sumpy_recurrence.py | tee ledger.txt
+          grep -q '^tested  *tested  *mpmath ' ledger.txt
+          grep -q '^decided (heuristic)  *decided (heuristic)  *cas ' ledger.txt
+          grep -q '^proved under harmonic  *assumed  *lean ' ledger.txt

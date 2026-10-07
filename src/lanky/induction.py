@@ -670,7 +670,8 @@ def find_certificate(case: Case) -> tuple[Use, ...] | None:
         found = _patterns(algebra, lemma)
         if found is not None:
             patterns.append((lemma, *found))
-    frontier = list(algebra.applications(goal))
+    # sorted wherever sympy hands back a set, so that a search is the same every time
+    frontier = sorted(algebra.applications(goal), key=str)
     known = set(frontier)
     instances: list[_Instance] = []
     seen: set[tuple[str, tuple[Any, ...]]] = set()
@@ -679,7 +680,7 @@ def find_certificate(case: Case) -> tuple[Use, ...] | None:
         for atom in frontier:
             for lemma, scope, side, applications in patterns:
                 unknowns = [scope[var.name] for var, _ in lemma.binders]
-                for pattern in applications:
+                for pattern in sorted(applications, key=str):
                     values = _unify(sympy, pattern, atom, unknowns)
                     if values is None or len(values) != len(unknowns):
                         continue
@@ -696,7 +697,7 @@ def find_certificate(case: Case) -> tuple[Use, ...] | None:
                         lemma, ordered, instance_side, algebra.applications(instance_side)
                     )
                     instances.append(instance)
-                    for application in instance.atoms - known:
+                    for application in sorted(instance.atoms - known, key=str):
                         known.add(application)
                         fresh.append(application)
             if len(instances) > MAX_INSTANCES:

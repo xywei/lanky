@@ -187,6 +187,49 @@ def exp_log_of_a_positive(x: Real) -> exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j
     """The logarithm undone on the positive real axis, which is off the cut."""
 
 
+@theorem
+def every_order(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """A table that follows Laplace's recurrence is a harmonic function's derivatives."""
+
+
+@theorem
+def every_order_helmholtz(
+    k: Real,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) + k**2 * D(a)(b) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) - k**2 * R(a)(b) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """The same for Helmholtz's PDE: a multiplier of the step is ``-k**2``."""
+
+
+@theorem
+def telescoping(
+    f: Fn[Nat, Real],
+    start: f(0) == 0,
+    step: all(f(n + 1) == f(n) + 1 / ((n + 1) * (n + 2)) for n in Nat),
+) -> all(f(n) == n / (n + 1) for n in Nat):
+    """A sum of ``1 / ((n + 1)(n + 2))``: the step is closed by ``field_simp``."""
+
+
+@theorem
+def _lost_sign(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: with its sign lost the recurrence gives ``R(2)(0) == D(0)(2) == -D(2)(0)``."""
+
+
 #: False in Python, ``log x - πi`` against ``log x + πi``, and true in Lean. A
 #: term built here and not an annotation, where ``complex`` would be a variable.
 _ACROSS_THE_CUT = Forall(
@@ -1502,6 +1545,69 @@ def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOr
         result = mathlib_oracle.establish(fact)
         assert result.status is Status.ASSUMED, fact.kind
         assert result.provenance["lean_declined"].startswith("Lean could not prove ∀ ")
+
+
+# }}}
+
+
+# {{{ induction over families, each case closed by a certificate Lean checks
+
+
+@pytest.mark.parametrize(
+    "claim", [every_order, every_order_helmholtz, telescoping], ids=lambda claim: claim.__name__
+)
+def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, claim) -> None:
+    """By strong induction on the order, with the step a linear combination Python found.
+
+    ``every_order`` is the claim the sumpy demonstration makes for every
+    order; Helmholtz's step needs a multiplier that is not a number, and the
+    telescoping sum's needs ``field_simp``.
+    """
+    pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
+    proved = mathlib_oracle.establish(claim.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    tactic = proved.provenance["tactic"]
+    assert " using Nat.strong_induction_on with\n" in tactic
+    assert "linear_combination (norm := " in tactic
+    assert proved.provenance["lean_source"].startswith("import Mathlib\n\ntheorem Lanky.")
+
+
+def test_lean_checks_a_certificate_and_refuses_a_wrong_one(mathlib_oracle: LeanOracle) -> None:
+    """Python searches and Lean checks: a certificate with one sign wrong is no proof."""
+    pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
+    from lanky.induction import Use
+    from lanky.oracles.lean import family_induction_scripts
+
+    statement = statement_of(every_order.term, "every_order", mathlib=True)
+    a, b, k = Var("a"), Var("b"), Var("k")
+
+    def found(sign: int):
+        def finder(case):
+            if case.name == "base":
+                return (Use("h1", (a, b)),)
+            return (Use("h2", (k, b)), Use("h0", (k, b), -1), Use("ih", (k, b + 2), sign))
+
+        return finder
+
+    (right,) = family_induction_scripts(statement, found(-1))
+    (wrong,) = family_induction_scripts(statement, found(1))
+    closed, detail = mathlib_oracle.session.run(statement.source(right))
+    assert closed, detail
+    closed, detail = mathlib_oracle.session.run(statement.source(wrong))
+    assert not closed
+    assert "ring" in detail or "linarith" in detail or "failed" in detail
+
+
+def test_a_claim_for_every_order_from_a_wrong_recurrence_is_not_proved(
+    mathlib_oracle: LeanOracle,
+) -> None:
+    """No certificate is found for it, and nothing else in the ladder proves it."""
+    from lanky.oracles.lean import family_induction_scripts
+
+    statement = statement_of(_lost_sign.term, "_lost_sign", mathlib=True)
+    assert family_induction_scripts(statement) == []
+    result = mathlib_oracle.establish(_lost_sign.fact())
+    assert result.status is Status.ASSUMED
 
 
 # }}}
