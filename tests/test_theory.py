@@ -408,3 +408,60 @@ def test_a_builtin_named_inside_an_annotation_is_refused() -> None:
         """True: round(0.4) is 0, and min is the family."""
 
     assert concrete.report().ok
+
+
+def test_a_term_is_no_key_of_a_dict_or_a_set_in_an_annotation() -> None:
+    """#73: a lookup keyed by a term answered from its hash, as if the key were absent.
+
+    A dict or a set finds a key by its hash before it compares anything, and
+    a term's hash is its structure's, so ``{0: 1}.get(i, 0)`` was ``0``
+    while the annotation was read, and the statement became ``f(i)*0 ==
+    0``, which Lean proved with ``omega``, false at ``i = 0``. ``i in {0, 1}``
+    was ``False`` the same way, and nothing asked a term for a truth value
+    lanky could refuse. A term is unhashable to the annotation's own code
+    now, as a list is, and the theorem is refused where it is written.
+    """
+    refused = r"i was hashed by the annotation, as a dict or a set lookup or display"
+
+    def looked_up(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {0: 1}.get(i, 0) for i in Fin[n]
+    ):
+        """False in Python at i = 0, where the lookup gives 1."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(looked_up)
+
+    def member(n: Nat) -> all(i in {0, 1} for i in Fin[n]):
+        """False wherever n > 2; read as False everywhere."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(member)
+
+    def displayed(n: Nat) -> all({i: 1}[0] == 1 for i in Fin[n]):
+        """A dict display keyed by a term."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(displayed)
+
+    def subscripted(n: Nat) -> all({0: 1}[i] == 1 for i in Fin[n]):
+        """This one raised KeyError, and is refused with the reason now."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(subscripted)
+
+    def quantified(n: Nat) -> {all(i >= 0 for i in Fin[n]): 1}.get(True, 0) == 1:
+        """A quantifier as a key, whose hash pymbolic generates."""
+
+    with pytest.raises(TypeError, match=r"forall i in Fin\(n\)\. i >= 0 was hashed"):
+        theorem(quantified)
+
+    # concrete keys, and a term as a value, are no business of the hash
+    @theorem
+    def concrete(n: Nat) -> {0: n, 1: 1}.get(0) == n:
+        """A lookup by a concrete key."""
+
+    assert concrete.statement == "n : Nat |- n == n"
+    # outside an annotation a term hashes as pymbolic's node does
+    x = Var("x")
+    assert hash(x) == hash(Var("x"))
+    assert {x: 1}[x] == 1
