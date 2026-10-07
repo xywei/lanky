@@ -406,6 +406,35 @@ def test_a_wrangler_off_its_pdes_recurrence_makes_no_claim_for_every_order(tmp_p
     assert all(fact.status is Status.REFUTED for fact in facts)
 
 
+def test_a_recurrence_that_reaches_past_the_order_makes_no_claim_for_every_order(demo) -> None:
+    """``G_x + G_yy == 0``, solved for ``G_x``, takes ``(2, 0)`` from ``(1, 2)``, past order 2.
+
+    A wrangler through order 2 has nothing there, so what it does at ``(2,
+    0)`` and ``(1, 1)`` is not the recurrence, and its weights there are not
+    checked against it: no claim for every order. Laplace's PDE, read the same
+    way, stays within the order and makes the claim.
+    """
+    from collections import namedtuple
+    from types import SimpleNamespace
+
+    derivative = namedtuple("derivative", ["mi", "vec_idx"])
+
+    def wrangler(pde):
+        operator = SimpleNamespace(eqs=[{derivative(mi, 0): c for mi, c in pde.items()}])
+        return SimpleNamespace(knl=SimpleNamespace(get_pde_as_diff_op=lambda: operator))
+
+    identifiers = [(0, 0), (1, 0), (0, 1), (2, 0), (1, 1), (0, 2)]
+    # (1, 0) is minus (0, 2), as the recurrence has it; (2, 0) and (1, 1) are anything
+    stored = [(0, 0), (0, 1), (0, 2)]
+    weights = [{0: 1}, {2: -1}, {1: 1}, {0: 5}, {1: 7}, {2: 1}]
+    found = demo._read_pde(wrangler({(1, 0): 1, (0, 2): 1}), identifiers, stored, weights)
+    assert found is None
+    stored = [(0, 0), (1, 0), (0, 1), (1, 1), (0, 2)]
+    weights = [{0: 1}, {1: 1}, {2: 1}, {4: -1}, {3: 1}, {4: 1}]
+    found = demo._read_pde(wrangler({(2, 0): 1, (0, 2): 1}), identifiers, stored, weights)
+    assert found == ({(2, 0): 1, (0, 2): 1}, (2, 0))
+
+
 def test_a_recurrence_that_is_not_linear_is_refused_where_it_is_written(tmp_path) -> None:
     text = FLIPPED.replace("rows[place] = -rows[place]", "rows[place] = rows[place] ** 2")
     path = tmp_path / "squared.py"

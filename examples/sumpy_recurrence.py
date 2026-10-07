@@ -529,9 +529,10 @@ def _read_pde(
     combination of the weights it names. ``None``, and no claim for every
     order, for a wrangler with no kernel to read a PDE off, a PDE with a
     coefficient that is not a rational number (Helmholtz's ``k``), a stored
-    set no derivative of the PDE gives, or weights that do not follow the
-    recurrence: the rows at points and as formulas still check such a
-    wrangler, and refute one that is wrong.
+    set no derivative of the PDE gives, a recurrence that reaches past the
+    order for some coefficient, where the wrangler cannot follow it, or
+    weights that do not follow the recurrence: the rows at points and as
+    formulas still check such a wrangler, and refute one that is wrong.
     """
     import sympy
 
@@ -571,13 +572,12 @@ def _read_pde(
                     continue
                 source = tuple(m - n + o for m, n, o in zip(mi, leading, other, strict=True))
                 if source not in place:
-                    expected = None
-                    break
+                    # the recurrence reaches past the order, where the wrangler
+                    # has nothing, so it cannot follow it here
+                    return None
                 for stored_place, weight in weights[place[source]].items():
                     share = -coefficient / pde[leading] * weight
                     expected[stored_place] = expected.get(stored_place, 0) + share
-            if expected is None:
-                continue
         actual = {key: Fraction(value) for key, value in weights[index].items() if value != 0}
         if {key: value for key, value in expected.items() if value != 0} != actual:
             return None
