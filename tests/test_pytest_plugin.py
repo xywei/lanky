@@ -57,6 +57,33 @@ def test_theorems_are_collected_as_items(pytester) -> None:
     result.stdout.fnmatch_lines(["*counterexample*"])
 
 
+OPEN = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def short_circuited(n: Nat) -> (n >= 0) | (m > 0):
+    """m is bound by nothing, and the tester never asked for it."""
+'''
+
+
+def test_a_theorem_with_a_free_name_fails_naming_it(pytester) -> None:
+    """#67: a statement that mentions a name nothing binds fails, and does not pass.
+
+    ``(n >= 0) | (m > 0)`` never asks for ``m``, and passed. No draw gives
+    ``m`` a value, so the statement cannot be tested, and the item fails with
+    the statement and the name, without a traceback.
+    """
+    pytester.makepyfile(test_open=OPEN)
+    result = run(pytester, "-v")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*the statement mentions m, which no parameter or binder*"])
+    result.stdout.no_fnmatch_line("*Traceback*")
+
+
 PRIVATE = '''
 from __future__ import annotations
 

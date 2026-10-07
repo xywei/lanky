@@ -1861,6 +1861,105 @@ def test_each_oracle_that_declined_is_named_under_the_table(tmp_path, monkeypatc
     assert printed.count("DECLINED ") == 1
 
 
+FREE_NAMES = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Fin, Fn, Nat
+
+
+@theorem
+def typo(n: Nat) -> n + m >= n:
+    """m was meant to be n."""
+
+
+@theorem
+def short_circuited(n: Nat) -> (n >= 0) | (m > 0):
+    """The tester never asked for m, and passed it."""
+
+
+@theorem
+def misspelt(n: Nat, f: Fn[Fin[n], Flaot]) -> all(f(i) >= 0 for i in Fin[n]):
+    """False for a family of floats, and Flaot is no sort."""
+
+
+@theorem
+def drawn_later(f: Fn[Fin[n], Nat], n: Nat) -> all(f(i) >= 0 for i in Fin[n]):
+    """A size written after the family it sizes is a variable all the same."""
+'''
+
+
+def _mentions(names: str) -> str:
+    """What the tester says when it declines a statement for its free names."""
+    return (
+        f"property-test: the statement mentions {names}, which no parameter or "
+        "binder of it binds, so no draw gives "
+    )
+
+
+def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> None:
+    """#67 and #74: a name nothing binds is named under the table, and nothing is tested.
+
+    ``typo`` read ``assumed`` with nothing to say why: the tester could not
+    run it and recorded the reason where ``lanky check`` does not print it,
+    and Lean declined it silently. ``short_circuited`` never asked for ``m``
+    and read ``tested``. ``misspelt`` drew its family empty where ``n`` is 0,
+    could draw it nowhere else, and read ``tested`` on those draws alone. The
+    tester refuses all three before it draws, and says which name it cannot
+    give a value. A size written after the family it sizes is no free name.
+    """
+    path = write_file(tmp_path, FREE_NAMES)
+    by_owner = {fact.owner: fact for fact in check_path(path)}
+    for owner, names in (("typo", "m"), ("short_circuited", "m"), ("misspelt", "Flaot")):
+        fact = by_owner[owner]
+        assert fact.status is Status.ASSUMED, (owner, fact.provenance)
+        assert fact.decided_by is None
+        assert fact.provenance["declined"].startswith(_mentions(names)), fact.provenance
+    later = by_owner["drawn_later"]
+    assert (later.status, later.decided_by) == (Status.TESTED, "property-test")
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    for owner, names in (("typo", "m"), ("short_circuited", "m"), ("misspelt", "Flaot")):
+        block = printed.split(f"DECLINED {owner} at claims.py:", 1)[1].splitlines()
+        assert block[1].startswith(f"  {_mentions(names)}"), block
+    assert printed.count("DECLINED ") == 3
+
+
+UNDRAWABLE = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Fin, Fn, Nat
+
+
+@theorem
+def families(n: Nat, f: Fn[Fin[n], Fn[Nat, Nat]]) -> all(f(i)(0) == 0 for i in Fin[n]):
+    """False: a family of families is not zero at zero for nothing."""
+'''
+
+
+def test_a_family_whose_values_cannot_be_drawn_is_not_tested_on_its_empty_draws(
+    tmp_path,
+) -> None:
+    """#74: a family the tester cannot fill was passed where it is empty.
+
+    The values of ``f`` are families over ``Nat``, which the tester cannot
+    tabulate, so every draw with ``n > 0`` stopped, and the draws with ``n =
+    0`` gave an empty table, where the goal holds: the claim read ``tested``
+    on evidence from ``n = 0`` alone. Such a family is refused at every size
+    now, so no draw is completed and the fact stays ``assumed``, saying why.
+    """
+    path = write_file(tmp_path, UNDRAWABLE)
+    (fact,) = check_path(path)
+    assert fact.status is Status.ASSUMED, fact.provenance
+    assert fact.provenance["valid"] == 0
+    assert fact.provenance["unsampleable"] == fact.provenance["samples"]
+    assert fact.provenance["untested"] == (
+        "no draw could be completed: cannot draw the values of "
+        "Fn[Fin(n), Fn[Nat, Nat]]: cannot tabulate a family over Nat"
+    )
+
+
 # }}}
 
 

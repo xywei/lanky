@@ -225,9 +225,9 @@ class OpenStatement(TypeError):
         them = "it" if len(self.names) == 1 else "them"
         super().__init__(
             f"the statement mentions {listing}, which no parameter or binder of it "
-            f"binds, so a draw gives {them} no value and the statement cannot be "
-            "tested: bind a variable as a parameter, and import a sort or spell it "
-            "as lanky.prelude does"
+            f"binds, so no draw gives {them} a value and the statement cannot be "
+            "tested; a name misspelt, not imported, or meant as a parameter is the "
+            "usual cause"
         )
 
 
