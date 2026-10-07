@@ -107,13 +107,13 @@ lanky's `main`.
   `DECLINED` line with the reason it gave as `declined`, a standard provenance
   key too; neither changes the exit code. A statement that mentions a name
   nothing in it binds, a misspelt parameter or sort, gets one from the
-  property tester, which names the name and draws nothing. Two claims with one fact id, which
-  a factory gives the claims it makes since an id names a definition, fail
-  the check: the first is checked and the others are named in a `DUPLICATE`
-  block, unchecked, rather than one silently replacing another. Files from
-  different source roots are checked in a process per root, so two
-  directories that each hold a `helpers.py` are each checked against their
-  own.
+  property tester, which names the name and draws nothing. Two claims with
+  one fact id, which a factory gives the claims it makes since an id names a
+  definition, fail the check: the first is checked and the others are named
+  in a `DUPLICATE` block, unchecked, rather than one silently replacing
+  another. Files from different source roots are checked in a process per
+  root, so two directories that each hold a `helpers.py` are each checked
+  against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a

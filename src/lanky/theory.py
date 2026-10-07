@@ -324,6 +324,10 @@ class Theorem:
         A pass here is evidence, not proof, and a pass over zero valid draws is
         not even evidence; :meth:`report` says how many draws the hypotheses
         accepted.
+
+        Raises:
+            lanky.testing.OpenStatement: As :meth:`report` does, for a
+                statement that mentions a name nothing in it binds.
         """
         report = self.report(n, seed)
         return report.ok, report.counterexample
