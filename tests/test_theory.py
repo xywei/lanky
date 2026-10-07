@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 import pytest
 
 from lanky import axiom, theorem
@@ -465,3 +467,57 @@ def test_a_term_is_no_key_of_a_dict_or_a_set_in_an_annotation() -> None:
     x = Var("x")
     assert hash(x) == hash(Var("x"))
     assert {x: 1}[x] == 1
+
+
+def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
+    """#73: a builtin called by name in an annotation hashed a term in lanky's frame.
+
+    A builtin an annotation names runs in :class:`lanky.terms.BuiltinName`,
+    so a hash it asked for was asked in lanky's frame and not refused: ``set(i
+    for k in range(1))`` held ``i``, and ``0 not in`` it read ``True``;
+    ``dict((i, 1) for k in range(1)).get(0, 0)`` read ``0``; and ``max`` with
+    a key that looks ``i`` up read as if ``i`` were never ``0``. Lean proved
+    each statement, and each is false at ``i = 0``. A hash a builtin asks for
+    is refused as the annotation's own is.
+    """
+
+    def set_of(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        (f(i) * 0 == 1) | (0 not in set(i for k in range(1))) for i in Fin[n]
+    ):
+        """False at i = 0, where the set holds 0."""
+
+    with pytest.raises(TypeError, match=r"Python's set raised .*i was hashed by the annotation"):
+        theorem(set_of)
+
+    def dict_of(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == dict((i, 1) for k in range(1)).get(0, 0) for i in Fin[n]
+    ):
+        """False at i = 0, where the lookup gives 1."""
+
+    with pytest.raises(TypeError, match=r"Python's dict raised .*i was hashed by the annotation"):
+        theorem(dict_of)
+
+    def keyed(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + max([0, 1], key=functools.partial({0: 5}.get, i)) == 1 for i in Fin[n]
+    ):
+        """False at i = 0, where both keys are 5 and max gives 0."""
+
+    with pytest.raises(TypeError, match=r"Python's max raised .*i was hashed by the annotation"):
+        theorem(keyed)
+
+    def ordered(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + sorted([1, 0], key=functools.partial({0: 5}.get, i))[0] == 0 for i in Fin[n]
+    ):
+        """False at i = 0, where both keys are 5 and sorted keeps 1 first."""
+
+    with pytest.raises(TypeError, match=r"Python's sorted raised .*i was hashed by the"):
+        theorem(ordered)
+
+    # at concrete values a builtin is Python's, a generator and a key included
+    @theorem
+    def concrete(n: Nat) -> len(set(k % 2 for k in range(4))) + max(
+        [0, 1, 2], key=functools.partial({0: 5}.get, 0)
+    ) + n >= 2:
+        """True: two residues, and every key is 5, so max gives the first, 0."""
+
+    assert concrete.statement == "n : Nat |- 2 + n >= 2"

@@ -745,14 +745,20 @@ def _refuse_hashing(term: Any, frame: Any) -> None:
     hash a dict or a set lookup, a dict or set display, or a cache asks for
     there is refused, naming the fix. ``frame`` is the frame that asked for
     the hash. A builtin such as ``dict.get`` has no frame of its own, so it
-    is the annotation's. lanky and pymbolic hash terms in their own code, as
-    a type's hash hashes its bound, and their frames are not the
-    annotation's. Neither is a function the annotation calls.
+    is the annotation's. One the annotation calls by name runs in lanky's
+    :meth:`BuiltinName.__call__`, which stands in for the annotation's frame
+    here: ``set(i for k in range(1))``, and the key function of ``max([0,
+    1], key=functools.partial({0: 5}.get, i))``, hashed ``i`` in that frame
+    and answered as if ``i`` were never ``0``. lanky and pymbolic hash terms
+    in their own code, as a type's hash hashes its bound, and their frames
+    are not the annotation's. Neither is a function the annotation calls.
 
     Raises:
         TypeError: If ``frame`` runs the code of an annotation being
-            evaluated.
+            evaluated, or calls a builtin for it.
     """
+    if frame is not None and frame.f_code is BuiltinName.__call__.__code__:
+        frame = frame.f_back
     code = frame.f_code if frame is not None else None
     if not any(id(code) in reading for reading in _ANNOTATION_CODE):
         return
@@ -1384,12 +1390,14 @@ class BuiltinName(Var):
     in the file run as a program. Called with a term among its arguments, or
     a container that holds one, it is refused, naming the builtin: lanky has
     no term for the builtin, and Python would compute it on the term,
-    comparing two propositions where ``min`` compares two numbers. A builtin
-    that hands back an iterator, ``zip``, ``enumerate`` or ``reversed``, is
-    run to the end where it is called, so that a symbolic domain it walks is
-    refused there and binds no binder of the generator around it. The
-    builtins that mean something else in an annotation
-    (:data:`BUILTIN_OVERRIDES`) are never looked up here.
+    comparing two propositions where ``min`` compares two numbers. A term's
+    hash the builtin asks for is refused, as it is in the annotation's own
+    frame (#73): ``set(i for k in range(1))`` hashed ``i`` here and held it,
+    so ``0 in`` it was ``False``. A builtin that hands back an iterator,
+    ``zip``, ``enumerate`` or ``reversed``, is run to the end where it is
+    called, so that a symbolic domain it walks is refused there and binds no
+    binder of the generator around it. The builtins that mean something else
+    in an annotation (:data:`BUILTIN_OVERRIDES`) are never looked up here.
 
     Named and not called, it is the variable it always was, a free name, as
     ``x: int`` is: a theorem refuses a parameter whose annotation is one
@@ -1404,7 +1412,7 @@ class BuiltinName(Var):
         Raises:
             TypeError: If an argument is a term, or holds one, if the builtin is
                 not one an annotation may call, or if the builtin raises it,
-                as it does when it iterates a symbolic domain.
+                as it does when it iterates a symbolic domain or hashes a term.
             SymbolicBoolError: If the builtin asks a proposition for its truth
                 value, as ``max`` does of a generator over a concrete domain
                 whose body is symbolic.
