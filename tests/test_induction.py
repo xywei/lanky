@@ -254,6 +254,8 @@ def test_a_certificate_from_the_hook_is_what_the_script_combines(searching) -> N
     k, b, a = Var("k"), Var("b"), Var("a")
 
     def from_the_pde(case: Case):
+        if (case.order, case.step) != ("a", 2):
+            return None
         if case.name == "base":
             return (Use("h1", (a, b)),)
         # wrong on purpose: the induction hypothesis added rather than taken away
@@ -265,6 +267,30 @@ def test_a_certificate_from_the_hook_is_what_the_script_combines(searching) -> N
         "h2 k (by omega) b (by omega) + ih k (by omega) (b + 2) (by omega) "
         "- h0 k (by omega) b (by omega)"
     )
+
+
+def test_a_hook_that_answers_for_every_step_gives_a_script_for_each(searching) -> None:
+    """Lean judges: the script for the step the hook did not mean fails, and the next is tried."""
+    statement = _statement(laplace)
+    k, b, a = Var("k"), Var("b"), Var("a")
+    steps = []
+
+    def every_step(case: Case):
+        if case.order != "a":
+            return None
+        steps.append((case.step, case.name))
+        if case.name == "base":
+            return (Use("h1", (a, b)),)
+        return (Use("h2", (k, b)), Use("h0", (k, b), -1), Use("ih", (k, b + 2), -1))
+
+    first, second = family_induction_scripts(statement, every_step)
+    assert "by_cases hbase : a < 1" in first
+    assert "by_cases hbase : a < 2" in second
+    assert steps == [(1, "base"), (1, "step"), (2, "base"), (2, "step")]
+    # the ladder keeps both, in that order
+    steps.clear()
+    ladder = tactic_ladder(statement, every_step)
+    assert ladder[len(BASE_TACTICS) : len(BASE_TACTICS) + 2] == [first, second]
 
 
 def test_a_hook_that_finds_nothing_or_fails_gives_no_script(searching) -> None:

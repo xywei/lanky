@@ -1583,6 +1583,8 @@ def test_lean_checks_a_certificate_and_refuses_a_wrong_one(mathlib_oracle: LeanO
 
     def found(sign: int):
         def finder(case):
+            if (case.order, case.step) != ("a", 2):
+                return None
             if case.name == "base":
                 return (Use("h1", (a, b)),)
             return (Use("h2", (k, b)), Use("h0", (k, b), -1), Use("ih", (k, b + 2), sign))

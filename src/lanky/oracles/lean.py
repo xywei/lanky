@@ -1349,8 +1349,11 @@ def family_induction_scripts(
 
     ``finder`` is the certificate hook (:data:`lanky.induction.Finder`),
     lanky's search (:func:`lanky.induction.find_certificate`) by default. A
-    script is written only where it gives a certificate for every case, and
-    the first such order and step make the one script returned.
+    script is written for each order and step for which it gives a
+    certificate for every case, in the order they are tried; lanky's search
+    checks its certificates as polynomial identities first, so it gives at
+    most one, while a plugin's hook may answer for a step it does not mean
+    (:attr:`lanky.induction.Case.step` says which), and Lean is the judge.
     """
     if not statement.mathlib:
         return []
@@ -1374,20 +1377,18 @@ def family_induction_scripts(
         return []
     with dialect(statement.mathlib):
         names, variables, _, naturals, introduced = _goal_intro(statement)
+    shared = _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced)
+    scripts = []
     for target in variables:
         if target.name not in naturals:
             continue
         for step in _steps(target, goal, lemmas):
             script = _family_induction(
-                statement,
-                _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced),
-                target,
-                step,
-                finder or find_certificate,
+                statement, shared, target, step, finder or find_certificate
             )
             if script is not None:
-                return [script]
-    return []
+                scripts.append(script)
+    return scripts
 
 
 class _FamilyGoal:
@@ -1501,6 +1502,8 @@ def _family_induction(
             variables={**types, **dict.fromkeys(own, Nat)},
             bounds={**bounds, **own},
             families=shared.families,
+            step=step,
+            order=name,
         )
 
     printing = {**types, name: Nat, successor: Nat}

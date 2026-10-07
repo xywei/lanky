@@ -140,6 +140,11 @@ class Case:
             in a base case below the step.
         families: The names in scope that are families; an application of one
             is an atom of the linear forms.
+        step: The step of the induction the case belongs to: the order is
+            below it in a base case, and ``k + step`` in the step.
+        order: The goal's variable the induction is on, by the name the
+            case's terms give it where it is still a variable, in the base
+            case taken for every order below the step at once.
     """
 
     name: str
@@ -148,6 +153,8 @@ class Case:
     variables: Mapping[str, Any]
     bounds: Mapping[str, tuple[Any, Any]]
     families: frozenset[str]
+    step: int = 1
+    order: str = ""
 
 
 @dataclass(frozen=True, eq=False)

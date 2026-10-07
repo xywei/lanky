@@ -120,7 +120,10 @@ loopty uses changes, and loopty's floor follows it.
 - The certificate hook: `lanky.oracles.lean.use_certificate(claim, finder)`
   has the induction ask `finder` instead of lanky's search, for a plugin
   that knows its multipliers; and `LeanOracle.certificates`, where it is
-  kept. `tactic_ladder(statement, finder)` takes one too.
+  kept. `tactic_ladder(statement, finder)` takes one too. A case says which
+  variable is induced on and with what step (`Case.order`, `Case.step`), so
+  a hook can answer for the induction it means, and a script is written for
+  every variable and step whose cases it answers, Lean judging each.
 - `lanky.oracles.lean.decline(claim, reason)`: the Lean oracle leaves one
   claim to the oracles after it, recording the reason as `declined`, without
   opening a session; kept in `LeanOracle.declines`.
@@ -138,7 +141,9 @@ loopty uses changes, and loopty's floor follows it.
   through `@reconstructs(..., uses=harmonic)`. With Mathlib, Lean proves it,
   and the ledger reads `tested`, `decided (heuristic)` and `proved under
   harmonic`; without, it is `assumed under harmonic`. Running the file
-  prints the recurrence and the PDE it comes from.
+  prints the recurrence and the PDE it comes from. Opaque functions with
+  declared recurrences, for the Helmholtz kernels, #3's last primitive, are
+  #82.
 
 ### Changed
 
@@ -148,7 +153,9 @@ loopty uses changes, and loopty's floor follows it.
   has no strategy for a conjunction that size: `lanky check
   examples/sumpy_recurrence.py` took 491 s with Mathlib, and takes about a
   minute now, most of it importing Mathlib and asking whether the third
-  row's hypotheses are inconsistent and its goal's domain empty.
+  row's hypotheses are inconsistent and its goal's domain empty. A budget
+  for the whole ladder, which any statement no attempt fits still lacks, is
+  #83.
 - The optional `test with Lean and Mathlib` CI job installs sumpy, runs
   `tests/test_sumpy_recurrence.py` with `tests/test_mathlib.py`, and checks
   that the demonstration's claim for every order is `proved under
