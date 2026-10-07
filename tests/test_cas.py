@@ -407,8 +407,44 @@ def test_the_deadline_reads_the_variable(cas, monkeypatch) -> None:
     monkeypatch.setenv("LANKY_CAS_TIMEOUT", "a minute")
     result = CasOracle().establish(fact_of(Forall(((x, Real),), x == x)))
     assert result.provenance["declined"] == (
-        "cas: LANKY_CAS_TIMEOUT is 'a minute', which is not a number of seconds"
+        "cas: LANKY_CAS_TIMEOUT is 'a minute', which is not a finite number of seconds"
     )
+
+
+@pytest.mark.parametrize("given", ["nan", "inf", "-inf"])
+def test_a_deadline_that_is_not_finite_is_declined_and_leaves_sigalrm_alone(
+    cas, monkeypatch, given
+) -> None:
+    """``float`` reads ``nan`` and ``inf``, which no timer takes.
+
+    The handler the oracle installs for its deadline used to stay installed
+    when the timer refused the value, so a later ``SIGALRM`` meant for
+    someone else raised the oracle's ``_Expired``.
+    """
+    import signal
+
+    before = signal.getsignal(signal.SIGALRM)
+    monkeypatch.setenv("LANKY_CAS_TIMEOUT", given)
+    result = CasOracle().establish(fact_of(Forall(((x, Real),), x == x)))
+    assert result.provenance["declined"] == (
+        f"cas: LANKY_CAS_TIMEOUT is {given!r}, which is not a finite number of seconds"
+    )
+    assert signal.getsignal(signal.SIGALRM) is before
+
+
+@pytest.mark.parametrize("seconds", [float("nan"), float("inf"), 1e300])
+def test_a_deadline_the_timer_will_not_take_is_none(cas, seconds) -> None:
+    """The block runs without one, and the ``SIGALRM`` handler is the one there was."""
+    import signal
+
+    before = signal.getsignal(signal.SIGALRM)
+    with _deadline(seconds):
+        assert signal.getsignal(signal.SIGALRM) is before
+        assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+    assert signal.getsignal(signal.SIGALRM) is before
+    result = CasOracle(timeout=seconds).establish(fact_of(Forall(((x, Real),), x == x)))
+    assert (result.status, result.decided_by) == (Status.DECIDED, "cas")
+    assert signal.getsignal(signal.SIGALRM) is before
 
 
 def test_no_deadline_off_the_main_thread_or_over_another_timer(cas) -> None:

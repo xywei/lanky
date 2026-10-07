@@ -45,6 +45,7 @@ does Lean's. sympy is imported on the first fact, not with lanky.
 
 from __future__ import annotations
 
+import math
 import os
 import signal
 import threading
@@ -85,7 +86,10 @@ def _deadline(seconds: float | None) -> Iterator[None]:
 
     That is in the main thread of a process with ``signal.setitimer`` and no
     interval timer of its own running, which would be clobbered. Elsewhere the
-    block runs without a deadline.
+    block runs without a deadline, and so it does when the timer will not
+    take ``seconds``: a deadline too long for it to hold, or one that is not a
+    number. Either way the ``SIGALRM`` handler is the one there was before,
+    once the block is over or the timer has refused.
     """
     if (
         not seconds
@@ -101,7 +105,12 @@ def _deadline(seconds: float | None) -> Iterator[None]:
         raise _Expired
 
     previous = signal.signal(signal.SIGALRM, expire)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+    except (OverflowError, ValueError, OSError):
+        signal.signal(signal.SIGALRM, previous)
+        yield
+        return
     try:
         yield
     finally:
@@ -163,8 +172,9 @@ class CasOracle:
         """The deadline for one fact, in seconds.
 
         Raises:
-            ValueError: If ``LANKY_CAS_TIMEOUT`` is not a number, which
-                :meth:`establish` declines the fact for, saying so.
+            ValueError: If ``LANKY_CAS_TIMEOUT`` is not a finite number,
+                ``nan`` and ``inf`` included, which :meth:`establish`
+                declines the fact for, saying so.
         """
         if self.timeout is not None:
             return self.timeout
@@ -172,11 +182,14 @@ class CasOracle:
         if given is None:
             return DEFAULT_TIMEOUT
         try:
-            return float(given)
+            seconds = float(given)
         except ValueError:
+            seconds = math.nan
+        if not math.isfinite(seconds):
             raise ValueError(
-                f"LANKY_CAS_TIMEOUT is {given!r}, which is not a number of seconds"
-            ) from None
+                f"LANKY_CAS_TIMEOUT is {given!r}, which is not a finite number of seconds"
+            )
+        return seconds
 
     def establish(self, fact: Fact, /) -> Fact | None:
         """``DECIDED`` when sympy takes every equation's difference to ``0``; declined otherwise.
