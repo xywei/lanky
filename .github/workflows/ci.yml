@@ -113,9 +113,16 @@ jobs:
       # the sumpy demonstration's tests run here instead of skipping
       # (tests/test_sumpy_recurrence.py, #75). It is sumpy's release on PyPI,
       # as a user would install it, and `uv run` keeps it, since its sync of
-      # the project does not remove what the project does not name.
+      # the project does not remove what the project does not name. sumpy
+      # depends on pyvkfft, which PyPI has as source only and which compiles
+      # against OpenCL's headers, so they are installed first; the wheel uv
+      # builds is kept in its cache.
       - name: Install sumpy, for the sumpy demonstration
-        run: uv pip install --python .venv/bin/python sumpy
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ocl-icd-opencl-dev opencl-headers
+          uv pip install --python .venv/bin/python sumpy
 
       - name: Read the driver's version
         id: driver
