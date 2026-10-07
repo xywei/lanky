@@ -1043,6 +1043,26 @@ def mathlib_oracle(mathlib_project: str | None) -> Iterator[LeanOracle]:
     oracle.session.close()
 
 
+def test_mathlib_refuses_a_name_the_declaration_does_not_bind(
+    mathlib_oracle: LeanOracle,
+) -> None:
+    """#68: in Mathlib mode too, an unbound name is an unknown identifier and not a variable.
+
+    The project the session runs in sets no option, so ``x - 1 ≥ 0`` with
+    ``x`` bound by nothing is a statement about a natural there as in core
+    Lean, which ``omega`` proves, unless ``autoImplicit`` is off.
+    """
+    from lanky.lean import ELABORATION_OPTIONS, LeanStatement
+
+    source = LeanStatement("free_goal", (), (), "x - 1 ≥ 0", mathlib=True).source("omega")
+    assert source.startswith(f"{ELABORATION_OPTIONS}\n")
+    closed, detail = mathlib_oracle.session.run(source)
+    assert not closed
+    assert "Unknown identifier" in detail or "unknown identifier" in detail, detail
+    closed, detail = mathlib_oracle.session.run(source.removeprefix(f"{ELABORATION_OPTIONS}\n"))
+    assert closed, detail
+
+
 def test_the_session_imports_mathlib_and_says_which(mathlib_oracle: LeanOracle) -> None:
     session = mathlib_oracle.session
     assert session.version == "v4.29.1"

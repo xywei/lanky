@@ -2720,6 +2720,27 @@ def test_a_session_runs_lean_source_directly(lean_oracle: LeanOracle) -> None:
     assert "omega" in detail
 
 
+def test_lean_refuses_a_name_the_declaration_does_not_bind(lean_oracle: LeanOracle) -> None:
+    """#68: an unbound name is an unknown identifier to Lean, and not an implicit variable.
+
+    The printer declines a statement with a free name (#64). Behind it, Lean
+    elaborates every declaration lanky sends with ``autoImplicit`` off, so
+    one the printer let through is refused rather than bound at a type Lean
+    infers: ``x - 1 ≥ 0`` with ``x`` bound by nothing was a statement about a
+    natural ``x``, which ``omega`` proved, and still is with the option on.
+    """
+    from lanky.lean import ELABORATION_OPTIONS
+
+    statement = LeanStatement("free_goal", (), (), "x - 1 ≥ 0")
+    source = statement.source("omega")
+    assert source.startswith(f"{ELABORATION_OPTIONS}\ntheorem Lanky.free_goal : ")
+    closed, detail = lean_oracle.session.run(source)
+    assert not closed
+    assert "Unknown identifier" in detail or "unknown identifier" in detail, detail
+    closed, detail = lean_oracle.session.run(source.removeprefix(f"{ELABORATION_OPTIONS}\n"))
+    assert closed, detail
+
+
 def test_checking_the_example_file_proves_the_scan(lean_oracle: LeanOracle) -> None:
     # The demo, end to end: the file is imported, the claims become facts, and
     # the strongest oracle that can take each one takes it.
