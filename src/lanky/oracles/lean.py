@@ -94,6 +94,7 @@ from lanky.lean import (
 from lanky.ledger import Fact, Status
 from lanky.prelude import FinType, FnType, Nat, Refined
 from lanky.terms import (
+    Add,
     Comparison,
     Exists,
     Forall,
@@ -1365,10 +1366,14 @@ def family_induction_scripts(
     families = _family_names(statement)
     if not families:
         return []
+    # a goal variable named like a parameter hides it after intro, where the
+    # hypotheses still mean the parameter, and the search would confuse the two
+    if {var.name for var, _ in goal.binders} & set(statement.types):
+        return []
     terms = statement.hypothesis_terms or (None,) * len(statement.hypotheses)
     lemmas = [
         lemma
-        for (name, _), term in zip(statement.hypotheses, terms, strict=True)
+        for (name, _), term in zip(statement.hypotheses, terms, strict=False)
         if term is not None
         for lemma in (lemma_of(name, term),)
         if lemma is not None
@@ -1507,7 +1512,8 @@ def _family_induction(
         )
 
     printing = {**types, name: Nat, successor: Nat}
-    ring = number_type(body.left, printing, mathlib=True)
+    # the ring the equation is in, which a multiplier is ascribed: the wider side's
+    ring = number_type(Add((body.left, body.right)), printing, mathlib=True)
 
     def closing(this: Case | None) -> str | None:
         """The ``linear_combination`` that checks the certificate the finder gives for a case."""

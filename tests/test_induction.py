@@ -82,6 +82,28 @@ def wrong_sign(
 
 
 @theorem
+def helmholtz_from_zero(
+    k: Real,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) + k**2 * D(a)(b) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) - k**2 * R(a)(b) for a in Nat for b in Nat),
+) -> all(0 == R(a)(b) - D(a)(b) for a in Nat for b in Nat):
+    """Helmholtz again, with the goal's left side a literal, which says nothing of its ring."""
+
+
+@theorem
+def shadowing(
+    a: Nat,
+    f: Fn[Nat, Real],
+    start: f(0) == a,
+    step: all(f(n + 1) == f(n) for n in Nat),
+) -> all(f(a) == a for a in Nat):
+    """The goal's ``a`` hides the parameter ``a`` that ``start`` is about, once it is introduced."""
+
+
+@theorem
 def increasing(
     f: Fn[Nat, Nat], step: all(f(n + 1) >= f(n) for n in Nat)
 ) -> all(f(n + 1) >= f(n) for n in Nat):
@@ -138,6 +160,17 @@ def test_a_multiplier_can_be_an_expression_in_the_statements_variables(searching
     step = script.splitlines()[-1]
     assert "+ ((-1) * k ^ 2 : ℝ) * (ih k_1 (by omega) b (by omega))" in step
     assert "- ih k_1 (by omega) (b + 2) (by omega)" in step
+
+
+def test_a_multiplier_is_in_the_ring_of_the_equation_whichever_side_says_so(searching) -> None:
+    """``0 == R(a)(b) - D(a)(b)`` is an equation of reals, though its left side is an integer."""
+    (script,) = family_induction_scripts(_statement(helmholtz_from_zero))
+    assert "k ^ 2 : ℝ) * (ih k_1 (by omega) b (by omega))" in script.splitlines()[-1]
+
+
+def test_a_goal_variable_that_hides_a_parameter_is_not_induced_on(searching) -> None:
+    """After ``intro a``, ``f 0 = a`` is about the hidden parameter, not the goal's ``a``."""
+    assert family_induction_scripts(_statement(shadowing)) == []
 
 
 def test_a_base_case_is_taken_one_order_at_a_time_when_it_has_to_be(searching) -> None:

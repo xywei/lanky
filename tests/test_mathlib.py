@@ -211,6 +211,18 @@ def every_order_helmholtz(
 
 
 @theorem
+def every_order_from_zero(
+    k: Real,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) + k**2 * D(a)(b) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) - k**2 * R(a)(b) for a in Nat for b in Nat),
+) -> all(0 == R(a)(b) - D(a)(b) for a in Nat for b in Nat):
+    """Helmholtz's, with a literal left side: the multiplier is ascribed ``ℝ`` all the same."""
+
+
+@theorem
 def telescoping(
     f: Fn[Nat, Real],
     start: f(0) == 0,
@@ -1554,7 +1566,9 @@ def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOr
 
 
 @pytest.mark.parametrize(
-    "claim", [every_order, every_order_helmholtz, telescoping], ids=lambda claim: claim.__name__
+    "claim",
+    [every_order, every_order_helmholtz, every_order_from_zero, telescoping],
+    ids=lambda claim: claim.__name__,
 )
 def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, claim) -> None:
     """By strong induction on the order, with the step a linear combination Python found.
