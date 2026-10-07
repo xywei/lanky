@@ -164,7 +164,13 @@ lanky's `main`.
   a `not` in a guard, an `if` statement inside a function an annotation
   calls, and a symbolic guard over a concrete domain (`if n > 100` in a sum
   over `Fin[3]`), which a walk of the domain would drop. The connectives are
-  `&`, `|` and `~`.
+  `&`, `|` and `~`. A builtin of Python's in an annotation is Python's at
+  concrete arguments (`round(0.5)` is `0`, and `complex(-1, -0.0)` keeps its
+  negative zero) and refused at a variable, naming it (`min(x, y)`), where
+  it used to be a free name; so is a truth value a builtin asks for inside a
+  quantifier (`min(i, j)`, `i in range(3)`), which used to be recorded as the
+  quantifier's guard, and a theorem parameter annotated with a builtin type,
+  `x: int`, naming the sort meant.
 - One reading of arithmetic for every oracle. `Nat` means an integer that is
   not negative, and the Lean printer says so: a natural is an `Int` with
   `0 ≤ n` as a hypothesis, and `//` and `%` are `Int.fdiv` and `Int.fmod`,
@@ -195,7 +201,12 @@ lanky's `main`.
   as already declared; a variable named like a root name the printer writes
   (`Int`, `Nat`, `Bool`, `Finset`) has those printed `_root_.Int` in its
   statement; and a variable named `rfl` or `_`, which `intro` and `rcases`
-  read as patterns, is introduced under a fresh name. An attempt that runs
+  read as patterns, is introduced under a fresh name. A statement that
+  mentions a name nothing in it binds is declined, naming it: Lean would read
+  the name as its own declaration of it, Mathlib's `round` for Python's, or
+  bind it implicitly at a type of its own choosing, and prove another
+  statement. An existential's conditions are conjuncts, so a disjunction
+  among them is bracketed, as Python groups it. An attempt that runs
   past `LANKY_LEAN_TIMEOUT` costs that attempt alone: the REPL the driver
   killed is started again for the next. And a REPL ends with the process
   that started it, however that process ends, a `SIGKILL` included: a small
@@ -225,6 +236,10 @@ lanky's `main`.
 - The property tester satisfies hypotheses of the shape `f(i) == e` by
   assignment and rejection-samples everything else, so an awkward hypothesis can
   end with no valid draws. The fact is then `ASSUMED`, never falsely `TESTED`.
+- `min` and `max` of a variable have no term yet (#66), so an annotation that
+  applies one to a variable is refused. A statement that mentions a name
+  nothing in it binds, a misspelt parameter say, reads `assumed`, and nothing
+  under the table says why yet (#67).
 - Division by zero is the one place the readings part. Lean's division is
   total, so `n // 0 == 0` is a theorem there and a `ZeroDivisionError` in
   Python; the fact carries a note, the ledger says what the sampled reading
