@@ -823,10 +823,9 @@ theorem Lanky.compressed_taylor (D : Int → Int → ℝ) (R : Int → Int → �
     (h1 : ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → a < 2 → R a b = D a b)
     (h2 : ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → R (a + 2) b = (-1) * R a (b + 2)) :
     ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → R a b = D a b := by
-  intro a hd b hd_1
+  intro a hd
   obtain ⟨a, rfl⟩ := Int.eq_ofNat_of_zero_le hd
   clear hd
-  revert b hd_1
   induction a using Nat.strong_induction_on with
   | _ a ih =>
     intro b hd_1

@@ -110,6 +110,25 @@ def increasing(
     """An order, not an equation: no linear combination is a proof of it."""
 
 
+@theorem
+def shifting(
+    f: Fn[Nat, Fn[Nat, Real]],
+    start: all(f(a)(0) == a for a in Nat),
+    step: all(f(a)(n + 1) == f(a + 1)(n) for a in Nat for n in Nat),
+) -> all(f(a)(n) == a + n for a in Nat for n in Nat):
+    """Induced on ``n``, whose step takes the hypothesis at ``a + 1``: ``a`` is generalized too."""
+
+
+@theorem
+def counting(
+    n: Nat,
+    f: Fn[Nat, Fn[Nat, Real]],
+    start: all(f(0)(b) == b for b in Nat),
+    step: all(f(i + 1)(b) == f(i)(b) + 1 for i in Nat for b in Nat),
+) -> all(f(i)(b) == i + b for i in Fin[n] for b in Nat):
+    """Induced on a point of ``Fin[n]``, whose bound comes before the later ``b``."""
+
+
 @pytest.fixture
 def searching():
     """sympy, which the search needs; skipped without it."""
@@ -130,28 +149,29 @@ def test_the_search_finds_the_step_of_the_compressed_taylor_reconstruction(searc
     """The recurrence at ``k``, the PDE at ``k`` and the hypothesis at ``k``, two ``y``'s up."""
     (script,) = family_induction_scripts(_statement(laplace))
     lines = script.splitlines()
-    assert lines[:7] == [
-        "intro a hd b hd_1",
+    # only the order and its guard are introduced before the induction, so the
+    # induction hypothesis takes the rest as the statement binds it
+    assert lines[:6] == [
+        "intro a hd",
         "obtain ⟨a, rfl⟩ := Int.eq_ofNat_of_zero_le hd",
         "clear hd",
-        "revert b hd_1",
         "induction a using Nat.strong_induction_on with",
         "| _ a ih =>",
         "  intro b hd_1",
     ]
-    assert lines[7] == "  by_cases hbase : a < 2"
+    assert lines[6] == "  by_cases hbase : a < 2"
     # below the step, the stored derivatives are the derivatives, for every order there at once
-    assert lines[8] == (
+    assert lines[7] == (
         f"  · linear_combination (norm := {COMBINATION_NORM}) h1 a (by omega) b (by omega) "
         "(by omega)"
     )
-    assert lines[9] == "  · obtain ⟨k, rfl⟩ : ∃ k : Nat, a = k + 2 := ⟨a - 2, by omega⟩"
-    step = lines[10]
+    assert lines[8] == "  · obtain ⟨k, rfl⟩ : ∃ k : Nat, a = k + 2 := ⟨a - 2, by omega⟩"
+    step = lines[9]
     assert step.startswith(f"    linear_combination (norm := {COMBINATION_NORM}) h2 k ")
     assert "h2 k (by omega) b (by omega)" in step
     assert "- h0 k (by omega) b (by omega)" in step
     assert "- ih k (by omega) (b + 2) (by omega)" in step
-    assert len(lines) == 11
+    assert len(lines) == 10
 
 
 def test_a_multiplier_can_be_an_expression_in_the_statements_variables(searching) -> None:
@@ -166,6 +186,36 @@ def test_a_multiplier_is_in_the_ring_of_the_equation_whichever_side_says_so(sear
     """``0 == R(a)(b) - D(a)(b)`` is an equation of reals, though its left side is an integer."""
     (script,) = family_induction_scripts(_statement(helmholtz_from_zero))
     assert "k ^ 2 : ℝ) * (ih k_1 (by omega) b (by omega))" in script.splitlines()[-1]
+
+
+def test_the_variables_before_the_order_are_generalized_too(searching) -> None:
+    """The step at ``n + 1`` takes the hypothesis at ``a + 1``, so it must hold at every ``a``."""
+    (script,) = family_induction_scripts(_statement(shifting))
+    lines = script.splitlines()
+    assert lines[:7] == [
+        "intro a hd n hd_1",
+        "obtain ⟨n, rfl⟩ := Int.eq_ofNat_of_zero_le hd_1",
+        "clear hd_1",
+        "revert a hd",
+        "induction n using Nat.strong_induction_on with",
+        "| _ n ih =>",
+        "  intro a hd",
+    ]
+    assert lines[-1].endswith("h1 a (by omega) k (by omega) + ih k (by omega) (a + 1) (by omega)")
+
+
+def test_the_orders_own_guards_come_before_the_later_variables(searching) -> None:
+    """``i < n`` is printed right after ``i``, so the hypothesis takes it before ``b``.
+
+    The step uses the hypothesis at ``k``, which needs ``k < n``: the search
+    reads it off the bound of the order, ``k + 1 <= n - 1``.
+    """
+    (script,) = family_induction_scripts(_statement(counting))
+    lines = script.splitlines()
+    assert lines[0] == "intro i hd"
+    assert "revert" not in script
+    assert lines[5] == "  intro hd_1 b hd_2"
+    assert lines[-1].endswith("+ ih k (by omega) (by omega) b (by omega)")
 
 
 def test_a_goal_variable_that_hides_a_parameter_is_not_induced_on(searching) -> None:
@@ -342,7 +392,7 @@ def test_a_hook_that_finds_nothing_or_fails_gives_no_script(searching) -> None:
 def test_the_family_induction_comes_after_the_core_attempts(searching) -> None:
     ladder = tactic_ladder(_statement(laplace))
     assert ladder[: len(BASE_TACTICS)] == list(BASE_TACTICS)
-    assert ladder[len(BASE_TACTICS)].startswith("intro a hd b hd_1\nobtain")
+    assert ladder[len(BASE_TACTICS)].startswith("intro a hd\nobtain")
     assert "linear_combination" in ladder[len(BASE_TACTICS)]
 
 

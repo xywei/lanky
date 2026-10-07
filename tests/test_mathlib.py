@@ -232,6 +232,27 @@ def telescoping(
 
 
 @theorem
+def every_order_along_b(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if b < 2),
+    recurrence: all(R(a)(b + 2) == -R(a + 2)(b) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """Laplace's recurrence solved for ``G_yy``: induced on ``b``, at every ``a``."""
+
+
+@theorem
+def counting(
+    n: Nat,
+    f: Fn[Nat, Fn[Nat, Real]],
+    start: all(f(0)(b) == b for b in Nat),
+    step: all(f(i + 1)(b) == f(i)(b) + 1 for i in Nat for b in Nat),
+) -> all(f(i)(b) == i + b for i in Fin[n] for b in Nat):
+    """Induced on a point of ``Fin[n]``, whose bound the hypothesis takes before ``b``."""
+
+
+@theorem
 def _lost_sign(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -1567,7 +1588,14 @@ def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOr
 
 @pytest.mark.parametrize(
     "claim",
-    [every_order, every_order_helmholtz, every_order_from_zero, telescoping],
+    [
+        every_order,
+        every_order_helmholtz,
+        every_order_from_zero,
+        telescoping,
+        every_order_along_b,
+        counting,
+    ],
     ids=lambda claim: claim.__name__,
 )
 def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, claim) -> None:
@@ -1575,7 +1603,11 @@ def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, clai
 
     ``every_order`` is the claim the sumpy demonstration makes for every
     order; Helmholtz's step needs a multiplier that is not a number, and the
-    telescoping sum's needs ``field_simp``.
+    telescoping sum's needs ``field_simp``. ``every_order_along_b`` is induced
+    on its second variable, and its step takes the hypothesis at ``a + 2``,
+    which holds there because the first is generalized too; ``counting``'s
+    order is a point of ``Fin[n]``, whose bound comes before the later
+    variable.
     """
     pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
     proved = mathlib_oracle.establish(claim.fact())

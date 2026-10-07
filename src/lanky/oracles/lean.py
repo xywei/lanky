@@ -1338,15 +1338,15 @@ def family_induction_scripts(
     universals of their own, are what may be combined (see
     :mod:`lanky.induction`). The order, a natural variable of the goal, is
     traded for the ``Nat`` it is, as in :func:`induction_scripts`, and induced
-    on strongly, with the goal's later variables and guards generalized, so
-    the induction hypothesis holds at every lower order and at any values of
-    the others. The step size is read off the hypotheses (:func:`_steps`). A
-    case below the step is the base, closed by one certificate for every
-    order there, or else by one for each order, after ``interval_cases``; the
-    order ``k + step`` is the step, where the induction hypothesis may be
-    used too. Each certificate is checked by ``linear_combination``, normalized
-    by :data:`COMBINATION_NORM`, and every guard of a hypothesis it applies is
-    discharged by ``omega``.
+    on strongly, with the goal's other variables and guards generalized, the
+    earlier ones as well as the later, so the induction hypothesis holds at
+    every lower order and at any values of the others. The step size is read
+    off the hypotheses (:func:`_steps`). A case below the step is the base,
+    closed by one certificate for every order there, or else by one for each
+    order, after ``interval_cases``; the order ``k + step`` is the step, where
+    the induction hypothesis may be used too. Each certificate is checked by
+    ``linear_combination``, normalized by :data:`COMBINATION_NORM`, and every
+    guard of a hypothesis it applies is discharged by ``omega``.
 
     ``finder`` is the certificate hook (:data:`lanky.induction.Finder`),
     lanky's search (:func:`lanky.induction.find_certificate`) by default. A
@@ -1436,6 +1436,13 @@ def _family_induction(
     natural_guard = shared.naturals[target.name]
     if shared.names[position + 1] != natural_guard:
         return None
+    # Only the order and the guard that makes it a natural are introduced to
+    # be traded for a Nat; the rest of the goal stays as the statement binds it,
+    # so the induction hypothesis takes the order's other guards, the later
+    # variables and the goal's guards in the order they are printed. The
+    # earlier variables are reverted before the induction, so the hypothesis
+    # holds at any values of them too, and come first.
+    earlier = shared.names[:position]
     later = shared.names[position + 2 :]
     used = set(shared.names) | {binder for binder, _ in statement.binders}
     used |= {hypothesis for hypothesis, _ in statement.hypotheses}
@@ -1462,27 +1469,42 @@ def _family_induction(
         found = _bounds_of(types[renamed])
         if found is not None:
             bounds[renamed] = found
+    # the order's own upper bound, a point of Fin[n] being at most n - 1
+    _, highest = _bounds_of(substitute_domain(domains[target.name], renaming)) or (0, None)
 
     def induction_hypothesis(below_this: Any) -> Lemma | None:
-        """The induction hypothesis, at every order below ``below_this``."""
+        """The induction hypothesis, at every order below ``below_this``.
+
+        Its premises are in the order Lean's hypothesis takes them: the
+        smaller order and that it is smaller, then the earlier variables,
+        each with its domain's guards, then the order's own guards beyond
+        ``0 ≤ m``, then the later variables with theirs, then the goal's
+        guards.
+        """
         m = Var(smaller)
         values = {**renaming, target.name: m}
         premises: list[tuple[str, Any]] = [
             ("value", smaller),
             ("proof", Comparison(m, "<", below_this)),
         ]
-        own = domain_conditions(target, domains[target.name])[1:]
-        premises += [("proof", substitute(guard, values)) for guard in own]
         binders: list[tuple[Var, Any]] = [(m, Nat)]
-        for var, domain in goal.binders[index + 1 :]:
+
+        def generalized(var: Var, domain: Any) -> None:
             renamed = renaming.get(var.name, var)
             binders.append((renamed, substitute_domain(domain, values)))
             premises.append(("value", renamed.name))
-            premises += [
+            premises.extend(
                 ("proof", substitute(guard, values)) for guard in domain_conditions(var, domain)
-            ]
-        premises += [("proof", substitute(guard, values)) for guard in conjuncts(goal.guard)]
-        if len(premises) - 2 != len(later):
+            )
+
+        for var, domain in goal.binders[:index]:
+            generalized(var, domain)
+        own = domain_conditions(target, domains[target.name])[1:]
+        premises.extend(("proof", substitute(guard, values)) for guard in own)
+        for var, domain in goal.binders[index + 1 :]:
+            generalized(var, domain)
+        premises.extend(("proof", substitute(guard, values)) for guard in conjuncts(goal.guard))
+        if len(premises) - 2 != len(earlier) + len(later):
             return None
         return Lemma(
             induction_name,
@@ -1540,25 +1562,26 @@ def _family_induction(
             if closed is None:
                 return None
             base_lines.append(f"· {closed}")
+    highest_successor = None if highest is None else highest - step
     successive = closing(
-        case("step", Var(successor) + step, {successor: (0, None)}, inductive=True)
+        case("step", Var(successor) + step, {successor: (0, highest_successor)}, inductive=True)
     )
     if successive is None:
         return None
     lines = [
-        f"intro {' '.join(shared.names)}",
+        f"intro {' '.join([*earlier, order, natural_guard])}",
         f"obtain ⟨{order}, rfl⟩ := {statement.qualified('Int.eq_ofNat_of_zero_le')} "
         f"{natural_guard}",
         f"clear {natural_guard}",
     ]
-    if later:
-        lines.append(f"revert {' '.join(later)}")
+    if earlier:
+        lines.append(f"revert {' '.join(earlier)}")
     lines += [
         f"induction {order} using {statement.qualified('Nat.strong_induction_on')} with",
         f"| _ {order} {induction_name} =>",
     ]
-    if later:
-        lines.append(f"  intro {' '.join(later)}")
+    if earlier or later:
+        lines.append(f"  intro {' '.join([*earlier, *later])}")
     lines += [
         f"  by_cases {below} : {order} < {step}",
         f"  · {base_lines[0]}",
