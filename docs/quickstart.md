@@ -798,6 +798,22 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
 - Leave off a theorem's return annotation. `@theorem` raises `TypeError`
   where the function is defined, because a theorem needs a goal, and
   `lanky check` reports the file as one that does not import.
+- Call one of Python's builtins in a claim. At numbers it is Python's:
+  `def half() -> round(0.5) == 1` is `0 == 1`, answered while the annotation
+  is read, and the row reads `refuted`, as running the file would say. At a
+  variable it is refused where the theorem is defined, naming it:
+  `def smaller(x: Real, y: Real) -> min(x, y) <= x` raises `TypeError`,
+  `min(x, y) applies Python's min to a symbolic value`. lanky has no term for
+  `min` yet, and the free name it used to be was read by Lean as Lean's own
+  `min`. `def wrong(x: int) -> x - 1 >= 0` is refused too, naming `Int` and
+  `Nat`: `int` is Python's type, and not a sort. So is `f: Fn[Fin[n], float]`,
+  naming `Real`.
+- Choose a branch inside a quantifier: `all((f(i) if i < 3 else -1) >= 0 for
+  i in Fin[n])`. The conditional asks `i < 3` for a truth value, which lanky
+  has only where it records a guard, so it is refused where the theorem is
+  defined, as `not` in a body and a comparison of two tuples are. A
+  condition on the points goes in the generator's `if` clause, written with
+  `&`, `|` and `~`.
 - Make two claims from one definition, with a function that decorates a
   nested `def` each time it is called. A fact id names a definition, so both
   claims have one id; the first is checked and stays in the table, and

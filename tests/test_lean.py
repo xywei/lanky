@@ -193,6 +193,42 @@ def test_an_existential_conjoins_its_guard() -> None:
     )
 
 
+def test_an_existential_brackets_a_disjunctive_condition() -> None:
+    """An existential's conditions are conjuncts, so a disjunction among them is bracketed (#61).
+
+    They were printed as a universal's are, to the left of an arrow, where a
+    disjunction needs no brackets. Joined with ``∧``, which binds more tightly
+    than ``∨``, the guard of ``any(x == -1 for x in Fin[3] if (x > 5) | (x <
+    1))`` made the statement ``(0 ≤ x ∧ x < 3 ∧ x > 5) ∨ (x < 1 ∧ x = -1)``,
+    which ``x = -1`` satisfies, while the only point Python's guard admits is
+    ``0``. A refinement of the domain and the guard of an existential with no
+    binders were printed the same way, in both dialects.
+    """
+    x = Var("x")
+    either = (x > 5) | (x < 1)
+    guarded = Exists(((x, FinType(3)),), x == -1, either)
+    refined = Exists(((x, Nat & either),), x == -1)
+    binderless = Forall(((x, Int),), Exists((), x == -1, either))
+    for mathlib in (False, True):
+        assert print_lean(guarded, mathlib=mathlib) == (
+            "∃ x : Int, 0 ≤ x ∧ x < 3 ∧ (x > 5 ∨ x < 1) ∧ x = -1"
+        )
+        assert print_lean(refined, mathlib=mathlib) == (
+            "∃ x : Int, 0 ≤ x ∧ (x > 5 ∨ x < 1) ∧ x = -1"
+        )
+        assert print_lean(binderless, mathlib=mathlib) == (
+            "∀ x : Int, (x > 5 ∨ x < 1) ∧ x = -1"
+        )
+    # a universal's conditions stand to the left of an arrow, which binds more
+    # loosely than ∨, and need no brackets
+    assert print_lean(Forall(((x, FinType(3)),), x != -1, either)) == (
+        "∀ x : Int, 0 ≤ x → x < 3 → x > 5 ∨ x < 1 → x ≠ -1"
+    )
+    assert print_lean(Forall(((x, Nat & either),), x != -1)) == (
+        "∀ x : Int, 0 ≤ x → x > 5 ∨ x < 1 → x ≠ -1"
+    )
+
+
 def test_a_generator_guard_follows_the_last_binder() -> None:
     term = Forall(((a, FinType(n)), (b, FinType(n))), f(a) <= f(b), a <= b)
     assert print_lean(term) == (
@@ -589,10 +625,13 @@ def test_a_binderless_statement_keeps_its_hypotheses() -> None:
     term = Forall((), Var("p") > 0, Var("p") > 1)
     assert print_lean(term) == "p > 1 → p > 0"
 
-    statement = statement_of(term, "binderless")
+    # what the oracle proves has to be closed (#64), so the arranger is shown
+    # a closed one, which only a term built node by node can be
+    closed = Forall((), prim.Comparison(2, ">", 0), prim.Comparison(2, ">", 1))
+    statement = statement_of(closed, "binderless")
     assert statement.binders == ()
-    assert statement.hypotheses == (("h0", "p > 1"),)
-    assert statement.goal == "p > 0"
+    assert statement.hypotheses == (("h0", "(2 : Int) > 1"),)
+    assert statement.goal == "(2 : Int) > 0"
 
 
 # }}}
@@ -910,6 +949,41 @@ def test_the_induction_names_root_declarations_as_the_statement_does() -> None:
         # Nat is not shadowed here, and stays as it is
         assert "((k + 1 : Nat) : _root_.Int) = (k : _root_.Int) + 1" in script
     assert "by_cases hlt : (k : _root_.Int) < p" in scripts[0]
+
+
+def test_a_free_name_is_shown_and_not_handed_to_lean() -> None:
+    """A statement with a name nothing in it binds is declined where it would be proved (#64).
+
+    The printer printed a free name as it stands, and Lean read it as its own
+    declaration of that name or, where there is none, bound it implicitly at a
+    type it inferred: ``x - 1 >= 0`` with a free ``x`` was ``theorem
+    Lanky.free (h0 : int) : x - 1 ≥ 0``, about a natural ``x`` and an ``int``
+    of any type, which ``omega`` proved. :func:`print_lean` still prints an
+    open term, to show it; :func:`statement_of`, what the oracle proves,
+    declines it, naming the names.
+    """
+    x, m, g, k = Var("x"), Var("m"), Var("g"), Var("k")
+    free = Forall((), x - 1 >= 0, Var("int"))
+    assert print_lean(free) == "int → x - 1 ≥ 0"
+    with pytest.raises(UnsupportedTerm, match="mentions int and x, which no parameter"):
+        statement_of(free, "free")
+    # a family applied and bound nowhere, a size in a domain, a size in a
+    # family's type, and a plain pymbolic variable, all free
+    for term, name in (
+        (Forall(((n, Nat),), f(n) >= 0), "f"),
+        (Forall(((i, FinType(m)),), i >= 0), "m"),
+        (Forall(((g, Fn[Fin[m], Nat]),), g(0) >= 0), "m"),
+        (Forall(((n, Nat),), prim.Comparison(prim.Variable("y"), ">=", n)), "y"),
+    ):
+        for mathlib in (False, True):
+            with pytest.raises(UnsupportedTerm, match=f"mentions {name}, which no parameter"):
+                statement_of(term, "free", mathlib=mathlib)
+    # a refinement's propositions are about the variable it refines, which is
+    # bound, and so is every name a closed statement mentions
+    statement = statement_of(Forall(((k, Nat & (k > 0)),), k >= 1), "bound")
+    assert statement.goal == "k ≥ 1"
+    statement = statement_of(Forall(((n, Nat), (i, FinType(n))), i < n), "bound")
+    assert statement.goal == "i < n"
 
 
 # }}}
@@ -2384,6 +2458,110 @@ def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_pat
     assert (truth.status, truth.decided_by) == (Status.REFUTED, "property-test")
     for owner in ("empty", "unreached"):
         assert by_owner[owner].is_vacuous, (owner, by_owner[owner].provenance)
+
+
+#: #61 and #64: claims Lean proved and Python refutes, or cannot read at all.
+_WRONG_PROOF_CLAIMS = '''\
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Fin, Nat
+
+
+@theorem
+def free_goal() -> x - 1 >= 0:
+    """x is bound by nothing, and false at x = 0 for whoever binds it as an integer."""
+
+
+@theorem
+def disjunctive_guard(m: Nat) -> any(x == -1 for x in Fin[m] if (x > 5) | (x < 1)):
+    """False: the guard admits 0 and the points past 5, and none of them is -1."""
+
+
+@theorem
+def rounds_half_up() -> round(0.5) == 1:
+    """False in Python, where round(0.5) is 0."""
+'''
+
+
+def test_lean_proves_no_claim_python_refutes(lean_oracle: LeanOracle, tmp_path) -> None:
+    """#61 and #64: two wrong proofs, through ``lanky check`` with Lean.
+
+    ``free_goal`` names an ``x`` nothing binds, which Lean bound implicitly as
+    a natural, and ``omega`` proved ``x - 1 ≥ 0`` about it; it is declined
+    now, and the tester cannot run it either, so it stays ``assumed``.
+    ``disjunctive_guard`` printed its guard without brackets, and Lean proved
+    the disjunction that made of it, at ``x = -1``; the tester refutes it.
+    ``round`` is Python's now (#63), so ``rounds_half_up`` is ``0 == 1``.
+    """
+    from lanky.check import check_path
+
+    path = tmp_path / "wrong_proofs.py"
+    path.write_text(_WRONG_PROOF_CLAIMS, encoding="utf-8")
+    by_owner = {fact.owner: fact for fact in check_path(path)}
+    free = by_owner["free_goal"]
+    assert free.status is Status.ASSUMED, free.provenance
+    assert free.decided_by is None
+    for owner in ("disjunctive_guard", "rounds_half_up"):
+        fact = by_owner[owner]
+        assert (fact.status, fact.decided_by) == (Status.REFUTED, "property-test"), (
+            owner,
+            fact.provenance,
+        )
+
+
+def _disjunctive_guard():
+    @theorem
+    def disjunctive_guard(m: Nat) -> any(x == -1 for x in Fin[m] if (x > 5) | (x < 1)):
+        """False: the guard admits 0 and the points past 5, and none of them is -1."""
+
+    return disjunctive_guard
+
+
+def test_a_proof_of_the_existential_lean_misread_is_refused(lean_oracle: LeanOracle) -> None:
+    """#61: the witness ``-1`` proved an existential whose guard admits no ``-1``.
+
+    The guard printed without brackets made the goal ``∃ x : Int, (0 ≤ x ∧ x
+    < m ∧ x > 5) ∨ (x < 1 ∧ x = -1)``, and a script pinned with
+    :func:`lanky.oracles.lean.use_tactic`, the way an existential is proved,
+    closed it with ``-1`` as the witness: the kernel checked a proof of a
+    statement Python refutes. Bracketed, the same script does not elaborate.
+    """
+    claim = _disjunctive_guard()
+    assert claim.report().ok is False
+    fact = claim.fact()
+    lean_oracle.tactics[fact.id] = "exact ⟨-1, Or.inr ⟨by decide, rfl⟩⟩"
+    try:
+        result = lean_oracle.establish(fact)
+    finally:
+        lean_oracle.tactics.clear()
+    assert result.status is Status.ASSUMED, result.provenance.get("lean_source")
+
+
+def test_the_oracle_declines_a_free_name_and_says_why(lean_oracle: LeanOracle) -> None:
+    """#64: asked directly, the oracle declines a statement with a free name, naming it."""
+    fact = Fact(
+        id="free:x",
+        kind="theorem",
+        statement="x - 1 >= 0",
+        term=Forall((), Var("x") - 1 >= 0),
+        owner="free_x",
+    )
+    assert not lean_oracle.can_establish(fact)
+    declined = lean_oracle.establish(fact)
+    assert declined.status is Status.ASSUMED
+    assert "mentions x, which no parameter or binder of it binds" in (
+        declined.provenance["declined"]
+    )
+    # the same statement with x bound as an integer is false, and not proved
+    bound = Fact(
+        id="bound:x",
+        kind="theorem",
+        statement="x : Int |- x - 1 >= 0",
+        term=Forall(((Var("x"), Int),), Var("x") - 1 >= 0),
+        owner="bound_x",
+    )
+    assert lean_oracle.establish(bound).status is Status.ASSUMED
 
 
 #: #39 and #43: claims named like root declarations of core Lean, and

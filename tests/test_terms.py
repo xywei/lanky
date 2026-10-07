@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import random
 from contextlib import closing
 
 import pymbolic.primitives as prim
 import pytest
 
-from lanky.prelude import Fin, Fn, Nat, Refined
+from lanky.prelude import Complex, Fin, Fn, Nat, Real, Refined
 from lanky.terms import (
+    BuiltinName,
     Comparison,
     Exists,
     Forall,
@@ -244,6 +246,54 @@ def test_python_and_between_propositions_still_works() -> None:
     assert render(claim) == "forall a in Fin(n), b in Fin(n) where a <= b and b < n. a <= b"
 
 
+def test_a_truth_value_asked_outside_the_if_clause_is_refused() -> None:
+    """A conditional, ``not`` and a comparison of tuples ask from the generator's frame too.
+
+    Each was read as a guard, since the check took any layout it did not know
+    for one, and each said something else, which Lean then proved:
+    ``all((f(i) if i < 3 else -1) >= 0 for ...)`` was ``f(i) >= 0`` below
+    ``3``, and false wherever ``n > 3`` in Python; ``~any(not (i < k) for
+    ...)`` was ``~any(False ... if i < k)``, which holds, while Python finds
+    ``i = k``; and ``all((i, 0) == (k, 0) for ...)``, or ``if (i, 0) <= (k,
+    0)``, recorded the items' ``i == k`` as the guard. Only the ``if`` clause
+    records one now.
+    """
+    n, f = Var("n"), Var("f")
+    refused = "and not by its ``if`` clause: a conditional expression"
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall((f(i) if i < 3 else -1) >= 0 for i in Fin[n])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i >= 0 for i in Fin[n] if (i > 1 if i < 3 else i > 5))
+    with pytest.raises(SymbolicBoolError, match=refused):
+        exists(not (i < k) for i in Fin[n] for k in Fin[n])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall((i, 0) == (k, 0) for i in Fin[n] for k in Fin[n])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i == k for i in Fin[n] for k in Fin[n] if (i, 0) <= (k, 0))
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i == k for i in Fin[n] for k in Fin[n] if [i] < [k])
+    with pytest.raises(SymbolicBoolError, match=refused):
+        forall(i == k for i in Fin[n] for k in Fin[n] if (i, 0) != (k, 0))
+
+
+def test_an_if_clause_is_a_guard_wherever_it_stands() -> None:
+    """The clauses the stricter check still reads: every ``if``, and tuples compared with ``==``.
+
+    A comparison with the term on the right is answered by the term's
+    reflected operator (``0 < i`` is ``i > 0``), and the items of two tuples
+    compared with ``==`` are the clause's own question, asked item by item.
+    """
+    n = Var("n")
+    reflected = forall(i > 0 for i in Fin[n] if 0 < i)
+    assert render(reflected) == "forall i in Fin(n) where i > 0. i > 0"
+    two = forall(i >= 0 for i in Fin[n] if i > 0 if i < 3)
+    assert render(two) == "forall i in Fin(n) where i > 0 and i < 3. i >= 0"
+    outer = forall(i <= k for i in Fin[n] if i < 3 for k in Fin[n])
+    assert render(outer) == "forall i in Fin(n), k in Fin(n) where i < 3. i <= k"
+    tuples = forall(i == k for i in Fin[n] for k in Fin[n] if (i, 0) == (k, 0))
+    assert render(tuples) == "forall i in Fin(n), k in Fin(n) where i == k. i == k"
+
+
 def test_a_concrete_comprehension_is_left_alone() -> None:
     """Nothing symbolic, nothing to refuse: plain Python keeps working."""
     assert forall(x > 0 for x in [1, 2, 3] if x > 0 and x < 3) is True
@@ -304,6 +354,167 @@ def test_the_ways_the_refusal_names_keep_the_condition() -> None:
     assert render(kept) == "sum(1 for i in Fin(m) if n > 100)"
     assert evaluate(kept, {"m": 3, "n": 3}) == 0
     assert evaluate(kept, {"m": 3, "n": 101}) == 3
+
+
+# }}}
+
+
+# {{{ Python's builtins in an annotation
+
+
+def test_a_builtin_name_is_a_variable_that_calls_the_builtin() -> None:
+    """A builtin's name is a :class:`BuiltinName`: Python's function when called concretely.
+
+    It is still a variable where it is not called, a free name, so a plugin
+    that refuses a sort written as a free name (loopty's ``a: float``) still
+    sees one (#63).
+    """
+    scope = Scope()
+    assert isinstance(scope["min"], BuiltinName)
+    assert isinstance(scope["float"], prim.Variable)
+    assert structurally_equal(scope["float"], Var("float"))
+    assert not isinstance(scope["n"], BuiltinName)
+    assert scope["min"] is scope["min"]
+    assert scope["round"](0.5) == 0
+    assert scope["len"](Fin[3]) == 3
+
+
+def _negative_zero(z: Complex) -> z * complex(-1, -0.0) == -z:
+    """A complex literal with a negative zero imaginary part, written as Python writes one."""
+
+
+def _rounds_half_up() -> round(0.5) == 1:
+    """False in Python, where ``round(0.5)`` is ``0``."""
+
+
+def _named_like_builtins(min: Nat, len: Nat) -> min + len >= min:
+    """Parameters named like builtins, which are the parameters."""
+
+
+def test_a_builtin_at_concrete_arguments_is_pythons() -> None:
+    """``complex(-1, -0.0)`` is the number, and ``round(0.5) == 1`` is answered (#63).
+
+    Both were applications of a free name, ``complex`` or ``round``, which no
+    oracle could read as the file run as a program does: the tester could not
+    evaluate them, and Lean read ``round`` as Mathlib's, which rounds half up
+    (#64).
+    """
+    goal = evaluate_annotations(_negative_zero)["return"]
+    (literal,) = [child for child in goal.left.children if isinstance(child, complex)]
+    assert literal == complex(-1, 0)
+    assert math.copysign(1.0, literal.imag) == -1.0
+    assert evaluate_annotations(_rounds_half_up)["return"] is False
+    # a parameter named like a builtin is the parameter, as it always was
+    goal = evaluate_annotations(_named_like_builtins)["return"]
+    assert render(goal) == "min + len >= min"
+    assert not any(isinstance(var, BuiltinName) for var in goal.left.children)
+
+
+def _uses_min(x: Real, y: Real) -> min(x, y) <= x:
+    """True in Python, and about Lean's ``min`` once printed."""
+
+
+def _uses_complex(x: Real) -> abs(complex(x, 1)) >= 1:
+    """``complex`` of a variable, which Python computes and lanky has no term for."""
+
+
+def _pairwise(n: Nat) -> all(max(i, j) >= i for i in Fin[n] for j in Fin[n]):
+    """A builtin in the body of a quantifier."""
+
+
+def _through_a_generator(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    max(f(i) * k for k in range(3)) >= 0 for i in Fin[n]
+):
+    """A builtin that compares what a generator over a concrete domain yields."""
+
+
+def _over_a_symbolic_domain(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    max(f(k) for k in Fin[n]) >= f(i) for i in Fin[n]
+):
+    """A builtin over a symbolic domain, which would have bound a binder of the quantifier."""
+
+
+def _prints(n: Nat) -> print(n) == 0:
+    """A builtin that is no part of a statement."""
+
+
+def test_a_builtin_of_a_symbolic_value_is_refused() -> None:
+    """``min(x, y)`` is refused, naming ``min``, where it applied a free name (#63)."""
+    with pytest.raises(TypeError, match=r"min\(x, y\) applies Python's min to a symbolic"):
+        evaluate_annotations(_uses_min)
+    with pytest.raises(TypeError, match=r"complex\(x, 1\) applies Python's complex"):
+        evaluate_annotations(_uses_complex)
+    with pytest.raises(TypeError, match=r"max\(i, j\) applies Python's max"):
+        evaluate_annotations(_pairwise)
+    # a generator is not looked into, and what the builtin does with it is
+    # refused where it asks a proposition for its truth value
+    with pytest.raises(SymbolicBoolError, match=r"max\(\(\.\.\. for \.\.\.\)\) asks"):
+        evaluate_annotations(_through_a_generator)
+    # or where it iterates a symbolic domain, which binds no binder of the
+    # quantifier around it
+    with pytest.raises(TypeError, match=r"Python's max raised .*cannot iterate Fin\(n\)"):
+        evaluate_annotations(_over_a_symbolic_domain)
+    with pytest.raises(TypeError, match="calls Python's print, which is no part of a statement"):
+        evaluate_annotations(_prints)
+
+
+def test_a_builtin_that_compares_inside_a_traced_generator_is_refused() -> None:
+    """A truth value a builtin asks for is no guard, though it is asked from the generator's frame.
+
+    A builtin has no frame of its own, so ``min(i, j)``, with Python's own
+    ``min`` (imported, or this module's), asked for ``j < i`` from the
+    generator being traced, and the answer was recorded as its guard: ``all(min(i,
+    j) == j for ...)``, false at ``i = 0, j = 1``, became ``j == j`` wherever
+    ``j < i``, which Lean proves (#63). So did ``i in range(3)``, which asks for
+    ``i == 0`` and stops.
+    """
+    n = Var("n")
+    with pytest.raises(SymbolicBoolError, match="asked for by a function the generator"):
+        forall(min(i, j) == j for i in Fin[n] for j in Fin[n])
+    with pytest.raises(SymbolicBoolError, match="or by an ``in`` test"):
+        forall(i >= 0 for i in Fin[n] if i in range(3))
+
+
+def _zipped(n: Nat) -> any(i != j for i, j in zip(Fin[n], Fin[n], strict=True)):
+    """False in Python, where zip pairs each point with itself."""
+
+
+def _counted(n: Nat) -> all(k == 0 for k, i in enumerate(Fin[n])):
+    """False in Python wherever ``n > 1``, where the count reaches 1."""
+
+
+def _zipped_generators(n: Nat) -> any(
+    i != j for i, j in zip((a for a in Fin[n]), Fin[n], strict=True)
+):
+    """A generator handed to zip, which zip iterates as lazily as a domain."""
+
+
+def _zipped_concretely() -> all(i == j for i, j in zip(Fin[3], Fin[3], strict=True)):
+    """True: zip over concrete domains, which is Python's."""
+
+
+def _counted_concretely() -> all(k == 2 - i for k, i in enumerate(reversed(range(3)))):
+    """True: Python's enumerate and reversed, which pair ``0`` with ``2``."""
+
+
+def test_a_builtin_that_iterates_does_so_where_it_is_called() -> None:
+    """``zip`` and ``enumerate`` over a symbolic domain are refused, not traced.
+
+    They hand back an iterator that does its work when it is iterated, which
+    was while the generator around it was traced: ``zip(Fin[n], Fin[n])``
+    bound two independent binders, so ``any(i != j ...)``, false in Python,
+    held at ``n = 2``; and ``enumerate(Fin[n])`` bound one point counted
+    ``0``, so ``all(k == 0 ...)``, false wherever ``n > 1``, was proved by
+    ``simp`` (#63's builtins, which an annotation could not call before).
+    """
+    with pytest.raises(TypeError, match=r"Python's zip raised at zip\(Fin\(n\), Fin\(n\), strict"):
+        evaluate_annotations(_zipped)
+    with pytest.raises(TypeError, match=r"Python's enumerate raised .*cannot iterate Fin\(n\)"):
+        evaluate_annotations(_counted)
+    with pytest.raises(TypeError, match=r"Python's zip raised .*cannot iterate Fin\(n\)"):
+        evaluate_annotations(_zipped_generators)
+    assert evaluate_annotations(_zipped_concretely)["return"] is True
+    assert evaluate_annotations(_counted_concretely)["return"] is True
 
 
 # }}}

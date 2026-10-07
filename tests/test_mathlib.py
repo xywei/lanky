@@ -580,6 +580,23 @@ def test_an_index_type_with_a_real_bound_is_declined() -> None:
     assert "i < 3" in print_lean(Forall(((i, FinType(Fraction(3, 1))),), i >= 0), mathlib=True)
 
 
+#: ``round(0.5) == 1`` with ``round`` a free name, as an annotation read it
+#: before #63 made it Python's: false in Python, where ``round(0.5)`` is ``0``,
+#: and true of Mathlib's ``round``, which rounds half up (#64).
+_FREE_ROUND = Forall((), Var("round")(0.5) == 1)
+
+
+def test_a_free_name_is_not_handed_to_mathlib() -> None:
+    """A free name is shown, and declined where Mathlib has a declaration of that name (#64)."""
+    assert print_lean(_FREE_ROUND, mathlib=True) == "round (1 / 2 : ℝ) = 1"
+    with pytest.raises(UnsupportedTerm, match="mentions round, which no parameter"):
+        statement_of(_FREE_ROUND, "rounds_half_up", mathlib=True)
+    a, b = Var("a"), Var("b")
+    smaller = Forall(((a, Nat), (b, Nat)), Var("min")(a, b) <= a)
+    with pytest.raises(UnsupportedTerm, match="mentions min, which no parameter"):
+        statement_of(smaller, "minimum", mathlib=True)
+
+
 def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
     statement = statement_of(gauss.term, "gauss", mathlib=True)
     assert statement.mathlib
@@ -1287,6 +1304,20 @@ def test_a_sum_python_refutes_is_not_proved(mathlib_oracle: LeanOracle) -> None:
         fact = Fact(id=label, kind="theorem", statement=label, term=term)
         proved = mathlib_oracle.establish(fact)
         assert proved.status is Status.PROVED, (label, proved.provenance.get("lean_reason"))
+
+
+def test_mathlib_does_not_prove_a_statement_about_its_own_round(
+    mathlib_oracle: LeanOracle,
+) -> None:
+    """#64: ``round(0.5) == 1`` read ``proved lean``, about Mathlib's ``round``.
+
+    The theorem written with Python's ``round`` is ``0 == 1`` now (#63), and
+    the free name, which only a term built by hand still holds, is declined.
+    """
+    fact = Fact(id="free:round", kind="theorem", statement="round(0.5) == 1", term=_FREE_ROUND)
+    declined = mathlib_oracle.establish(fact)
+    assert declined.status is Status.ASSUMED
+    assert "mentions round" in declined.provenance["declined"]
 
 
 def test_a_killed_server_is_started_again_with_mathlib(mathlib_oracle: LeanOracle) -> None:
