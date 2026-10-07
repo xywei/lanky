@@ -614,13 +614,22 @@ def test_a_verdict_the_rules_decline_says_why_under_the_table(tmp_path, capsys) 
 
 
 def test_pytential_and_sympy_are_never_lanky_dependencies() -> None:
-    """Not declared, and not imported by lanky, the rule engine or the demonstration."""
+    """Not declared, and not imported by lanky, the rule engine or the demonstration.
+
+    sympy is the one exception to the first, and only as the ``cas`` extra,
+    which installs the simplifier the CAS oracle asks (#3): it is never a
+    dependency of lanky itself, and pytential and sumpy are named nowhere.
+    """
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    declared = [
-        *project["dependencies"],
-        *(entry for extra in project.get("optional-dependencies", {}).values() for entry in extra),
-    ]
-    assert not [entry for entry in declared if re.match(r"(pytential|sympy|sumpy)\b", entry)]
+    names = r"(pytential|sympy|sumpy)\b"
+    assert not [entry for entry in project["dependencies"] if re.match(names, entry)]
+    named = {
+        extra: [entry for entry in entries if re.match(names, entry)]
+        for extra, entries in project.get("optional-dependencies", {}).items()
+    }
+    assert {extra: entries for extra, entries in named.items() if entries} == {
+        "cas": ["sympy>=1.12"]
+    }
     code = (
         "import sys, lanky, lanky.cli, lanky.rewrites, layer_potentials\n"
         "from lanky.check import import_path\n"

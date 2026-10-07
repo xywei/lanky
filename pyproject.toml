@@ -34,6 +34,12 @@ dependencies = [
 lean = [
     "lean-interact>=0.11.5",
 ]
+# The computer-algebra oracle, which decides an identity by simplifying the
+# difference of its sides to zero (see src/lanky/oracles/cas.py). sympy is
+# imported on the first fact it is asked about, never with lanky.
+cas = [
+    "sympy>=1.12",
+]
 
 [project.urls]
 Homepage = "https://github.com/xywei/lanky"

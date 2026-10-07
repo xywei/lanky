@@ -37,6 +37,48 @@ loopty uses changes, and loopty's floor follows it.
 - `lanky.lean.elementary_arguments(term)`: every `exp`, `log` and `sqrt` in a
   term, with what its argument is as a number (`Int`, `Real` or `Complex`) as
   the printer reads it (#59).
+- **A computer-algebra oracle, `cas`, behind a `cas` extra** (#3). It is of
+  the `heuristic` trust class, so a fact it decides reads
+  `decided (heuristic)`, the property tester still samples it, and a
+  counterexample overrules it. It takes a statement that asserts equations,
+  alone, in a conjunction, or under universals whose variables range over
+  numbers, with sides built from arithmetic, `abs`, `exp`, `log` and
+  `sqrt`, and decides it when `sympy.simplify` takes the difference of the
+  sides of every equation to `0`. It decides nothing else: a difference
+  left over is no counterexample, since sympy may not have found the
+  identity, so the fact is declined with the difference in the reason, and
+  the tester, which can refute, is asked next. The hypotheses are not read,
+  since an identity that holds everywhere holds wherever they do. A fact
+  gets `LANKY_CAS_TIMEOUT` seconds (60), and `LANKY_CAS_DISABLE=1` turns
+  the oracle off, as `LANKY_LEAN_DISABLE` does Lean's. It is available
+  where sympy imports (`pip install lanky[cas]`), and sympy is imported on
+  the first fact it is offered, never with lanky. A decision records
+  `cas_equations`, `cas_seconds` and `cas_version`.
+- `lanky.cas`: the bridge the oracle reads statements through, and that a
+  plugin building claims from sympy's output can use. `to_sympy(term,
+  symbols)` and `equations(term)` take a lanky term to sympy, a variable as
+  a symbol with what its sort grants (`Real` is real, `Int` an integer, and
+  `Nat` and a point of `Fin[n]` an integer that is not negative) and a
+  float as the rational it holds; `from_sympy(expr)` builds lanky's own
+  nodes back, a rational as a `Fraction`, a negative power as a quotient
+  and a half power as `lanky.sqrt`. Both are strict: a family, a
+  subscript, a reduction, a floor division, a variable whose sort is not a
+  set of numbers or that no quantifier binds, a real `log` or `sqrt` of an
+  argument sympy cannot show is not negative (below zero sympy's value is
+  complex, Python's `math` raises and Mathlib's is real), a sympy float and
+  `pi` raise `lanky.cas.Untranslatable` with the reason.
+- `examples/sumpy_recurrence.py`, a second worked case of a consumer (#3).
+  It claims that sumpy's compressed Taylor wrangler for the 2-D Laplace
+  kernel (`LinearPDEBasedExpansionTermsWrangler`) reconstructs every
+  derivative of `log r` through order 6 from the 13 it stores, with the
+  recurrence read off the wrangler, and checks the claim twice in one
+  ledger: `tested` by mpmath, which takes the derivatives numerically at 20
+  points, and `decided (heuristic)` by the CAS oracle, which simplifies the
+  28 equations sympy's derivatives give. Above them is the kernel's
+  harmonicity, `G_xx + G_yy == 0` away from the origin, an axiom taken on
+  its citation, which neither row rests on and a proof for every order
+  would. sumpy, sympy and mpmath are imported inside the script, and its
+  tests skip where sumpy is not importable.
 - `lanky.terms.BuiltinName` and `lanky.terms.EVALUATED_BUILTINS`: the name of
   one of Python's builtins in an annotation, which is a variable where it is
   named and the builtin where it is called at concrete arguments, and the
@@ -429,6 +471,14 @@ loopty uses changes, and loopty's floor follows it.
   process has taken since, by its start time, as a process that has ended.
   Their deadlines are a minute, which a passing run never waits for. The
   code under test does not change.
+- The suite runs with the CAS oracle off unless a test asks for it, as it
+  runs without Mathlib: `tests/conftest.py` sets `LANKY_CAS_DISABLE`, and the
+  `cas` fixture takes it out and skips where sympy is not installed. With
+  the oracle on, thirteen tests read `decided (heuristic)` where they pin
+  `tested` on an identity such as `n + 0 == n`, and nothing else changes,
+  the documented ledgers included. CI's `test with Lean` job installs the
+  `cas` extra, so the oracle's tests run there, and sumpy from PyPI, so the
+  sumpy demonstration's do (#75); the main job installs no extra, as before.
 
 ## [0.1.0.dev0] - 2026-09-18
 

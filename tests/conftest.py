@@ -1,4 +1,4 @@
-"""Test configuration: pytest's test-runner fixture, and core Lean unless asked.
+"""Test configuration: pytest's test-runner fixture, core Lean and no CAS unless asked.
 
 A run of pytest inside a test (``pytester``) loads lanky's plugin through its
 ``pytest11`` entry point, which only an installed distribution registers, so
@@ -12,6 +12,13 @@ is taken out of the environment before any test runs, whatever the shell that
 started the suite exported, and handed to the tests in ``tests/test_mathlib.py``
 through the ``mathlib_project`` fixture; those set it again where they want
 Mathlib mode, and skip when there is none.
+
+The CAS oracle (:mod:`lanky.oracles.cas`) is on wherever sympy imports, and the
+suite is written without it for the same reason: the documented ledgers, and
+most tests of the property tester, read ``tested`` for identities sympy
+decides. So ``LANKY_CAS_DISABLE`` is set before any test runs, for this process
+and every one it starts, and the tests of the oracle take it out again through
+the ``cas`` fixture, which skips where sympy is not installed.
 """
 
 from __future__ import annotations
@@ -32,6 +39,17 @@ MATHLIB_PROJECT = os.environ.pop("LANKY_LEAN_MATHLIB", None) or None
 def mathlib_project() -> str | None:
     """The Lake project with Mathlib that ``LANKY_LEAN_MATHLIB`` named, or ``None``."""
     return MATHLIB_PROJECT
+
+
+os.environ["LANKY_CAS_DISABLE"] = "1"
+
+
+@pytest.fixture
+def cas(monkeypatch):
+    """sympy, with the CAS oracle switched on for the test; skipped without sympy."""
+    sympy = pytest.importorskip("sympy")
+    monkeypatch.delenv("LANKY_CAS_DISABLE", raising=False)
+    return sympy
 
 
 def plugin_arguments() -> list[str]:
