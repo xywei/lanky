@@ -40,6 +40,17 @@ field and a ``ZeroDivisionError`` in Python, whatever the sort.
 number is ``0``; ``math.log`` and ``math.sqrt`` raise. An argument that is a
 positive literal is the one that can be ruled out by looking.
 
+A complex logarithm or square root carries no note. ``Complex.log 0`` is ``0``
+where ``cmath.log`` raises, and on the branch cut, the non-positive real axis,
+``cmath`` picks a side by the sign of a zero imaginary part, which Lean's
+complex numbers do not have; but the printer gives a statement that takes one
+side conditions, that every argument stays off the cut and away from the
+logarithm's zero, and the Lean oracle declines the statement unless it proves
+them (see :mod:`lanky.lean`). Where Lean answers, the two readings are one.
+Whether an argument is complex is read as the printer reads it
+(:func:`lanky.lean.elementary_arguments`), so a note is about the function
+the statement is printed with.
+
 Rounding is not a difference between the readings. The tester reads ``Real``
 and ``Complex`` exactly, whatever their exactness class (#33): it draws
 fractions, and encloses ``exp``, ``log`` and ``sqrt`` in intervals where their
@@ -61,9 +72,10 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.lean import elementary_arguments
 from lanky.mathlib import project_directory
 from lanky.prelude import FinType, FnType, Refined, Sort
-from lanky.terms import Elementary, Exists, Forall, Sum, init_args
+from lanky.terms import Exists, Forall, Sum, init_args
 
 __all__ = [
     "DIVISION_BY_ZERO",
@@ -216,19 +228,20 @@ def _is_positive_literal(expr: Any) -> bool:
 
 
 def leaves_the_domain(term: Any) -> bool:
-    """Whether ``term`` takes a logarithm or a square root of something not seen positive.
+    """Whether ``term`` takes a real logarithm or square root of something not seen positive.
 
     Syntactic, like the division checks: ``log(2)`` carries no note, and
     ``log(x)``, ``log(x * x)`` and ``sqrt(x - 1)`` do, a hypothesis that keeps
     the argument positive included. ``exp`` is total on both sides and is never
     noted: the tester encloses it rather than computing a float, which neither
-    overflows nor underflows.
+    overflows nor underflows. Neither is a function of a complex argument,
+    whose cut the Lean oracle keeps it off (see the module docstring).
     """
     return any(
-        isinstance(node, Elementary)
-        and node.function in ("log", "sqrt")
+        node.function in ("log", "sqrt")
+        and kind != "Complex"
         and not _is_positive_literal(node.argument)
-        for node in _walk(term)
+        for node, kind in elementary_arguments(term)
     )
 
 

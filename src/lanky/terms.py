@@ -1034,10 +1034,11 @@ def _elementary(function: str) -> Callable[[Any], Any]:
 
 #: The exponential, ``Real.exp`` or ``Complex.exp`` in Lean.
 exp = _elementary("exp")
-#: The natural logarithm, ``Real.log`` in Lean; a complex one is not printed (see
-#: :mod:`lanky.lean`).
+#: The natural logarithm, ``Real.log`` in Lean, and ``Complex.log`` for a complex
+#: argument, which Lean has to keep off the branch cut (see :mod:`lanky.lean`).
 log = _elementary("log")
-#: The square root of a real number, ``Real.sqrt`` in Lean.
+#: The square root, ``Real.sqrt`` in Lean, and ``Complex.sqrt`` for a complex
+#: argument, which Lean has to keep off the branch cut (see :mod:`lanky.lean`).
 sqrt = _elementary("sqrt")
 
 
