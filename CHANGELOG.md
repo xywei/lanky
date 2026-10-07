@@ -37,9 +37,110 @@ loopty uses changes, and loopty's floor follows it.
 - `lanky.lean.elementary_arguments(term)`: every `exp`, `log` and `sqrt` in a
   term, with what its argument is as a number (`Int`, `Real` or `Complex`) as
   the printer reads it (#59).
+- `lanky.terms.BuiltinName` and `lanky.terms.EVALUATED_BUILTINS`: the name of
+  one of Python's builtins in an annotation, which is a variable where it is
+  named and the builtin where it is called at concrete arguments, and the
+  builtins that are (#63).
 
 ### Changed
 
+- **Lean proved two kinds of false statement, and does not now** (#61, #64).
+  A wrong proof is the worst thing a proof host can report, so these lead.
+  - *An existential's disjunctive condition is bracketed* (#61). The printer
+    joins an existential's conditions, its domain's guards, a refinement's
+    propositions and the generator's guard, to its body with `∧`, and
+    printed each at the precedence of an arrow's antecedent, as a
+    universal's are. `∨` binds more loosely than `∧`, so a condition that
+    was a disjunction went unbracketed and Lean read another statement:
+    `any(x == -1 for x in Fin[m] if (x > 5) | (x < 1))` was `∃ x : Int, 0 ≤
+    x ∧ x < m ∧ x > 5 ∨ x < 1 ∧ x = -1`, which `x = -1` satisfies, and a
+    script pinned with `use_tactic` proved it with `-1` as the witness,
+    while the guard admits no point that is `-1` and the tester refutes the
+    claim. A refinement of the domain and the guard of an existential with
+    no binders were printed the same way, in both dialects. An existential's
+    conditions are printed as conjuncts now, `(x > 5 ∨ x < 1)`, as a
+    reduction's `with` clause already was; a universal's are joined with `→`,
+    which binds more loosely than `∨`, and print as before.
+  - *A statement with a free name is not handed to Lean* (#64). A name
+    nothing in a statement binds was printed as it stands, and Lean read it
+    as whatever it or Mathlib declares under that name, or, where there is
+    none, bound it implicitly at a type it inferred. `round(0.5) == 1` was
+    `round (1 / 2 : ℝ) = 1` in Mathlib mode, proved about Mathlib's `round`,
+    which rounds half up, where Python's rounds half to even and gives `0`;
+    and `def free_goal() -> x - 1 >= 0`, with `x` bound nowhere, was
+    `theorem Lanky.free_goal : x - 1 ≥ 0`, about a natural `x`, which
+    `omega` proved in core Lean. `lanky.lean.statement_of`, which arranges
+    what the oracle proves, declines a term with a free name now, naming
+    it: in a body, a guard or a binder's domain, in a family's type, and a
+    plain pymbolic `Variable` that a term built by hand holds. `print_lean`,
+    which shows a term, still prints an open one as it stands. Such a
+    statement reads `assumed`, since the tester cannot evaluate it either;
+    that nothing under the table says why is #67. Elaborating every
+    declaration with `autoImplicit` off, which would make Lean refuse a free
+    name the printer let through, is #68.
+- **A builtin in an annotation is Python's, or refused** (#63). An annotation
+  is evaluated in a `Scope`, which invents a variable for every name it does
+  not have, and Python looks a name up there before it looks at the
+  builtins, so every builtin but `all`, `any`, `sum` and `abs` was a
+  variable: `min(x, y)` and `complex(x, 1)` applied a free name, as a family
+  is applied, and read `assumed` with nothing to say why, or `proved` about
+  Lean's own `min` (#64). A builtin's name is a
+  `lanky.terms.BuiltinName` now. Called at concrete arguments, it is the
+  builtin, if it is one of `EVALUATED_BUILTINS`, those that compute a value
+  from their arguments alone: `round(0.5) == 1` is Python's `0 == 1`, which
+  the tester refutes, and `complex(-1, -0.0)` is the complex number with its
+  negative zero, which an annotation could write only as `-(1 + 0j)`. Called
+  with a term among its arguments it is refused where the annotation is
+  evaluated, naming it (`min(x, y) applies Python's min to a symbolic
+  value`), and so is a call of a builtin that is no part of a statement,
+  `print`, `open` or `eval`; giving `min` and `max` a meaning as terms is
+  #66. A builtin a statement calls runs with binder tracing suspended, so a
+  symbolic domain it would iterate, `max(f(k) for k in Fin[n])`, and a
+  proposition it would ask for a truth value are refused rather than read
+  as a binder or a guard of the quantifier around it. A builtin that hands
+  back an iterator, `zip`, `enumerate` or `reversed`, is run to the end
+  where it is called, for the same reason: its iterator did its work later,
+  while the generator around it was traced, so `zip(Fin[n], Fin[n])` bound
+  two independent binders where Python pairs each point with itself, and
+  `all(k == 0 for k, i in enumerate(Fin[n]))`, false wherever `n > 1`, was
+  proved. Named and not called, a builtin is the free name it was, which a
+  plugin can refuse, as loopty refuses a kernel's `a: float`; a theorem
+  refuses a parameter or a goal annotated with one, `x: int`, which made
+  `int` a hypothesis and `x` a free name that Lean bound as a natural, and
+  the type itself, which the annotation is without `from __future__ import
+  annotations`, naming the lanky sort meant (`Int` or `Nat`, `Real`,
+  `Complex`, `Bool`). So it does a builtin named anywhere inside an
+  annotation: `f: Fn[Fin[n], float]` made `float` the sort of the family's
+  values, which the tester could not draw, and passed on the draws where the
+  family is empty, so `all(f(i) >= 0 for i in Fin[n])` read `tested`.
+- **Only a generator's `if` clause records a guard** (#63). Three more ways
+  of asking for a truth value inside a quantifier were read as its `if`
+  clause, and Lean proved what they made of the statement, which Python
+  refutes. A conditional expression picks a branch by its condition, so
+  `all((f(i) if i < 3 else -1) >= 0 for i in Fin[n])` became `f(i) >= 0` for
+  `i < 3`, false in Python wherever `n > 3`. `not c` in a body became the
+  guard `c` and the body `False`, so `~any(not (i < k) for ...)` held. And
+  a comparison of two tuples or lists compares their items with `==` until
+  two differ, so `all((i, 0) == (k, 0) for ...)` was `True` wherever `i ==
+  k`, and so was `all(i == k for ... if (i, 0) <= (k, 0))`. The check used to
+  read any layout it did not know as a guard; it now recognizes the `if`
+  clause by what it does with a point it rejects, going back to the loop for
+  the next one, and refuses everything else, naming the three. Two tuples
+  compared with `==` in an `if` clause are still read, item by item, which
+  is what their equality means.
+- **A truth value a builtin asks for while a generator is traced is refused**
+  (#63). The one place Python may ask for the truth value of a proposition
+  is a generator's `if` clause, and lanky reads the frame that asked to tell
+  it from a mistake. A builtin has no frame of its own, so `min(i, j)` with
+  Python's own `min`, which a module that imports it, or code that builds a
+  term without a `Scope`, still calls, asked for `j < i` from the generator's
+  frame, and the answer was recorded as its guard: `all(min(i, j) == j for i
+  in Fin[n] for j in Fin[n])`, false at `i = 0, j = 1`, became `j == j`
+  wherever `j < i`, which Lean proves. And `if i in range(3)` asked for `i ==
+  0` and stopped there. A truth value asked for by a call, by an `in` test or
+  by the step of a loop over an iterator a builtin made is refused now, as
+  one asked for by an `if` inside a function the annotation calls already
+  was.
 - **A fact id names its definition by the path of the file that defines it**
   (#22). The id is `kind:module.owner@line`, and `module` was the name the
   module was imported under. `lanky check helpers.py` imports the file under a
