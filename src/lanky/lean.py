@@ -192,9 +192,11 @@ zero and both are ``π * I``: printed as they stand, the two make an equation
 Lean proves and Python refutes at every positive ``x``. The tester leaves a
 draw on the cut undecided, and the printer's reading has to stop there too.
 
-A literal argument is looked at: ``log(-1 + 0j)`` is declined where it is
-printed, as is ``log(0j)``, which ``cmath`` has no value for and Lean's total
-logarithm makes ``0``. Any other argument is something only a proof can keep
+A literal argument, which only a term built by hand holds (``lanky.log`` of a
+number is Python's value), is looked at: ``Elementary("log", -1 + 0j)`` is
+declined where it is printed, as is the logarithm of ``0j``, which ``cmath``
+has no value for and Lean's total logarithm makes ``0``, and one off the cut
+needs nothing more. Any other argument is something only a proof can keep
 off the cut, so the statement carries the claim that it is off as a *side
 condition* (:attr:`LeanStatement.side_conditions`): a theorem of its own,
 ``0 < Complex.re a ∨ Complex.im a ≠ 0`` for a logarithm of ``a``, which
