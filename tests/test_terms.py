@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 from contextlib import closing
 
 import pymbolic.primitives as prim
@@ -1511,6 +1512,11 @@ def test_a_fraction_is_an_operand_as_an_int_is() -> None:
         "x ** 1/3": (x**third, prim.Power(x, third)),
         "1/3 ** x": (third**x, prim.Power(third, x)),
     }
+    if sys.version_info < (3, 12, 5):
+        # Python asks the Fraction first, and before 3.12.5 its __pow__ made
+        # itself a float for an exponent it did not know, so the term was
+        # handed 0.3333333333333333 (CPython gh-119189)
+        built.pop("1/3 ** x")
     for written, (term, expected) in built.items():
         assert structurally_equal(term, expected), (written, render(term))
         # a lanky node, whose comparison builds a proposition
