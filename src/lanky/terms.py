@@ -1138,10 +1138,10 @@ class BuiltinName(Var):
     (#63, #64). A builtin's name is this instead. Called at concrete
     arguments it is the builtin, if it is one of :data:`EVALUATED_BUILTINS`:
     ``round(0.5)`` is ``0`` and ``complex(-1, -0.0)`` the complex number, as
-    in the file run as a program. Called with a term or a lanky type among its
-    arguments it is refused, naming the builtin: lanky has no term for the
-    builtin, and Python would compute it on the term, comparing two
-    propositions where ``min`` compares two numbers. The builtins that mean
+    in the file run as a program. Called with a term among its arguments, or
+    a container that holds one, it is refused, naming the builtin: lanky has
+    no term for the builtin, and Python would compute it on the term,
+    comparing two propositions where ``min`` compares two numbers. The builtins that mean
     something else in an annotation (:data:`BUILTIN_OVERRIDES`) are never
     looked up here.
 
@@ -1156,8 +1156,9 @@ class BuiltinName(Var):
         """The builtin at concrete arguments; refused at symbolic ones.
 
         Raises:
-            TypeError: If an argument is a term or a lanky type, or holds one,
-                or if the builtin is not one an annotation may call.
+            TypeError: If an argument is a term, or holds one, if the builtin is
+                not one an annotation may call, or if the builtin raises it,
+                as it does when it iterates a symbolic domain.
             SymbolicBoolError: If the builtin asks a proposition for its truth
                 value, as ``max`` does of a generator over a concrete domain
                 whose body is symbolic.
