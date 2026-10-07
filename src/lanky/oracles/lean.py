@@ -174,6 +174,17 @@ SIDE_CONDITION_TACTICS: tuple[str, ...] = (
     "simp_all",
 )
 
+#: What closes the side goal of a lemma ``simp`` rewrites with, ``a ≠ 0`` for
+#: ``Complex.exp_log``, once ``simp`` has taken ``a`` apart into its real and
+#: imaginary parts: what is left says that they are not both zero, ``x = 0 →
+#: ¬y = 0`` for ``x + y * 1j`` or ``¬x * x + 1 = 0`` for ``x * x + 1``, and
+#: the arithmetic tactics show it from the hypotheses (``y > 0``) or from
+#: nothing. Every arm closes the goal or fails.
+_NONZERO_CLOSERS = (
+    "first | positivity | linarith | nlinarith "
+    "| (intro; linarith) | (intro; nlinarith) | (intro; positivity)"
+)
+
 #: :data:`_CLOSERS`, with Mathlib's closing tactics after the core ones.
 _MATHLIB_CLOSERS = (
     f"{_CLOSERS} | linarith | nlinarith | positivity | (ring_nf; done) "
@@ -1175,10 +1186,14 @@ def tactic_ladder(statement: LeanStatement) -> list[str]:
     it stands but for the closers, and then Mathlib's attempts: the tactics in
     :data:`MATHLIB_TACTICS` on the whole goal, and :func:`reduction_scripts`.
     One that takes a complex logarithm or square root, which is one with side
-    conditions (:attr:`lanky.lean.LeanStatement.side_conditions`), gets one
-    more whole-goal attempt: ``Complex.exp_log`` holds for an argument that is
-    not zero, and ``simp`` shows one is not by its real and imaginary parts
+    conditions (:attr:`lanky.lean.LeanStatement.side_conditions`), gets two
+    more whole-goal attempts. ``Complex.exp_log`` holds for an argument that
+    is not zero, and ``simp`` shows one is not by its real and imaginary parts
     (``Complex.ext_iff``), so that ``exp(log(x + 1j)) == x + 1j`` is proved.
+    ``simp`` does not read the hypotheses there, so the second attempt is the
+    same ``simp`` with a discharger that does, through the arithmetic tactics
+    (:data:`_NONZERO_CLOSERS`): ``exp(log(x + y * 1j)) == x + y * 1j`` under
+    ``y > 0``, and ``exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j``.
     """
     with dialect(statement.mathlib):
         names, _, _, _, _ = _goal_intro(statement)
@@ -1187,8 +1202,10 @@ def tactic_ladder(statement: LeanStatement) -> list[str]:
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
         ladder += _mathlib_tactics(lemmas)
         if statement.side_conditions:
-            parts = ", ".join((*lemmas, statement.qualified("Complex.ext_iff")))
+            ext = statement.qualified("Complex.ext_iff")
+            parts = ", ".join((*lemmas, ext))
             ladder.append(f"simp [{parts}]")
+            ladder.append(f"simp (disch := (simp [{ext}] <;> {_NONZERO_CLOSERS})) [{parts}]")
     if names:
         introduction = f"intro {' '.join(names)}"
         ladder += [

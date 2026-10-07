@@ -147,9 +147,12 @@ loopty uses changes, and loopty's floor follows it.
   binder's domain outright. A proof's `lean_source` proves the side conditions first, under
   `Lanky.<name>_branch_cut_<i>`, and then the statement. The ladder's `simp`
   lemmas gain `Complex.exp_log` and `Complex.sqrt`, and a statement with side
-  conditions gets one more attempt, with `Complex.ext_iff`, so
-  `exp(log(x + 1j)) == x + 1j` and `sqrt(x + y * 1j) ** 2 == x + y * 1j`
-  under `y != 0` read `proved lean`. A complex argument no longer gets the
+  conditions gets two more attempts, a `simp` with `Complex.ext_iff` and the
+  same `simp` with a discharger that shows `Complex.exp_log`'s argument
+  nonzero from the hypotheses with the arithmetic tactics, so
+  `exp(log(x + 1j)) == x + 1j`, `exp(log(x + y * 1j)) == x + y * 1j` under
+  `y > 0`, and `sqrt(x + y * 1j) ** 2 == x + y * 1j` under `y != 0` read
+  `proved lean`. A complex argument no longer gets the
   `semantics` note of the real logarithm and square root, whose gap its side
   conditions close.
 - **`lanky check` says why an oracle declined a fact** (#37). An oracle that

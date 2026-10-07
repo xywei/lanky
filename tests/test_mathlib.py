@@ -176,6 +176,16 @@ def root_squared(x: Real, y: Real, hy: y != 0) -> sqrt(x + y * 1j) ** 2 == x + y
     """The principal square root squared, where a hypothesis keeps it off the cut."""
 
 
+@theorem
+def exp_log_above_the_axis(x: Real, y: Real, hy: y > 0) -> exp(log(x + y * 1j)) == x + y * 1j:
+    """The logarithm undone, where only a hypothesis shows its argument is not zero."""
+
+
+@theorem
+def exp_log_of_a_positive(x: Real) -> exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j:
+    """The logarithm undone on the positive real axis, which is off the cut."""
+
+
 #: False in Python, ``log x - πi`` against ``log x + πi``, and true in Lean. A
 #: term built here and not an annotation, where ``complex`` would be a variable.
 _ACROSS_THE_CUT = Forall(
@@ -601,12 +611,15 @@ def test_the_mathlib_ladder_follows_the_core_one() -> None:
     assert "Finset.insert_Ico_right_eq_Ico_add_one" in script
     assert "first | (have hih := ih (by omega)) | (have hih := ih) | skip" in script
     assert tactic_ladder(statement_of(gauss.term, "gauss", mathlib=True))[-1] == script
-    # a complex logarithm or square root gets one more whole-goal attempt (#59)
+    # a complex logarithm or square root gets two more whole-goal attempts (#59),
+    # the second with a discharger that reads the hypotheses
     ladder = tactic_ladder(statement_of(exp_log_off_the_cut.term, "e", mathlib=True))
     assert ladder[: len(BASE_TACTICS) + len(MATHLIB_TACTICS)] == [*BASE_TACTICS, *MATHLIB_TACTICS]
-    (extra,) = ladder[len(BASE_TACTICS) + len(MATHLIB_TACTICS) :]
-    assert extra.startswith("simp [Real.exp_add, ") and extra.endswith(", Complex.ext_iff]")
-    assert "Complex.exp_log, Complex.sqrt" in extra
+    plain, discharged = ladder[len(BASE_TACTICS) + len(MATHLIB_TACTICS) :]
+    assert plain.startswith("simp [Real.exp_add, ") and plain.endswith(", Complex.ext_iff]")
+    assert "Complex.exp_log, Complex.sqrt" in plain
+    assert discharged.startswith("simp (disch := (simp [Complex.ext_iff] <;> first | positivity")
+    assert discharged.endswith(plain.removeprefix("simp "))
     # a quantified goal is the core induction's, and a sum over no natural bound is nobody's
     assert reduction_scripts(statement_of(scan_monotone.term, "s", mathlib=True)) == []
     constant = Forall(((x, Real),), Sum(((i, FinType(3)),), x) == 3 * x)
@@ -1365,7 +1378,9 @@ def test_mathlibs_principal_branches_are_pythons_off_the_cut(
 
 
 @pytest.mark.parametrize(
-    "claim", [exp_log_off_the_cut, root_squared], ids=lambda claim: claim.__name__
+    "claim",
+    [exp_log_off_the_cut, root_squared, exp_log_above_the_axis, exp_log_of_a_positive],
+    ids=lambda claim: claim.__name__,
 )
 def test_mathlib_proves_a_complex_logarithm_or_root_off_the_cut(
     mathlib_oracle: LeanOracle, claim
@@ -1373,7 +1388,9 @@ def test_mathlib_proves_a_complex_logarithm_or_root_off_the_cut(
     """Printed, and proved once the claim that its argument is off the cut is (#59).
 
     The file that replays the proof proves that claim first, under a name of
-    its own, and the provenance lists it.
+    its own, and the provenance lists it. The last two need the ladder's
+    ``simp`` with a discharger: ``Complex.exp_log`` wants the argument
+    nonzero, which takes the hypothesis ``y > 0``, or ``positivity``.
     """
     owner = claim.__name__
     fact = Fact(id=owner, kind="theorem", statement=owner, term=claim.term, owner=owner)
