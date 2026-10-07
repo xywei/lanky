@@ -1069,9 +1069,13 @@ _ELEMENTARY = {
     "sqrt": ("Real.sqrt", "Complex.sqrt"),
 }
 
-#: The functions with a branch cut on the complex plane, and what each is
-#: called where the printer says why a statement is declined.
-_CUT_FUNCTIONS = {"log": "logarithm", "sqrt": "square root"}
+#: The functions with a branch cut on the complex plane, what each is called
+#: where the printer says why a statement is declined, and where its cut is:
+#: a logarithm's takes zero in, where ``cmath.log`` has no value.
+_CUT_FUNCTIONS = {
+    "log": ("logarithm", "the non-positive real axis"),
+    "sqrt": ("square root", "the negative real axis"),
+}
 
 
 def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
@@ -1096,12 +1100,12 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
     real, complex_ = _ELEMENTARY[expr.function]
     is_complex = _kind(expr.argument, types) == "Complex"
     if is_complex and _literal_on_the_cut(expr.function, expr.argument):
+        kind, axis = _CUT_FUNCTIONS[expr.function]
         raise UnsupportedTerm(
-            f"{render(expr)} is a complex {_CUT_FUNCTIONS[expr.function]} on its "
-            "branch cut, the non-positive real axis, where Python and Lean do not "
-            "agree: cmath picks a side of the cut by the sign of a zero imaginary "
-            "part, or has no value at all, and Lean's complex numbers have no "
-            "signed zero"
+            f"{render(expr)} is a complex {kind} on its branch cut, {axis}, where "
+            "Python and Lean do not agree: cmath picks a side of the cut by the "
+            "sign of a zero imaginary part, or has no value at all, and Lean's "
+            "complex numbers have no signed zero"
         )
     name = complex_ if is_complex else real
     return _parens(f"{global_name(name)} {_render(expr.argument, _ATOM, types)}", _APP, outer)
