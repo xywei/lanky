@@ -352,7 +352,10 @@ class Theorem:
 
         ``mathlib=True`` prints it for a Lean that has imported Mathlib, which
         reads ``Real``, ``Complex``, sums and ``exp``, ``log`` and ``sqrt``
-        (see :mod:`lanky.lean`).
+        (see :mod:`lanky.lean`). A complex ``log`` or ``sqrt`` means in Lean
+        what it means in Python only off its branch cut, which the proposition
+        alone does not say: :func:`lanky.lean.statement_of` gives it with the
+        side conditions that do, which the Lean oracle proves first.
         """
         from lanky.lean import print_lean
 

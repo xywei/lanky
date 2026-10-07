@@ -26,6 +26,7 @@ import pytest
 
 from lanky import exp, log, sqrt, theorem
 from lanky import mathlib as mathlib_mode
+from lanky.check import goal_guard_fact, hypotheses_fact
 from lanky.intervals import ComplexValue, exp_value
 from lanky.lean import (
     UnsupportedTerm,
@@ -1427,6 +1428,49 @@ def test_a_statement_that_may_reach_the_cut_is_declined(mathlib_oracle: LeanOrac
         assert "branch cut" in declined
         assert result.provenance["declined"] == f"lean: {declined}"
         assert "lean_tried" not in result.provenance
+
+
+def test_a_pinned_tactic_does_not_skip_the_side_conditions(mathlib_oracle: LeanOracle) -> None:
+    """A per-fact tactic proves the statement only after its side conditions (#59).
+
+    ``simp`` proves ``_ACROSS_THE_CUT`` as printed, both sides being one
+    ``Complex.log`` in Lean; pinned to the fact, it is still never tried,
+    because the claim that the argument is off the cut fails first.
+    """
+    statement = statement_of(_ACROSS_THE_CUT, "across", mathlib=True)
+    closed, detail = mathlib_oracle.session.run(statement.source("simp"))
+    assert closed, detail
+    oracle = LeanOracle(session=mathlib_oracle.session)
+    oracle.tactics["across"] = "simp"
+    fact = Fact(id="across", kind="theorem", statement="across", term=_ACROSS_THE_CUT)
+    result = oracle.establish(fact)
+    assert result.status is Status.ASSUMED
+    assert result.provenance["lean_declined"].startswith("Lean could not prove ∀ ")
+
+
+def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOracle) -> None:
+    """The vacuity questions carry the side conditions of the guards they ask about (#59).
+
+    ``log(x * complex(-1, -0.0)) != log(x * complex(-1, 0.0))`` holds at every
+    positive ``x`` in Python, and is false in Lean, where both sides are one
+    ``Complex.log``: ``simp_all`` shows hypotheses with it in them
+    inconsistent, and a goal's guard with it in it empty, which would make
+    the claim vacuous and fail the check. Neither question is answered.
+    """
+    unequal = log(x * complex(-1, -0.0)) != log(x * complex(-1, 0.0))
+    on_the_cut = log(y * complex(-1, -0.0)) != log(y * complex(-1, 0.0))
+    claims = (
+        (Forall(((x, Real),), x == 7, (x > 0) & unequal), hypotheses_fact),
+        (Forall(((x, Real),), Forall(((y, Real),), y == x, on_the_cut), x > 0), goal_guard_fact),
+    )
+    for term, question in claims:
+        fact = question(Fact(id="c", kind="theorem", statement="c", term=term, owner="c"))
+        statement = statement_of(fact.term, "c", mathlib=True)
+        closed, detail = mathlib_oracle.session.run(statement.source("simp_all"))
+        assert closed, detail
+        result = mathlib_oracle.establish(fact)
+        assert result.status is Status.ASSUMED, fact.kind
+        assert result.provenance["lean_declined"].startswith("Lean could not prove ∀ ")
 
 
 # }}}
