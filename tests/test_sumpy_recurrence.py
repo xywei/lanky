@@ -228,7 +228,10 @@ def flipped():
     from sumpy.expansion import LinearPDEBasedExpansionTermsWrangler
     from sumpy.kernel import LaplaceKernel
 
-    return Flipped(LinearPDEBasedExpansionTermsWrangler(order=4, dim=2, knl=LaplaceKernel(2)))
+    wrangler = LinearPDEBasedExpansionTermsWrangler(
+        order=4, dim=2, max_mi=None, knl=LaplaceKernel(2)
+    )
+    return Flipped(wrangler)
 '''
 
 

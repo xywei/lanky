@@ -13,9 +13,10 @@ What lanky itself owns is small: terms, the prelude of sorts and index types, a
 ledger of facts (each with a status: tested, decided, proved, certified, assumed,
 refuted; and the facts it rests on, which bound what it is worth) and four
 plugin interfaces (theories, oracles, executors, CLI verbs) discovered through
-entry points. Lean is an oracle and the property tester is an oracle; a
-polyhedral plugin such as loopty registers its own theory, its own decision
-procedure, and its own verbs, and lanky never imports it. A result lanky cannot
+entry points. Lean is an oracle, sympy is one where it is installed, a
+simplifier whose answers the ledger marks as a heuristic's, and the property
+tester is one; a polyhedral plugin such as loopty registers its own theory,
+its own decision procedure, and its own verbs, and lanky never imports it. A result lanky cannot
 establish enters on a citation, through ``@axiom``, and a transformation some
 other tool made enters as a rewrite, through ``@rewrite``: a source, a target,
 and the obligation between them that an oracle discharges.

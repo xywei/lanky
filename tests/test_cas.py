@@ -71,6 +71,27 @@ def test_lanky_imports_without_importing_sympy() -> None:
     assert run.stdout.strip() == "False"
 
 
+def test_a_statement_of_another_shape_is_refused_before_sympy_is_imported(cas) -> None:
+    """An order, or a sum, costs a check nothing for the oracle's being installed."""
+    code = (
+        "import sys\n"
+        "from lanky.ledger import Fact\n"
+        "from lanky.oracles.cas import CasOracle\n"
+        "from lanky.prelude import Real\n"
+        "from lanky.terms import Forall, Var\n"
+        "x = Var('x')\n"
+        "term = Forall(((x, Real),), x <= x + 1)\n"
+        "fact = Fact(id='t', kind='theorem', statement='', term=term)\n"
+        "print(CasOracle().can_establish(fact), 'sympy' in sys.modules)\n"
+        "term = Forall(((x, Real),), x + x == 2 * x)\n"
+        "fact = Fact(id='t', kind='theorem', statement='', term=term)\n"
+        "print(CasOracle().can_establish(fact), 'sympy' in sys.modules)\n"
+    )
+    run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.split() == ["False", "False", "True", "True"]
+
+
 def test_the_oracle_is_registered_as_a_heuristic() -> None:
     """Between Lean, the kernel, and the property tester, the test."""
     import lanky  # noqa: F401 - registers the built-in oracles

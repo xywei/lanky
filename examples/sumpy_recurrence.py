@@ -420,7 +420,9 @@ def compressed_taylor():
     from sumpy.expansion import LinearPDEBasedExpansionTermsWrangler
     from sumpy.kernel import LaplaceKernel
 
-    return LinearPDEBasedExpansionTermsWrangler(order=ORDER, dim=2, knl=LaplaceKernel(2))
+    return LinearPDEBasedExpansionTermsWrangler(
+        order=ORDER, dim=2, max_mi=None, knl=LaplaceKernel(2)
+    )
 
 
 # {{{ running it

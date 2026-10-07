@@ -244,31 +244,48 @@ def equations(term: Any) -> tuple[Equation, ...]:
     an identity that holds only under them, which is declined, and never makes
     a wrong one.
 
+    The shape is read first, without sympy, so a statement of another shape
+    is refused before sympy is imported: a file of orders and sums costs a
+    check nothing for the oracle's being installed.
+
     Raises:
         Untranslatable: For a statement of any other shape (an order, a
             disequality, a disjunction, an existential), for one that
             asserts no equation, and for a side outside the fragment.
     """
-    found = tuple(_equations(term, {}))
+    found = list(_comparisons(term, ()))
     if not found:
         raise Untranslatable(f"{render(term)} asserts no equation")
-    return found
+    symbols: dict[tuple[str, int], Any] = {}
+    out = []
+    for comparison, binders in found:
+        scope: dict[str, Any] = {}
+        for var, domain in binders:
+            key = (var.name, id(domain))
+            if key not in symbols:
+                symbols[key] = symbol_for(var.name, domain)
+            scope[var.name] = symbols[key]
+        out.append(
+            Equation(
+                comparison,
+                to_sympy(comparison.left, scope),
+                to_sympy(comparison.right, scope),
+            )
+        )
+    return tuple(out)
 
 
-def _equations(term: Any, symbols: dict[str, Any]) -> Iterator[Equation]:
-    """The equations of ``term``, read with ``symbols`` in scope."""
+def _comparisons(term: Any, binders: tuple) -> Iterator[tuple[Any, tuple]]:
+    """Each equation of ``term``, with the binders in scope around it, outermost first."""
     if isinstance(term, Forall):
-        inner = dict(symbols)
-        for var, domain in term.binders:
-            inner[var.name] = symbol_for(var.name, domain)
-        yield from _equations(term.body, inner)
+        yield from _comparisons(term.body, (*binders, *term.binders))
         return
     if isinstance(term, prim.LogicalAnd):
         for child in term.children:
-            yield from _equations(child, symbols)
+            yield from _comparisons(child, binders)
         return
     if isinstance(term, prim.Comparison) and term.operator == "==":
-        yield Equation(term, to_sympy(term.left, symbols), to_sympy(term.right, symbols))
+        yield term, binders
         return
     if isinstance(term, bool):
         raise Untranslatable(f"the statement is the constant {term}")
