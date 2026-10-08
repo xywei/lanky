@@ -356,28 +356,32 @@ theorem with the same draw.
 
 - **The draws.** Six of small values and domain ends come first, every
   natural the tester draws and a domain's first and last points, smallest
-  first, so a refutation names a small point; then 32 of the property
-  tester's, with a definitional hypothesis satisfied by construction, as the
-  tester satisfies it. The readings are compared whether or not a draw
-  satisfies the hypotheses. A bounded quantifier is enumerated, as Python
-  enumerates it, and one over a sort, `for k in Nat`, runs over a sample of
-  about five of its values, the same on both sides. A family over a sort,
-  `Fn[Nat, Real]`, which the tester cannot tabulate, is drawn at each point
-  as either reading applies it.
+  first, so a refutation names a small point; then one at each integer
+  written in the claim, or in a helper it calls, and next to it, so that a
+  helper that answers otherwise only at `1000` is reached there; then 32 of
+  the property tester's, with a definitional hypothesis satisfied by
+  construction, as the tester satisfies it. The readings are compared whether
+  or not a draw satisfies the hypotheses. A bounded quantifier is enumerated,
+  as Python enumerates it, and one over a sort, `for k in Nat`, runs over a
+  sample of about five of its values and the integers the claim writes, the
+  same on both sides. A family over a sort, `Fn[Nat, Real]`, which the tester
+  cannot tabulate, is drawn at each point as either reading applies it.
 - **Agreement.** The same truth value, or the same value, for every
   annotation: the goal, each hypothesis and each variable's sort. A truth
   value against a number disagrees, and so does an exception on one side
   only, whatever it is: `i.name` raising at a number where its term has a
-  value, or `1 // i` stopping Python at `i = 0` where the term has an answer.
-  Where both stop with no answer for one reason, a family applied outside
+  value, or `1 // i` leaving Python with no answer at `i = 0` where the term
+  has one. Where both have no answer for one reason, a family applied outside
   its domain or a division by zero, they agree. `~`, `&` and `|` of truth
-  values are lanky's `not`, `and` and `or` there too, read three-valued, so
-  `(i == 0) | (f(i - 1) <= f(i))` is true at `i = 0`, and not Python's
-  `~True`, which is `-2`. A quantifier, on the other hand, is read on both
-  sides as Python's `all` and `any` read it, its points in order, stopping
-  at the first that settles it or has no answer. A truth value that differs
-  where the term compared two floating-point numbers that agree to `1e-9` is
-  put down to rounding.
+  values are lanky's `not`, `and` and `or` there too, and not Python's
+  `~True`, which is `-2`, and they and the quantifiers are read three-valued
+  on both sides, as lanky reads them: an operand or a point with no answer,
+  whatever was raised, is passed over, and one after it that settles the
+  whole settles it. So `(i == 0) | (f(i - 1) <= f(i))` is true at `i = 0`,
+  and a misreading at `i = 1` is compared even where both readings have no
+  answer at `i = 0`, where Python's `all` would stop. The two readings make
+  the same operations in the same order, a sum included, so nothing is put
+  down to rounding.
 - **What rests on it.** Every pass, decision and proof of a claim rests on
   its reading, which is why `scan_monotone`'s proof above is worth `tested`.
   A reading that cannot be run at a point is `assumed`, with the reason: a

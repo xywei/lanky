@@ -101,10 +101,8 @@ domain or an overflow, neither has a value, and they agree: ``n // 0 == 0`` is
 read faithfully, and what Lean's total division makes of it is the semantics
 gap :mod:`lanky.semantics` notes. Two other exceptions are no comparison
 (``silent``). Nothing is put down to rounding: the two readings make the same
-operations in the same order, a sum included, so a truth value that differs is
-a disagreement, and a claim that is true over the reals and false in the
-floating-point numbers both readings compute, where they round alike, reads
-the same on both sides.
+operations in the same order, a sum included, and round alike, so a truth
+value that differs is a disagreement.
 
 *The fact.* Its kind is ``faithful`` (:data:`lanky.ledger.FAITHFUL`), its id
 is the claim's with that kind (``faithful:gauss.gauss@31``), and it has the
@@ -580,7 +578,9 @@ class _Rerun(ast.NodeTransformer):
     when :func:`_quantify` asks for it, so that what one raises does not end
     the walk. ``sum`` over a generator becomes ``__lanky_sum__`` of the same
     points (:func:`_add`). An ``and`` in an ``if`` clause is read three-valued
-    too (:func:`_both`).
+    too (:func:`_both`). A generator that binds a name with ``:=`` is left as
+    it is written, and runs as Python runs it: the thunk would bind the name
+    for itself alone.
     """
 
     def __init__(self, names: dict[str, str]) -> None:
@@ -609,8 +609,12 @@ class _Rerun(ast.NodeTransformer):
             return node
         (generator,) = node.args
         readable = ast.GeneratorExp if kind == "sum" else ast.GeneratorExp | ast.ListComp
-        if not isinstance(generator, readable) or any(
-            clause.is_async for clause in generator.generators
+        if (
+            not isinstance(generator, readable)
+            or any(clause.is_async for clause in generator.generators)
+            # a name bound by := in a clause is the generator's to read, and a
+            # thunk would bind it to itself, so such a generator runs as written
+            or any(isinstance(part, ast.NamedExpr) for part in ast.walk(generator))
         ):
             return node
         guards = [_guard(test) for clause in generator.generators for test in clause.ifs]

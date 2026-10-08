@@ -143,8 +143,12 @@ to match.
   that run builds. Each theorem and axiom gets a second fact, of kind
   `faithful` and statement `the term computes what the annotations compute`:
   the annotations are run again as plain Python at drawn values, six draws of
-  small values and domain ends and then 32 of the property tester's, the term
-  is evaluated at the same values, and the two have to agree. A disagreement
+  small values and domain ends, one at each integer written in the claim or
+  in a helper it calls and next to it, and then 32 of the property tester's,
+  the term is evaluated at the same values, and the two have to agree. Both
+  readings read the connectives and the quantifiers three-valued, as lanky
+  does, so a point where both have no answer does not keep the points after
+  it from being compared. A disagreement
   refutes the reading, with the draw, the annotation as written and both
   answers, and the claim is offered to no oracle and fails the check: a hash,
   a text, `is`, an attribute or a comparison of types that answered from the
@@ -442,18 +446,28 @@ proved. The check is sampled, and that leaves these limits:
 
 - A disagreement only at points no draw reaches is not seen. A bounded
   quantifier is enumerated, and a quantifier over a sort runs over a sample of
-  about five of its values, the same on both sides; the variables take six
-  draws of small values and domain ends, and 32 of the property tester's.
+  about five of its values and the integers the claim writes, the same on both
+  sides. The variables take six draws of small values and domain ends, one at
+  each integer written in the claim or in a helper it calls and next to it, up
+  to 4096 and, for a variable that sizes a domain, only up to a size at which
+  the claim's nested domains hold about 1024 points, and 32 of the property
+  tester's.
 - A claim whose annotations cannot be run at a point keeps an `assumed`
   reading, and a proof of it reads `proved under faithful:name`, with the
   reason in a `DECLINED` line: a variable of a sort no value can be drawn of
   (the pytential demonstration's boundaries), an annotation Python evaluated
   when the function was defined, without `from __future__ import annotations`,
   and one with no answer on both sides at any draw.
-- A truth value that differs where the term compared two floating-point
-  numbers that agree to `1e-9` is put down to rounding, and not counted:
-  Python's `sum` compensates as it adds, and the term's sum is added one by
-  one.
+- Where both readings have no answer at a point, a division by zero or a
+  family outside its domain, they agree there, and what Python would have
+  evaluated after it in the same operation is not compared: in `1 // i ==
+  table(i)` at `i = 0`, `table(0)`. A quantifier, `&` and `|` pass over such a
+  point or operand on both sides, and a sum with no value is compared point by
+  point, so what comes after it there is compared; what Lean's total division
+  makes of the point itself is the semantics gap lanky already notes.
+- The rerun runs inside lanky, as the reading does, so a helper that answers
+  otherwise when it finds lanky on its caller's stack answers alike in both.
+  The check is against misreadings, not against code written to evade it.
 - The check runs the annotations' Python, helpers included, at every draw,
   about forty times a claim, so a helper with a side effect has it that often,
   and one that never returns at some value stops the check there.

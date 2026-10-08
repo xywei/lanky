@@ -25,36 +25,46 @@ worth the `tested` reading it rests on.
   is evaluated at the same values, and the two have to agree.
   - The draws: six of small values and domain ends first (`CORNERS`, every
     natural the tester draws and a domain's first and last points, smallest
-    first, so a refutation names a small point), then 32 of the property
-    tester's (`SAMPLES`), with definitional hypotheses satisfied by
-    construction. A bounded quantifier is enumerated, and one over a sort
-    runs over a sample of it, the same on both sides
-    (`lanky.terms.concrete_sorts`). A family over a sort, `Fn[Nat, Real]`,
-    which the tester cannot tabulate, is drawn at each point as either reading
-    applies it (`DrawnFamily`). A refinement no draw satisfies is drawn from
-    what it refines: the readings are compared whether or not the hypotheses
-    hold.
-  - The rerun reads `~`, `&` and `|` of truth values as lanky's `not`, `and`
-    and `or`, three-valued: Python's `~True` is `-2`, and its `|` asked
-    `f(-1)` of `(i == 0) | (f(i - 1) <= f(i))` at `i = 0`.
-  - The term is evaluated at the same values in Python's arithmetic, with a
-    quantifier read as Python's `all` and `any` read the generator it was
-    written as: its points in order, stopping at the first that settles it
-    or has no answer. The tester's reading is three-valued, and a
-    counterexample after a point with no answer settles it; Python's `all`
-    stops at that point, and so does the comparison, so that both readings
-    stop where Python stops.
-  - Agreement: the same truth value or the same value. A truth value against
-    a number disagrees, and so does an exception on one side only, whatever
-    it is: `i.name` raising at a number where the term has a value, and a
-    division by zero where Python stops and the term does not, as
-    `(f(i) * 0 == 1 // i + 1) | (i is not 0)` does at `i = 0`, whose term
-    reads `or True`. Where both stop with no answer for one reason (a family
-    outside its domain, a division by zero, an elementary function outside
-    its domain, an overflow), they agree. A truth value that differs where
-    the term compared two floating-point numbers that agree to `1e-9`
-    (`TOLERANCE`) is put down to rounding: Python's `sum` compensates as it
-    adds.
+    first, so a refutation names a small point); then one at each integer
+    written in the claim, in the helpers it calls and in what they read, and
+    next to it (up to `WRITTEN` of them, none past `WRITTEN_MAX = 4096`, and
+    for a value that sizes a domain, none past the size at which the claim's
+    nested domains hold about `SIZE_POINTS = 1024` points), so that a helper
+    misread only at `6`, or at a key `1000` of a table, is reached; then 32
+    of the property tester's (`SAMPLES`), with definitional hypotheses
+    satisfied by construction. A bounded quantifier is enumerated, and one
+    over a sort runs over a sample of it, the written integers included, the
+    same on both sides (`lanky.terms.concrete_sorts`). A family over a sort,
+    `Fn[Nat, Real]`, which the tester cannot tabulate, is drawn at each point
+    as either reading applies it (`DrawnFamily`). A refinement no draw
+    satisfies is drawn from what it refines: the readings are compared
+    whether or not the hypotheses hold.
+  - Both readings read the connectives and the quantifiers as lanky does,
+    three-valued, passing over whatever an operand or a point raised: the
+    rerun's `~`, `&` and `|` of truth values are `not`, `and` and `or`
+    (Python's `~True` is `-2`, and its `|` asked `f(-1)` of `(i == 0) | (f(i -
+    1) <= f(i))` at `i = 0`), and its `all` and `any` over a generator walk
+    every point, with the `if` clauses as one conjunction of guards, as the
+    term holds them, so an earlier clause with no answer and a later one that
+    rejects the point read alike in either order (#97). Python's `all` stops
+    at the first point that raises, and a comparison that stopped there on
+    both sides never compared the points after it: `all(f(i) * 0 + (1 // i) *
+    0 == table(i) for i in Fin[n])`, misread at `table(1)`, read `tested` and
+    Lean proved its term. A `sum` walks every point too, has no value where a
+    point has none, and is then compared point by point.
+  - The term is evaluated at the same values in Python's arithmetic, its
+    sums added with Python's `sum` over the same values, which compensates as
+    it adds since 3.12, so that both readings round alike.
+  - Agreement: the same truth value or the same value, exactly. A truth value
+    against a number disagrees, and so does an exception on one side only,
+    whatever it is: `i.name` raising at a number where the term has a value,
+    and a division by zero where Python has no answer and the term has one,
+    as `(f(i) * 0 == 1 // i + 1) | (i is not 0)` at `i = 0`, whose term reads
+    `or True`. Where both have no answer for one reason (a family outside its
+    domain, a division by zero, an elementary function outside its domain, an
+    overflow), they agree. Nothing is put down to rounding: a helper
+    answering `x * (1 + 1e-12)` at a number and `x` at a term is refuted, where
+    a tolerance would have let the CAS decide `1.0*x == x`.
   - The fact, of kind `faithful` (`lanky.ledger.FAITHFUL`), id
     `faithful:module.name@line`, owner and location the claim's, statement
     `the term computes what the annotations compute`, is `refuted` by
@@ -106,9 +116,10 @@ worth the `tested` reading it rests on.
 - A later claim of an id that is refused as a duplicate (#52) takes its
   reading with it.
 - The README's Known limits section says what the check leaves: points no
-  draw reaches, claims whose annotations cannot be run at a point, and the
-  points Python cannot answer at or rounding decides. The quickstart has a
-  Check the reading section, and every ledger in both is run again.
+  draw reaches, claims whose annotations cannot be run at a point, and a part
+  of an annotation after a point where both readings have no answer. The
+  quickstart has a Check the reading section, and every ledger in both is run
+  again.
 - The publish workflow builds in a job that can only read the repository, with
   a checkout that keeps no credentials, and uploads from a second job that
   alone may ask for the token PyPI trusts and runs no checkout or build. Before,

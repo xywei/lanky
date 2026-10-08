@@ -518,14 +518,16 @@ def test_a_sum_rounds_alike_and_nothing_is_put_down_to_rounding(prover, tmp_path
 
 
 def test_an_exception_on_one_side_only_is_a_disagreement(prover, tmp_path) -> None:
-    """Where Python stops with no answer and the term has one, the reading is refuted.
+    """Where Python has no answer and the term has one, the reading is refuted.
 
     At ``i = 0`` Python raises on ``1 // i`` and the rest of the ``|`` is
-    ``0 is not 0``, which is false, so the annotation has no value; its term,
-    ``... or True``, is true there whatever the left side is, and true at
-    every other point too. Read as Lean's total division, the annotation is
-    false at ``i = 0`` (``1 / 0 + 1`` is ``1``), and the term is what Lean
-    would prove. A point where only one reading stops is not passed over.
+    ``0 is not 0``, which is false, so the point has no value, and nor does
+    the quantifier, which no other point settles; its term, ``... or True``,
+    is true there whatever the left side is, and true at every other point
+    too. Read as Lean's total division, the annotation is false at ``i = 0``
+    (``1 / 0 + 1`` is ``1``), and the term is what Lean would prove. A point
+    with no answer is passed over on both sides alike, and an answer on one
+    side only is a disagreement.
     """
     path = _write(
         tmp_path,
@@ -745,7 +747,9 @@ def test_the_if_clauses_are_one_conjunction_in_either_order(tmp_path) -> None:
     so ``if f(i - 1) > 0 if i > 0`` stops at ``f(-1)`` at ``i = 0``, where the
     term, one conjunction, is false and skips the point. Read as the term
     holds it on both sides, the later clause rejects the point either way.
-    So does ``and`` in one clause, which lanky records as two guards.
+    So does ``and`` in one clause, which lanky records as two guards. A
+    generator that binds a name with ``:=`` runs as written, since a thunk
+    would bind the name for itself alone.
     """
     path = _write(
         tmp_path,
@@ -756,7 +760,11 @@ def test_the_if_clauses_are_one_conjunction_in_either_order(tmp_path) -> None:
         "@theorem\n"
         "def and_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all(f(i) >= 0 for i in Fin[n] if (f(i - 1) > 0) and (i > 0)):\n"
-        '    """The same, in one clause."""\n',
+        '    """The same, in one clause."""\n\n\n'
+        "@theorem\n"
+        "def named_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
+        "all(y >= 0 for i in Fin[n] if (y := f(i)) >= 0):\n"
+        '    """A name bound by := in a clause, which the generator reads as written."""\n',
     )
     for owner, (_claim, reading) in _pairs(check_path(path)).items():
         assert reading.status is Status.TESTED, (owner, reading.provenance)
