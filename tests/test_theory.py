@@ -524,6 +524,65 @@ def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
     assert concrete.statement == "n : Nat |- 2 + n >= 2"
 
 
+def test_a_term_is_no_text_in_an_annotation() -> None:
+    """A term made into text in an annotation answered with its name, whatever its value.
+
+    An f-string, ``str.format`` or a ``%`` format asked a term for its text,
+    which is what it is written as: ``f"{i}"`` was ``"i"`` while the
+    annotation was read, so ``{"0": 1}.get(f"{i}", 0)`` was ``0`` and
+    ``len(f"{i}")`` was ``1``. Lean proved the statements built on them, false
+    at ``i = 0`` and at ``i = 10``, and nothing asked a term for a truth value
+    lanky could refuse. A term's text is refused to the annotation's own code
+    now, as its hash is (#73).
+    """
+    refused = r"i was made into text by the annotation, as an f-string"
+
+    def formatted(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get(f"{i}", 0) for i in Fin[n]
+    ):
+        """False at i = 0, where the lookup gives 1."""
+
+    def counted(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 + len(f"{i}") == 1 for i in Fin[n]):
+        """False at i = 10, which has two digits."""
+
+    def converted(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get(f"{i!s}", 0) + {"0": 1}.get(f"{i!r}", 0) for i in Fin[n]
+    ):
+        """False at i = 0."""
+
+    def percent(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get("%s" % i, 0)  # noqa: UP031 - the form under test
+        for i in Fin[n]
+    ):
+        """False at i = 0."""
+
+    def formatted_by_method(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get("{}".format(i), 0)  # noqa: UP032 - the form under test
+        for i in Fin[n]
+    ):
+        """False at i = 0."""
+
+    def keyed(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + max([0, 1], key=functools.partial("{}{}".format, i)) == 1 for i in Fin[n]
+    ):
+        """A key function a builtin calls, whose text of i sorts after its value's."""
+
+    for claim in (formatted, counted, converted, percent, formatted_by_method):
+        with pytest.raises(TypeError, match=refused):
+            theorem(claim)
+    with pytest.raises(TypeError, match=r"Python's max raised .*i was made into text"):
+        theorem(keyed)
+
+    # concrete values are Python's, and a term prints as before outside one
+    @theorem
+    def concrete(n: Nat) -> len(f"{12}") + len("%s" % 3) + n >= 3:  # noqa: UP031
+        """True: two digits and one."""
+
+    assert concrete.statement == "n : Nat |- 3 + n >= 3"
+    x = Var("x")
+    assert (f"{x}", f"{x!r}", "%s" % x, str(x)) == ("x", "Var('x')", "x", "x")  # noqa: UP031
+
+
 def test_a_thread_reading_an_annotation_unmarks_only_its_own() -> None:
     """#73: the annotation being read is each thread's own.
 

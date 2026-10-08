@@ -406,6 +406,42 @@ class SymbolicMixin:
             _refuse_hashing(self, sys._getframe(1))
         return super().__hash__()  # type: ignore[misc]
 
+    def __format__(self, spec: str) -> str:
+        """Format as any object is, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the text is asked for by the code of an annotation
+                being evaluated, as an f-string or ``str.format`` there asks
+                for it (see :func:`_refuse_text`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_text(self, sys._getframe(1))
+        return super().__format__(spec)
+
+    def __str__(self) -> str:
+        """Print as the underlying pymbolic node does, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the text is asked for by the code of an annotation
+                being evaluated, as a ``%`` format or an f-string's ``!s``
+                there asks for it (see :func:`_refuse_text`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_text(self, sys._getframe(1))
+        return super().__str__()
+
+    def __repr__(self) -> str:
+        """Represent as the underlying pymbolic node does, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the text is asked for by the code of an annotation
+                being evaluated, as an f-string's ``!r`` there asks for it
+                (see :func:`_refuse_text`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_text(self, sys._getframe(1))
+        return super().__repr__()
+
     # {{{ comparisons build propositions
 
     def __eq__(self, other: Any) -> Comparison:  # type: ignore[override]
@@ -713,7 +749,7 @@ def _tests_a_value(listing: tuple[Any, ...], position: int) -> bool:
 # }}}
 
 
-# {{{ where a term was hashed
+# {{{ where a term was hashed or made into text
 
 
 #: The code of each annotation being evaluated, outermost first, by the ``id``
@@ -782,10 +818,7 @@ def _refuse_hashing(term: Any, frame: Any) -> None:
         TypeError: If ``frame`` runs the code of an annotation being
             evaluated, or calls a builtin for it.
     """
-    if frame is not None and frame.f_code is BuiltinName.__call__.__code__:
-        frame = frame.f_back
-    code = frame.f_code if frame is not None else None
-    if not any(id(code) in reading for reading in _ANNOTATION_CODE.get()):
+    if not _asked_by_annotation(frame):
         return
     raise TypeError(
         f"{render(term)} was hashed by the annotation, as a dict or a set lookup "
@@ -798,6 +831,50 @@ def _refuse_hashing(term: Any, frame: Any) -> None:
         "give its values, and a membership test as comparisons joined with |, as "
         "in (i == 0) | (i == 1)"
     )
+
+
+def _refuse_text(term: Any, frame: Any) -> None:
+    """Refuse a term's text to the code of an annotation being evaluated.
+
+    A term's text is what it is written as, whatever value it takes, as its
+    hash is its structure's (:func:`_refuse_hashing`): ``f"{i}"`` was ``"i"``
+    while the annotation was read, so ``{"0": 1}.get(f"{i}", 0)`` was ``0``
+    and ``len(f"{i}")`` was ``1``, and Lean proved the statements built on
+    them, false at ``i = 0`` and at ``i = 10``. Nothing asked the term for a
+    truth value lanky could refuse. ``str(i)`` and ``repr(i)`` are refused
+    already, as builtins applied to a term (:class:`BuiltinName`); an
+    f-string, ``str.format`` and a ``%`` format ask for the text without a
+    builtin, and are refused here, in the frames :func:`_refuse_hashing`
+    refuses a hash to. lanky's own messages print terms in its own frames.
+
+    Raises:
+        TypeError: If ``frame`` runs the code of an annotation being
+            evaluated, or calls a builtin for it.
+    """
+    if not _asked_by_annotation(frame):
+        return
+    raise TypeError(
+        f"{render(term)} was made into text by the annotation, as an f-string, "
+        "str.format or a % format there makes it: a term's text is what it is "
+        "written as, the same whatever value it takes, so a string made of it, "
+        "and whatever is read off that string, says something else than what was "
+        "written. A term is no string in an annotation: compare the term itself, "
+        "as in (i == 0) | (i == 1)"
+    )
+
+
+def _asked_by_annotation(frame: Any) -> bool:
+    """Whether ``frame`` runs the code of an annotation being evaluated, or a builtin it calls.
+
+    A builtin called from Python code has no frame of its own, so what it
+    asks for is asked by the frame that called it. One the annotation calls
+    by name runs in :meth:`BuiltinName.__call__`, which stands in for the
+    annotation's frame.
+    """
+    if frame is not None and frame.f_code is BuiltinName.__call__.__code__:
+        frame = frame.f_back
+    code = frame.f_code if frame is not None else None
+    return any(id(code) in reading for reading in _ANNOTATION_CODE.get())
 
 
 def _hashed_unless_annotation(cls: type) -> type:
