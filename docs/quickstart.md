@@ -161,7 +161,7 @@ on the first fact and then remembered, so after anything has been attempted the
 line names the Lean version in use instead.
 
 On a machine with no Lean it reads
-`lean (kernel): unavailable: lean_interact is not installed (pip install lanky[lean])`,
+`lean (kernel): unavailable: lean_interact is not installed (pip install "lanky[lean]")`,
 which is a one-line reason and not an error.
 
 ## Read the provenance
