@@ -200,7 +200,9 @@ lanky's `main`.
   annotation, `f: Fn[Fin[n], float]`, and names the sort meant. A term is no
   key of a dict and no member of a set in an annotation: `{0: 1}.get(i, 0)`
   and `i in {0, 1}` are refused, where the lookup answered from the term's
-  hash as if the key were absent and Lean proved what that left.
+  hash as if the key were absent and Lean proved what that left. Nor is a
+  term text, `f"{i}"`, or a truth value, `1 if i else 0`, which answered
+  the same at every value; compare it instead, `i != 0`.
 - One reading of arithmetic for every oracle. `Nat` means an integer that is
   not negative, and the Lean printer says so: a natural is an `Int` with
   `0 ≤ n` as a hypothesis, and `//` and `%` are `Int.fdiv` and `Int.fmod`,

@@ -156,8 +156,23 @@ loopty uses changes, and loopty's floor follows it.
     that looks `i` up are refused too. Which annotation is being read is a
     context's own, so two threads reading annotations at once do not unmark
     each other's. This is the frame-based reading the `if` clause check uses
-    (#63). A function the annotation calls is not the
-    annotation's code, and a lookup there is not refused (#80).
+    (#63). A function the annotation calls is not the annotation's code, and
+    a lookup there is not refused (#80).
+  - *A term made into text, or read as a number's truth value, is refused in
+    an annotation* (#73). A term's text is what it is written as, and its
+    truth value as a number was pymbolic's, each the same at every value the
+    term takes, and neither asked lanky anything: `{"0": 1}.get(f"{i}", 0)`
+    was `0`, `len(f"{i}")` was `1`, `1 if i else 0` was `1`, `i and True`
+    was `True` and `(i - i) or 5` was `i - i`, and Lean proved the
+    statements built on them, false at `i = 0`, or at `i = 10` for the
+    length. An f-string, `str.format` or a `%` format of a term, and Python's
+    `and`, `or` and `not`, a conditional expression or an `if` clause on a
+    term that is a number, are refused in the frames a hash is, naming the
+    fix: compare the term, as in `i != 0`. `str(i)` and `repr(i)` were
+    refused already, as builtins applied to a term, and so was a
+    proposition's truth value anywhere but an `if` clause. Python's `is` and
+    a term's attributes still answer about the term and not its value
+    (#88).
   - *Every declaration is elaborated with `autoImplicit` off* (#68). Lean
     binds a name a declaration's signature does not know as an implicit
     argument, at a type it infers, which is how `theorem Lanky.free_goal :
@@ -181,12 +196,13 @@ loopty uses changes, and loopty's floor follows it.
   `property-test: the statement mentions m, which no parameter or binder of
   it binds, ...`. The names are the ones the Lean printer declines a
   statement for, read from its sorts too, so a misspelt sort is one, and
-  from inside a list or a nested tuple an argument is written as, which
-  the walk used to stop at; a variable binds its name in every sort,
-  whatever order the parameters are written in. `Theorem.report` and `Theorem.test` raise, and the pytest
-  plugin fails such a theorem, naming the names. A plugin's facts that
-  mention names on purpose get the line as well: loopty's postconditions
-  in `examples/spmv.py`, which the tester could not run before either.
+  from inside a list, a nested tuple or a dict an argument is written as,
+  which the walk used to stop at (#87); a variable binds its name in every
+  sort, whatever order the parameters are written in. `Theorem.report` and
+  `Theorem.test` raise, and the pytest plugin fails such a theorem, naming
+  the names. A plugin's fact that mentions names on purpose, such as an
+  array a kernel reads, is declined by the tester the same way, and gets
+  the line where no other oracle takes it.
 - **A family whose values the tester cannot draw is not passed on its empty
   draws** (#74). `f: Fn[Fin[n], Flaot]`, with a misspelt sort, or `f:
   Fn[Fin[n], Fn[Nat, Nat]]`, whose values are families over `Nat` and
