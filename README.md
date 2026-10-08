@@ -454,6 +454,13 @@ proved. The check is sampled, and that leaves these limits:
   numbers that agree to `1e-9` is put down to rounding, and not counted:
   Python's `sum` compensates as it adds, and the term's sum is added one by
   one.
+- The check runs the annotations' Python, helpers included, at every draw,
+  about forty times a claim, so a helper with a side effect has it that often,
+  and one that never returns at some value stops the check there.
+- `lanky check` and the pytest plugin make the check. A theorem called or
+  sampled directly, `gauss(n=4)` or `gauss.report()`, as `python
+  examples/gauss.py` does, evaluates its term as before;
+  `gauss.faithful_fact()` is the check.
 
 ## Install
 
