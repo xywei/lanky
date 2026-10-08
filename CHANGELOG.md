@@ -182,8 +182,8 @@ loopty uses changes, and loopty's floor follows it.
     in` now (`lanky.lean.ELABORATION_OPTIONS`), so that a name the printer
     let through would be an unknown identifier to Lean rather than a
     variable. The printer still declines such a statement first, so no
-    status changes, but every `lean_source` a proof records starts with the
-    line.
+    status changes, but every `lean_source` a proof records has the line
+    before each declaration, after `import Mathlib` in Mathlib mode.
 - **The tester declines a statement with a free name, and `lanky check`
   says which** (#67). A name nothing in a statement binds, a misspelt
   parameter, has no value at a draw. `n + m >= n` raised at the first draw,
