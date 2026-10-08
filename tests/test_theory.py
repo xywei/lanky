@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import re
 import threading
 
 import pytest
@@ -581,6 +582,64 @@ def test_a_term_is_no_text_in_an_annotation() -> None:
     assert concrete.statement == "n : Nat |- 3 + n >= 3"
     x = Var("x")
     assert (f"{x}", f"{x!r}", "%s" % x, str(x)) == ("x", "Var('x')", "x", "x")  # noqa: UP031
+
+
+def test_a_number_term_has_no_truth_value_in_an_annotation() -> None:
+    """The truth value of a term that is a number was pymbolic's, the same at every value.
+
+    Python reads a number as true where it is not zero, and pymbolic answered
+    for a term from its structure: ``i`` was true and ``i*0`` false. ``1 if i
+    else 0`` was ``1``, ``i and True`` was ``True`` and ``(i - i) or 5`` was
+    ``i - i``, and Lean proved the statements built on them, each false at ``i
+    = 0``. A proposition's truth value was refused there already; a number's
+    is refused now in the annotation's own code, an ``if`` clause included.
+    """
+    from lanky.terms import SymbolicBoolError
+
+    def conditional(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + (1 if i else 0) == 1 for i in Fin[n]
+    ):
+        """False at i = 0, where the conditional gives 0."""
+
+    def conjoined(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        (f(i) * 0 == 1) | (i and True) for i in Fin[n]
+    ):
+        """False at i = 0, where i and True is 0."""
+
+    def disjoined(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + ((i - i) or 5) == 0 for i in Fin[n]
+    ):
+        """False everywhere, where (i - i) or 5 is 5."""
+
+    def negated(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        (f(i) * 0 == 0) & (not (i * 0)) for i in Fin[n]
+    ):
+        """True as written, since i*0 is 0, and refused all the same, as a number's truth is."""
+
+    def filtered(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) >= 1 for i in Fin[n] if i):
+        """An if clause that is a number, which no guard was recorded for."""
+
+    for claim, shown in (
+        (conditional, "i"),
+        (conjoined, "i"),
+        (disjoined, "i - i"),
+        (negated, "i*0"),
+        (filtered, "i"),
+    ):
+        with pytest.raises(
+            SymbolicBoolError,
+            match=rf"the truth value of {re.escape(shown)} was asked for by the annotation",
+        ):
+            theorem(claim)
+
+    # concrete values are Python's, and pymbolic answers outside an annotation
+    @theorem
+    def concrete(n: Nat) -> (1 if 3 else 0) + (0 or n) >= n:
+        """True: 3 is true, and 0 or n is n."""
+
+    assert concrete.statement == "n : Nat |- 1 + n >= n"
+    x = Var("x")
+    assert bool(x) and bool(x + 1)
 
 
 def test_a_thread_reading_an_annotation_unmarks_only_its_own() -> None:

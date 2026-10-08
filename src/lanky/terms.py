@@ -442,6 +442,25 @@ class SymbolicMixin:
             _refuse_text(self, sys._getframe(1))
         return super().__repr__()
 
+    def __bool__(self) -> bool:
+        """Answer as the underlying pymbolic node does, but not for an annotation's own code.
+
+        A proposition answers for itself (:class:`PropositionMixin`); this is
+        the truth value of a number, which Python reads as ``x != 0``.
+        pymbolic answers it from the structure, ``True`` for ``i`` and
+        ``False`` for ``i*0``, and asks it so itself, to simplify a product.
+
+        Raises:
+            SymbolicBoolError: If the truth value is asked for by the code of an
+                annotation being evaluated, as ``and``, ``or``, ``not``, a
+                conditional expression or an ``if`` clause there asks for it
+                (see :func:`_refuse_truth`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_truth(self, sys._getframe(1))
+        answer = getattr(super(), "__bool__", None)
+        return True if answer is None else answer()
+
     # {{{ comparisons build propositions
 
     def __eq__(self, other: Any) -> Comparison:  # type: ignore[override]
@@ -860,6 +879,36 @@ def _refuse_text(term: Any, frame: Any) -> None:
         "and whatever is read off that string, says something else than what was "
         "written. A term is no string in an annotation: compare the term itself, "
         "as in (i == 0) | (i == 1)"
+    )
+
+
+def _refuse_truth(term: Any, frame: Any) -> None:
+    """Refuse the truth value of a term that is a number to an annotation's own code.
+
+    Python reads a number as true where it is not zero, and a term is no
+    number until it is evaluated, so its truth value was pymbolic's, the same
+    at every value it takes: ``i`` was true and ``i*0`` false. ``1 if i else
+    0`` was ``1``, ``i and True`` was ``True``, ``not i`` was ``False``, and
+    ``(i - i) or 5`` was ``i - i``, and Lean proved the statements built on
+    them, false at ``i = 0``. A proposition's truth value is refused there
+    already (:class:`PropositionMixin`), and a number's is refused the same
+    way, in the frames :func:`_refuse_hashing` refuses a hash to, the ``if``
+    clause of a generator included. pymbolic asks for it in its own frames.
+
+    Raises:
+        SymbolicBoolError: If ``frame`` runs the code of an annotation being
+            evaluated, or calls a builtin for it.
+    """
+    if not _asked_by_annotation(frame):
+        return
+    raise SymbolicBoolError(
+        f"the truth value of {render(term)} was asked for by the annotation, as "
+        "Python's and, or and not, a conditional expression a if c else b, or an "
+        "if clause ask for it: Python reads a number as true where it is not zero, "
+        "and a term is no number until it is evaluated, so the answer would be "
+        "the same at every value it takes and say something else than what was "
+        f"written. Compare it instead, as in {render(term)} != 0, and join "
+        "propositions with &, | and ~"
     )
 
 
