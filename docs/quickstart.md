@@ -367,15 +367,17 @@ theorem with the same draw.
 - **Agreement.** The same truth value, or the same value, for every
   annotation: the goal, each hypothesis and each variable's sort. A truth
   value against a number disagrees, and so does an exception on one side
-  only, `i.name` raising at a number where its term has a value. Where
-  Python stops with no answer that lanky's reading settles three-valued, a
-  family applied outside its domain or a division by zero, the point is not
-  compared; where both stop for one reason, they agree. `~`, `&` and `|` of
-  truth values are lanky's `not`, `and` and `or` there too, read
-  three-valued, so `(i == 0) | (f(i - 1) <= f(i))` is true at `i = 0`, and
-  not Python's `~True`, which is `-2`. A truth value that differs where the
-  term compared two floating-point numbers that agree to `1e-9` is put down
-  to rounding.
+  only, whatever it is: `i.name` raising at a number where its term has a
+  value, or `1 // i` stopping Python at `i = 0` where the term has an answer.
+  Where both stop with no answer for one reason, a family applied outside
+  its domain or a division by zero, they agree. `~`, `&` and `|` of truth
+  values are lanky's `not`, `and` and `or` there too, read three-valued, so
+  `(i == 0) | (f(i - 1) <= f(i))` is true at `i = 0`, and not Python's
+  `~True`, which is `-2`. A quantifier, on the other hand, is read on both
+  sides as Python's `all` and `any` read it, its points in order, stopping
+  at the first that settles it or has no answer. A truth value that differs
+  where the term compared two floating-point numbers that agree to `1e-9` is
+  put down to rounding.
 - **What rests on it.** Every pass, decision and proof of a claim rests on
   its reading, which is why `scan_monotone`'s proof above is worth `tested`.
   A reading that cannot be run at a point is `assumed`, with the reason: a

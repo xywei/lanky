@@ -46,11 +46,17 @@ variable or a function that makes terms on purpose
 *The term.* The term is evaluated at the same values by lanky's evaluator
 (:class:`lanky.terms.LankyEvaluationMapper`) in the Python reading, the one
 :meth:`lanky.theory.Theorem.__call__` uses, so that Python's numbers and its
-rounding are on both sides. A quantifier over a sort ranges over the same
-sample the rerun iterated, read as the whole domain, so a universal and an
-existential are answered over it both ways, as Python's ``all`` and ``any``
-answer them. A variable's sort is compared too, as it is at the draw: a
-``Fin``'s bound, a refinement's truth values, a family's domain and values.
+rounding are on both sides. A quantifier is read as Python's ``all`` and
+``any`` read the generator it was written as (:class:`_Reading`): its points
+in order, the guard at each before the body, stopping at the first point that
+settles it or that has no answer. The property tester reads a quantifier
+three-valued, as a conjunction of its points, so that a counterexample after a
+point with no answer is one all the same; the comparison reads it as the
+rerun does, so that both readings stop where Python stops, and a point where
+only one of them stops is a disagreement like any other. A quantifier over a
+sort ranges over the same sample the rerun iterated, read as the whole
+domain. A variable's sort is compared too, as it is at the draw: a ``Fin``'s
+bound, a refinement's truth values, a family's domain and values.
 
 *The points.* First come :data:`CORNERS` draws of small values and domain
 ends, every natural the tester draws, a ``Fin``'s first and last points,
@@ -66,16 +72,17 @@ readings are compared whether or not the hypotheses hold.
 
 *Agreement.* At a draw each annotation has to compute the same on both sides:
 the same truth value, or the same value, and a truth value against a number
-is a disagreement. So is an exception on one side only, ``i.name`` raising at
-a number where its term has a value, with one exception: where Python stops
-with no answer, at a family applied outside its domain, a division by zero,
-an elementary function outside its domain or an overflow, lanky's reading
-may settle the point three-valued, as a quantifier does at a point past one
-with no answer, so such a point is not compared (``open``). Where both sides
-stop there for one reason, with the same exception, neither has a value, and
-they agree: ``n // 0 == 0`` is read faithfully, and what Lean's total
-division makes of it is the semantics gap :mod:`lanky.semantics` notes. Two
-other exceptions are no comparison (``silent``). A disagreement in a truth
+is a disagreement. So is an exception on one side only, whatever it is:
+``i.name`` raising at a number where its term has a value, and a division by
+zero or a family applied outside its domain where Python stops and the term
+does not, as ``(f(i) * 0 == 1 // i + 1) | (i is not 0)`` does at ``i = 0``,
+where its term reads ``or True``. Where both sides stop with no answer for
+one reason, the same exception of :data:`_OPEN`, a family applied outside its
+domain, a division by zero, an elementary function outside its domain or an
+overflow, neither has a value, and they agree: ``n // 0 == 0`` is read
+faithfully, and what Lean's total division makes of it is the semantics gap
+:mod:`lanky.semantics` notes. Two other exceptions are no comparison
+(``silent``). A disagreement in a truth
 value at a draw where the term compared two floating-point numbers that
 agree to :data:`TOLERANCE` is put down to rounding and not counted
 (``rounding``): Python's ``sum`` compensates as it adds, and the evaluator
@@ -114,6 +121,7 @@ import operator
 import random
 import warnings
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
@@ -124,7 +132,10 @@ import pymbolic.primitives as prim
 from lanky.intervals import ComplexValue
 from lanky.ledger import FAITHFUL, Fact, Status, fact_id
 from lanky.prelude import FinType, FnType, LankyType, Refined, Sort, SumType
+from lanky.terms import _OPEN as _CONNECTIVES_PASS_OVER
 from lanky.terms import (
+    Exists,
+    Forall,
     LankyEvaluationMapper,
     Polarity,
     Undecided,
@@ -200,11 +211,18 @@ _SMALL: dict[str, tuple[Any, ...]] = {
     "Prop": (False, True),
 }
 
-#: What Python raises where it stops with no answer and lanky's reading may
-#: settle the point three-valued: a family applied outside its domain, a
-#: quantifier the draws leave open, a division by zero, an elementary function
-#: outside its domain (:class:`lanky.terms.UndefinedValue`), an overflow.
+#: What Python raises where it stops with no answer at a point: a family
+#: applied outside its domain, a division by zero, an elementary function
+#: outside its domain (:class:`lanky.terms.UndefinedValue`), an overflow. Two
+#: readings that raise one of these, of one type, agree that there is no value
+#: there.
 _OPEN = (Undecided, ArithmeticError)
+
+#: What an operand of lanky's connectives raises that they pass over, as
+#: having no answer here (see :func:`lanky.terms.conjoin`): an undecided
+#: quantifier, a division by zero and an elementary function outside its
+#: domain, and not an overflow, which stops them.
+_PASSED_OVER = _CONNECTIVES_PASS_OVER
 
 #: What a comparison's operator is, as the function Python applies for it.
 _COMPARISONS: dict[str, Callable[[Any, Any], Any]] = {
@@ -243,9 +261,12 @@ def _connective(settles: bool) -> Callable[[Callable[[], Any], Callable[[], Any]
     :func:`lanky.terms.conjoin` and :func:`lanky.terms.disjoin` read them: an
     operand that settles it settles it, whatever the other could not answer,
     and an operand with no answer is raised again when nothing settles it.
-    Python's ``|`` runs both operands first, so ``(i == 0) | (f(i - 1) <=
-    f(i))`` stopped at ``f(-1)`` where lanky's reading is true. Of anything
-    else it is Python's own operator, the bitwise one on two integers.
+    What counts as no answer is what lanky's connectives pass over
+    (:data:`_PASSED_OVER`), so that the two readings stop at the same
+    operands. Python's ``|`` runs both operands first, so ``(i == 0) | (f(i -
+    1) <= f(i))`` stopped at ``f(-1)`` where lanky's reading is true. Of
+    anything else it is Python's own operator, the bitwise one on two
+    integers.
     """
     python = operator.or_ if settles else operator.and_
 
@@ -253,7 +274,7 @@ def _connective(settles: bool) -> Callable[[Callable[[], Any], Callable[[], Any]
         pending: Exception | None = None
         try:
             first = left()
-        except _OPEN as exc:
+        except _PASSED_OVER as exc:
             pending, first = exc, _MISSING
         if first is not _MISSING and not _is_truth(first):
             return python(first, right())
@@ -261,7 +282,7 @@ def _connective(settles: bool) -> Callable[[Callable[[], Any], Callable[[], Any]
             return settles
         try:
             second = right()
-        except _OPEN:
+        except _PASSED_OVER:
             if pending is not None:
                 raise pending from None
             raise
@@ -391,11 +412,13 @@ def _close(left: Any, right: Any) -> bool:
 
 
 class _Reading(LankyEvaluationMapper):
-    """lanky's evaluator in the Python reading, a sort read as the sample the rerun iterated.
+    """lanky's evaluator in the Python reading, with quantifiers read as ``all`` and ``any``.
 
-    ``fragile`` records whether a comparison it made was between two
-    floating-point numbers that agree to :data:`TOLERANCE`, where rounding
-    can decide the answer (see the module docstring).
+    A sort is read as the sample the rerun iterated, and a quantifier walks
+    its points in order and stops where Python's ``all`` and ``any`` stop
+    (:meth:`_quantify`). ``fragile`` records whether a comparison it made was
+    between two floating-point numbers that agree to :data:`TOLERANCE`, where
+    rounding can decide the answer (see the module docstring).
     """
 
     def __init__(self, context: dict[str, Any], samples: _Samples) -> None:
@@ -407,6 +430,32 @@ class _Reading(LankyEvaluationMapper):
     def is_exhaustive(domain: Any) -> bool:
         """Every domain is walked whole: a sort's sample is its domain here."""
         return True
+
+    def _quantify(self, expr: Forall | Exists) -> bool:
+        """A quantifier as Python's ``all`` or ``any`` reads the generator it was written as.
+
+        The points come in the order the rerun walks them, and at each the
+        guard is read before the body, as a generator's ``if`` clause is. The
+        walk stops at the first point whose body settles the quantifier, a
+        counterexample to a universal or a witness to an existential, and at
+        the first point where the domain, the guard or the body has no answer,
+        raising what Python raises there. The evaluator's own reading is
+        three-valued, so that a counterexample after a point with no answer
+        settles a universal all the same (see
+        :class:`~lanky.terms.LankyEvaluationMapper`); Python's ``all`` stops at
+        that point. The term is compared with the rerun as the rerun reads it,
+        so that a point where only one of them stops is a disagreement, and
+        not a difference between two readings of one quantifier.
+        """
+        settles = isinstance(expr, Exists)
+        antecedent = self.polarity if settles else self.polarity.flipped()
+        with closing(self.assignments(expr.binders, antecedent)) as points:
+            for _ in points:
+                if not self._holds(expr.guard, antecedent):
+                    continue
+                if self._truth(expr.body) == settles:
+                    return settles
+        return not settles
 
     def map_comparison(self, expr: prim.Comparison) -> Any:
         """Compare the two sides as Python does, noting a comparison rounding can decide."""
@@ -769,11 +818,11 @@ def _judge(python: _Outcome, term: _Outcome, fragile: bool) -> str:
     """How the two readings of one annotation compare at one draw.
 
     ``agreed``, the same value, or no value on either side for one reason
-    (one of :data:`_OPEN`, of one type); ``differed``; ``open``, where Python
-    stopped with no answer that lanky's reading may settle; ``silent``, where
-    both raised otherwise; ``rounding``, a truth value that differs where the
-    term compared two floating-point numbers that agree to :data:`TOLERANCE`;
-    or ``uncomparable``, a value that holds a term or that ``==`` cannot
+    (one of :data:`_OPEN`, of one type); ``differed``, which an exception on
+    one side only is too, whatever it is; ``silent``, where both raised
+    otherwise; ``rounding``, a truth value that differs where the term
+    compared two floating-point numbers that agree to :data:`TOLERANCE`; or
+    ``uncomparable``, a value that holds a term or that ``==`` cannot
     compare.
     """
     if python.error is not None and term.error is not None:
@@ -782,9 +831,9 @@ def _judge(python: _Outcome, term: _Outcome, fragile: bool) -> str:
             # zero, say, or a family applied outside its domain
             return "agreed"
         return "silent"
-    if python.error is not None:
-        return "open" if isinstance(python.error, _OPEN) else "differed"
-    if term.error is not None:
+    if python.error is not None or term.error is not None:
+        # one reading has a value and the other none: i.name raising at a
+        # number, or Python stopping at 1 // 0 where the term's or is True
         return "differed"
     left, right = python.value, term.value
     if _holds_term(left) or _holds_term(right):

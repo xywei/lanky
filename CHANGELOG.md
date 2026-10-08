@@ -37,14 +37,24 @@ worth the `tested` reading it rests on.
   - The rerun reads `~`, `&` and `|` of truth values as lanky's `not`, `and`
     and `or`, three-valued: Python's `~True` is `-2`, and its `|` asked
     `f(-1)` of `(i == 0) | (f(i - 1) <= f(i))` at `i = 0`.
+  - The term is evaluated at the same values in Python's arithmetic, with a
+    quantifier read as Python's `all` and `any` read the generator it was
+    written as: its points in order, stopping at the first that settles it
+    or has no answer. The tester's reading is three-valued, and a
+    counterexample after a point with no answer settles it; Python's `all`
+    stops at that point, and so does the comparison, so that both readings
+    stop where Python stops.
   - Agreement: the same truth value or the same value. A truth value against
-    a number disagrees, and so does an exception on one side only. Where
-    Python stops with no answer that lanky's reading settles three-valued (a
-    family outside its domain, a division by zero, an elementary function
-    outside its domain), the point is not compared, and where both stop for
-    one reason they agree. A truth value that differs where the term
-    compared two floating-point numbers that agree to `1e-9` (`TOLERANCE`) is
-    put down to rounding: Python's `sum` compensates as it adds.
+    a number disagrees, and so does an exception on one side only, whatever
+    it is: `i.name` raising at a number where the term has a value, and a
+    division by zero where Python stops and the term does not, as
+    `(f(i) * 0 == 1 // i + 1) | (i is not 0)` does at `i = 0`, whose term
+    reads `or True`. Where both stop with no answer for one reason (a family
+    outside its domain, a division by zero, an elementary function outside
+    its domain, an overflow), they agree. A truth value that differs where
+    the term compared two floating-point numbers that agree to `1e-9`
+    (`TOLERANCE`) is put down to rounding: Python's `sum` compensates as it
+    adds.
   - The fact, of kind `faithful` (`lanky.ledger.FAITHFUL`), id
     `faithful:module.name@line`, owner and location the claim's, statement
     `the term computes what the annotations compute`, is `refuted` by

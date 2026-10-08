@@ -500,6 +500,60 @@ def test_a_disagreement_rounding_explains_is_not_counted(tmp_path) -> None:
     assert halves.provenance["counterexample"] == {"n": 1, "f": [1]}
 
 
+def test_an_exception_on_one_side_only_is_a_disagreement(prover, tmp_path) -> None:
+    """Where Python stops with no answer and the term has one, the reading is refuted.
+
+    At ``i = 0`` Python raises on ``1 // i`` and the rest of the ``|`` is
+    ``0 is not 0``, which is false, so the annotation has no value; its term,
+    ``... or True``, is true there whatever the left side is, and true at
+    every other point too. Read as Lean's total division, the annotation is
+    false at ``i = 0`` (``1 / 0 + 1`` is ``1``), and the term is what Lean
+    would prove. A point where only one reading stops is not passed over.
+    """
+    path = _write(
+        tmp_path,
+        "\n\n@theorem\n"
+        "def stops(n: Nat, f: Fn[Fin[n], Nat]) -> "
+        "all((f(i) * 0 == 1 // i + 1) | (i is not 0) for i in Fin[n]):\n"
+        '    """Python stops at i = 0; the term reads or True."""\n',
+    )
+    ((claim, reading),) = _pairs(check_path(path)).values()
+    assert reading.status is Status.REFUTED, reading.provenance
+    assert reading.provenance["counterexample"] == {"n": 1, "f": [1]}
+    assert reading.provenance["python_answer"].startswith("raises ZeroDivisionError")
+    assert reading.provenance["term_answer"] == "computes True"
+    assert claim.status is Status.ASSUMED
+    assert prover.shown == []
+
+
+def test_both_readings_stop_where_python_stops(tmp_path) -> None:
+    """A quantifier is read as ``all`` reads it, and an overflow stops ``|`` on both sides.
+
+    ``all(f(i - 1) <= f(i) for i in Fin[n])`` has no value in Python at any
+    ``n >= 1``: ``all`` stops at ``i = 0``, where ``f(-1)`` is outside the
+    domain. Read three-valued, as the tester reads it, the term is false
+    wherever ``f`` decreases later on, which is an answer where Python has
+    none; read as ``all`` reads it, the term stops at ``i = 0`` too, and the
+    two agree. Likewise lanky's ``|`` passes over a division by zero but not
+    an overflow, so the rerun's ``|`` stops at Python's ``OverflowError``
+    as the term's does, and does not answer ``x == x`` in its place.
+    """
+    path = _write(
+        tmp_path,
+        "\n\n@theorem\n"
+        "def ordered(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i - 1) <= f(i) for i in Fin[n]):\n"
+        '    """No value in Python wherever n >= 1."""\n\n\n'
+        "@theorem\n"
+        "def overflows(x: Real) -> ((x + 2) ** 2000.0 > 0) | (x == x):\n"
+        '    """Python\'s float power overflows past 1, on both sides."""\n',
+    )
+    pairs = _pairs(check_path(path))
+    for owner in ("ordered", "overflows"):
+        reading = pairs[owner][1]
+        assert reading.status is Status.TESTED, (owner, reading.provenance)
+        assert "silent" not in reading.provenance, owner
+
+
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
     """The tester cannot tabulate ``Fn[Nat, Nat]``; the check draws it point by point.
 

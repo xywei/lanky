@@ -450,10 +450,10 @@ proved. The check is sampled, and that leaves these limits:
   (the pytential demonstration's boundaries), an annotation Python evaluated
   when the function was defined, without `from __future__ import annotations`,
   and one with no answer on both sides at any draw.
-- Where Python stops with no answer that lanky's three-valued reading settles,
-  a family applied outside its domain or a division by zero, the point is not
-  compared, and a truth value that differs where the term compared two
-  floating-point numbers that agree to `1e-9` is put down to rounding.
+- A truth value that differs where the term compared two floating-point
+  numbers that agree to `1e-9` is put down to rounding, and not counted:
+  Python's `sum` compensates as it adds, and the term's sum is added one by
+  one.
 
 ## Install
 
