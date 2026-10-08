@@ -78,8 +78,11 @@ claim, in its annotations and in the functions they call, and next to them
 :data:`WRITTEN_MAX`: a helper that answers otherwise at ``1000`` is reached
 there. A variable that sizes a domain the claim walks takes such a value only
 up to a size that keeps the walk to about :data:`SIZE_POINTS` points, and the
-values join the samples of the sorts. Then come :data:`SAMPLES` of the
-property tester's draws (:func:`lanky.testing.sample_value`, from its seed).
+values join the samples of the sorts; a draw of such a claim at which a
+reading walks more than :data:`WALK_POINTS` points all the same, over
+``Fin[2 ** n]`` say, is given up as too large to walk (``unwalked``). Then
+come :data:`SAMPLES` of the property tester's draws
+(:func:`lanky.testing.sample_value`, from its seed).
 The definitional hypotheses are satisfied by construction
 (:func:`lanky.testing.satisfy_hypotheses`) so that a scan is one. A bounded
 quantifier enumerates every point of its domain anyway. A family over a sort
@@ -143,6 +146,7 @@ import types
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import closing
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import Any
@@ -191,6 +195,7 @@ __all__ = [
     "SIZE_POINTS",
     "SORT_POINTS",
     "STATEMENT",
+    "WALK_POINTS",
     "WRITTEN",
     "WRITTEN_MAX",
     "DrawnFamily",
@@ -237,6 +242,12 @@ WRITTEN_MAX = 4096
 #: ``Fin[n]``, takes a written value only up to the size at which the domains
 #: nested in the claim, each that large, hold this many points.
 SIZE_POINTS = 1024
+
+#: How many points one reading of one annotation may walk at a draw of a
+#: claim that writes an integer the draws take, before the draw is given up as
+#: too large to walk: a size kept to :data:`SIZE_POINTS` can still size a
+#: domain of ``2 ** n`` points.
+WALK_POINTS = 1 << 15
 
 #: The small values each sort's sample starts with.
 _SMALL: dict[str, tuple[Any, ...]] = {
@@ -370,6 +381,34 @@ def _truthy(value: Any) -> bool:
     return bool(value) if not _is_truth(value) else value
 
 
+class _TooLarge(BaseException):  # noqa: N818 - not an error, a walk given up
+    """A reading at a counted draw walked more than :data:`WALK_POINTS` points (see :class:`_Draw`).
+
+    It is no ``Exception``, so that neither reading passes over it as a point
+    with no answer: it gives the draw up (see :func:`_compare`).
+    """
+
+
+#: The points the walk at the current draw may still take, or ``None`` where
+#: the draw is not counted (see :class:`_Draw`).
+_BUDGET: ContextVar[list[int] | None] = ContextVar("lanky_faithful_budget", default=None)
+
+
+def _step() -> None:
+    """Count one point a walk takes, and give the draw up past its budget.
+
+    Raises:
+        _TooLarge: If the walks at this draw have taken :data:`WALK_POINTS`
+            points.
+    """
+    budget = _BUDGET.get()
+    if budget is None:
+        return
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise _TooLarge(f"the walk took more than {WALK_POINTS} points")
+
+
 def _domain(opened: list[Exception], thunk: Callable[[], Any]) -> Iterator[Any]:
     """The points of one ``for`` clause of a quantifier's generator, or none, noting why.
 
@@ -392,6 +431,7 @@ def _domain(opened: list[Exception], thunk: Callable[[], Any]) -> Iterator[Any]:
         except Exception as exc:  # noqa: BLE001 - a domain that stopped giving points
             opened.append(exc)
             return
+        _step()
         yield point
 
 
@@ -785,6 +825,7 @@ class _Reading(LankyEvaluationMapper):
                 except Exception as exc:  # noqa: BLE001 - a domain that stopped giving points
                     yield _Unbound(exc)
                     break
+                _step()
                 self.context[var.name] = point
                 here = unsure
                 try:
@@ -1208,6 +1249,8 @@ def _draw(
             bound = int(evaluate(domain.bound, context))
             if bound < 0:
                 raise SkipSample(f"{domain} has a negative size")
+            if isinstance(source, _Pinned) and bound > WALK_POINTS:
+                raise SkipSample(f"{domain} has {bound} points, too many to draw a family over")
             return Table(
                 [_draw(codomain, source, context, size=size) for _ in range(bound)],
                 name=name or "a family",
@@ -1249,11 +1292,18 @@ def _key(point: Any) -> Any:
 
 @dataclass
 class _Draw:
-    """One draw: its label, the values of the variables, and the samples of the sorts."""
+    """One draw: its label, the values of the variables, and the samples of the sorts.
+
+    ``counted`` says whether the walks at it count their points against
+    :data:`WALK_POINTS`, which they do wherever the claim writes an integer
+    the draws take: at a draw at one, and at every other draw, whose samples
+    of the sorts hold them.
+    """
 
     label: str
     context: dict[str, Any]
     samples: _Samples
+    counted: bool = False
 
 
 def _draws(
@@ -1298,7 +1348,8 @@ def _draws(
             continue
         if label.startswith("draw"):
             made += 1
-        yield _Draw(label, context, samples)
+        # a written integer reaches the samples of the sorts at every draw
+        yield _Draw(label, context, samples, counted=bool(extent.written))
 
 
 #: How deep the functions an annotation calls are read for the integers they hold.
@@ -1543,6 +1594,35 @@ def _compare(
     for annotation in annotations:
         unsummed: list[list[tuple[str, Any]]] = []
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)
+        reading = _Reading(dict(draw.context), draw.samples)
+        try:
+            python, term = _both_readings(annotation, scope, reading, draw)
+        except _TooLarge as exc:
+            yield annotation, "unwalked", _Outcome(error=exc), _Outcome(error=exc)
+            return
+        if not _same_points(unsummed, reading.unsummed):
+            # a sum had no value on both sides, or on one, and its points differ
+            python = replace(python, sums=_points_of(unsummed))
+            term = replace(term, sums=_points_of(reading.unsummed))
+            yield annotation, "differed", python, term
+            continue
+        yield annotation, _judge(python, term), python, term
+
+
+def _both_readings(
+    annotation: _Annotation, scope: dict[str, Any], reading: _Reading, draw: _Draw
+) -> tuple[_Outcome, _Outcome]:
+    """What the rerun of ``annotation`` and its term came to at ``draw``.
+
+    Where the draw is counted (:class:`_Draw`), each reading may walk
+    :data:`WALK_POINTS` points.
+
+    Raises:
+        _TooLarge: If one of them walked more than that, which gives the draw
+            up.
+    """
+    token = _BUDGET.set([WALK_POINTS] if draw.counted else None)
+    try:
         with concrete_sorts(draw.samples):
             try:
                 if annotation.code is not None:
@@ -1552,18 +1632,17 @@ def _compare(
                 python = _Outcome(_value_at(value, _Reading(dict(draw.context), draw.samples)))
             except Exception as exc:  # noqa: BLE001 - what the annotation raises is its answer
                 python = _Outcome(error=exc)
-        reading = _Reading(dict(draw.context), draw.samples)
+    finally:
+        _BUDGET.reset(token)
+    token = _BUDGET.set([WALK_POINTS] if draw.counted else None)
+    try:
         try:
             term = _Outcome(_value_at(annotation.term, reading))
         except Exception as exc:  # noqa: BLE001 - what the term raises is its answer
             term = _Outcome(error=exc)
-        if not _same_points(unsummed, reading.unsummed):
-            # a sum had no value on both sides, or on one, and its points differ
-            python = replace(python, sums=_points_of(unsummed))
-            term = replace(term, sums=_points_of(reading.unsummed))
-            yield annotation, "differed", python, term
-            continue
-        yield annotation, _judge(python, term), python, term
+    finally:
+        _BUDGET.reset(token)
+    return python, term
 
 
 def _same_points(left: list[list[tuple[str, Any]]], right: list[list[tuple[str, Any]]]) -> bool:
@@ -1711,6 +1790,12 @@ def faithful_fact(theorem: Any) -> Fact:
             ):
                 if verdict == "differed":
                     return _refuted(fact, annotation, draw, python, term)
+                if verdict == "unwalked":
+                    # given up as too large to walk, so the draw is not one
+                    tally.draws -= 1
+                    tally.skipped.append(f"{draw.label}: {python.error}")
+                    tally.counts["unwalked"] = tally.counts.get("unwalked", 0) + 1
+                    continue
                 tally.record(annotation, verdict, python, term)
     except Exception as exc:  # noqa: BLE001 - a fact, never a crash of the check
         return declined(f"the annotations could not be run again: {type(exc).__name__}: {exc}")

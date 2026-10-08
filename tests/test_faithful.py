@@ -714,7 +714,9 @@ def test_a_written_value_keeps_a_draw_small_enough_to_run(tmp_path) -> None:
     :data:`~lanky.faithful.SIZE_POINTS` by how deeply the claim nests its
     domains: a misreading at ``1000`` under two nested quantifiers over
     ``Fin[n]`` is past what a draw walks, a limit of the check, and the
-    reading is ``tested``.
+    reading is ``tested``. A draw whose walk takes more than
+    :data:`~lanky.faithful.WALK_POINTS` points all the same, ``Fin[2 ** n]``
+    at a written ``63``, is given up.
     """
     from lanky import faithful
 
@@ -726,6 +728,9 @@ def test_a_written_value_keeps_a_draw_small_enough_to_run(tmp_path) -> None:
         "def powers(n: Nat, h: n < 63) -> 2 ** n < 2 ** 63:\n"
         '    """Drawn at 62, 63 and 64, and not at 2 ** 63."""\n\n\n'
         "@theorem\n"
+        "def bits(n: Nat, h: n < 64) -> all(x < 2 ** n for x in Fin[2 ** n]):\n"
+        '    """Drawn at 63, 64 and 65, which are given up as too large to walk."""\n\n\n'
+        "@theorem\n"
         "def nested(n: Nat, f: Fn[Fin[n], Nat]) -> all(\n"
         "    all(f(i) * 0 + f(j) * 0 == thousand(i) for j in Fin[n]) for i in Fin[n]\n"
         "):\n"
@@ -735,6 +740,10 @@ def test_a_written_value_keeps_a_draw_small_enough_to_run(tmp_path) -> None:
     powers = pairs["powers"][1]
     assert powers.status is Status.TESTED, powers.provenance
     assert powers.provenance["draws"] == faithful.CORNERS + 3 + faithful.SAMPLES
+    bits = pairs["bits"][1]
+    assert bits.status is Status.TESTED, bits.provenance
+    assert bits.provenance["unwalked"] == 3
+    assert bits.provenance["draws"] == faithful.CORNERS + faithful.SAMPLES
     nested = pairs["nested"][1]
     assert nested.status is Status.TESTED, nested.provenance
     assert nested.provenance["draws"] == faithful.CORNERS + 3 + faithful.SAMPLES
