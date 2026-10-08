@@ -795,7 +795,9 @@ def test_a_helper_reads_the_module_as_it_was_when_the_claim_was_read(tmp_path) -
     ``K`` rebound later made the rerun answer otherwise than the reading, and
     refuted a faithful reading; a table rebound later to one without the key
     the reading missed made the rerun agree with the misread term, and hid
-    the misreading. The module's functions are bound to the copy.
+    the misreading. The module's functions are bound to the copy, and to
+    what a factory's helper closed over then, which a ``nonlocal`` rebinds
+    later just as a module rebinds a global.
     """
     path = _write(
         tmp_path,
@@ -808,13 +810,30 @@ def test_a_helper_reads_the_module_as_it_was_when_the_claim_was_read(tmp_path) -
         "@theorem\n"
         "def looked_up(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):\n"
         '    """Misread at i = 0, where the table read then gives 1."""\n\n\n'
-        "K = 1\nTABLE = {}\n",
+        "def make():\n"
+        "    at, held = 0, {0: 1}\n\n"
+        "    def closed():\n        return at\n\n"
+        "    def held_at(i):\n        return held.get(i, 0)\n\n"
+        "    def rebind():\n"
+        "        nonlocal at, held\n"
+        "        at, held = 1, {}\n\n"
+        "    return closed, held_at, rebind\n\n\n"
+        "closed, held_at, rebind = make()\n\n\n"
+        "@theorem\n"
+        "def closed_over(n: Nat) -> n * 0 == closed():\n"
+        '    """Read with at = 0, which rebind changes after it."""\n\n\n'
+        "@theorem\n"
+        "def held(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == held_at(i) for i in Fin[n]):\n"
+        '    """Misread at i = 0, where the table closed over then gives 1."""\n\n\n'
+        "K = 1\nTABLE = {}\nrebind()\n",
     )
     pairs = _pairs(check_path(path))
-    assert pairs["constant"][1].status is Status.TESTED, pairs["constant"][1].provenance
-    looked_up = pairs["looked_up"][1]
-    assert looked_up.status is Status.REFUTED, looked_up.provenance
-    assert looked_up.provenance["counterexample"] == {"n": 1, "f": [1]}
+    for owner in ("constant", "closed_over"):
+        assert pairs[owner][1].status is Status.TESTED, (owner, pairs[owner][1].provenance)
+    for owner in ("looked_up", "held"):
+        reading = pairs[owner][1]
+        assert reading.status is Status.REFUTED, (owner, reading.provenance)
+        assert reading.provenance["counterexample"] == {"n": 1, "f": [1]}
 
 
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:

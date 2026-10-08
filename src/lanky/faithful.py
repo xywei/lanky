@@ -201,6 +201,7 @@ __all__ = [
     "WRITTEN",
     "WRITTEN_MAX",
     "DrawnFamily",
+    "closure_contents",
     "faithful_fact",
 ]
 
@@ -602,6 +603,38 @@ def _scope(namespace: dict[str, Any]) -> dict[str, Any]:
     return scope
 
 
+#: Stands for a closure cell that held nothing when the claim was read.
+_EMPTY_CELL = object()
+
+
+def closure_contents(namespace: dict[str, Any], live: Any) -> dict[str, tuple[Any, ...]]:
+    """What each function of the module in ``namespace`` closes over now, by name.
+
+    ``live`` is the module's globals; a function whose globals they are and
+    that closes over something, a helper a factory made, has the contents of
+    its cells taken, an empty cell as :data:`_EMPTY_CELL`.
+    :class:`lanky.theory.Theorem` takes them when it reads a claim, beside
+    :attr:`~lanky.theory.Theorem.namespace`, so that the faithfulness check
+    binds its copies of the helpers to what they closed over then
+    (:func:`_snapshot`): a ``nonlocal`` rebound later would otherwise change
+    what the rerun reads.
+    """
+    out: dict[str, tuple[Any, ...]] = {}
+    for name, value in namespace.items():
+        if not isinstance(value, types.FunctionType) or value.__globals__ is not live:
+            continue
+        if not value.__closure__:
+            continue
+        contents = []
+        for cell in value.__closure__:
+            try:
+                contents.append(cell.cell_contents)
+            except ValueError:  # an empty cell
+                contents.append(_EMPTY_CELL)
+        out[name] = tuple(contents)
+    return out
+
+
 def _snapshot(theorem: Any) -> dict[str, Any]:
     """The module's globals as they were when lanky read the claim, its helpers bound to them.
 
@@ -613,16 +646,24 @@ def _snapshot(theorem: Any) -> dict[str, Any]:
     reading that was faithful, and a table a helper reads, rebound to one
     without the key the reading missed, would hide a misreading. So each
     function of the module is copied, its globals the copy here, and the
-    copy is what the annotation and the other helpers call. A function
-    defined in another module, or behind a wrapper such as
+    copy is what the annotation and the other helpers call, closing over
+    what the function closed over then (:func:`closure_contents`). A
+    function defined in another module, or behind a wrapper such as
     :func:`functools.lru_cache`, reads its module's globals as they are.
     """
     namespace = dict(theorem.namespace)
     live = getattr(theorem.fn, "__globals__", None)
+    closures = getattr(theorem, "closures", {})
     for name, value in list(namespace.items()):
         if isinstance(value, types.FunctionType) and value.__globals__ is live:
+            cells = value.__closure__
+            if name in closures and cells is not None:
+                cells = tuple(
+                    types.CellType() if held is _EMPTY_CELL else types.CellType(held)
+                    for held in closures[name]
+                )
             copy = types.FunctionType(
-                value.__code__, namespace, value.__name__, value.__defaults__, value.__closure__
+                value.__code__, namespace, value.__name__, value.__defaults__, cells
             )
             copy.__kwdefaults__ = value.__kwdefaults__
             copy.__dict__.update(value.__dict__)

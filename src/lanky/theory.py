@@ -164,6 +164,10 @@ class Theorem:
             helper it calls, reads to another value later, as a factory's
             ``K = 0`` after a first claim read ``K = 1``, does not change what
             the annotation said.
+        closures: What each of the module's functions in ``namespace``
+            closed over when the annotations were read, by name
+            (:func:`lanky.faithful.closure_contents`), which the faithfulness
+            check binds its copies of them to.
 
     Raises:
         TypeError: If the function has no return annotation (or ``-> None``).
@@ -185,6 +189,9 @@ class Theorem:
         functools.update_wrapper(self, fn)
         self.uses = fact_ids(uses)
         self.namespace = dict(getattr(fn, "__globals__", {}))
+        from lanky.faithful import closure_contents
+
+        self.closures = closure_contents(self.namespace, getattr(fn, "__globals__", None))
         annotations = evaluate_annotations(fn)
         self.goal = annotations.pop("return", None)
         if self.goal is None:
