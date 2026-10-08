@@ -94,7 +94,8 @@ def test_the_claim_is_one_statement_with_an_equation_per_coefficient(demo) -> No
     assert render(equations[0]) == "log(sqrt(x**2 + y**2)) == log(sqrt(x**2 + y**2))"
     index = demo.compressed_taylor.identifiers.index((2, 0))
     left, right = equations[index].left, equations[index].right
-    assert render(left).startswith("-1*")
+    # a negation, which renders as a unary minus (#69)
+    assert render(left).startswith("-((1 - ")
     assert render(right) != render(left)
     assert sampled.owner == symbolic.owner == "compressed_taylor"
     assert sampled.id.endswith(":sampled") and symbolic.id.endswith(":symbolic")
