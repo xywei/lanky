@@ -549,6 +549,12 @@ def _add(log: list[list[tuple[str, Any]]], make: Callable[[list[Exception]], Any
     return builtins.sum(values)
 
 
+def _bind(scope: dict[str, Any], name: str, value: Any) -> Any:
+    """``name := value``, bound in the annotation's globals ``scope`` (see :class:`_Rerun`)."""
+    scope[name] = value
+    return value
+
+
 #: The names the rerun calls its own functions by (see :class:`_Rerun`).
 _RERUN_NAMES: dict[str, Any] = {
     "__lanky_not__": _not,
@@ -621,9 +627,9 @@ class _Rerun(ast.NodeTransformer):
     when :func:`_quantify` asks for it, so that what one raises does not end
     the walk. ``sum`` over a generator becomes ``__lanky_sum__`` of the same
     points (:func:`_add`). An ``and`` in an ``if`` clause is read three-valued
-    too (:func:`_both`). A generator that binds a name with ``:=`` is left as
-    it is written, and runs as Python runs it: the thunk would bind the name
-    for itself alone.
+    too (:func:`_both`), and ``name := value`` binds the name in the
+    annotation's globals, where Python binds it from a generator and where
+    every thunk reads it.
     """
 
     def __init__(self, names: dict[str, str]) -> None:
@@ -644,6 +650,17 @@ class _Rerun(ast.NodeTransformer):
             return node
         return ast.copy_location(_call(name, _thunk(node.left), _thunk(node.right)), node)
 
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:
+        """``name := value`` as ``__lanky_walrus__("name", value)``, which binds it in the globals.
+
+        In a generator ``:=`` binds the name in the scope around it, which is
+        the annotation's globals, and a thunk would bind it for itself alone;
+        so the binding is made in the globals, where every thunk reads it.
+        """
+        self.generic_visit(node)
+        call = _call("__lanky_walrus__", ast.Constant(node.target.id), node.value)
+        return ast.copy_location(call, node)
+
     def visit_Call(self, node: ast.Call) -> Any:
         """A quantifier or a sum over a generator as the rerun reads it; any other call as it is."""
         self.generic_visit(node)
@@ -652,12 +669,8 @@ class _Rerun(ast.NodeTransformer):
             return node
         (generator,) = node.args
         readable = ast.GeneratorExp if kind == "sum" else ast.GeneratorExp | ast.ListComp
-        if (
-            not isinstance(generator, readable)
-            or any(clause.is_async for clause in generator.generators)
-            # a name bound by := in a clause is the generator's to read, and a
-            # thunk would bind it to itself, so such a generator runs as written
-            or any(isinstance(part, ast.NamedExpr) for part in ast.walk(generator))
+        if not isinstance(generator, readable) or any(
+            clause.is_async for clause in generator.generators
         ):
             return node
         guards = [_guard(test) for clause in generator.generators for test in clause.ifs]
@@ -1594,6 +1607,7 @@ def _compare(
     scope = _scope(namespace)
     for name in parameters:
         scope[name] = draw.context[name] if name in draw.context else Var(name)
+    scope["__lanky_walrus__"] = functools.partial(_bind, scope)
     for annotation in annotations:
         unsummed: list[list[tuple[str, Any]]] = []
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)

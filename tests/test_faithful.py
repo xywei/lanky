@@ -594,6 +594,13 @@ def overflows(n: Nat) -> ((1.0 * n + 2) ** 2000 >= 0) & (n * 0 == table(n)):
 @theorem
 def sums(n: Nat, f: Fn[Fin[n], Nat]) -> sum(f(i - 1) * 0 + table(i) for i in Fin[n]) == 0:
     \"\"\"f(-1) leaves the sum with no value; at i = 1 the term adds 0 where Python adds 1.\"\"\"
+
+
+@theorem
+def named(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    y * 0 + (1 // i) * 0 == table(i) for i in Fin[n] if (y := f(i)) >= 0
+):
+    \"\"\"As divides, with a name bound by := in the clause.\"\"\"
 """
 
 
@@ -617,6 +624,7 @@ def test_a_point_after_one_where_both_readings_stop_is_compared(prover, tmp_path
         "divides": {"n": 5, "f": fives},
         "overflows": {"n": 1},
         "sums": {"n": 5, "f": fives},
+        "named": {"n": 5, "f": fives},
     }
     for owner, point in expected.items():
         claim, reading = pairs[owner]
@@ -756,9 +764,9 @@ def test_the_if_clauses_are_one_conjunction_in_either_order(tmp_path) -> None:
     so ``if f(i - 1) > 0 if i > 0`` stops at ``f(-1)`` at ``i = 0``, where the
     term, one conjunction, is false and skips the point. Read as the term
     holds it on both sides, the later clause rejects the point either way.
-    So does ``and`` in one clause, which lanky records as two guards. A
-    generator that binds a name with ``:=`` runs as written, since a thunk
-    would bind the name for itself alone.
+    So does ``and`` in one clause, which lanky records as two guards. A name
+    bound with ``:=`` in a clause is bound where Python binds it, in the
+    annotation's globals, where the body reads it.
     """
     path = _write(
         tmp_path,
@@ -773,7 +781,7 @@ def test_the_if_clauses_are_one_conjunction_in_either_order(tmp_path) -> None:
         "@theorem\n"
         "def named_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all(y >= 0 for i in Fin[n] if (y := f(i)) >= 0):\n"
-        '    """A name bound by := in a clause, which the generator reads as written."""\n',
+        '    """A name bound by := in a clause, which the body reads."""\n',
     )
     for owner, (_claim, reading) in _pairs(check_path(path)).items():
         assert reading.status is Status.TESTED, (owner, reading.provenance)
