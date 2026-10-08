@@ -1886,6 +1886,16 @@ def misspelt(n: Nat, f: Fn[Fin[n], Flaot]) -> all(f(i) >= 0 for i in Fin[n]):
 @theorem
 def drawn_later(f: Fn[Fin[n], Nat], n: Nat) -> all(f(i) >= 0 for i in Fin[n]):
     """A size written after the family it sizes is a variable all the same."""
+
+
+@theorem
+def listed(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f([m]) == 0):
+    """m is in a list, which the walk for free names stopped at."""
+
+
+@theorem
+def tupled(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f((0, (m, 1))) == 0):
+    """m is in a tuple inside a tuple."""
 '''
 
 
@@ -1904,13 +1914,23 @@ def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> No
     run it and recorded the reason where ``lanky check`` does not print it,
     and Lean declined it silently. ``short_circuited`` never asked for ``m``
     and read ``tested``. ``misspelt`` drew its family empty where ``n`` is 0,
-    could draw it nowhere else, and read ``tested`` on those draws alone. The
-    tester refuses all three before it draws, and says which name it cannot
-    give a value. A size written after the family it sizes is no free name.
+    could draw it nowhere else, and read ``tested`` on those draws alone. A
+    name inside a list or a nested tuple, an argument written as one, is free
+    too: ``listed`` and ``tupled`` read ``tested`` while the walk stopped at
+    the container. The tester refuses each of them before it draws, and says
+    which name it cannot give a value. A size written after the family it
+    sizes is no free name.
     """
     path = write_file(tmp_path, FREE_NAMES)
     by_owner = {fact.owner: fact for fact in check_path(path)}
-    for owner, names in (("typo", "m"), ("short_circuited", "m"), ("misspelt", "Flaot")):
+    declined = (
+        ("typo", "m"),
+        ("short_circuited", "m"),
+        ("misspelt", "Flaot"),
+        ("listed", "m"),
+        ("tupled", "m"),
+    )
+    for owner, names in declined:
         fact = by_owner[owner]
         assert fact.status is Status.ASSUMED, (owner, fact.provenance)
         assert fact.decided_by is None
@@ -1919,10 +1939,10 @@ def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> No
     assert (later.status, later.decided_by) == (Status.TESTED, "property-test")
     assert cli.main(["check", path]) == 0
     printed = capsys.readouterr().out
-    for owner, names in (("typo", "m"), ("short_circuited", "m"), ("misspelt", "Flaot")):
+    for owner, names in declined:
         block = printed.split(f"DECLINED {owner} at claims.py:", 1)[1].splitlines()
         assert block[1].startswith(f"  {_mentions(names)}"), block
-    assert printed.count("DECLINED ") == 3
+    assert printed.count("DECLINED ") == len(declined)
 
 
 UNDRAWABLE = '''

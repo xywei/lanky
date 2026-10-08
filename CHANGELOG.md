@@ -180,9 +180,10 @@ loopty uses changes, and loopty's floor follows it.
   records that as `declined`, so `lanky check` prints a `DECLINED` line:
   `property-test: the statement mentions m, which no parameter or binder of
   it binds, ...`. The names are the ones the Lean printer declines a
-  statement for, read from its sorts too, so a misspelt sort is one; a
-  variable binds its name in every sort, whatever order the parameters are
-  written in. `Theorem.report` and `Theorem.test` raise, and the pytest
+  statement for, read from its sorts too, so a misspelt sort is one, and
+  from inside a list or a nested tuple an argument is written as, which
+  the walk used to stop at; a variable binds its name in every sort,
+  whatever order the parameters are written in. `Theorem.report` and `Theorem.test` raise, and the pytest
   plugin fails such a theorem, naming the names. A plugin's facts that
   mention names on purpose get the line as well: loopty's postconditions
   in `examples/spmv.py`, which the tester could not run before either.

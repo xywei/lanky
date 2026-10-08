@@ -2503,9 +2503,12 @@ def free_names(expr: Any) -> frozenset[str]:
     if isinstance(expr, prim.ExpressionNode):
         found = set()
         for child in init_args(expr):
-            for item in child if isinstance(child, tuple) else (child,):
-                found |= free_names(item)
+            found |= free_names(child)
         return frozenset(found)
+    if isinstance(expr, tuple | list):
+        # a node's children, and an argument written as a list or a tuple,
+        # which holds terms as deep as it is nested
+        return frozenset().union(*(free_names(item) for item in expr))
     return frozenset()
 
 
