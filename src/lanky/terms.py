@@ -2554,12 +2554,14 @@ def free_variables(expr: Any) -> frozenset[str]:
 def free_names(expr: Any) -> frozenset[str]:
     """Every name ``expr`` mentions that no binder of it binds, wherever it stands.
 
-    :func:`free_variables`, reading three more places, since what an oracle is
+    :func:`free_variables`, reading four more places, since what an oracle is
     handed has to be closed: a plain pymbolic ``Variable``, which a term built
     node by node can hold; a family's domain and codomain, which the Lean
     erasure prints as ``Int → Nat`` but which the statement still sizes by its
-    bound; and a sort that is itself a term, a name nothing defines, such as
-    the misspelt ``Flaot`` of ``Fn[Fin[n], Flaot]`` (see :func:`sort_free_names`).
+    bound; a sort that is itself a term, a name nothing defines, such as the
+    misspelt ``Flaot`` of ``Fn[Fin[n], Flaot]`` (see :func:`sort_free_names`);
+    and an argument written as a set or a dict, ``f({"slot": m})``, whose
+    keys and values are read as a list's items are (#87).
     The Lean printer declines a statement with a free name
     (:func:`lanky.lean.statement_of`), and so does the property tester
     (:func:`lanky.testing.check`). :func:`free_variables` is what a plugin
@@ -2582,10 +2584,13 @@ def free_names(expr: Any) -> frozenset[str]:
         for child in init_args(expr):
             found |= free_names(child)
         return frozenset(found)
-    if isinstance(expr, tuple | list):
-        # a node's children, and an argument written as a list or a tuple,
-        # which holds terms as deep as it is nested
+    if isinstance(expr, tuple | list | set | frozenset):
+        # a node's children, and an argument written as a list, a tuple or a
+        # set, which holds terms as deep as it is nested
         return frozenset().union(*(free_names(item) for item in expr))
+    if isinstance(expr, dict):
+        # an argument written as a dict, whose values can be terms (#87)
+        return frozenset().union(*(free_names(item) for item in (*expr.keys(), *expr.values())))
     return frozenset()
 
 

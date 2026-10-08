@@ -1896,6 +1896,11 @@ def listed(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f([m]) == 0):
 @theorem
 def tupled(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f((0, (m, 1))) == 0):
     """m is in a tuple inside a tuple."""
+
+
+@theorem
+def mapped(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f({"slot": [m]}) == 0):
+    """m is in a list a dict holds as a value."""
 '''
 
 
@@ -1915,11 +1920,11 @@ def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> No
     and Lean declined it silently. ``short_circuited`` never asked for ``m``
     and read ``tested``. ``misspelt`` drew its family empty where ``n`` is 0,
     could draw it nowhere else, and read ``tested`` on those draws alone. A
-    name inside a list or a nested tuple, an argument written as one, is free
-    too: ``listed`` and ``tupled`` read ``tested`` while the walk stopped at
-    the container. The tester refuses each of them before it draws, and says
-    which name it cannot give a value. A size written after the family it
-    sizes is no free name.
+    name inside a list, a nested tuple or a dict, an argument written as one,
+    is free too: ``listed``, ``tupled`` and ``mapped`` read ``tested`` while
+    the walk stopped at the container (#87 for the dict). The tester refuses
+    each of them before it draws, and says which name it cannot give a
+    value. A size written after the family it sizes is no free name.
     """
     path = write_file(tmp_path, FREE_NAMES)
     by_owner = {fact.owner: fact for fact in check_path(path)}
@@ -1929,6 +1934,7 @@ def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> No
         ("misspelt", "Flaot"),
         ("listed", "m"),
         ("tupled", "m"),
+        ("mapped", "m"),
     )
     for owner, names in declined:
         fact = by_owner[owner]
