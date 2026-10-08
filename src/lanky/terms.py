@@ -384,6 +384,26 @@ def _make_unary(name: str) -> Callable[..., Any]:
     return operation
 
 
+def _make_bitwise(name: str) -> Callable[..., Any]:
+    """Wrap one of pymbolic's ``^``, ``<<`` and ``>>`` so that it answers a lanky node.
+
+    They are integer arithmetic, and only an integer is an operand of one, so
+    nothing but pymbolic's own operator builds the node.
+    """
+    base = getattr(prim.ExpressionNode, f"__{name}__")
+
+    def operation(self: Any, other: Any) -> Any:
+        result = base(self, other)
+        if result is NotImplemented:
+            return NotImplemented
+        return lift(result)
+
+    operation.__name__ = f"__{name}__"
+    operation.__qualname__ = f"SymbolicMixin.__{name}__"
+    operation.__doc__ = f"Build the lanky counterpart of pymbolic's ``__{name}__``."
+    return operation
+
+
 class SymbolicMixin:
     """Operator overloading shared by every lanky term.
 
@@ -391,7 +411,10 @@ class SymbolicMixin:
     that the next operator applied to it is lanky's again. Comparisons build
     :class:`Comparison` instead of answering ``bool``; ``&``, ``|`` and ``~``
     build the logical connectives rather than bitwise ones, because lanky terms
-    are mathematics and not bit patterns.
+    are mathematics and not bit patterns. ``^``, ``<<`` and ``>>`` are integer
+    arithmetic, and re-tagged as the rest is: left as pymbolic's own nodes,
+    ``(k ^ 1) == 0`` compared them structurally and answered ``False``, and
+    ``(k << 2) > 5`` raised, where a program means the proposition.
     """
 
     def __hash__(self) -> int:
@@ -529,6 +552,9 @@ for _name in (
     "mod", "rmod", "pow", "rpow",
 ):
     setattr(SymbolicMixin, f"__{_name}__", _make_binary(_name))
+
+for _name in ("xor", "rxor", "lshift", "rlshift", "rshift", "rrshift"):
+    setattr(SymbolicMixin, f"__{_name}__", _make_bitwise(_name))
 
 for _name in ("neg", "pos"):
     setattr(SymbolicMixin, f"__{_name}__", _make_unary(_name))
@@ -1007,6 +1033,18 @@ class Power(SymbolicMixin, prim.Power):
     """Exponentiation."""
 
 
+class BitwiseXor(SymbolicMixin, prim.BitwiseXor):
+    """Exclusive or, of integers bit by bit, as in ``k ^ 1``."""
+
+
+class LeftShift(SymbolicMixin, prim.LeftShift):
+    """Left shift of an integer, as in ``k << 2``."""
+
+
+class RightShift(SymbolicMixin, prim.RightShift):
+    """Right shift of an integer, as in ``k >> 1``."""
+
+
 class Call(SymbolicMixin, prim.Call):
     """Application of a family to arguments, as in ``off(r)``."""
 
@@ -1117,6 +1155,9 @@ _COUNTERPART: dict[type, type] = {
     prim.FloorDiv: FloorDiv,
     prim.Remainder: Remainder,
     prim.Power: Power,
+    prim.BitwiseXor: BitwiseXor,
+    prim.LeftShift: LeftShift,
+    prim.RightShift: RightShift,
     prim.Call: Call,
     prim.Subscript: Subscript,
     prim.Comparison: Comparison,
