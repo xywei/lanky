@@ -287,9 +287,12 @@ def _kleene(settles: bool, operands: Iterable[Callable[[], Any]]) -> bool:
     exception, so that an exception never keeps an operand after it from
     being compared on both sides.
 
+    An operand that answers something other than a truth value has no answer
+    either, as lanky's reading has it (:func:`_truth`).
+
     Raises:
-        TypeError: If an operand answers something that is not a truth
-            value, which is passed over like any other exception.
+        Exception: The first exception an operand raised, when no operand
+            settles the whole.
     """
     pending: Exception | None = None
     for operand in operands:
@@ -1596,7 +1599,7 @@ def _compare(
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)
         reading = _Reading(dict(draw.context), draw.samples)
         try:
-            python, term = _both_readings(annotation, scope, reading, draw)
+            python, term = _both_readings(annotation, scope, reading, draw, unsummed)
         except _TooLarge as exc:
             yield annotation, "unwalked", _Outcome(error=exc), _Outcome(error=exc)
             return
@@ -1610,9 +1613,15 @@ def _compare(
 
 
 def _both_readings(
-    annotation: _Annotation, scope: dict[str, Any], reading: _Reading, draw: _Draw
+    annotation: _Annotation,
+    scope: dict[str, Any],
+    reading: _Reading,
+    draw: _Draw,
+    unsummed: list[list[tuple[str, Any]]],
 ) -> tuple[_Outcome, _Outcome]:
     """What the rerun of ``annotation`` and its term came to at ``draw``.
+
+    ``unsummed`` is where the rerun's sums with no value go (:func:`_add`).
 
     Where the draw is counted (:class:`_Draw`), each reading may walk
     :data:`WALK_POINTS` points.
@@ -1629,7 +1638,10 @@ def _both_readings(
                     value = eval(annotation.code, scope, None)
                 else:
                     value = annotation.given
-                python = _Outcome(_value_at(value, _Reading(dict(draw.context), draw.samples)))
+                # a term the rerun built, read at the draw, logs its sums with the rerun's
+                built = _Reading(dict(draw.context), draw.samples)
+                built.unsummed = unsummed
+                python = _Outcome(_value_at(value, built))
             except Exception as exc:  # noqa: BLE001 - what the annotation raises is its answer
                 python = _Outcome(error=exc)
     finally:

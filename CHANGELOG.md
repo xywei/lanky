@@ -29,8 +29,10 @@ worth the `tested` reading it rests on.
     written in the claim, in the helpers it calls and in what they read, and
     next to it (up to `WRITTEN` of them, none past `WRITTEN_MAX = 4096`, and
     for a value that sizes a domain, none past the size at which the claim's
-    nested domains hold about `SIZE_POINTS = 1024` points), so that a helper
-    misread only at `6`, or at a key `1000` of a table, is reached; then 32
+    nested domains hold about `SIZE_POINTS = 1024` points, a draw at which a
+    reading walks more than `WALK_POINTS = 32768` all the same being given up
+    as `unwalked`), so that a helper misread only at `6`, or at a key `1000`
+    of a table, is reached; then 32
     of the property tester's (`SAMPLES`), with definitional hypotheses
     satisfied by construction. A bounded quantifier is enumerated, and one
     over a sort runs over a sample of it, the written integers included, the

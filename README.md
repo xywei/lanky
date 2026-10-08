@@ -451,7 +451,8 @@ proved. The check is sampled, and that leaves these limits:
   each integer written in the claim or in a helper it calls and next to it, up
   to 4096 and, for a variable that sizes a domain, only up to a size at which
   the claim's nested domains hold about 1024 points, and 32 of the property
-  tester's.
+  tester's. A draw at which a reading would walk more than 32768 points,
+  `Fin[2 ** n]` at a written `63`, is given up.
 - A claim whose annotations cannot be run at a point keeps an `assumed`
   reading, and a proof of it reads `proved under faithful:name`, with the
   reason in a `DECLINED` line: a variable of a sort no value can be drawn of
