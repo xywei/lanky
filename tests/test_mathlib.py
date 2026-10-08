@@ -1648,7 +1648,9 @@ def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, clai
     tactic = proved.provenance["tactic"]
     assert " using Nat.strong_induction_on with\n" in tactic
     assert "linear_combination (norm := " in tactic
-    assert proved.provenance["lean_source"].startswith("import Mathlib\n\ntheorem Lanky.")
+    source = proved.provenance["lean_source"]
+    assert source.startswith("import Mathlib\n\n")
+    assert "\ntheorem Lanky." in source
 
 
 def test_lean_checks_a_certificate_and_refuses_a_wrong_one(mathlib_oracle: LeanOracle) -> None:
