@@ -146,14 +146,15 @@ jobs:
         run: uv run pytest -q
 
       # The row the README leads with, shown rather than claimed: the README
-      # has to have a `proved lean` row, and the check has to print a row that
+      # has to have a row proved by lean, worth the `tested` reading it rests
+      # on in the EFFECTIVE column (#91), and the check has to print a row that
       # starts with it. The README trims the statement column to fit and ends
       # the row in "...", so what is left of it is compared as a prefix.
       - name: Check the worked example, and the README's proved-lean row
         run: |
           set -euo pipefail
           uv run lanky check examples/gauss.py | tee ledger.txt
-          row=$(grep -m1 '^proved  lean ' README.md)
+          row=$(grep -m1 -E '^proved +(tested +)?lean ' README.md)
           prefix=${row%...}
           found=0
           while IFS= read -r line; do
@@ -264,13 +265,14 @@ jobs:
       - name: Test Mathlib mode
         run: uv run pytest -q tests/test_mathlib.py tests/test_sumpy_recurrence.py
 
-      # The row the README shows as `tested property-test` reads `proved lean`
-      # here, next to the scan: both rows of the table are proved.
+      # The row the README shows as `tested property-test` is proved by lean
+      # here, next to the scan: both claims of the table are proved, each worth
+      # the `tested` reading it rests on (#91).
       - name: Check the worked example with Mathlib
         run: |
           set -euo pipefail
           uv run lanky check examples/gauss.py | tee ledger.txt
-          proved=$(grep -c '^proved  lean ' ledger.txt)
+          proved=$(grep -cE '^proved +(tested +)?lean ' ledger.txt)
           if (( proved != 2 )); then
             echo "expected both rows proved by lean, found ${proved}" >&2
             exit 1
