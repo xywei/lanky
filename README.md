@@ -33,12 +33,14 @@ Three commands, all of them working today:
 $ python examples/gauss.py           # theorems run as property tests
 $ pytest examples/gauss.py           # the same theorems, collected as test items
 $ lanky check examples/gauss.py      # the ledger: every claim and who decided it
-STATUS  BY             WHERE        OWNER          STATEMENT
-------  -------------  -----------  -------------  --------------------------------------------
-tested  property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == ...
-proved  lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fi...
+STATUS  EFFECTIVE  BY             WHERE        OWNER          STATEMENT
+------  ---------  -------------  -----------  -------------  ---------------------------------
+tested  tested     property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fi...
+tested  tested     python         gauss.py:31  gauss          the term computes what the ann...
+proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat]...
+tested  tested     python         gauss.py:39  scan_monotone  the term computes what the ann...
 
-2 facts: 1 proved, 1 tested
+4 facts: 1 proved, 3 tested
 ```
 
 (Abridged: the statement column is trimmed here to fit the page, and this run
@@ -47,9 +49,17 @@ checks this table against what it prints.
 [docs/quickstart.md](https://github.com/xywei/lanky/blob/main/docs/quickstart.md)
 has the untrimmed table.)
 
-That second row is what the project is for. The same file, on a machine without
-Lean, reads `tested property-test` and exits 0 just the same: the status column
-says how much the claim is worth, and nothing else changes.
+The third row is what the project is for: `scan_monotone` is proved by Lean.
+Under each claim is its reading. lanky reads an annotation by running it on
+symbolic terms, and every oracle is handed the term that run builds, so a proof
+is a proof of the term. To check that the term is what was written, the
+annotations are run again as plain Python at drawn values and the term is
+evaluated at the same values: `tested python` says they agreed at every draw.
+The proof rests on that check, so the `EFFECTIVE` column says what it is worth,
+`tested`. The same file, on a machine without Lean, reads `tested
+property-test` and exits 0 just the same: the status column says how strongly
+each fact is established, and the `EFFECTIVE` column, there only when some fact
+is worth less than its status, what it is worth.
 
 ## What nothing else does
 
@@ -94,8 +104,8 @@ says how much the claim is worth, and nothing else changes.
 
 This is 0.1.0, the first release. The core works; the edges are sharp. Below
 is what works, what works in part and what does not work yet, and after it,
-under Known limits, a kind of claim Lean can prove although the annotation
-means something else: read that before you rely on a proof. CI runs the
+under Known limits, how far lanky checks that the claim Lean proves is the one
+the annotation makes: read that before you rely on a proof. CI runs the
 suite on every change, without Lean on Python 3.12 and 3.13 and with Lean
 v4.29.1, and holds the tables on this page and in the quickstart to what
 `lanky check` prints. Until 1.0 an interface a plugin uses can change in a
@@ -128,6 +138,22 @@ to match.
   provenance; no oracle is asked to establish it, and the property tester
   still looks for a counterexample, so an axiom copied down wrong is refuted
   (and one whose hypotheses nothing satisfies is caught as vacuous).
+- The reading of every claim is checked (#91). lanky reads an annotation by
+  running its Python on symbolic terms, and the oracles are handed the term
+  that run builds. Each theorem and axiom gets a second fact, of kind
+  `faithful` and statement `the term computes what the annotations compute`:
+  the annotations are run again as plain Python at drawn values, six draws of
+  small values and domain ends and then 32 of the property tester's, the term
+  is evaluated at the same values, and the two have to agree. A disagreement
+  refutes the reading, with the draw, the annotation as written and both
+  answers, and the claim is offered to no oracle and fails the check: a hash,
+  a text, `is`, an attribute or a comparison of types that answered from the
+  term object, in the annotation or in a helper or a library it calls, is
+  refuted at a point instead of proved. Every pass, decision and proof of a
+  claim rests on its reading, so a proof is worth `tested` in the `EFFECTIVE`
+  column, and `proved under faithful:name` where the reading could not be run
+  at a point, with the reason in a `DECLINED` line. The pytest plugin fails a
+  theorem whose reading is refuted.
 - Facts rest on facts. `@theorem(uses=[...])` names the theorems, axioms or
   fact ids a theorem rests on, and a plugin sets `Fact.rests_on` on the facts
   it builds. The ledger reads the graph: a row says what it is established
@@ -395,35 +421,39 @@ to match.
 ## Known limits
 
 An annotation is traced Python: lanky runs it on symbolic terms, and the claim
-is the term the run builds. An operation that goes through a term's overloads,
-an operator, a comparison, a quantifier, a family applied to an index, builds
-more of the term. One that answers from the term object instead gives a
-concrete answer while the annotation is read, the same at every value, and the
-term then says something other than what was written. lanky refuses the cases
-it can see: a term's hash, text or truth value asked for in the annotation's
-own code, an `if` statement in a function the annotation calls, a builtin of
-Python's at a variable. These it does not check yet:
+the oracles are handed is the term the run builds. An operation that goes
+through a term's overloads, an operator, a comparison, a quantifier, a family
+applied to an index, builds more of the term. One that answers from the term
+object instead gives a concrete answer while the annotation is read, the same
+at every value, and the term then says something other than what was written:
+`is` and a term's attributes
+([#88](https://github.com/xywei/lanky/issues/88)), a hash, a text or a truth
+value asked for inside a helper function or a library
+([#80](https://github.com/xywei/lanky/issues/80)), comparing or hashing the
+types ([#79](https://github.com/xywei/lanky/issues/79)). lanky refuses the
+cases it can see while it reads, a term's hash, text or truth value asked for
+in the annotation's own code, an `if` statement in a function the annotation
+calls, a builtin of Python's at a variable, and checks the rest by their
+results ([#91](https://github.com/xywei/lanky/issues/91)): each claim's
+`faithful` fact runs the annotations again as Python at drawn values and
+compares the term there, so `all((f(i) * 0 == 1) | (i is not 0) for i in
+Fin[n])`, whose term is `f(i)*0 == 1 or True`, is refuted at `n = 1` instead of
+proved. The check is sampled, and that leaves these limits:
 
-- `is`, and a term's attributes. `i is not 0` is `True` at every `i`, and
-  `i.name` is `"i"`, so `all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n])`,
-  false at `i = 0`, is proved by core Lean
-  ([#88](https://github.com/xywei/lanky/issues/88)).
-- A hash, a text or a truth value asked for inside a helper function or a
-  library rather than in the annotation itself. `{0: 1}.get(i, 0)` in a
-  function the annotation calls answers as if the key were absent, `0` at
-  every `i` ([#80](https://github.com/xywei/lanky/issues/80)).
-- Comparing or hashing the types. `Fin[n] != Fin[3]` compares the bounds as
-  structures and is `True` while the annotation is read, at `n = 3` too
-  ([#79](https://github.com/xywei/lanky/issues/79)).
-
-Each has a false claim that Lean proves. The fix is decided, and planned for
-0.2.0 ([#91](https://github.com/xywei/lanky/issues/91)): a check rather than
-more rules. Each claim gets a `faithful` fact, for which the annotation's
-Python is rerun at drawn concrete points and its term has to agree there;
-every decision and proof rests on that fact, and a disagreement refutes the
-reading. Until then, write a claim with the operators, quantifiers and sorts
-lanky provides, and read its statement (the ledger's `STATEMENT` column, or
-`.statement`): it is the claim the oracles were given.
+- A disagreement only at points no draw reaches is not seen. A bounded
+  quantifier is enumerated, and a quantifier over a sort runs over a sample of
+  about five of its values, the same on both sides; the variables take six
+  draws of small values and domain ends, and 32 of the property tester's.
+- A claim whose annotations cannot be run at a point keeps an `assumed`
+  reading, and a proof of it reads `proved under faithful:name`, with the
+  reason in a `DECLINED` line: a variable of a sort no value can be drawn of
+  (the pytential demonstration's boundaries), an annotation Python evaluated
+  when the function was defined, without `from __future__ import annotations`,
+  and one with no answer on both sides at any draw.
+- Where Python stops with no answer that lanky's three-valued reading settles,
+  a family applied outside its domain or a division by zero, the point is not
+  compared, and a truth value that differs where the term compared two
+  floating-point numbers that agree to `1e-9` is put down to rounding.
 
 ## Install
 

@@ -497,7 +497,8 @@ def test_with_mathlib_the_claim_for_every_order_is_proved_under_harmonic(
         ["decided (heuristic)", "decided (heuristic)", "cas"],
         ["proved under harmonic", "assumed", "lean"],
     ]
-    assert "4 facts: 1 assumed, 1 decided, 1 proved, 1 tested" in printed
+    # and harmonic's reading of its annotations, tested (#91)
+    assert "5 facts: 1 assumed, 1 decided, 1 proved, 2 tested" in printed
     # and that is the table the quickstart shows
     shown = _shown("LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py")
     printed_lines = [line.rstrip() for line in printed.splitlines()]

@@ -71,8 +71,11 @@ a number where its term has a value, with one exception: where Python stops
 at no answer, a family applied outside its domain, a division by zero, an
 elementary function outside its domain or an overflow, lanky's reading may
 settle the point three-valued, as a quantifier does at a point past one with
-no answer, so such a point is not compared (``open``). Two exceptions are no
-comparison either. A disagreement in a truth value at a draw where the term
+no answer, so such a point is not compared (``open``). Where both sides stop
+there for one reason, with the same exception, neither has a value, and they
+agree: ``n // 0 == 0`` is read faithfully, and what Lean's total division
+makes of it is the semantics gap :mod:`lanky.semantics` notes. Two other
+exceptions are no comparison. A disagreement in a truth value at a draw where the term
 compared two floating-point numbers that agree to :data:`TOLERANCE` is put
 down to rounding and not counted (``rounding``): Python's ``sum`` rounds as
 it adds, and the evaluator as pymbolic keeps the term, which can differ in
@@ -756,13 +759,18 @@ def _same(left: Any, right: Any) -> bool | None:
 def _judge(python: _Outcome, term: _Outcome, fragile: bool) -> str:
     """How the two readings of one annotation compare at one draw.
 
-    ``agreed``; ``differed``; ``open``, where Python stopped with no answer
-    that lanky's reading may settle (see :data:`_OPEN`); ``silent``, where both
-    raised; ``rounding``, a truth value that differs where the term compared
+    ``agreed``, the same value, or no value on either side for one reason
+    (one of :data:`_OPEN`, of one type); ``differed``; ``open``, where Python
+    stopped with no answer that lanky's reading may settle; ``silent``, where
+    both raised otherwise; ``rounding``, a truth value that differs where the term compared
     two floating-point numbers that agree to :data:`TOLERANCE`; or
     ``uncomparable``, a value that holds a term or that ``==`` cannot compare.
     """
     if python.error is not None and term.error is not None:
+        if isinstance(python.error, _OPEN) and type(python.error) is type(term.error):
+            # neither has a value here, for the one reason: a division by
+            # zero, say, or a family applied outside its domain
+            return "agreed"
         return "silent"
     if python.error is not None:
         return "open" if isinstance(python.error, _OPEN) else "differed"

@@ -666,3 +666,33 @@ def test_a_theorem_whose_reading_is_refuted_fails_under_pytest(
 
 
 # }}}
+
+
+def test_the_quickstart_shows_what_check_prints_for_a_misread_claim(tmp_path, capsys) -> None:
+    """The quickstart's ``misread.py`` block is a real run, with Lean and without.
+
+    The file is written from the quickstart's own snippet, after the imports
+    ``examples/gauss.py`` has, as the quickstart has a reader write it. No
+    oracle is asked about the claim, so the output is the same either way.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    doc = (root / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
+    marker = next(index for index, line in enumerate(doc) if "Put this in `misread.py`" in line)
+    start = doc.index("```python", marker) + 1
+    snippet = "\n".join(doc[start : doc.index("```", start)]) + "\n"
+    lines = (root / "examples" / "gauss.py").read_text(encoding="utf-8").splitlines(keepends=True)
+    head = next(index for index, line in enumerate(lines) if line.startswith("from __future__"))
+    end = next(index for index, line in enumerate(lines) if line.startswith("@theorem"))
+    path = tmp_path / "misread.py"
+    path.write_text("".join(lines[head:end]) + snippet, encoding="utf-8")
+    assert cli.main(["check", str(path)]) == 1
+    printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+    at = doc.index("$ uv run lanky check misread.py") + 1
+    shown = []
+    for line in doc[at:]:
+        if line.startswith(("$ ", "```")):
+            break
+        shown.append(line.rstrip())
+    assert printed == shown

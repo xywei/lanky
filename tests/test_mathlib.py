@@ -1549,7 +1549,9 @@ def test_the_quickstarts_mathlib_ledger_is_the_one_check_prints(
             break
         shown.append(line.rstrip())
     assert shown == printed
-    assert [line.split()[:2] for line in printed[2:4]] == [["proved", "lean"]] * 2
+    # each proof rests on its claim's reading, which the draws tested (#91)
+    assert [line.split()[:3] for line in printed[2:6:2]] == [["proved", "tested", "lean"]] * 2
+    assert [line.split()[:3] for line in printed[3:7:2]] == [["tested", "tested", "python"]] * 2
 
 
 def test_mathlibs_principal_branches_are_pythons_off_the_cut(

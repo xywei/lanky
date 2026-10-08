@@ -1895,10 +1895,24 @@ def _assert_abridged(readme: list[str], printed: list[str]) -> None:
         assert _abridges(shown, line, statement_at), (shown, line)
 
 
+#: The ``EFFECTIVE`` cells of the documented table, each with the two spaces
+#: after it: the header, the rule under it, and what every row is worth.
+_EFFECTIVE_CELLS = ("EFFECTIVE  ", "---------  ", "tested     ")
+
+
 def _read_as_tested(line: str) -> str:
-    """A line of the documented table as a machine without Lean prints it."""
+    """A line of the documented table as a machine without Lean prints it.
+
+    With Lean the proof of ``scan_monotone`` rests on its reading, which the
+    draws tested (#91), so it is worth ``tested`` and the table has an
+    ``EFFECTIVE`` column after the status. Without Lean nothing is worth less
+    than its own status, and the column is not there; it is the eleven
+    characters after the status column's eight, in every row of the table.
+    """
+    if line[8:19] in _EFFECTIVE_CELLS:
+        line = line[:8] + line[19:]
     return line.replace(f"proved  {'lean':13}", f"tested  {'property-test':13}").replace(
-        "2 facts: 1 proved, 1 tested", "2 facts: 2 tested"
+        "4 facts: 1 proved, 3 tested", "4 facts: 4 tested"
     )
 
 
@@ -1929,11 +1943,13 @@ def test_an_abridged_row_keeps_every_column_but_the_statement() -> None:
 def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) -> None:
     """On a machine without Lean the README's ``proved lean`` row reads ``tested``.
 
-    That is the README's other claim about the table: the status column changes
-    and nothing else does, the exit code included. The columns keep their
-    widths, because the property tester decided the other row already. Both
-    documents are held to it, so the README's rows are checked here too and not
-    only where Lean is installed.
+    That is the README's other claim about the table: the status column changes,
+    and the ``EFFECTIVE`` column, which says that the proof is worth the
+    ``tested`` reading it rests on, is not needed, and nothing else changes,
+    the exit code included. The other columns keep their widths, because the
+    property tester decided the other row already. Both documents are held to
+    it, so the README's rows are checked here too and not only where Lean is
+    installed.
     """
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     printed = _check_gauss(capsys)
@@ -2840,7 +2856,10 @@ def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, 
     assert _printed_after("docs/quickstart.md", CHECK_GAUSS) == printed
     readme = _printed_after("README.md", "lanky check examples/gauss.py")
     _assert_abridged(readme, printed)
-    assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
+    # the proof, worth the reading it rests on, which the draws tested (#91)
+    assert any(
+        line.startswith("proved  tested     lean ") and "scan_monotone" in line for line in readme
+    )
 
 
 def test_the_quickstart_gap_transcripts_are_what_check_prints(
@@ -2855,7 +2874,7 @@ def test_the_quickstart_gap_transcripts_are_what_check_prints(
     """
     truncated, div_zero = _gap_rows(tmp_path, capsys)
     assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
-    assert div_zero[2].split()[:4] == ["proved", "lean", "gap.py:7", "div_zero"]
+    assert div_zero[2].split()[:5] == ["proved", "tested", "lean", "gap.py:7", "div_zero"]
     semantics = _block_from("docs/quickstart.md", "SEMANTICS div_zero")
     assert semantics[0] in div_zero
     at = div_zero.index(semantics[0])
@@ -3175,7 +3194,8 @@ def test_lean_shows_a_vacuous_claim_vacuous(lean_oracle: LeanOracle, tmp_path, c
     assert fact.provenance["vacuous_by"] == "lean"
     assert ": False := by" in fact.provenance["vacuous_evidence"]["lean_source"]
     assert cli.main(["check", str(path)]) == 1
-    assert "proved (vacuous)  lean" in capsys.readouterr().out
+    # worth the reading it rests on, which the draws tested (#91)
+    assert "proved (vacuous)  tested     lean" in capsys.readouterr().out
 
 
 _CLOSED = (
@@ -3336,7 +3356,7 @@ def test_lean_shows_a_goal_guard_empty_and_the_claim_vacuous(
     assert "p < q → p > q → False := by" in source
     assert cli.main(["check", str(path)]) == 1
     printed = capsys.readouterr().out
-    assert "proved (vacuous)  lean" in printed
+    assert "proved (vacuous)  tested     lean" in printed
     assert "VACUOUS flipped at flipped.py:7" in printed
 
 
@@ -3422,7 +3442,7 @@ def test_lean_shows_the_quickstart_flipped_goal_guard_vacuous(
     """What the quickstart says Lean does with the flipped guard: vacuous, and exit 1."""
     printed = _check_flipped_gauss(tmp_path / "flipped", capsys, 1)
     row = next(line for line in printed if "scan_monotone" in line and "gauss.py:39" in line)
-    assert row.startswith("proved (vacuous)  lean")
+    assert row.startswith("proved (vacuous)  tested     lean")
     assert any(line.startswith("VACUOUS scan_monotone at gauss.py:39") for line in printed)
     assert not any(line.startswith("WARNING") for line in printed)
 
