@@ -330,6 +330,26 @@ def _make_unary(name: str) -> Callable[..., Any]:
     return operation
 
 
+def _make_bitwise(name: str) -> Callable[..., Any]:
+    """Wrap one of pymbolic's ``^``, ``<<`` and ``>>`` so that it answers a lanky node.
+
+    They are integer arithmetic, and only an integer is an operand of one, so
+    nothing but pymbolic's own operator builds the node.
+    """
+    base = getattr(prim.ExpressionNode, f"__{name}__")
+
+    def operation(self: Any, other: Any) -> Any:
+        result = base(self, other)
+        if result is NotImplemented:
+            return NotImplemented
+        return lift(result)
+
+    operation.__name__ = f"__{name}__"
+    operation.__qualname__ = f"SymbolicMixin.__{name}__"
+    operation.__doc__ = f"Build the lanky counterpart of pymbolic's ``__{name}__``."
+    return operation
+
+
 class SymbolicMixin:
     """Operator overloading shared by every lanky term.
 
@@ -412,9 +432,11 @@ for _name in (
     "add", "radd", "sub", "rsub", "mul", "rmul",
     "truediv", "rtruediv", "floordiv", "rfloordiv",
     "mod", "rmod", "pow", "rpow",
-    "xor", "rxor", "lshift", "rlshift", "rshift", "rrshift",
 ):
     setattr(SymbolicMixin, f"__{_name}__", _make_binary(_name))
+
+for _name in ("xor", "rxor", "lshift", "rlshift", "rshift", "rrshift"):
+    setattr(SymbolicMixin, f"__{_name}__", _make_bitwise(_name))
 
 for _name in ("neg", "pos"):
     setattr(SymbolicMixin, f"__{_name}__", _make_unary(_name))
