@@ -787,6 +787,36 @@ def test_the_if_clauses_are_one_conjunction_in_either_order(tmp_path) -> None:
         assert reading.status is Status.TESTED, (owner, reading.provenance)
 
 
+def test_a_helper_reads_the_module_as_it_was_when_the_claim_was_read(tmp_path) -> None:
+    """A helper the annotation calls sees the globals of the module as the reading saw them.
+
+    The rerun runs in a copy of the module's globals taken when the claim was
+    read, and a function of the module read the live module all the same. A
+    ``K`` rebound later made the rerun answer otherwise than the reading, and
+    refuted a faithful reading; a table rebound later to one without the key
+    the reading missed made the rerun agree with the misread term, and hid
+    the misreading. The module's functions are bound to the copy.
+    """
+    path = _write(
+        tmp_path,
+        "\n\nK = 0\nTABLE = {0: 1}\n\n\n"
+        "def k():\n    return K\n\n\n"
+        "def table(i):\n    return TABLE.get(i, 0)\n\n\n"
+        "@theorem\n"
+        "def constant(n: Nat) -> n * 0 == k():\n"
+        '    """Read with K = 0, which the module rebinds after it."""\n\n\n'
+        "@theorem\n"
+        "def looked_up(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):\n"
+        '    """Misread at i = 0, where the table read then gives 1."""\n\n\n'
+        "K = 1\nTABLE = {}\n",
+    )
+    pairs = _pairs(check_path(path))
+    assert pairs["constant"][1].status is Status.TESTED, pairs["constant"][1].provenance
+    looked_up = pairs["looked_up"][1]
+    assert looked_up.status is Status.REFUTED, looked_up.provenance
+    assert looked_up.provenance["counterexample"] == {"n": 1, "f": [1]}
+
+
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
     """The tester cannot tabulate ``Fn[Nat, Nat]``; the check draws it point by point.
 

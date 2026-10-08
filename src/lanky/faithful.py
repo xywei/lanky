@@ -20,10 +20,12 @@ than from its value shows up as a point where they do not.
 
 *The rerun.* An annotation is compiled from its source again and evaluated as
 Python evaluates it, in a copy of the function's globals as they were when
-lanky read it (:attr:`lanky.theory.Theorem.namespace`), so a helper function
-the annotation calls, a library and a dict lookup run on numbers, as in the
-file run as a program. A parameter that is a variable is its drawn value, a
-family a :class:`~lanky.testing.Table` or a family drawn as it is applied
+lanky read it (:attr:`lanky.theory.Theorem.namespace`), with the module's own
+functions bound to that copy (:func:`_snapshot`), so a helper function the
+annotation calls, a library and a dict lookup run on numbers, as in the file
+run as a program, and a helper reads what it read when the claim was read.
+A parameter that is a variable is its drawn value, a family a
+:class:`~lanky.testing.Table` or a family drawn as it is applied
 (:class:`DrawnFamily`), both callable, and a parameter that is a hypothesis is
 the variable lanky's reading makes of it. ``all``, ``any``, ``sum`` and
 ``abs`` are Python's, which is what lanky's are at concrete values, whatever
@@ -598,6 +600,36 @@ def _scope(namespace: dict[str, Any]) -> dict[str, Any]:
     for name in BUILTIN_OVERRIDES:
         scope[name] = getattr(builtins, name)
     return scope
+
+
+def _snapshot(theorem: Any) -> dict[str, Any]:
+    """The module's globals as they were when lanky read the claim, its helpers bound to them.
+
+    :attr:`lanky.theory.Theorem.namespace` is a copy of the module's globals
+    taken then, but a function defined in the module reads the module's
+    globals as they are when it is called: a helper that reads ``K``, with
+    ``K = 0`` when the claim was read and ``K = 1`` later in the module, would
+    answer at ``1`` in the rerun where the reading saw ``0``, which refutes a
+    reading that was faithful, and a table a helper reads, rebound to one
+    without the key the reading missed, would hide a misreading. So each
+    function of the module is copied, its globals the copy here, and the
+    copy is what the annotation and the other helpers call. A function
+    defined in another module, or behind a wrapper such as
+    :func:`functools.lru_cache`, reads its module's globals as they are.
+    """
+    namespace = dict(theorem.namespace)
+    live = getattr(theorem.fn, "__globals__", None)
+    for name, value in list(namespace.items()):
+        if isinstance(value, types.FunctionType) and value.__globals__ is live:
+            copy = types.FunctionType(
+                value.__code__, namespace, value.__name__, value.__defaults__, value.__closure__
+            )
+            copy.__kwdefaults__ = value.__kwdefaults__
+            copy.__dict__.update(value.__dict__)
+            copy.__qualname__ = value.__qualname__
+            copy.__module__ = value.__module__
+            namespace[name] = copy
+    return namespace
 
 
 def _thunk(node: ast.expr) -> ast.Lambda:
@@ -1455,8 +1487,11 @@ def _written(codes: Sequence[Any], namespace: dict[str, Any]) -> tuple[int, ...]
     return tuple(kept[:WRITTEN])
 
 
-def _extent(theorem: Any, codes: Sequence[Any]) -> _Extent:
+def _extent(theorem: Any, codes: Sequence[Any], namespace: dict[str, Any]) -> _Extent:
     """What the claim's draws take besides the corners (see :class:`_Extent`).
+
+    ``namespace`` is the module's globals as the claim was read
+    (:func:`_snapshot`), where the integers it writes are read.
 
     A name sizes a domain where it is free in the bound of a ``Fin`` the claim
     holds, in a variable's sort or in a quantifier's or a sum's domain. A
@@ -1501,7 +1536,7 @@ def _extent(theorem: Any, codes: Sequence[Any]) -> _Extent:
         default=0,
     )
     largest = max(MAX_NAT + 1, int(SIZE_POINTS ** (1 / depth))) if depth else SIZE_POINTS
-    return _Extent(_written(codes, theorem.namespace), frozenset(sizes), largest)
+    return _Extent(_written(codes, namespace), frozenset(sizes), largest)
 
 
 # }}}
@@ -1601,8 +1636,8 @@ def _compare(
     """Each annotation, how its two readings compare at ``draw``, and the two outcomes.
 
     ``namespace`` is the function's globals as they were when lanky read the
-    annotations (:attr:`lanky.theory.Theorem.namespace`), and the rerun runs
-    in it (:func:`_scope`).
+    annotations, its helpers bound to them (:func:`_snapshot`), and the rerun
+    runs in it (:func:`_scope`).
     """
     scope = _scope(namespace)
     for name in parameters:
@@ -1805,14 +1840,16 @@ def faithful_fact(theorem: Any) -> Fact:
         if isinstance(annotations, str):
             return declined(annotations)
         parameters = list(inspect.signature(theorem.fn).parameters)
-        extent = _extent(theorem, [a.code for a in annotations if a.code is not None])
+        namespace = _snapshot(theorem)
+        codes = [annotation.code for annotation in annotations if annotation.code is not None]
+        extent = _extent(theorem, codes, namespace)
         for draw in _draws(theorem.variables, hypotheses, extent):
             if isinstance(draw, str):
                 tally.skipped.append(draw)
                 continue
             tally.draws += 1
             for annotation, verdict, python, term in _compare(
-                theorem.namespace, parameters, annotations, draw
+                namespace, parameters, annotations, draw
             ):
                 if verdict == "differed":
                     return _refuted(fact, annotation, draw, python, term)

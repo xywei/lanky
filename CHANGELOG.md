@@ -21,8 +21,9 @@ worth the `tested` reading it rests on.
   builds. `lanky.faithful.faithful_fact(theorem)` checks that reading by its
   results: each annotation, the goal, each hypothesis and each variable's
   sort, is run again as plain Python at drawn values, in the function's
-  globals as they were when it was read (`Theorem.namespace`), and the term
-  is evaluated at the same values, and the two have to agree.
+  globals as they were when it was read (`Theorem.namespace`), with the
+  module's own functions bound to them, so that a helper reads what it read
+  then; the term is evaluated at the same values, and the two have to agree.
   - The draws: six of small values and domain ends first (`CORNERS`, every
     natural the tester draws and a domain's first and last points, smallest
     first, so a refutation names a small point); then one at each integer

@@ -159,8 +159,9 @@ class Theorem:
             is what the theorem is worth, not a hypothesis for its proof.
         namespace: The function's globals as they were when the annotations
             were read, a shallow copy, which the faithfulness check runs them
-            in again (:meth:`faithful_fact`): a module that binds a name the
-            annotation reads to another value later, as a factory's
+            in again (:meth:`faithful_fact`), with the module's own functions
+            bound to it: a module that binds a name the annotation, or a
+            helper it calls, reads to another value later, as a factory's
             ``K = 0`` after a first claim read ``K = 1``, does not change what
             the annotation said.
 
