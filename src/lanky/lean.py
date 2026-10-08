@@ -701,9 +701,9 @@ def _integral(value: Any) -> Any:
     negative summand read back as a subtraction. The base is the one that
     matters: without its ascription ``1 - Fraction(2, 1) ** n >= 0`` printed
     over ``Nat``, where Lean proves it with truncated subtraction and Python
-    refutes it at ``n = 1``. pymbolic's operators refuse a ``Fraction``
-    operand, so such a literal comes only from a term built node by node, by
-    hand or by a plugin.
+    refutes it at ``n = 1``. A term's operators take a ``Fraction`` operand
+    as they take an ``int`` (#76), so ``Fraction(2, 1) ** n`` written in an
+    annotation holds one, as a term built node by node can.
     """
     if isinstance(value, Fraction) and value.denominator == 1:
         return int(value)

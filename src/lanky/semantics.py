@@ -181,9 +181,8 @@ def _domain_sorts(node: Any) -> tuple[str, ...]:
 def _is_nonzero_literal(expr: Any) -> bool:
     """Whether this divisor is an integer literal that is plainly not zero.
 
-    An integral ``Fraction``, which only a term built node by node carries, is
-    the integer it equals, as the Lean printer reads it: ``n // Fraction(2,
-    1)`` prints as ``n / 2``.
+    An integral ``Fraction`` is the integer it equals, as the Lean printer
+    reads it: ``n // Fraction(2, 1)`` prints as ``n / 2``.
     """
     if isinstance(expr, Fraction) and expr.denominator == 1:
         expr = int(expr)
