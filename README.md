@@ -465,7 +465,8 @@ proved. The check is sampled, and that leaves these limits:
   table(i)` at `i = 0`, `table(0)`. A quantifier, `&` and `|` pass over such a
   point or operand on both sides, and a sum with no value is compared point by
   point, so what comes after it there is compared; what Lean's total division
-  makes of the point itself is the semantics gap lanky already notes.
+  makes of the point itself is the semantics gap lanky already notes
+  ([#99](https://github.com/xywei/lanky/issues/99)).
 - The rerun runs inside lanky, as the reading does, so a helper that answers
   otherwise when it finds lanky on its caller's stack answers alike in both.
   The check is against misreadings, not against code written to evade it.
