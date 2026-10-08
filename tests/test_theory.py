@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import functools
+import re
+import threading
+
 import pytest
 
 from lanky import axiom, theorem
@@ -9,7 +13,7 @@ from lanky.ledger import Fact, Status
 from lanky.oracles.test import TestOracle
 from lanky.plugins import registry
 from lanky.prelude import Fin, Fn, Int, Nat
-from lanky.terms import Var
+from lanky.terms import Var, evaluate_annotations
 from lanky.theory import Axiom, Theorem
 
 
@@ -408,3 +412,280 @@ def test_a_builtin_named_inside_an_annotation_is_refused() -> None:
         """True: round(0.4) is 0, and min is the family."""
 
     assert concrete.report().ok
+
+
+def test_a_term_is_no_key_of_a_dict_or_a_set_in_an_annotation() -> None:
+    """#73: a lookup keyed by a term answered from its hash, as if the key were absent.
+
+    A dict or a set finds a key by its hash before it compares anything, and
+    a term's hash is its structure's, so ``{0: 1}.get(i, 0)`` was ``0``
+    while the annotation was read, and the statement became ``f(i)*0 ==
+    0``, which Lean proved with ``omega``, false at ``i = 0``. ``i in {0, 1}``
+    was ``False`` the same way, and nothing asked a term for a truth value
+    lanky could refuse. A term is unhashable to the annotation's own code
+    now, as a list is, and the theorem is refused where it is written.
+    """
+    refused = r"i was hashed by the annotation, as a dict or a set lookup or display"
+
+    def looked_up(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {0: 1}.get(i, 0) for i in Fin[n]
+    ):
+        """False in Python at i = 0, where the lookup gives 1."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(looked_up)
+
+    def member(n: Nat) -> all(i in {0, 1} for i in Fin[n]):
+        """False wherever n > 2; read as False everywhere."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(member)
+
+    def displayed(n: Nat) -> all({i: 1}[0] == 1 for i in Fin[n]):
+        """A dict display keyed by a term."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(displayed)
+
+    def subscripted(n: Nat) -> all({0: 1}[i] == 1 for i in Fin[n]):
+        """This one raised KeyError, and is refused with the reason now."""
+
+    with pytest.raises(TypeError, match=refused):
+        theorem(subscripted)
+
+    def quantified(n: Nat) -> {all(i >= 0 for i in Fin[n]): 1}.get(True, 0) == 1:
+        """A quantifier as a key, whose hash pymbolic generates."""
+
+    with pytest.raises(TypeError, match=r"forall i in Fin\(n\)\. i >= 0 was hashed"):
+        theorem(quantified)
+
+    # concrete keys, and a term as a value, are no business of the hash
+    @theorem
+    def concrete(n: Nat) -> {0: n, 1: 1}.get(0) == n:
+        """A lookup by a concrete key."""
+
+    assert concrete.statement == "n : Nat |- n == n"
+    # outside an annotation a term hashes as pymbolic's node does
+    x = Var("x")
+    assert hash(x) == hash(Var("x"))
+    assert {x: 1}[x] == 1
+
+
+def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
+    """#73: a builtin called by name in an annotation hashed a term in lanky's frame.
+
+    A builtin an annotation names runs in :class:`lanky.terms.BuiltinName`,
+    so a hash it asked for was asked in lanky's frame and not refused: ``set(i
+    for k in range(1))`` held ``i``, and ``0 not in`` it read ``True``;
+    ``dict((i, 1) for k in range(1)).get(0, 0)`` read ``0``; and ``max`` with
+    a key that looks ``i`` up read as if ``i`` were never ``0``. Lean proved
+    each statement, and each is false at ``i = 0``. A hash a builtin asks for
+    is refused as the annotation's own is.
+    """
+
+    def set_of(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        (f(i) * 0 == 1) | (0 not in set(i for k in range(1))) for i in Fin[n]
+    ):
+        """False at i = 0, where the set holds 0."""
+
+    with pytest.raises(TypeError, match=r"Python's set raised .*i was hashed by the annotation"):
+        theorem(set_of)
+
+    def dict_of(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == dict((i, 1) for k in range(1)).get(0, 0) for i in Fin[n]
+    ):
+        """False at i = 0, where the lookup gives 1."""
+
+    with pytest.raises(TypeError, match=r"Python's dict raised .*i was hashed by the annotation"):
+        theorem(dict_of)
+
+    def keyed(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + max([0, 1], key=functools.partial({0: 5}.get, i)) == 1 for i in Fin[n]
+    ):
+        """False at i = 0, where both keys are 5 and max gives 0."""
+
+    with pytest.raises(TypeError, match=r"Python's max raised .*i was hashed by the annotation"):
+        theorem(keyed)
+
+    def ordered(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + sorted([1, 0], key=functools.partial({0: 5}.get, i))[0] == 0 for i in Fin[n]
+    ):
+        """False at i = 0, where both keys are 5 and sorted keeps 1 first."""
+
+    with pytest.raises(TypeError, match=r"Python's sorted raised .*i was hashed by the"):
+        theorem(ordered)
+
+    # at concrete values a builtin is Python's, a generator and a key included
+    @theorem
+    def concrete(n: Nat) -> len(set(k % 2 for k in range(4))) + max(
+        [0, 1, 2], key=functools.partial({0: 5}.get, 0)
+    ) + n >= 2:
+        """True: two residues, and every key is 5, so max gives the first, 0."""
+
+    assert concrete.statement == "n : Nat |- 2 + n >= 2"
+
+
+def test_a_term_is_no_text_in_an_annotation() -> None:
+    """A term made into text in an annotation answered with its name, whatever its value.
+
+    An f-string, ``str.format`` or a ``%`` format asked a term for its text,
+    which is what it is written as: ``f"{i}"`` was ``"i"`` while the
+    annotation was read, so ``{"0": 1}.get(f"{i}", 0)`` was ``0`` and
+    ``len(f"{i}")`` was ``1``. Lean proved the statements built on them, false
+    at ``i = 0`` and at ``i = 10``, and nothing asked a term for a truth value
+    lanky could refuse. A term's text is refused to the annotation's own code
+    now, as its hash is (#73).
+    """
+    refused = r"i was made into text by the annotation, as an f-string"
+
+    def formatted(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get(f"{i}", 0) for i in Fin[n]
+    ):
+        """False at i = 0, where the lookup gives 1."""
+
+    def counted(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 + len(f"{i}") == 1 for i in Fin[n]):
+        """False at i = 10, which has two digits."""
+
+    def converted(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get(f"{i!s}", 0) + {"0": 1}.get(f"{i!r}", 0) for i in Fin[n]
+    ):
+        """False at i = 0."""
+
+    def percent(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get("%s" % i, 0)  # noqa: UP031 - the form under test
+        for i in Fin[n]
+    ):
+        """False at i = 0."""
+
+    def formatted_by_method(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 == {"0": 1}.get("{}".format(i), 0)  # noqa: UP032 - the form under test
+        for i in Fin[n]
+    ):
+        """False at i = 0."""
+
+    def keyed(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + max([0, 1], key=functools.partial("{}{}".format, i)) == 1 for i in Fin[n]
+    ):
+        """A key function a builtin calls, whose text of i sorts after its value's."""
+
+    for claim in (formatted, counted, converted, percent, formatted_by_method):
+        with pytest.raises(TypeError, match=refused):
+            theorem(claim)
+    with pytest.raises(TypeError, match=r"Python's max raised .*i was made into text"):
+        theorem(keyed)
+
+    # concrete values are Python's, and a term prints as before outside one
+    @theorem
+    def concrete(n: Nat) -> len(f"{12}") + len("%s" % 3) + n >= 3:  # noqa: UP031
+        """True: two digits and one."""
+
+    assert concrete.statement == "n : Nat |- 3 + n >= 3"
+    x = Var("x")
+    assert (f"{x}", f"{x!r}", "%s" % x, str(x)) == ("x", "Var('x')", "x", "x")  # noqa: UP031
+
+
+def test_a_number_term_has_no_truth_value_in_an_annotation() -> None:
+    """The truth value of a term that is a number was pymbolic's, the same at every value.
+
+    Python reads a number as true where it is not zero, and pymbolic answered
+    for a term from its structure: ``i`` was true and ``i*0`` false. ``1 if i
+    else 0`` was ``1``, ``i and True`` was ``True`` and ``(i - i) or 5`` was
+    ``i - i``, and Lean proved the statements built on them, each false at ``i
+    = 0``. A proposition's truth value was refused there already; a number's
+    is refused now in the annotation's own code, an ``if`` clause included.
+    """
+    from lanky.terms import SymbolicBoolError
+
+    def conditional(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + (1 if i else 0) == 1 for i in Fin[n]
+    ):
+        """False at i = 0, where the conditional gives 0."""
+
+    def conjoined(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        (f(i) * 0 == 1) | (i and True) for i in Fin[n]
+    ):
+        """False at i = 0, where i and True is 0."""
+
+    def disjoined(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        f(i) * 0 + ((i - i) or 5) == 0 for i in Fin[n]
+    ):
+        """False everywhere, where (i - i) or 5 is 5."""
+
+    def negated(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+        (f(i) * 0 == 0) & (not (i * 0)) for i in Fin[n]
+    ):
+        """True as written, since i*0 is 0, and refused all the same, as a number's truth is."""
+
+    def filtered(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) >= 1 for i in Fin[n] if i):
+        """An if clause that is a number, which no guard was recorded for."""
+
+    for claim, shown in (
+        (conditional, "i"),
+        (conjoined, "i"),
+        (disjoined, "i - i"),
+        (negated, "i*0"),
+        (filtered, "i"),
+    ):
+        with pytest.raises(
+            SymbolicBoolError,
+            match=rf"the truth value of {re.escape(shown)} was asked for by the annotation",
+        ):
+            theorem(claim)
+
+    # concrete values are Python's, and pymbolic answers outside an annotation
+    @theorem
+    def concrete(n: Nat) -> (1 if 3 else 0) + (0 or n) >= n:
+        """True: 3 is true, and 0 or n is n."""
+
+    assert concrete.statement == "n : Nat |- 1 + n >= n"
+    x = Var("x")
+    assert bool(x) and bool(x + 1)
+
+
+def test_a_thread_reading_an_annotation_unmarks_only_its_own() -> None:
+    """#73: the annotation being read is each thread's own.
+
+    The code of the annotations being read was one list for the process, and
+    reading one pushed its code and popped the last. A thread that began
+    reading before another and finished first popped the other's code, and a
+    dict lookup keyed by a term in the other's annotation then answered from
+    the hash. Here the first annotation is read in a thread and held until the
+    second one, read here, has begun; the first then finishes, and the second
+    looks ``n`` up in a dict, which is refused.
+    """
+    first_in, second_in, first_out = threading.Event(), threading.Event(), threading.Event()
+
+    def hold_first() -> int:
+        first_in.set()
+        assert second_in.wait(30)
+        return 0
+
+    def hold_second() -> int:
+        second_in.set()
+        assert first_out.wait(30)
+        return 0
+
+    namespace: dict = {"hold_first": hold_first, "hold_second": hold_second}
+    source = (
+        "from __future__ import annotations\n"
+        "def first() -> hold_first():\n    pass\n"
+        "def second() -> hold_second() + {0: 1}.get(n, 0):\n    pass\n"
+    )
+    exec(compile(source, "<threads>", "exec"), namespace)
+
+    def read_first() -> None:
+        try:
+            evaluate_annotations(namespace["first"])
+        finally:
+            first_out.set()
+
+    thread = threading.Thread(target=read_first)
+    thread.start()
+    try:
+        assert first_in.wait(30)
+        with pytest.raises(TypeError, match="n was hashed by the annotation"):
+            evaluate_annotations(namespace["second"])
+    finally:
+        second_in.set()
+        thread.join(30)
+    assert not thread.is_alive()

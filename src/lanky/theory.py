@@ -309,7 +309,13 @@ class Theorem:
     # {{{ property testing
 
     def report(self, n: int = 200, seed: int = 0) -> TestReport:
-        """Sample the statement and report what the draws found."""
+        """Sample the statement and report what the draws found.
+
+        Raises:
+            lanky.testing.OpenStatement: If the statement mentions a name
+                nothing in it binds, a misspelt parameter or sort, which no
+                draw gives a value.
+        """
         return check(self.variables, [p for _, p in self.hypotheses], self.goal, n, seed)
 
     def test(self, n: int = 200, seed: int = 0) -> tuple[bool, dict | None]:
@@ -318,6 +324,10 @@ class Theorem:
         A pass here is evidence, not proof, and a pass over zero valid draws is
         not even evidence; :meth:`report` says how many draws the hypotheses
         accepted.
+
+        Raises:
+            lanky.testing.OpenStatement: As :meth:`report` does, for a
+                statement that mentions a name nothing in it binds.
         """
         report = self.report(n, seed)
         return report.ok, report.counterexample
