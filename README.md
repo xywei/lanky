@@ -400,9 +400,9 @@ an operator, a comparison, a quantifier, a family applied to an index, builds
 more of the term. One that answers from the term object instead gives a
 concrete answer while the annotation is read, the same at every value, and the
 term then says something other than what was written. lanky refuses the cases
-it can see in the annotation's own code (a term's hash, text or truth value,
-an `if` statement, a builtin of Python's at a variable). These it does not
-check yet:
+it can see: a term's hash, text or truth value asked for in the annotation's
+own code, an `if` statement in a function the annotation calls, a builtin of
+Python's at a variable. These it does not check yet:
 
 - `is`, and a term's attributes. `i is not 0` is `True` at every `i`, and
   `i.name` is `"i"`, so `all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n])`,
