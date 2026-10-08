@@ -44,7 +44,8 @@ proved  lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat
 (Abridged: the statement column is trimmed here to fit the page, and this run
 is on a machine with the `lean` extra installed. CI runs it on one too, and
 checks this table against what it prints.
-[docs/quickstart.md](docs/quickstart.md) has the untrimmed table.)
+[docs/quickstart.md](https://github.com/xywei/lanky/blob/main/docs/quickstart.md)
+has the untrimmed table.)
 
 That second row is what the project is for. The same file, on a machine without
 Lean, reads `tested property-test` and exits 0 just the same: the status column
@@ -91,10 +92,15 @@ says how much the claim is worth, and nothing else changes.
 
 ## Status
 
-This is `0.1.0.dev1`, a development release. The core works; the edges are
-sharp. The version moves to the next `0.1.0.devN` whenever an interface loopty
-uses changes, and loopty raises its floor to match; in between, loopty follows
-lanky's `main`.
+This is 0.1.0, the first release. The core works; the edges are sharp. Below
+is what works, what works in part and what does not work yet, and after it,
+under Known limits, a kind of claim Lean can prove although the annotation
+means something else: read that before you rely on a proof. CI runs the
+suite on every change, without Lean on Python 3.12 and 3.13 and with Lean
+v4.29.1, and holds the tables on this page and in the quickstart to what
+`lanky check` prints. Until 1.0 an interface a plugin uses can change in a
+minor release; the CHANGELOG says when one does, and loopty raises its floor
+to match.
 
 **Works.**
 
@@ -262,8 +268,9 @@ lanky's `main`.
   ladder goes on to `norm_num`, `positivity`, `ring`, `field_simp`,
   `linarith` and `nlinarith`, and to an induction for a sum whose bound a
   natural parameter sets, so Gauss's sum in `examples/gauss.py` reads
-  `proved lean`. With the variable unset, the oracle
-  is the core one, exactly. [docs/quickstart.md](docs/quickstart.md#prove-it-with-mathlib)
+  `proved lean`. With the variable unset, the oracle is the core one,
+  exactly.
+  [docs/quickstart.md](https://github.com/xywei/lanky/blob/main/docs/quickstart.md#prove-it-with-mathlib)
   walks through it.
 - Induction over families, in Mathlib mode: a claim about every order, a
   universal over naturals whose body is an equation between applications of
@@ -286,9 +293,7 @@ lanky's `main`.
   assignment and rejection-samples everything else, so an awkward hypothesis can
   end with no valid draws. The fact is then `ASSUMED`, never falsely `TESTED`.
 - `min` and `max` of a variable have no term yet (#66), so an annotation that
-  applies one to a variable is refused. A statement that mentions a name
-  nothing in it binds, a misspelt parameter say, reads `assumed`, and nothing
-  under the table says why yet (#67).
+  applies one to a variable is refused.
 - Division by zero is the one place the readings part. Lean's division is
   total, so `n // 0 == 0` is a theorem there and a `ZeroDivisionError` in
   Python; the fact carries a note, the ledger says what the sampled reading
@@ -386,22 +391,54 @@ lanky's `main`.
   a lemma by name falls through to the tester (`use_tactic` pins a script).
 - A proof scripting surface: today a proof is a tactic ladder lanky drives, not a
   Python program over a live goal.
-- Anything on PyPI above the 0.0.1 placeholder.
+
+## Known limits
+
+An annotation is traced Python: lanky runs it on symbolic terms, and the claim
+is the term the run builds. An operation that goes through a term's overloads,
+an operator, a comparison, a quantifier, a family applied to an index, builds
+more of the term. One that answers from the term object instead gives a
+concrete answer while the annotation is read, the same at every value, and the
+term then says something other than what was written. lanky refuses the cases
+it can see in the annotation's own code (a term's hash, text or truth value,
+an `if` statement, a builtin of Python's at a variable). These it does not
+check yet:
+
+- `is`, and a term's attributes. `i is not 0` is `True` at every `i`, and
+  `i.name` is `"i"`, so `all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n])`,
+  false at `i = 0`, is proved by core Lean
+  ([#88](https://github.com/xywei/lanky/issues/88)).
+- A hash, a text or a truth value asked for inside a helper function or a
+  library rather than in the annotation itself. `{0: 1}.get(i, 0)` in a
+  function the annotation calls answers as if the key were absent, `0` at
+  every `i` ([#80](https://github.com/xywei/lanky/issues/80)).
+- Comparing or hashing the types. `Fin[n] != Fin[3]` compares the bounds as
+  structures and is `True` while the annotation is read, at `n = 3` too
+  ([#79](https://github.com/xywei/lanky/issues/79)).
+
+Each has a false claim that Lean proves. The fix is decided, and planned for
+0.2.0 ([#91](https://github.com/xywei/lanky/issues/91)): a check rather than
+more rules. Each claim gets a `faithful` fact, for which the annotation's
+Python is rerun at drawn concrete points and its term has to agree there;
+every decision and proof rests on that fact, and a disagreement refutes the
+reading. Until then, write a claim with the operators, quantifiers and sorts
+lanky provides, and read its statement (the ledger's `STATEMENT` column, or
+`.statement`): it is the claim the oracles were given.
 
 ## Install
-
-```sh
-uv add lanky
-```
 
 ```sh
 pip install lanky
 ```
 
+lanky needs Python 3.12 or later. In a uv project, `uv add lanky`, and the
+same for the extras below. The examples and the quickstart are in the
+repository and not in the package; clone it to follow them.
+
 The CAS oracle is an extra, which installs sympy:
 
 ```sh
-uv add "lanky[cas]"
+pip install "lanky[cas]"
 ```
 
 Where sympy imports, the oracle is on: an identity sympy simplifies reads
@@ -413,9 +450,11 @@ The Lean oracle is an extra, because it pulls a sizable dependency tree and need
 a Lean toolchain on `PATH`:
 
 ```sh
-uv add "lanky[lean]"
+pip install "lanky[lean]"
 ```
 
+Lean comes from elan, its toolchain manager
+([installation](https://github.com/leanprover/elan#installation)).
 The toolchain the oracle runs on has to be one the Lean REPL has a build for.
 With lean-interact 0.11.5 that is a Lean release up to v4.32.0 (or
 v4.33.0-rc1), which elan's current `stable` is not. Given a newer `lean`, the
@@ -429,17 +468,20 @@ elan default leanprover/lean4:v4.29.1
 ```
 
 Mathlib mode needs the same extra and toolchain, and a Lake project with
-Mathlib fetched, about 7 GB on disk:
+Mathlib fetched, about 7 GB on disk. lanky ships the project, pinned, and one
+command writes it and fetches Mathlib:
 
 ```sh
-uv run python -m lanky.mathlib ~/mathlib    # writes the pinned project, runs `lake exe cache get`
+python -m lanky.mathlib ~/mathlib    # writes the pinned project, runs `lake exe cache get`
 export LANKY_LEAN_MATHLIB=~/mathlib
 ```
 
 The command never builds Mathlib from source; it fetches the compiled files
 Mathlib publishes, keeping the packed downloads in `MATHLIB_CACHE_DIR`
 (default `~/.cache/mathlib`). The first session of a process imports Mathlib, which takes
-seconds and about 1.5 GB of memory.
+seconds and about 1.5 GB of memory. The induction over families finds its
+combinations with sympy, so a claim for every order wants both extras,
+`pip install "lanky[lean,cas]"`.
 
 Without the extra, every Lean test skips with a one-line reason and the weaker
 oracles do the work. `lanky check --verbose` prints each oracle and whether it
@@ -554,13 +596,13 @@ changes what the code means.
 
 ## Documentation
 
-- [docs/quickstart.md](docs/quickstart.md): the worked file, end to end, with
-  the output the commands actually print, a second one with an axiom, the
-  pytential demonstration, where a rule engine checks a derivation under the
-  axioms it rests on, and the sumpy demonstration, where a recurrence is
-  tested by mpmath and decided by sympy through an order, and proved by Lean
-  with Mathlib for every order.
-- [CHANGELOG.md](CHANGELOG.md).
+- [docs/quickstart.md](https://github.com/xywei/lanky/blob/main/docs/quickstart.md):
+  the worked file, end to end, with the output the commands actually print,
+  a second one with an axiom, the pytential demonstration, where a rule engine
+  checks a derivation under the axioms it rests on, and the sumpy
+  demonstration, where a recurrence is tested by mpmath and decided by sympy
+  through an order, and proved by Lean with Mathlib for every order.
+- [CHANGELOG.md](https://github.com/xywei/lanky/blob/main/CHANGELOG.md).
 - [loopty](https://github.com/xywei/loopty): the sister project and lanky's
   first plugin: a typed polyhedral layer over loopy, where the facts are about
   loop kernels and isl decides them.
@@ -574,4 +616,4 @@ AI involvement throughout.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/xywei/lanky/blob/main/LICENSE).
