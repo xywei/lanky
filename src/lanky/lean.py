@@ -240,6 +240,7 @@ from lanky.terms import (
     Sum,
     Var,
     conjuncts,
+    free_names,
     free_variables,
     init_args,
     render,
@@ -247,6 +248,7 @@ from lanky.terms import (
 )
 
 __all__ = [
+    "ELABORATION_OPTIONS",
     "ROOT_NAMES",
     "LeanStatement",
     "UnsupportedTerm",
@@ -701,9 +703,9 @@ def _integral(value: Any) -> Any:
     negative summand read back as a subtraction. The base is the one that
     matters: without its ascription ``1 - Fraction(2, 1) ** n >= 0`` printed
     over ``Nat``, where Lean proves it with truncated subtraction and Python
-    refutes it at ``n = 1``. pymbolic's operators refuse a ``Fraction``
-    operand, so such a literal comes only from a term built node by node, by
-    hand or by a plugin.
+    refutes it at ``n = 1``. A term's operators take a ``Fraction`` operand
+    as they take an ``int`` (#76), so ``Fraction(2, 1) ** n`` written in an
+    annotation holds one, as a term built node by node can.
     """
     if isinstance(value, Fraction) and value.denominator == 1:
         return int(value)
@@ -1617,55 +1619,6 @@ def _free_scope(term: Any) -> dict[str, Any]:
     return dict.fromkeys(sorted(free_variables(term)))
 
 
-def _free_names(expr: Any) -> frozenset[str]:
-    """Every name ``expr`` mentions that no binder of it binds, wherever it stands.
-
-    :func:`lanky.terms.free_variables`, reading two more places, since what is
-    handed to Lean has to be closed (see :func:`statement_of`): a plain
-    pymbolic ``Variable``, which a term built node by node can hold, and a
-    family's domain and codomain, which the erasure prints as ``Int → Nat``
-    but which the lanky statement still sizes by its bound.
-    """
-    if isinstance(expr, prim.Variable):
-        return frozenset({expr.name})
-    if isinstance(expr, Forall | Exists | Sum):
-        bound: set[str] = set()
-        found: set[str] = set()
-        for var, domain in expr.binders:
-            # a domain is evaluated before its own binder exists
-            found |= _domain_free_names(var.name, domain) - bound
-            bound.add(var.name)
-        for part in (expr.body, expr.guard):
-            found |= _free_names(part) - bound
-        return frozenset(found)
-    if isinstance(expr, prim.ExpressionNode):
-        found = set()
-        for child in init_args(expr):
-            for item in child if isinstance(child, tuple) else (child,):
-                found |= _free_names(item)
-        return frozenset(found)
-    return frozenset()
-
-
-def _domain_free_names(own: str | None, domain: Any) -> frozenset[str]:
-    """The free names of what a binder's domain carries.
-
-    A refinement's propositions are about the variable the binder binds,
-    ``own``, which is not free in them. One inside a family's type refines the
-    family's index, which has no name, so ``own`` is ``None`` there.
-    """
-    if isinstance(domain, Refined):
-        props: frozenset[str] = frozenset().union(*(_free_names(p) for p in domain.props))
-        return _domain_free_names(own, domain.base) | (props - {own})
-    if isinstance(domain, FinType):
-        return _free_names(domain.bound)
-    if isinstance(domain, FnType):
-        return _domain_free_names(None, domain.domain) | _domain_free_names(
-            None, domain.codomain
-        )
-    return frozenset()
-
-
 # }}}
 
 
@@ -2087,6 +2040,16 @@ def check_applications(term: Any) -> None:
 
 # {{{ a term as a Lean theorem
 
+#: What every declaration lanky sends Lean is elaborated under (#68). Lean binds
+#: a name a declaration's signature does not know as an implicit argument, at
+#: a type it infers, unless ``autoImplicit`` is off: ``theorem
+#: Lanky.free_goal : x - 1 ≥ 0`` was a statement about a natural ``x``, which
+#: ``omega`` proved, and ``(h0 : int)`` bound ``int`` as a type (#64). The
+#: printer declines a statement with a free name (:func:`statement_of`); with
+#: the option off, Lean would refuse one the printer let through as an unknown
+#: identifier rather than read it as a variable.
+ELABORATION_OPTIONS = "set_option autoImplicit false in"
+
 
 @dataclass(eq=False)
 class LeanStatement:
@@ -2226,13 +2189,14 @@ class LeanStatement:
 
         The tactic block is indented as a block, so a multi-line script can be
         passed in as written. The theorem is declared under
-        :attr:`declared_name`.
+        :attr:`declared_name`, with auto-bound implicits off
+        (:data:`ELABORATION_OPTIONS`).
         """
         head = f"theorem {self.declared_name}"
         if self.parameters:
             head = f"{head} {self.parameters}"
         body = "\n".join("  " + line if line.strip() else line for line in tactic.splitlines())
-        return f"{head} : {self.goal} := by\n{body}\n"
+        return f"{ELABORATION_OPTIONS}\n{head} : {self.goal} := by\n{body}\n"
 
 
 def _lean_name(name: str) -> str:
@@ -2299,7 +2263,7 @@ def _refuse_free_names(term: Any) -> None:
     Raises:
         UnsupportedTerm: Naming every such name.
     """
-    names = sorted(_free_names(term))
+    names = sorted(free_names(term))
     if not names:
         return
     listing = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"

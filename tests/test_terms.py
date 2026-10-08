@@ -18,6 +18,8 @@ from lanky.terms import (
     LankyEvaluationMapper,
     OpenPoint,
     Polarity,
+    Power,
+    Product,
     Scope,
     Sum,
     SymbolicBoolError,
@@ -59,6 +61,29 @@ def test_comparison_is_a_term_not_a_bool() -> None:
     assert render(claim) == "n + 1 == 2*n"
     assert evaluate(claim, {"n": 1}) is True
     assert evaluate(claim, {"n": 3}) is False
+
+
+def test_a_comparison_of_an_xor_or_a_shift_is_a_term_not_a_bool() -> None:
+    # ^, << and >> built pymbolic's own nodes, whose == compared structurally
+    # and answered False, and whose < raised: a kernel's when((k ^ 1) == 0)
+    # was traced as a guard that never holds.
+    n = Var("n")
+    for term, shown in (
+        (n ^ 1, "n ^ 1"),
+        (1 ^ n, "1 ^ n"),
+        (n << 2, "n << 2"),
+        (2 << n, "2 << n"),
+        (n >> 1, "n >> 1"),
+        (8 >> n, "8 >> n"),
+    ):
+        assert render(term) == shown
+        for claim in (term == 0, term != 0, term < 3, term >= n, (term + 1) * 2 > n):
+            assert isinstance(claim, Comparison), claim
+    assert evaluate((n ^ 1) == 0, {"n": 1}) is True
+    assert evaluate((n ^ 1) == 0, {"n": 2}) is False
+    assert evaluate((n << 2) > 5, {"n": 2}) is True
+    assert evaluate((8 >> n) != 2, {"n": 2}) is False
+    assert structurally_equal(n ^ 1, prim.BitwiseXor((Var("n"), 1)))
 
 
 def test_truth_value_of_a_proposition_is_refused() -> None:
@@ -1471,6 +1496,195 @@ def test_every_answer_holds_under_every_reading_of_a_division_by_zero() -> None:
             point = {"n": report.counterexample["n"]}
             assert not any(truth(point, reading) for reading in readings), render(term)
     assert decided > 300
+
+
+# }}}
+
+
+# {{{ a Fraction as an operand, and the text a term renders as
+
+
+def test_a_fraction_is_an_operand_as_an_int_is() -> None:
+    """``x ** Fraction(1, 3)`` keeps its exponent, and ``Fraction(1, 3) * x`` is a product (#76).
+
+    pymbolic's operators take no ``Fraction``, so Python fell back on the
+    ``Fraction``'s own: the exponent became the float ``0.3333333333333333``,
+    which every oracle reads as the rational it holds and not as a third, and
+    the product raised ``TypeError``. Every operator builds its node now, as
+    pymbolic builds it for a number, on either side of the term, and the node
+    is lanky's, so the next operator is lanky's too. For ``Fraction(1, 3) **
+    x`` Python asks the ``Fraction`` first, and before CPython 3.12.5 its
+    ``__pow__`` handed the term the float ``0.3333333333333333``
+    (gh-119189); the base is the ``Fraction`` on every version, and a float
+    written as one stays a float.
+    """
+    from fractions import Fraction
+
+    x = Var("x")
+    third = Fraction(1, 3)
+    built = {
+        "x + 1/3": (x + third, prim.Sum((x, third))),
+        "1/3 + x": (third + x, prim.Sum((third, x))),
+        "x - 1/3": (x - third, prim.Sum((x, -third))),
+        "1/3 - x": (third - x, prim.Sum((third, prim.Product((-1, x))))),
+        "x * 1/3": (x * third, prim.Product((x, third))),
+        "1/3 * x": (third * x, prim.Product((third, x))),
+        "x / 1/3": (x / third, prim.Quotient(x, third)),
+        "1/3 / x": (third / x, prim.Quotient(third, x)),
+        "x // 1/3": (x // third, prim.FloorDiv(x, third)),
+        "1/3 // x": (third // x, prim.FloorDiv(third, x)),
+        "x % 1/3": (x % third, prim.Remainder(x, third)),
+        "1/3 % x": (third % x, prim.Remainder(third, x)),
+        "x ** 1/3": (x**third, prim.Power(x, third)),
+        "1/3 ** x": (third**x, prim.Power(third, x)),
+    }
+    for written, (term, expected) in built.items():
+        assert structurally_equal(term, expected), (written, render(term))
+        # a lanky node, whose comparison builds a proposition
+        assert isinstance(term == 0, Comparison), written
+    assert render(x**third) == "x**(1/3)"
+    assert render(third * x) == "1/3*x"
+    assert render(third**x) == "(1/3)**x"
+    assert render(Fraction(2) ** x) == "2**x"
+    assert structurally_equal(0.5**x, prim.Power(0.5, x))
+    assert structurally_equal(float(third) ** x, prim.Power(float(third), x))
+    assert evaluate(third * x, {"x": 6}) == 2
+    # a statement over the reals with a cube root, which the float exponent
+    # had the tester refute at x = 2
+    report = check([("x", Real & (x > 0))], [], (x**third) ** 3 == x)
+    assert report.ok and report.valid == 200, report
+
+
+def test_a_negation_renders_as_a_unary_minus() -> None:
+    """``-x`` reads ``-x`` wherever it stands, and not ``-1*x`` (#69).
+
+    pymbolic builds a negation as a product whose first factor is ``-1``,
+    and only a summand was read back as a subtraction. A negation is a unary
+    minus now, at the precedence Python gives one, between ``*`` and ``**``.
+    """
+    x, y, n = Var("x"), Var("y"), Var("n")
+    assert render(-x) == "-x"
+    assert render(-x == -x) == "-x == -x"
+    assert render(-(x * y)) == "-x*y"
+    assert render((-x) ** 2) == "(-x)**2"
+    assert render(-(x**2)) == "-x**2"
+    assert render(x * -y) == "x*-y"
+    assert render(y - x) == "y - x"
+    assert render(-x + y) == "-x + y"
+    # behind a unary minus, a floor division keeps its brackets: Python reads
+    # -n // 2 as (-n) // 2
+    assert render(-(n // 2) + 1) == "-(n // 2) + 1"
+    assert render(-(n // 2) * y) == "-(n // 2)*y"
+    assert render(-(x + y)) == "-(x + y)"
+
+
+def test_a_rendered_term_brackets_what_python_would_read_otherwise() -> None:
+    """A floor division after a factor, a negative base, and a power as a base keep brackets.
+
+    ``a*b // c`` is ``(a*b) // c`` to Python, ``-2**n`` is ``-(2**n)``,
+    ``x**y**2`` is ``x**(y**2)``, and a ``Fraction`` prints with a slash,
+    so each of them read as another number than the term's.
+    """
+    from fractions import Fraction
+
+    a, b, n, x, y = (Var(name) for name in "abnxy")
+    assert render(a * (b // 2)) == "a*(b // 2)"
+    assert render(a * (b % 2)) == "a*(b % 2)"
+    assert render(2 * (n // 2) == n) == "2*(n // 2) == n"
+    assert render(Power(-2, n)) == "(-2)**n"
+    assert render((x**y) ** 2) == "(x**y)**2"
+    assert render(x ** (y**2)) == "x**y**2"
+    assert render(x / Fraction(1, 3)) == "x / (1/3)"
+    assert render(x**-1) == "x**(-1)"
+
+
+def _random_arithmetic(rng: random.Random, depth: int) -> object:
+    """A random arithmetic term over ``x``, ``y`` and ``z``, built with lanky's operators."""
+    from fractions import Fraction
+
+    if depth == 0 or rng.random() < 0.2:
+        return rng.choice(
+            [Var("x"), Var("y"), Var("z"), 2, 3, -2, Fraction(1, 3), Fraction(-3, 2)]
+        )
+    left, right = _random_arithmetic(rng, depth - 1), _random_arithmetic(rng, depth - 1)
+    choice = rng.randrange(8)
+    if choice == 0:
+        # a negated literal is a node only when it is built as one
+        return -left if isinstance(left, prim.ExpressionNode) else Product((-1, left))
+    if choice == 1:
+        return Power(left, rng.randrange(3))
+    operators = [
+        lambda p, q: p + q,
+        lambda p, q: p - q,
+        lambda p, q: p * q,
+        lambda p, q: p / q,
+        lambda p, q: p // q,
+        lambda p, q: p % q,
+    ]
+    if not any(isinstance(side, prim.ExpressionNode) for side in (left, right)):
+        left = Var("x")
+    operator = operators[choice - 2]
+    try:
+        return operator(left, right)
+    except ZeroDivisionError:
+        return left
+
+
+def test_a_rendered_term_reads_back_as_the_same_number() -> None:
+    """Python reads what :func:`render` prints as the number the term evaluates to.
+
+    The ledger's statement column is the text, so a bracket it drops says
+    something else than the claim: ``-(n // 2) + 1`` printed ``-n // 2 + 1``,
+    and ``(-2)**n`` printed ``-2**n``. Random terms are rendered, the text is
+    parsed as Python parses it, and evaluated with every number exact, and it
+    has to agree with the term's exact reading.
+    """
+    import ast
+    from fractions import Fraction
+
+    from lanky.terms import exact_reading
+
+    class _Exact(ast.NodeTransformer):
+        """Every number a ``Fraction``: ``1/3`` is a third, and ``a // b / c`` no float.
+
+        An integer literal is made one, and so is a floor division's value,
+        which Python gives as an ``int`` even of two fractions. The parse is
+        Python's, which is what is being tested.
+        """
+
+        def visit_Constant(self, node: ast.Constant) -> ast.AST:
+            if isinstance(node.value, int):
+                return ast.Call(ast.Name("Fraction", ast.Load()), [node], [])
+            return node
+
+        def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+            self.generic_visit(node)
+            if isinstance(node.op, ast.FloorDiv):
+                return ast.Call(ast.Name("Fraction", ast.Load()), [node], [])
+            return node
+
+    rng = random.Random(7)
+    compared = 0
+    for _ in range(600):
+        term = _random_arithmetic(rng, 4)
+        if not isinstance(term, prim.ExpressionNode):
+            continue
+        text = render(term)
+        tree = ast.fix_missing_locations(_Exact().visit(ast.parse(text, mode="eval")))
+        code = compile(tree, "<rendered>", "eval")
+        for values in (
+            {"x": Fraction(2), "y": Fraction(-3), "z": Fraction(5)},
+            {"x": Fraction(-5, 2), "y": Fraction(7), "z": Fraction(-1)},
+        ):
+            try:
+                with exact_reading():
+                    expected = evaluate(term, dict(values))
+                read = eval(code, {"__builtins__": {}, "Fraction": Fraction}, dict(values))
+            except (ZeroDivisionError, Undecided, OverflowError):
+                continue
+            assert read == expected, (text, values)
+            compared += 1
+    assert compared > 500
 
 
 # }}}

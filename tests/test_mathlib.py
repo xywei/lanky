@@ -471,6 +471,7 @@ def test_a_complex_logarithm_carries_the_claim_that_it_is_off_the_cut() -> None:
     # the two arguments print alike, and the claim about them is made once
     (condition,) = statement.side_conditions
     assert condition.source("intros\nnorm_num") == (
+        "set_option autoImplicit false in\n"
         "theorem Lanky.across_branch_cut_0 (x : ℝ) (h0 : x > 0) : "
         f"0 < Complex.re ({argument}) ∨ Complex.im ({argument}) ≠ 0 := by\n"
         "  intros\n  norm_num\n"
@@ -720,11 +721,11 @@ def test_a_mathlib_statement_is_marked_and_arranged_as_a_theorem() -> None:
     assert divided.proposition == "∀ x : ℝ, ∀ y : ℝ, y ≠ 0 → ((x : ℝ) / y) * y = x"
     # declared in a namespace of its own, where no Mathlib lemma can already have the name
     assert statement.declared_name == "Lanky.gauss"
-    assert statement.source("omega").startswith("theorem Lanky.gauss (n : Int) (h0 : 0 ≤ n) :")
+    assert "\ntheorem Lanky.gauss (n : Int) (h0 : 0 ≤ n) :" in statement.source("omega")
     # and so is a core statement, where no root declaration of core Lean can (#39)
     core = statement_of(commutes.term, "commutes")
     assert core.declared_name == "Lanky.commutes"
-    assert core.source("omega").startswith("theorem Lanky.commutes (a : Int)")
+    assert "\ntheorem Lanky.commutes (a : Int)" in core.source("omega")
 
 
 def test_the_mathlib_ladder_follows_the_core_one() -> None:
@@ -1151,6 +1152,26 @@ def mathlib_oracle(mathlib_project: str | None) -> Iterator[LeanOracle]:
     oracle.session.close()
 
 
+def test_mathlib_refuses_a_name_the_declaration_does_not_bind(
+    mathlib_oracle: LeanOracle,
+) -> None:
+    """#68: in Mathlib mode too, an unbound name is an unknown identifier and not a variable.
+
+    The project the session runs in sets no option, so ``x - 1 ≥ 0`` with
+    ``x`` bound by nothing is a statement about a natural there as in core
+    Lean, which ``omega`` proves, unless ``autoImplicit`` is off.
+    """
+    from lanky.lean import ELABORATION_OPTIONS, LeanStatement
+
+    source = LeanStatement("free_goal", (), (), "x - 1 ≥ 0", mathlib=True).source("omega")
+    assert source.startswith(f"{ELABORATION_OPTIONS}\n")
+    closed, detail = mathlib_oracle.session.run(source)
+    assert not closed
+    assert "Unknown identifier" in detail or "unknown identifier" in detail, detail
+    closed, detail = mathlib_oracle.session.run(source.removeprefix(f"{ELABORATION_OPTIONS}\n"))
+    assert closed, detail
+
+
 def test_the_session_imports_mathlib_and_says_which(mathlib_oracle: LeanOracle) -> None:
     session = mathlib_oracle.session
     assert session.version == "v4.29.1"
@@ -1168,7 +1189,9 @@ def test_mathlib_proves_gauss_by_induction_on_its_bound(mathlib_oracle: LeanOrac
     assert proved.status is Status.PROVED
     assert proved.decided_by == "lean"
     assert proved.provenance["tactic"].startswith("obtain ⟨n, rfl⟩")
-    assert proved.provenance["lean_source"].startswith("import Mathlib\n\ntheorem Lanky.gauss")
+    assert proved.provenance["lean_source"].startswith(
+        "import Mathlib\n\nset_option autoImplicit false in\ntheorem Lanky.gauss"
+    )
     assert proved.provenance["lean_mathlib"] == mathlib_oracle.session.mathlib_revision
     assert mathlib_oracle.establish(squares.fact()).status is Status.PROVED
 
@@ -1540,7 +1563,9 @@ def test_mathlib_proves_a_complex_logarithm_or_root_off_the_cut(
         proved.provenance.get("lean_declined") or proved.provenance.get("lean_reason")
     )
     source = proved.provenance["lean_source"]
-    assert source.startswith(f"import Mathlib\n\ntheorem Lanky.{owner}_branch_cut_0 ")
+    assert source.startswith(
+        f"import Mathlib\n\nset_option autoImplicit false in\ntheorem Lanky.{owner}_branch_cut_0 "
+    )
     assert f"\ntheorem Lanky.{owner} " in source
     (condition,) = statement_of(claim.term, owner, mathlib=True).side_conditions
     assert proved.provenance["lean_side_conditions"] == [condition.proposition]

@@ -94,10 +94,12 @@ __all__ = [
     "exists",
     "exp",
     "forall",
-    "init_args",
+    "free_names",
     "free_variables",
+    "init_args",
     "log",
     "render",
+    "sort_free_names",
     "sqrt",
     "structurally_equal",
     "sum_",
@@ -301,12 +303,45 @@ def disjoin(operands: Iterable[Callable[[], bool]]) -> bool:
 # {{{ operator-overloading mixins
 
 
+#: What each arithmetic operator builds, as pymbolic's operators build it, from
+#: the term it is called on and the other operand. It is for an operand
+#: pymbolic's own operators refuse, a ``Fraction`` (see :func:`_make_binary`).
+_BUILDS: dict[str, Callable[[Any, Any], Any]] = {
+    "add": lambda term, other: prim.Sum((term, other)),
+    "radd": lambda term, other: prim.Sum((other, term)),
+    "sub": lambda term, other: prim.Sum((term, -other)),
+    "rsub": lambda term, other: prim.Sum((other, -term)),
+    "mul": lambda term, other: prim.Product((term, other)),
+    "rmul": lambda term, other: prim.Product((other, term)),
+    "truediv": lambda term, other: prim.Quotient(term, other),
+    "rtruediv": lambda term, other: prim.Quotient(other, term),
+    "floordiv": lambda term, other: prim.FloorDiv(term, other),
+    "rfloordiv": lambda term, other: prim.FloorDiv(other, term),
+    "mod": lambda term, other: prim.Remainder(term, other),
+    "rmod": lambda term, other: prim.Remainder(other, term),
+    "pow": lambda term, other: prim.Power(term, other),
+    "rpow": lambda term, other: prim.Power(other, term),
+}
+
+
 def _make_binary(name: str) -> Callable[..., Any]:
-    """Wrap one pymbolic arithmetic operator so that it answers a lanky node."""
+    """Wrap one pymbolic arithmetic operator so that it answers a lanky node.
+
+    A ``Fraction`` is an operand like an ``int`` or a ``float`` (#76).
+    pymbolic's operators take no ``Fraction``, so Python fell back on the
+    ``Fraction``'s own: ``x ** Fraction(1, 3)`` became ``x **
+    0.3333333333333333``, a float every oracle reads as the rational it holds
+    and not as a cube root, and ``Fraction(1, 3) * x`` raised. The node is
+    built here instead, as pymbolic builds it for a number. A base the
+    ``Fraction`` made a float of is taken back (see :func:`_fraction_base`).
+    """
     base = getattr(prim.ExpressionNode, f"__{name}__")
+    build = _BUILDS[name]
 
     def operation(self: Any, other: Any) -> Any:
-        result = base(self, other)
+        if name == "rpow" and isinstance(other, float):
+            other = _fraction_base(other, sys._getframe(1))
+        result = build(self, other) if isinstance(other, Fraction) else base(self, other)
         if result is NotImplemented:
             return NotImplemented
         return lift(result)
@@ -315,6 +350,25 @@ def _make_binary(name: str) -> Callable[..., Any]:
     operation.__qualname__ = f"SymbolicMixin.__{name}__"
     operation.__doc__ = f"Build the lanky counterpart of pymbolic's ``__{name}__``."
     return operation
+
+
+def _fraction_base(value: float, frame: Any) -> Any:
+    """The ``Fraction`` that ``Fraction.__pow__`` made ``value`` of, or ``value``.
+
+    For ``Fraction(1, 3) ** x`` Python asks the ``Fraction`` first, and
+    before CPython 3.12.5 its ``__pow__`` made itself a float for an exponent
+    it did not know and raised that to the term (CPython gh-119189), so the
+    term's ``__rpow__`` was handed ``0.3333333333333333``. ``frame``, the
+    frame that asked, is then that ``__pow__``, whose first argument is the
+    ``Fraction``, and the base is taken from there. A float written as one
+    is no ``Fraction``'s and is kept.
+    """
+    if frame is None or frame.f_code is not Fraction.__pow__.__code__:
+        return value
+    given = frame.f_locals.get(frame.f_code.co_varnames[0])
+    if isinstance(given, Fraction) and float(given) == value:
+        return given
+    return value
 
 
 def _make_unary(name: str) -> Callable[..., Any]:
@@ -330,6 +384,26 @@ def _make_unary(name: str) -> Callable[..., Any]:
     return operation
 
 
+def _make_bitwise(name: str) -> Callable[..., Any]:
+    """Wrap one of pymbolic's ``^``, ``<<`` and ``>>`` so that it answers a lanky node.
+
+    They are integer arithmetic, and only an integer is an operand of one, so
+    nothing but pymbolic's own operator builds the node.
+    """
+    base = getattr(prim.ExpressionNode, f"__{name}__")
+
+    def operation(self: Any, other: Any) -> Any:
+        result = base(self, other)
+        if result is NotImplemented:
+            return NotImplemented
+        return lift(result)
+
+    operation.__name__ = f"__{name}__"
+    operation.__qualname__ = f"SymbolicMixin.__{name}__"
+    operation.__doc__ = f"Build the lanky counterpart of pymbolic's ``__{name}__``."
+    return operation
+
+
 class SymbolicMixin:
     """Operator overloading shared by every lanky term.
 
@@ -337,12 +411,79 @@ class SymbolicMixin:
     that the next operator applied to it is lanky's again. Comparisons build
     :class:`Comparison` instead of answering ``bool``; ``&``, ``|`` and ``~``
     build the logical connectives rather than bitwise ones, because lanky terms
-    are mathematics and not bit patterns.
+    are mathematics and not bit patterns. ``^``, ``<<`` and ``>>`` are integer
+    arithmetic, and re-tagged as the rest is: left as pymbolic's own nodes,
+    ``(k ^ 1) == 0`` compared them structurally and answered ``False``, and
+    ``(k << 2) > 5`` raised, where a program means the proposition.
     """
 
     def __hash__(self) -> int:
-        """Hash as the underlying pymbolic node does."""
+        """Hash as the underlying pymbolic node does, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the hash is asked for by the code of an annotation
+                being evaluated, as a dict or a set lookup or display there
+                asks for it (see :func:`_refuse_hashing`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_hashing(self, sys._getframe(1))
         return super().__hash__()  # type: ignore[misc]
+
+    def __format__(self, spec: str) -> str:
+        """Format as any object is, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the text is asked for by the code of an annotation
+                being evaluated, as an f-string or ``str.format`` there asks
+                for it (see :func:`_refuse_text`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_text(self, sys._getframe(1))
+        return super().__format__(spec)
+
+    def __str__(self) -> str:
+        """Print as the underlying pymbolic node does, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the text is asked for by the code of an annotation
+                being evaluated, as a ``%`` format or an f-string's ``!s``
+                there asks for it (see :func:`_refuse_text`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_text(self, sys._getframe(1))
+        return super().__str__()
+
+    def __repr__(self) -> str:
+        """Represent as the underlying pymbolic node does, but not for an annotation's own code.
+
+        Raises:
+            TypeError: If the text is asked for by the code of an annotation
+                being evaluated, as an f-string's ``!r`` there asks for it
+                (see :func:`_refuse_text`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_text(self, sys._getframe(1))
+        return super().__repr__()
+
+    def __bool__(self) -> bool:
+        """Answer as the underlying pymbolic node does, but not for an annotation's own code.
+
+        A proposition answers for itself (:class:`PropositionMixin`); this is
+        the truth value of a number, which Python reads as ``x != 0``.
+        pymbolic answers it from the structure, ``True`` for ``i`` and
+        ``False`` for ``i*0``, and asks it so itself, to flatten a sum or a
+        product.
+
+        Raises:
+            SymbolicBoolError: If the truth value is asked for by the code of an
+                annotation being evaluated, as ``and``, ``or``, ``not``, a
+                conditional expression or an ``if`` clause there asks for it
+                (see :func:`_refuse_truth`).
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_truth(self, sys._getframe(1))
+        answer = getattr(super(), "__bool__", None)
+        return True if answer is None else answer()
 
     # {{{ comparisons build propositions
 
@@ -411,6 +552,9 @@ for _name in (
     "mod", "rmod", "pow", "rpow",
 ):
     setattr(SymbolicMixin, f"__{_name}__", _make_binary(_name))
+
+for _name in ("xor", "rxor", "lshift", "rlshift", "rshift", "rrshift"):
+    setattr(SymbolicMixin, f"__{_name}__", _make_bitwise(_name))
 
 for _name in ("neg", "pos"):
     setattr(SymbolicMixin, f"__{_name}__", _make_unary(_name))
@@ -651,6 +795,186 @@ def _tests_a_value(listing: tuple[Any, ...], position: int) -> bool:
 # }}}
 
 
+# {{{ where a term was hashed or made into text
+
+
+#: The code of each annotation being evaluated, outermost first, by the ``id``
+#: of each code object, which the mapping keeps alive: the annotation compiled,
+#: and every generator expression and lambda in it (see
+#: :func:`evaluate_annotations`). It is a context's own, so a thread that
+#: finishes reading an annotation unmarks its own and not another thread's.
+_ANNOTATION_CODE: ContextVar[tuple[dict[int, Any], ...]] = ContextVar(
+    "lanky_annotation_code", default=()
+)
+
+
+def _nested_code(code: Any) -> dict[int, Any]:
+    """``code`` and every code object compiled inside it, by ``id``.
+
+    A generator expression and a lambda are code objects of their own, among
+    the constants of the code they are written in; a comprehension of 3.12
+    and later runs in the code around it.
+    """
+    found = {id(code): code}
+    pending = [code]
+    while pending:
+        for constant in pending.pop().co_consts:
+            if isinstance(constant, type(code)) and id(constant) not in found:
+                found[id(constant)] = constant
+                pending.append(constant)
+    return found
+
+
+@contextmanager
+def _reading(code: Any) -> Iterator[None]:
+    """Mark ``code``, an annotation compiled, as the annotation being evaluated."""
+    token = _ANNOTATION_CODE.set((*_ANNOTATION_CODE.get(), _nested_code(code)))
+    try:
+        yield
+    finally:
+        _ANNOTATION_CODE.reset(token)
+
+
+def _refuse_hashing(term: Any, frame: Any) -> None:
+    """Refuse a term's hash to the code of an annotation being evaluated (#73).
+
+    An annotation is Python run on terms, and a dict or a set finds a key by
+    its hash before it compares anything. A term's hash is its structure's,
+    so a term used as a key matches no concrete key, and the lookup answers
+    as if the key were absent without asking the term for a truth value,
+    which is where a misuse is otherwise caught (:func:`_asking_context`):
+    ``{0: 1}.get(i, 0)`` was ``0`` while the annotation was read, so ``all(f(i)
+    * 0 == {0: 1}.get(i, 0) for i in Fin[n])`` became ``f(i)*0 == 0``, which
+    Lean proved and which is false at ``i = 0``. ``i in {0, 1}`` was
+    ``False`` the same way.
+
+    So a term is unhashable to the annotation's own code, as a list is: the
+    hash a dict or a set lookup, a dict or set display, or a cache asks for
+    there is refused, naming the fix. ``frame`` is the frame that asked for
+    the hash. A builtin such as ``dict.get`` has no frame of its own, so it
+    is the annotation's. One the annotation calls by name runs in lanky's
+    :meth:`BuiltinName.__call__`, which stands in for the annotation's frame
+    here: ``set(i for k in range(1))``, and the key function of ``max([0,
+    1], key=functools.partial({0: 5}.get, i))``, hashed ``i`` in that frame
+    and answered as if ``i`` were never ``0``. lanky and pymbolic hash terms
+    in their own code, as a type's hash hashes its bound, and their frames
+    are not the annotation's. Neither is a function the annotation calls.
+
+    Raises:
+        TypeError: If ``frame`` runs the code of an annotation being
+            evaluated, or calls a builtin for it.
+    """
+    if not _asked_by_annotation(frame):
+        return
+    raise TypeError(
+        f"{render(term)} was hashed by the annotation, as a dict or a set lookup "
+        "or display there hashes its keys: a dict or a set finds a key by its "
+        "hash before it compares anything, and a term's hash is its structure's, "
+        "so a term matches no concrete key and the lookup would answer as if it "
+        "were absent, which says something else than what was written. A term is "
+        "no key of a dict and no member of a set in an annotation: write a table "
+        "indexed by a term as a family, a parameter Fn[...] with hypotheses that "
+        "give its values, and a membership test as comparisons joined with |, as "
+        "in (i == 0) | (i == 1)"
+    )
+
+
+def _refuse_text(term: Any, frame: Any) -> None:
+    """Refuse a term's text to the code of an annotation being evaluated.
+
+    A term's text is what it is written as, whatever value it takes, as its
+    hash is its structure's (:func:`_refuse_hashing`): ``f"{i}"`` was ``"i"``
+    while the annotation was read, so ``{"0": 1}.get(f"{i}", 0)`` was ``0``
+    and ``len(f"{i}")`` was ``1``, and Lean proved the statements built on
+    them, false at ``i = 0`` and at ``i = 10``. Nothing asked the term for a
+    truth value lanky could refuse. ``str(i)`` and ``repr(i)`` are refused
+    already, as builtins applied to a term (:class:`BuiltinName`); an
+    f-string, ``str.format`` and a ``%`` format ask for the text without a
+    builtin, and are refused here, in the frames :func:`_refuse_hashing`
+    refuses a hash to. lanky's own messages print terms in its own frames.
+
+    Raises:
+        TypeError: If ``frame`` runs the code of an annotation being
+            evaluated, or calls a builtin for it.
+    """
+    if not _asked_by_annotation(frame):
+        return
+    raise TypeError(
+        f"{render(term)} was made into text by the annotation, as an f-string, "
+        "str.format or a % format there makes it: a term's text is what it is "
+        "written as, the same whatever value it takes, so a string made of it, "
+        "and whatever is read off that string, says something else than what was "
+        "written. A term is no string in an annotation: compare the term itself, "
+        "as in (i == 0) | (i == 1)"
+    )
+
+
+def _refuse_truth(term: Any, frame: Any) -> None:
+    """Refuse the truth value of a term that is a number to an annotation's own code.
+
+    Python reads a number as true where it is not zero, and a term is no
+    number until it is evaluated, so its truth value was pymbolic's, the same
+    at every value it takes: ``i`` was true and ``i*0`` false. ``1 if i else
+    0`` was ``1``, ``i and True`` was ``True``, ``not i`` was ``False``, and
+    ``(i - i) or 5`` was ``i - i``, and Lean proved the statements built on
+    them, false at ``i = 0``. A proposition's truth value is refused there
+    already (:class:`PropositionMixin`), and a number's is refused the same
+    way, in the frames :func:`_refuse_hashing` refuses a hash to, the ``if``
+    clause of a generator included. pymbolic asks for it in its own frames.
+
+    Raises:
+        SymbolicBoolError: If ``frame`` runs the code of an annotation being
+            evaluated, or calls a builtin for it.
+    """
+    if not _asked_by_annotation(frame):
+        return
+    raise SymbolicBoolError(
+        f"the truth value of {render(term)} was asked for by the annotation, as "
+        "Python's and, or and not, a conditional expression a if c else b, or an "
+        "if clause ask for it: Python reads a number as true where it is not zero, "
+        "and a term is no number until it is evaluated, so the answer would be "
+        "the same at every value it takes and say something else than what was "
+        f"written. Compare it instead, as in {render(term)} != 0, and join "
+        "propositions with &, | and ~"
+    )
+
+
+def _asked_by_annotation(frame: Any) -> bool:
+    """Whether ``frame`` runs the code of an annotation being evaluated, or a builtin it calls.
+
+    A builtin called from Python code has no frame of its own, so what it
+    asks for is asked by the frame that called it. One the annotation calls
+    by name runs in :meth:`BuiltinName.__call__`, which stands in for the
+    annotation's frame.
+    """
+    if frame is not None and frame.f_code is BuiltinName.__call__.__code__:
+        frame = frame.f_back
+    code = frame.f_code if frame is not None else None
+    return any(id(code) in reading for reading in _ANNOTATION_CODE.get())
+
+
+def _hashed_unless_annotation(cls: type) -> type:
+    """Give ``cls`` the hash pymbolic generated for it, refused as :func:`_refuse_hashing` says.
+
+    :func:`pymbolic.expr_dataclass` puts a hash of its own on the class it
+    decorates, which takes the place of the one :class:`SymbolicMixin` has.
+    """
+    generated = cls.__hash__
+
+    def __hash__(self: Any) -> int:
+        if _ANNOTATION_CODE.get():
+            _refuse_hashing(self, sys._getframe(1))
+        return generated(self)
+
+    __hash__.__qualname__ = f"{cls.__qualname__}.__hash__"
+    __hash__.__doc__ = SymbolicMixin.__hash__.__doc__
+    cls.__hash__ = __hash__  # type: ignore[method-assign]
+    return cls
+
+
+# }}}
+
+
 class PropositionMixin(SymbolicMixin):
     """A term whose value is a truth value.
 
@@ -709,6 +1033,18 @@ class Power(SymbolicMixin, prim.Power):
     """Exponentiation."""
 
 
+class BitwiseXor(SymbolicMixin, prim.BitwiseXor):
+    """Exclusive or, of integers bit by bit, as in ``k ^ 1``."""
+
+
+class LeftShift(SymbolicMixin, prim.LeftShift):
+    """Left shift of an integer, as in ``k << 2``."""
+
+
+class RightShift(SymbolicMixin, prim.RightShift):
+    """Right shift of an integer, as in ``k >> 1``."""
+
+
 class Call(SymbolicMixin, prim.Call):
     """Application of a family to arguments, as in ``off(r)``."""
 
@@ -733,6 +1069,7 @@ class LogicalNot(PropositionMixin, prim.LogicalNot):
     """Negation."""
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Forall(PropositionMixin, prim.ExpressionNode):
     """Universal quantification over index-type binders.
@@ -749,6 +1086,7 @@ class Forall(PropositionMixin, prim.ExpressionNode):
 
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Exists(PropositionMixin, prim.ExpressionNode):
     """Existential quantification, with the same shape as :class:`Forall`."""
@@ -759,6 +1097,7 @@ class Exists(PropositionMixin, prim.ExpressionNode):
 
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Sum(SymbolicMixin, prim.ExpressionNode):
     """A reduction over binders: the value of ``lanky.sum(body for i in dom)``.
@@ -775,6 +1114,7 @@ class Sum(SymbolicMixin, prim.ExpressionNode):
     mapper_method: ClassVar[str] = "map_lanky_sum"
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Abs(SymbolicMixin, prim.ExpressionNode):
     """Absolute value."""
@@ -786,6 +1126,7 @@ class Abs(SymbolicMixin, prim.ExpressionNode):
 ELEMENTARY_FUNCTIONS = ("exp", "log", "sqrt")
 
 
+@_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Elementary(SymbolicMixin, prim.ExpressionNode):
     """An elementary function applied to one argument: ``exp(x)``, ``log(x)``, ``sqrt(x)``.
@@ -814,6 +1155,9 @@ _COUNTERPART: dict[type, type] = {
     prim.FloorDiv: FloorDiv,
     prim.Remainder: Remainder,
     prim.Power: Power,
+    prim.BitwiseXor: BitwiseXor,
+    prim.LeftShift: LeftShift,
+    prim.RightShift: RightShift,
     prim.Call: Call,
     prim.Subscript: Subscript,
     prim.Comparison: Comparison,
@@ -1239,12 +1583,14 @@ class BuiltinName(Var):
     in the file run as a program. Called with a term among its arguments, or
     a container that holds one, it is refused, naming the builtin: lanky has
     no term for the builtin, and Python would compute it on the term,
-    comparing two propositions where ``min`` compares two numbers. A builtin
-    that hands back an iterator, ``zip``, ``enumerate`` or ``reversed``, is
-    run to the end where it is called, so that a symbolic domain it walks is
-    refused there and binds no binder of the generator around it. The
-    builtins that mean something else in an annotation
-    (:data:`BUILTIN_OVERRIDES`) are never looked up here.
+    comparing two propositions where ``min`` compares two numbers. A term's
+    hash the builtin asks for is refused, as it is in the annotation's own
+    frame (#73): ``set(i for k in range(1))`` hashed ``i`` here and held it,
+    so ``0 in`` it was ``False``. A builtin that hands back an iterator,
+    ``zip``, ``enumerate`` or ``reversed``, is run to the end where it is
+    called, so that a symbolic domain it walks is refused there and binds no
+    binder of the generator around it. The builtins that mean something else
+    in an annotation (:data:`BUILTIN_OVERRIDES`) are never looked up here.
 
     Named and not called, it is the variable it always was, a free name, as
     ``x: int`` is: a theorem refuses a parameter whose annotation is one
@@ -1259,7 +1605,7 @@ class BuiltinName(Var):
         Raises:
             TypeError: If an argument is a term, or holds one, if the builtin is
                 not one an annotation may call, or if the builtin raises it,
-                as it does when it iterates a symbolic domain.
+                as it does when it iterates a symbolic domain or hashes a term.
             SymbolicBoolError: If the builtin asks a proposition for its truth
                 value, as ``max`` does of a generator over a concrete domain
                 whose body is symbolic.
@@ -1355,6 +1701,10 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
 
     ``values`` overrides the proxies, which is how the same annotation is reused
     as a predicate over concrete values.
+
+    While a string is evaluated, a term is unhashable to its code, so that a
+    dict or a set lookup keyed by one is refused rather than answered as if
+    the key were absent (see :func:`_refuse_hashing`).
     """
     raw = inspect.get_annotations(fn, eval_str=False)
     scope = Scope(getattr(fn, "__globals__", {}))
@@ -1366,7 +1716,14 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
 
     out: dict[str, Any] = {}
     for name, annotation in raw.items():
-        out[name] = eval(annotation, scope, None) if isinstance(annotation, str) else annotation
+        if not isinstance(annotation, str):
+            out[name] = annotation
+            continue
+        # eval strips the spaces and tabs a string starts with, and compile
+        # does not
+        code = compile(annotation.lstrip(" \t"), "<string>", "eval")
+        with _reading(code):
+            out[name] = eval(code, scope, None)
     return out
 
 
@@ -2062,11 +2419,12 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
     def map_foreign(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
         """A constant pymbolic has no class for, a ``Fraction``, is its own value.
 
-        pymbolic's operators refuse a ``Fraction`` operand, so a term with one
-        in it is built node by node, by a plugin, and it is a literal like any
-        other: the Lean printer reads an integral one as the integer it equals,
-        and the evaluator refused it as an invalid foreign object, which left
-        the property tester unable to run the statement at all.
+        A term with one in it is written with a ``Fraction`` operand, which a
+        term's operators take (#76), or built node by node, by a plugin, and
+        it is a literal like any other: the Lean printer reads an integral one
+        as the integer it equals, and the evaluator refused it as an invalid
+        foreign object, which left the property tester unable to run the
+        statement at all.
         """
         if isinstance(expr, Fraction):
             return expr
@@ -2285,7 +2643,78 @@ def free_variables(expr: Any) -> frozenset[str]:
     return frozenset()
 
 
-_OR, _AND, _NOT, _CMP, _ADD, _MUL, _POW, _ATOM = range(8)
+def free_names(expr: Any) -> frozenset[str]:
+    """Every name ``expr`` mentions that no binder of it binds, wherever it stands.
+
+    :func:`free_variables`, reading four more places, since what an oracle is
+    handed has to be closed: a plain pymbolic ``Variable``, which a term built
+    node by node can hold; a family's domain and codomain, which the Lean
+    erasure prints as ``Int → Nat`` but which the statement still sizes by its
+    bound; a sort that is itself a term, a name nothing defines, such as the
+    misspelt ``Flaot`` of ``Fn[Fin[n], Flaot]`` (see :func:`sort_free_names`);
+    and an argument written as a set or a dict, ``f({"slot": m})``, whose
+    keys and values are read as a list's items are (#87).
+    The Lean printer declines a statement with a free name
+    (:func:`lanky.lean.statement_of`), and so does the property tester
+    (:func:`lanky.testing.check`). :func:`free_variables` is what a plugin
+    sizes a kernel with, and is left as it is.
+    """
+    if isinstance(expr, prim.Variable):
+        return frozenset({expr.name})
+    if isinstance(expr, Forall | Exists | Sum):
+        bound: set[str] = set()
+        found: set[str] = set()
+        for var, domain in expr.binders:
+            # a domain is evaluated before its own binder exists
+            found |= sort_free_names(domain, var.name) - bound
+            bound.add(var.name)
+        for part in (expr.body, expr.guard):
+            found |= free_names(part) - bound
+        return frozenset(found)
+    if isinstance(expr, prim.ExpressionNode):
+        found = set()
+        for child in init_args(expr):
+            found |= free_names(child)
+        return frozenset(found)
+    if isinstance(expr, tuple | list | set | frozenset):
+        # a node's children, and an argument written as a list, a tuple or a
+        # set, which holds terms as deep as it is nested
+        return frozenset().union(*(free_names(item) for item in expr))
+    if isinstance(expr, dict):
+        # an argument written as a dict, whose values can be terms (#87)
+        return frozenset().union(*(free_names(item) for item in (*expr.keys(), *expr.values())))
+    return frozenset()
+
+
+def sort_free_names(sort: Any, own: str | None = None) -> frozenset[str]:
+    """The free names of what a sort carries (see :func:`free_names`).
+
+    A ``Fin`` bound, the pieces of a sum, a family's domain and codomain, and
+    a refinement's propositions are read, and a sort that is a term is read as
+    one, so a name standing where a sort should is free. A refinement is about
+    the variable it refines, ``own``, which is not free in it. One inside a
+    family's type refines the family's index, which has no name, so ``own`` is
+    ``None`` there.
+    """
+    from lanky.prelude import FinType, FnType, Refined, SumType
+
+    if isinstance(sort, Refined):
+        props: frozenset[str] = frozenset().union(*(free_names(p) for p in sort.props))
+        return sort_free_names(sort.base, own) | (props - {own})
+    if isinstance(sort, FinType):
+        return free_names(sort.bound)
+    if isinstance(sort, FnType):
+        return sort_free_names(sort.domain) | sort_free_names(sort.codomain)
+    if isinstance(sort, SumType):
+        return frozenset().union(*(sort_free_names(piece) for piece in sort.pieces))
+    if isinstance(sort, prim.ExpressionNode):
+        return free_names(sort)
+    return frozenset()
+
+
+#: Precedence, loosest first. ``_NEG`` is a unary minus, which binds more
+#: tightly than ``*`` and more loosely than ``**``, as Python has it.
+_OR, _AND, _NOT, _CMP, _ADD, _MUL, _NEG, _POW, _ATOM = range(9)
 
 
 def _parens(text: str, inner: int, outer: int) -> str:
@@ -2298,40 +2727,103 @@ def _binders_text(expr: Forall | Exists | Sum) -> str:
     return ", ".join(f"{var.name} in {domain}" for var, domain in expr.binders)
 
 
+def _negated(expr: Any) -> Any:
+    """What a product ``-1*t`` negates, ``t``, or ``None`` for anything else.
+
+    pymbolic builds ``-t`` as the product ``(-1)*t``, and ``-(x*y)`` as
+    ``(-1)*x*y``, whose negated part is the product ``x*y``.
+    """
+    if not isinstance(expr, prim.Product) or len(expr.children) < 2:
+        return None
+    first = expr.children[0]
+    if isinstance(first, bool) or not isinstance(first, int) or first != -1:
+        return None
+    rest = expr.children[1:]
+    return rest[0] if len(rest) == 1 else Product(rest)
+
+
 def _signed(child: Any) -> tuple[bool, str]:
     """Split a summand into a sign and its text, so that ``a + (-1)*b`` prints as ``a - b``.
 
     Subtraction is not a pymbolic node: ``a - b`` is a sum with a negated
     summand, and printing it as written is what makes a statement readable.
+    The text is what follows a binary minus, which binds as loosely as a
+    sum does.
     """
-    if isinstance(child, prim.Product) and child.children:
-        first = child.children[0]
-        if isinstance(first, int) and first == -1:
-            rest = child.children[1:]
-            if len(rest) == 1:
-                return True, _render(rest[0], _MUL)
-            return True, _render(Product(rest), _MUL)
-    if isinstance(child, int | float | Fraction) and child < 0:
+    negated = _negated(child)
+    if negated is not None:
+        return True, _render(negated, _MUL)
+    if isinstance(child, int | float | Fraction) and not isinstance(child, bool) and child < 0:
         return True, _render(-child, _MUL)
     return False, _render(child, _ADD)
 
 
 def _sum_text(children: Sequence[Any]) -> str:
-    """Render the summands of a sum, with subtraction where a summand is negated."""
+    """Render the summands of a sum, with subtraction where a summand is negated.
+
+    The first summand has no minus to stand behind, so a negation there is a
+    unary minus, rendered as one (see :func:`_render`): ``-(n // 2) + 1`` is
+    not ``-n // 2 + 1``, which Python reads as ``(-n) // 2 + 1``.
+    """
     parts = []
     for position, child in enumerate(children):
-        negated, text = _signed(child)
         if position == 0:
-            parts.append(f"-{text}" if negated else text)
-        else:
-            parts.append(f"{' - ' if negated else ' + '}{text}")
+            parts.append(_render(child, _ADD))
+            continue
+        negated, text = _signed(child)
+        parts.append(f"{' - ' if negated else ' + '}{text}")
     return "".join(parts)
 
 
+def _product_text(children: Sequence[Any], negated: bool = False) -> str:
+    """Render the factors of a product, the first behind a unary minus if ``negated``.
+
+    Python reads ``*``, ``/``, ``//`` and ``%`` from the left, so a factor
+    after the first one that is a product or a division itself is bracketed,
+    as the right operand of a left-associative operator has to be:
+    ``a*(b // c)`` is not ``a*b // c``, which is ``(a*b) // c``. A first
+    factor behind a minus is rendered as a unary minus's operand (see
+    :func:`_render`).
+    """
+    parts = []
+    for position, child in enumerate(children):
+        if position == 0:
+            parts.append(f"-{_render(child, _NEG)}" if negated else _render(child, _MUL))
+        else:
+            parts.append(_render(child, _MUL + 1))
+    return "*".join(parts)
+
+
+def _number_text(value: numbers.Number, outer: int) -> str:
+    """Render a number, bracketed where its sign or its slash would be misread.
+
+    ``Fraction(1, 3)`` reads ``1/3``, a division, and a negative number has
+    a unary minus in front: ``x**(1/3)`` and ``(-2)**n`` are not ``x**1/3``
+    and ``-2**n``, which Python reads as ``(x**1)/3`` and ``-(2**n)``.
+    """
+    text = str(value)
+    if "/" in text:
+        level = _MUL
+    elif text.startswith("-"):
+        level = _NEG
+    else:
+        level = _ATOM
+    return _parens(text, level, outer)
+
+
 def _render(expr: Any, outer: int) -> str:
-    """Render ``expr``, parenthesized for a context of precedence ``outer``."""
+    """Render ``expr``, parenthesized for a context of precedence ``outer``.
+
+    A negation, which pymbolic builds as the product ``(-1)*t``, is a unary
+    minus (#69): ``-x`` and ``-x*y`` rather than ``-1*x`` and ``-1*x*y``,
+    and ``(-x)**2`` with its brackets. What follows the minus is rendered at
+    the precedence of a unary minus, so ``-(a // b)`` keeps its brackets,
+    since Python reads ``-a // b`` as ``(-a) // b``.
+    """
     if isinstance(expr, Var | prim.Variable):
         return expr.name
+    if isinstance(expr, numbers.Number):
+        return _number_text(expr, outer)
     if isinstance(expr, Forall | Exists):
         universal = isinstance(expr, Forall)
         if not expr.binders:
@@ -2370,8 +2862,13 @@ def _render(expr: Any, outer: int) -> str:
     if isinstance(expr, prim.Sum):
         return _parens(_sum_text(expr.children), _ADD, outer)
     if isinstance(expr, prim.Product):
-        text = "*".join(_render(child, _MUL) for child in expr.children)
-        return _parens(text, _MUL, outer)
+        negated = _negated(expr)
+        if negated is None:
+            return _parens(_product_text(expr.children), _MUL, outer)
+        if isinstance(negated, prim.Product) and _negated(negated) is None:
+            # -x*y is (-x)*y, a product: its first factor stands behind the minus
+            return _parens(_product_text(negated.children, negated=True), _MUL, outer)
+        return _parens(f"-{_render(negated, _NEG)}", _NEG, outer)
     if isinstance(expr, prim.QuotientBase):
         if isinstance(expr, prim.FloorDiv):
             symbol = "//"
@@ -2382,7 +2879,8 @@ def _render(expr: Any, outer: int) -> str:
         text = f"{_render(expr.numerator, _MUL)} {symbol} {_render(expr.denominator, _POW)}"
         return _parens(text, _MUL, outer)
     if isinstance(expr, prim.Power):
-        text = f"{_render(expr.base, _POW)}**{_render(expr.exponent, _POW)}"
+        # ** groups to the right, so a power as the base is bracketed
+        text = f"{_render(expr.base, _POW + 1)}**{_render(expr.exponent, _POW)}"
         return _parens(text, _POW, outer)
     if isinstance(expr, prim.Call):
         args = ", ".join(_render(arg, _OR) for arg in expr.parameters)

@@ -106,13 +106,15 @@ lanky's `main`.
   under the table in a `CITED` line with its citation, and a fact left
   `assumed` that an oracle looked at and declined, saying why, in a
   `DECLINED` line with the reason it gave as `declined`, a standard provenance
-  key too; neither changes the exit code. Two claims with one fact id, which
-  a factory gives the claims it makes since an id names a definition, fail
-  the check: the first is checked and the others are named in a `DUPLICATE`
-  block, unchecked, rather than one silently replacing another. Files from
-  different source roots are checked in a process per root, so two
-  directories that each hold a `helpers.py` are each checked against their
-  own.
+  key too; neither changes the exit code. A statement that mentions a name
+  nothing in it binds, a misspelt parameter or sort, gets one from the
+  property tester, which names the name and draws nothing. Two claims with
+  one fact id, which a factory gives the claims it makes since an id names a
+  definition, fail the check: the first is checked and the others are named
+  in a `DUPLICATE` block, unchecked, rather than one silently replacing
+  another. Files from different source roots are checked in a process per
+  root, so two directories that each hold a `helpers.py` are each checked
+  against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
@@ -196,7 +198,12 @@ lanky's `main`.
   range(3)`), which used to be recorded as the quantifier's guard, and a
   symbolic domain `zip` or `enumerate` walks. A theorem refuses a parameter
   annotated with a builtin type, `x: int`, or naming one anywhere in its
-  annotation, `f: Fn[Fin[n], float]`, and names the sort meant.
+  annotation, `f: Fn[Fin[n], float]`, and names the sort meant. A term is no
+  key of a dict and no member of a set in an annotation: `{0: 1}.get(i, 0)`
+  and `i in {0, 1}` are refused, where the lookup answered from the term's
+  hash as if the key were absent and Lean proved what that left. Nor is a
+  term text, `f"{i}"`, or a truth value, `1 if i else 0`, which answered
+  the same at every value; compare it instead, `i != 0`.
 - One reading of arithmetic for every oracle. `Nat` means an integer that is
   not negative, and the Lean printer says so: a natural is an `Int` with
   `0 ≤ n` as a hypothesis, and `//` and `%` are `Int.fdiv` and `Int.fmod`,
@@ -204,7 +211,11 @@ lanky's `main`.
   tester tests, so a claim is refuted, or not, whether or not Lean is
   installed: `n - 1 >= 0` over `Nat` is refuted everywhere, and `n - 1 <= n`
   is still proved where Lean is. A comparison with no variable in it, which
-  only a plugin builds, is ascribed `Int` as well.
+  only a plugin builds, is ascribed `Int` as well. A `Fraction` is a number
+  like an `int`: `x ** Fraction(1, 3)` is a cube root, and not a power to the
+  float nearest a third. Every declaration Lean is sent is elaborated with
+  `autoImplicit` off, so a name its signature does not bind is an unknown
+  identifier to Lean and never a variable Lean picks a type for.
 - Vacuous claims are caught. When no draw satisfies a fact's hypotheses, the
   stronger oracles are asked whether the hypotheses alone prove `False`. If one
   does, the row reads `proved (vacuous)` and `lanky check` exits 1: the claim

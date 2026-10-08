@@ -288,8 +288,10 @@ def test_a_statement_becomes_lean_binders_and_hypotheses() -> None:
     assert statement.binders == (("x", "Int"), ("y", "Int"))
     assert statement.hypotheses == (("h0", "0 ≤ x"), ("h1", "0 ≤ y"))
     assert statement.goal == "x + y = y + x"
-    # each binder's guard follows it, as it does in print_lean
+    # each binder's guard follows it, as it does in print_lean, and the
+    # declaration is elaborated with auto-bound implicits off (#68)
     assert statement.source("omega") == (
+        "set_option autoImplicit false in\n"
         "theorem Lanky.commutes (x : Int) (h0 : 0 ≤ x) (y : Int) (h1 : 0 ≤ y) : "
         "x + y = y + x := by\n  omega\n"
     )
@@ -304,7 +306,7 @@ def test_an_index_typed_variable_carries_its_bounds_as_hypotheses() -> None:
 
 def test_the_scan_statement_prints_as_a_lean_theorem() -> None:
     statement = statement_of(scan_monotone.term, "scan_monotone")
-    assert statement.source("omega").splitlines()[0] == (
+    assert statement.source("omega").splitlines()[1] == (
         "theorem Lanky.scan_monotone (size : Int) (h0 : 0 ≤ size) (cnt : Int → Nat) "
         "(off : Int → Nat) (h1 : (off 0 : Int) = 0) "
         "(h2 : ∀ r : Int, 0 ≤ r → r < size → "
@@ -714,7 +716,7 @@ def test_a_theorem_named_like_a_keyword_is_declared_under_its_quoted_name() -> N
     statement = statement_of(scoped.term, "scoped")
     assert statement.name == "«scoped»"
     assert statement.source("omega").startswith(
-        "theorem Lanky.«scoped» (a : Int) (h0 : 0 ≤ a) "
+        "set_option autoImplicit false in\ntheorem Lanky.«scoped» (a : Int) (h0 : 0 ≤ a) "
     )
     mathlib = statement_of(scoped.term, "scoped", mathlib=True)
     assert mathlib.declared_name == "Lanky.«scoped»"
@@ -756,6 +758,7 @@ def test_a_variable_named_like_a_hypothesis_does_not_meet_one() -> None:
     statement = statement_of(_named_like_a_hypothesis().term, "named")
     assert statement.hypotheses == (("h0_1", "0 ≤ h0"), ("h1", "0 ≤ b"))
     assert statement.source("omega").startswith(
+        "set_option autoImplicit false in\n"
         "theorem Lanky.named (h0 : Int) (h0_1 : 0 ≤ h0) (b : Int) (h1 : 0 ≤ b) : "
         "h0 + b = b + h0"
     )
@@ -817,7 +820,7 @@ def test_a_claim_named_like_a_core_declaration_is_declared_in_a_namespace() -> N
     for name in ("and_comm", "trivial", "id", "absurd", "congr"):
         statement = statement_of(commutes.term, name)
         assert statement.declared_name == f"Lanky.{name}"
-        assert statement.source("omega").startswith(f"theorem Lanky.{name} (x : Int) ")
+        assert f"\ntheorem Lanky.{name} (x : Int) " in statement.source("omega")
     assert statement_of(commutes.term, "inferInstanceAs").declared_name == (
         "Lanky.«inferInstanceAs»"
     )
@@ -1025,7 +1028,7 @@ def test_a_natural_is_an_integer_with_its_bound_as_a_hypothesis() -> None:
     """
     assert print_lean(_truncated.term) == "∀ n : Int, 0 ≤ n → n - 1 ≥ 0"
     statement = statement_of(_truncated.term, "truncated")
-    assert statement.source("omega").splitlines()[0] == (
+    assert statement.source("omega").splitlines()[1] == (
         "theorem Lanky.truncated (n : Int) (h0 : 0 ≤ n) : n - 1 ≥ 0 := by"
     )
     assert print_lean(one_below.term) == "∀ m : Int, 0 ≤ m → m - 1 ≤ m"
@@ -2715,6 +2718,27 @@ def test_a_session_runs_lean_source_directly(lean_oracle: LeanOracle) -> None:
     closed, detail = lean_oracle.session.run("theorem t (x : Nat) : x + 1 = x := by omega\n")
     assert not closed
     assert "omega" in detail
+
+
+def test_lean_refuses_a_name_the_declaration_does_not_bind(lean_oracle: LeanOracle) -> None:
+    """#68: an unbound name is an unknown identifier to Lean, and not an implicit variable.
+
+    The printer declines a statement with a free name (#64). Behind it, Lean
+    elaborates every declaration lanky sends with ``autoImplicit`` off, so
+    one the printer let through is refused rather than bound at a type Lean
+    infers: ``x - 1 ≥ 0`` with ``x`` bound by nothing was a statement about a
+    natural ``x``, which ``omega`` proved, and still is with the option on.
+    """
+    from lanky.lean import ELABORATION_OPTIONS
+
+    statement = LeanStatement("free_goal", (), (), "x - 1 ≥ 0")
+    source = statement.source("omega")
+    assert source.startswith(f"{ELABORATION_OPTIONS}\ntheorem Lanky.free_goal : ")
+    closed, detail = lean_oracle.session.run(source)
+    assert not closed
+    assert "Unknown identifier" in detail or "unknown identifier" in detail, detail
+    closed, detail = lean_oracle.session.run(source.removeprefix(f"{ELABORATION_OPTIONS}\n"))
+    assert closed, detail
 
 
 def test_checking_the_example_file_proves_the_scan(lean_oracle: LeanOracle) -> None:

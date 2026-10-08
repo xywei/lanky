@@ -173,6 +173,7 @@ statement on one line):
 ```text
 lean_version: v4.29.1
 
+set_option autoImplicit false in
 theorem Lanky.scan_monotone (n : Int) (h0 : 0 ≤ n) (cnt : Int → Nat) (off : Int → Nat)
     (h1 : (off 0 : Int) = 0)
     (h2 : ∀ r : Int, 0 ≤ r → r < n → (off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) :
@@ -190,6 +191,11 @@ theorem Lanky.scan_monotone (n : Int) (h0 : 0 ≤ n) (cnt : Int → Nat) (off : 
     by_cases hlt : (k : Int) < a
     ...
 ```
+
+The first line keeps Lean from binding a name the theorem does not, at a
+type it would pick: lanky declines a statement with such a name before Lean
+sees it, and with `autoImplicit` off Lean would refuse one too, as an unknown
+identifier.
 
 Three representation choices are visible there. A natural is an `Int` with
 `0 ≤ n` as a hypothesis, which is the integer reading every oracle shares (see
@@ -903,6 +909,27 @@ are inconsistent and its goal's domain empty, which they are not.
   `min`. `def wrong(x: int) -> x - 1 >= 0` is refused too, naming `Int` and
   `Nat`: `int` is Python's type, and not a sort. So is `f: Fn[Fin[n], float]`,
   naming `Real`.
+- Look a point up in a dict: `def looked_up(n: Nat, f: Fn[Fin[n], Nat]) ->
+  all(f(i) * 0 == {0: 1}.get(i, 0) for i in Fin[n])`. A dict finds a key by
+  its hash, and a term's hash is its structure's, so the lookup would answer
+  `0`, as if `i` were never `0`, and the claim would be `f(i)*0 == 0`. A term
+  is unhashable to an annotation's own code instead, so the theorem is
+  refused where it is defined (`i was hashed by the annotation, as a dict or
+  a set lookup or display there hashes its keys`), and so is `i in {0, 1}`.
+  A table indexed by a point is a family, with hypotheses that give its
+  values.
+- Misspell a name: `def typo(n: Nat) -> n + m >= n`. No parameter binds `m`,
+  so no draw gives it a value, and the tester draws nothing; Lean is not
+  handed it either. The row reads `assumed`, and the tester says why under
+  the table:
+
+  ```text
+  DECLINED typo at typo.py:7: n : Nat |- n + m >= n
+    property-test: the statement mentions m, which no parameter or binder of it binds, so no draw gives it a value and the statement cannot be tested; a name misspelt, not imported, or meant as a parameter is the usual cause
+  ```
+
+  A misspelt sort, `f: Fn[Fin[n], Flaot]`, is named the same way. Under
+  `pytest` such a theorem fails, naming the name.
 - Choose a branch inside a quantifier: `all((f(i) if i < 3 else -1) >= 0 for
   i in Fin[n])`. The conditional asks `i < 3` for a truth value, which lanky
   has only where it records a guard, so it is refused where the theorem is
