@@ -448,7 +448,8 @@ class SymbolicMixin:
         A proposition answers for itself (:class:`PropositionMixin`); this is
         the truth value of a number, which Python reads as ``x != 0``.
         pymbolic answers it from the structure, ``True`` for ``i`` and
-        ``False`` for ``i*0``, and asks it so itself, to simplify a product.
+        ``False`` for ``i*0``, and asks it so itself, to flatten a sum or a
+        product.
 
         Raises:
             SymbolicBoolError: If the truth value is asked for by the code of an
