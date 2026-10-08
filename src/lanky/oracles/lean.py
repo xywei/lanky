@@ -1759,7 +1759,7 @@ class LeanOracle:
         if shutil.which("lean") is None:
             return False, "lean is not on PATH"
         if not _lean_interact_installed():
-            return False, "lean_interact is not installed (pip install lanky[lean])"
+            return False, 'lean_interact is not installed (pip install "lanky[lean]")'
         session = self.session
         if session.mathlib is not None:
             return self._mathlib_availability(session)

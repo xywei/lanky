@@ -154,7 +154,7 @@ class CasOracle:
         if os.environ.get("LANKY_CAS_DISABLE"):
             return False, "disabled by LANKY_CAS_DISABLE"
         if find_spec("sympy") is None:
-            return False, "sympy is not installed (pip install lanky[cas])"
+            return False, 'sympy is not installed (pip install "lanky[cas]")'
         installed = _sympy_version()
         return True, f"sympy {installed}" if installed else ""
 

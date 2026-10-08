@@ -13,10 +13,14 @@ the demonstration's the other way round. That holds for the `gap.py` blocks in
 [One reading of arithmetic](#one-reading-of-arithmetic) too: the suite writes
 `gap.py` from the snippet shown there and checks it both ways.
 
+To use lanky in a project of your own, `pip install lanky`; the README's
+[Install](../README.md#install) section has the extras, Lean and Mathlib. To
+follow along here, clone the repository, which has the examples:
+
 ```sh
 git clone https://github.com/xywei/lanky.git
 cd lanky
-uv sync --group dev              # add --extra lean for the Lean oracle
+uv sync --group dev              # add --extra lean for the Lean oracle, --extra cas for the CAS one
 ```
 
 ## The file
@@ -157,7 +161,7 @@ on the first fact and then remembered, so after anything has been attempted the
 line names the Lean version in use instead.
 
 On a machine with no Lean it reads
-`lean (kernel): unavailable: lean_interact is not installed (pip install lanky[lean])`,
+`lean (kernel): unavailable: lean_interact is not installed (pip install "lanky[lean]")`,
 which is a one-line reason and not an error.
 
 ## Read the provenance
@@ -535,7 +539,7 @@ The `cas` extra installs sympy, and with it lanky's oracle `cas`, of the trust
 class `heuristic`:
 
 ```sh
-uv add "lanky[cas]"
+uv sync --group dev --extra cas    # in this checkout; pip install "lanky[cas]" elsewhere
 ```
 
 It takes a statement that asserts equations, alone, in a conjunction or under

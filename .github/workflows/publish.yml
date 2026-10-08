@@ -10,14 +10,43 @@ jobs:
     permissions:
       # Required for PyPI Trusted Publishing (OIDC).
       id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v5
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
+      # A tag publishes the version the package says it is, so the two have to
+      # be the same: v0.1.0 for version 0.1.0 in pyproject.toml and in
+      # lanky.__version__. A tag that is not stops here, before anything is
+      # built, and nothing reaches PyPI.
+      - name: Check that the tag is the package's version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          project=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          module=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/lanky/__init__.py)
+          echo "tag ${GITHUB_REF_NAME}, pyproject.toml ${project}, lanky.__version__ ${module}"
+          if [[ "${tag}" != "${project}" || "${tag}" != "${module}" ]]; then
+            echo "the tag ${GITHUB_REF_NAME} is not the package's version: pyproject.toml has ${project}, lanky.__version__ ${module}" >&2
+            exit 1
+          fi
+
       - name: Build sdist and wheel
         run: uv build
+
+      # What was built is what the tag names, one sdist and one wheel, and
+      # their metadata renders on PyPI.
+      - name: Check the distributions
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          ls dist
+          test -f "dist/lanky-${tag}.tar.gz"
+          test -f "dist/lanky-${tag}-py3-none-any.whl"
+          test "$(ls dist | wc -l)" -eq 2
+          uvx twine check --strict dist/*
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
