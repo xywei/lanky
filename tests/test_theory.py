@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import threading
 
 import pytest
 
@@ -11,7 +12,7 @@ from lanky.ledger import Fact, Status
 from lanky.oracles.test import TestOracle
 from lanky.plugins import registry
 from lanky.prelude import Fin, Fn, Int, Nat
-from lanky.terms import Var
+from lanky.terms import Var, evaluate_annotations
 from lanky.theory import Axiom, Theorem
 
 
@@ -521,3 +522,52 @@ def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
         """True: two residues, and every key is 5, so max gives the first, 0."""
 
     assert concrete.statement == "n : Nat |- 2 + n >= 2"
+
+
+def test_a_thread_reading_an_annotation_unmarks_only_its_own() -> None:
+    """#73: the annotation being read is each thread's own.
+
+    The code of the annotations being read was one list for the process, and
+    reading one pushed its code and popped the last. A thread that began
+    reading before another and finished first popped the other's code, and a
+    dict lookup keyed by a term in the other's annotation then answered from
+    the hash. Here the first annotation is read in a thread and held until the
+    second one, read here, has begun; the first then finishes, and the second
+    looks ``n`` up in a dict, which is refused.
+    """
+    first_in, second_in, first_out = threading.Event(), threading.Event(), threading.Event()
+
+    def hold_first() -> int:
+        first_in.set()
+        assert second_in.wait(30)
+        return 0
+
+    def hold_second() -> int:
+        second_in.set()
+        assert first_out.wait(30)
+        return 0
+
+    namespace: dict = {"hold_first": hold_first, "hold_second": hold_second}
+    source = (
+        "from __future__ import annotations\n"
+        "def first() -> hold_first():\n    pass\n"
+        "def second() -> hold_second() + {0: 1}.get(n, 0):\n    pass\n"
+    )
+    exec(compile(source, "<threads>", "exec"), namespace)
+
+    def read_first() -> None:
+        try:
+            evaluate_annotations(namespace["first"])
+        finally:
+            first_out.set()
+
+    thread = threading.Thread(target=read_first)
+    thread.start()
+    try:
+        assert first_in.wait(30)
+        with pytest.raises(TypeError, match="n was hashed by the annotation"):
+            evaluate_annotations(namespace["second"])
+    finally:
+        second_in.set()
+        thread.join(30)
+    assert not thread.is_alive()

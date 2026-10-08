@@ -402,7 +402,7 @@ class SymbolicMixin:
                 being evaluated, as a dict or a set lookup or display there
                 asks for it (see :func:`_refuse_hashing`).
         """
-        if _ANNOTATION_CODE:
+        if _ANNOTATION_CODE.get():
             _refuse_hashing(self, sys._getframe(1))
         return super().__hash__()  # type: ignore[misc]
 
@@ -719,8 +719,11 @@ def _tests_a_value(listing: tuple[Any, ...], position: int) -> bool:
 #: The code of each annotation being evaluated, outermost first, by the ``id``
 #: of each code object, which the mapping keeps alive: the annotation compiled,
 #: and every generator expression and lambda in it (see
-#: :func:`evaluate_annotations`).
-_ANNOTATION_CODE: list[dict[int, Any]] = []
+#: :func:`evaluate_annotations`). It is a context's own, so a thread that
+#: finishes reading an annotation unmarks its own and not another thread's.
+_ANNOTATION_CODE: ContextVar[tuple[dict[int, Any], ...]] = ContextVar(
+    "lanky_annotation_code", default=()
+)
 
 
 def _nested_code(code: Any) -> dict[int, Any]:
@@ -743,11 +746,11 @@ def _nested_code(code: Any) -> dict[int, Any]:
 @contextmanager
 def _reading(code: Any) -> Iterator[None]:
     """Mark ``code``, an annotation compiled, as the annotation being evaluated."""
-    _ANNOTATION_CODE.append(_nested_code(code))
+    token = _ANNOTATION_CODE.set((*_ANNOTATION_CODE.get(), _nested_code(code)))
     try:
         yield
     finally:
-        _ANNOTATION_CODE.pop()
+        _ANNOTATION_CODE.reset(token)
 
 
 def _refuse_hashing(term: Any, frame: Any) -> None:
@@ -782,7 +785,7 @@ def _refuse_hashing(term: Any, frame: Any) -> None:
     if frame is not None and frame.f_code is BuiltinName.__call__.__code__:
         frame = frame.f_back
     code = frame.f_code if frame is not None else None
-    if not any(id(code) in reading for reading in _ANNOTATION_CODE):
+    if not any(id(code) in reading for reading in _ANNOTATION_CODE.get()):
         return
     raise TypeError(
         f"{render(term)} was hashed by the annotation, as a dict or a set lookup "
@@ -806,7 +809,7 @@ def _hashed_unless_annotation(cls: type) -> type:
     generated = cls.__hash__
 
     def __hash__(self: Any) -> int:
-        if _ANNOTATION_CODE:
+        if _ANNOTATION_CODE.get():
             _refuse_hashing(self, sys._getframe(1))
         return generated(self)
 

@@ -153,8 +153,10 @@ loopty uses changes, and loopty's floor follows it.
     the annotation calls by name runs in lanky's `BuiltinName`, whose frame
     stands in for the annotation's, so `set(i for k in range(1))`, `dict((i,
     1) for k in range(1))` and a key function handed to `max` or `sorted`
-    that looks `i` up are refused too. This is the frame-based reading the
-    `if` clause check uses (#63). A function the annotation calls is not the
+    that looks `i` up are refused too. Which annotation is being read is a
+    context's own, so two threads reading annotations at once do not unmark
+    each other's. This is the frame-based reading the `if` clause check uses
+    (#63). A function the annotation calls is not the
     annotation's code, and a lookup there is not refused (#80).
   - *Every declaration is elaborated with `autoImplicit` off* (#68). Lean
     binds a name a declaration's signature does not know as an implicit
