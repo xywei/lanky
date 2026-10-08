@@ -99,6 +99,11 @@ worth the `tested` reading it rests on.
   draw reaches, claims whose annotations cannot be run at a point, and the
   points Python cannot answer at or rounding decides. The quickstart has a
   Check the reading section, and every ledger in both is run again.
+- The publish workflow builds in a job that can only read the repository, with
+  a checkout that keeps no credentials, and uploads from a second job that
+  alone may ask for the token PyPI trusts and runs no checkout or build. Before,
+  one job held `id-token: write` while it ran the build, so the build backend
+  or anything it pulled in could have asked for that token.
 
 ## [0.1.0] - 2026-10-08
 
