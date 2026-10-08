@@ -84,6 +84,7 @@ __all__ = [
     "Var",
     "binder_assignments",
     "binders",
+    "concrete_sorts",
     "conjoin",
     "conjuncts",
     "disjoin",
@@ -99,7 +100,9 @@ __all__ = [
     "init_args",
     "log",
     "render",
+    "rerunning",
     "sort_free_names",
+    "sort_points",
     "sqrt",
     "structurally_equal",
     "sum_",
@@ -1242,6 +1245,47 @@ def current_trace() -> _Trace | None:
     generic point or to enumerate concretely.
     """
     return _TRACE_STACK[-1] if _TRACE_STACK else None
+
+
+#: What an unbounded sort iterates while an annotation is rerun at concrete
+#: values (see :func:`concrete_sorts`), or ``None`` outside such a rerun.
+_SORT_POINTS: ContextVar[Callable[[Any], Sequence[Any]] | None] = ContextVar(
+    "lanky_sort_points", default=None
+)
+
+
+@contextmanager
+def concrete_sorts(points: Callable[[Any], Sequence[Any]]) -> Iterator[None]:
+    """Iterate every sort concretely while the block runs: an annotation rerun at a point.
+
+    An annotation is read once on terms, where ``for k in Nat`` binds one
+    generic point. The faithfulness check (:mod:`lanky.faithful`) runs the
+    same annotation again at concrete values of its parameters, and there a
+    sort is a domain to walk like any other: ``Nat``, which has no end,
+    iterates ``points(Nat)``, a finite sample of it, which the check then
+    evaluates the term over too, and a ``Fin`` whose bound is a number that
+    is not an ``int`` is walked as the evaluator walks it, to the bound's
+    integer part.
+    """
+    token = _SORT_POINTS.set(points)
+    try:
+        yield
+    finally:
+        _SORT_POINTS.reset(token)
+
+
+def sort_points(sort: Any) -> Sequence[Any] | None:
+    """The points ``sort`` iterates in a rerun at concrete values, or ``None`` outside one.
+
+    See :func:`concrete_sorts`.
+    """
+    points = _SORT_POINTS.get()
+    return None if points is None else points(sort)
+
+
+def rerunning() -> bool:
+    """Whether an annotation is being rerun at concrete values (see :func:`concrete_sorts`)."""
+    return _SORT_POINTS.get() is not None
 
 
 class _Driven:
