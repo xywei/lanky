@@ -444,6 +444,14 @@ loopty uses changes, and loopty's floor follows it.
   the table as a `WARNING`, with exit code 0. A fact a stronger oracle
   established gets no such reason from its cross-check, since the pass is
   not what it rests on.
+- **A comparison of an `^`, a `<<` or a `>>` is a proposition.** The three
+  built pymbolic's own nodes, which no lanky operator re-tagged, so `==` of
+  one compared it structurally and answered `False`, and `<` raised a
+  `TypeError`: loopty traced a kernel's `when((k ^ 1) == 0)` as a guard that
+  never holds, and `(k << 1) != 4` as one that always does. They are lanky's
+  `BitwiseXor`, `LeftShift` and `RightShift` now, re-tagged as the other
+  arithmetic is, and their comparisons build `Comparison`. `&`, `|` and `~`
+  stay the logical connectives.
 
 ### Notes
 

@@ -337,7 +337,10 @@ class SymbolicMixin:
     that the next operator applied to it is lanky's again. Comparisons build
     :class:`Comparison` instead of answering ``bool``; ``&``, ``|`` and ``~``
     build the logical connectives rather than bitwise ones, because lanky terms
-    are mathematics and not bit patterns.
+    are mathematics and not bit patterns. ``^``, ``<<`` and ``>>`` are integer
+    arithmetic, and re-tagged as the rest is: left as pymbolic's own nodes,
+    ``(k ^ 1) == 0`` compared them structurally and answered ``False``, and
+    ``(k << 2) > 5`` raised, where a program means the proposition.
     """
 
     def __hash__(self) -> int:
@@ -409,6 +412,7 @@ for _name in (
     "add", "radd", "sub", "rsub", "mul", "rmul",
     "truediv", "rtruediv", "floordiv", "rfloordiv",
     "mod", "rmod", "pow", "rpow",
+    "xor", "rxor", "lshift", "rlshift", "rshift", "rrshift",
 ):
     setattr(SymbolicMixin, f"__{_name}__", _make_binary(_name))
 
@@ -709,6 +713,18 @@ class Power(SymbolicMixin, prim.Power):
     """Exponentiation."""
 
 
+class BitwiseXor(SymbolicMixin, prim.BitwiseXor):
+    """Exclusive or, of integers bit by bit, as in ``k ^ 1``."""
+
+
+class LeftShift(SymbolicMixin, prim.LeftShift):
+    """Left shift of an integer, as in ``k << 2``."""
+
+
+class RightShift(SymbolicMixin, prim.RightShift):
+    """Right shift of an integer, as in ``k >> 1``."""
+
+
 class Call(SymbolicMixin, prim.Call):
     """Application of a family to arguments, as in ``off(r)``."""
 
@@ -814,6 +830,9 @@ _COUNTERPART: dict[type, type] = {
     prim.FloorDiv: FloorDiv,
     prim.Remainder: Remainder,
     prim.Power: Power,
+    prim.BitwiseXor: BitwiseXor,
+    prim.LeftShift: LeftShift,
+    prim.RightShift: RightShift,
     prim.Call: Call,
     prim.Subscript: Subscript,
     prim.Comparison: Comparison,

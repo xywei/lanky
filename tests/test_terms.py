@@ -61,6 +61,29 @@ def test_comparison_is_a_term_not_a_bool() -> None:
     assert evaluate(claim, {"n": 3}) is False
 
 
+def test_a_comparison_of_an_xor_or_a_shift_is_a_term_not_a_bool() -> None:
+    # ^, << and >> built pymbolic's own nodes, whose == compared structurally
+    # and answered False, and whose < raised: a kernel's when((k ^ 1) == 0)
+    # was traced as a guard that never holds.
+    n = Var("n")
+    for term, shown in (
+        (n ^ 1, "n ^ 1"),
+        (1 ^ n, "1 ^ n"),
+        (n << 2, "n << 2"),
+        (2 << n, "2 << n"),
+        (n >> 1, "n >> 1"),
+        (8 >> n, "8 >> n"),
+    ):
+        assert render(term) == shown
+        for claim in (term == 0, term != 0, term < 3, term >= n, (term + 1) * 2 > n):
+            assert isinstance(claim, Comparison), claim
+    assert evaluate((n ^ 1) == 0, {"n": 1}) is True
+    assert evaluate((n ^ 1) == 0, {"n": 2}) is False
+    assert evaluate((n << 2) > 5, {"n": 2}) is True
+    assert evaluate((8 >> n) != 2, {"n": 2}) is False
+    assert structurally_equal(n ^ 1, prim.BitwiseXor((Var("n"), 1)))
+
+
 def test_truth_value_of_a_proposition_is_refused() -> None:
     with pytest.raises(SymbolicBoolError):
         bool(Var("n") == 0)
