@@ -434,11 +434,22 @@ class CheckVerb:
         The lines come right after those, in the table's order, since they
         explain ``assumed`` rows too. Nothing here fails the check: an
         assumed fact is a claim nobody established, not a broken one.
+
+        A claim's reading of its annotations (:mod:`lanky.faithful`) that
+        could not be checked gets a line only where something rests on it,
+        a pass or a proof of the claim. Otherwise the claim is an axiom, or
+        is ``assumed`` itself, and its ``CITED`` or ``DECLINED`` line says
+        why it is worth nothing; a reading of a boundary no draw can be made
+        of said it once more for every axiom about one.
         """
+        resting = {entry for fact in ledger for entry in fact.rests_on}
         declined = [
             fact
             for fact in ledger
-            if fact.status is Status.ASSUMED and not fact.is_axiom and decline_lines(fact)
+            if fact.status is Status.ASSUMED
+            and not fact.is_axiom
+            and (not fact.is_reading or fact.id in resting)
+            and decline_lines(fact)
         ]
         if not declined:
             return

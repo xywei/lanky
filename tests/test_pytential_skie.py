@@ -20,7 +20,7 @@ from pathlib import Path
 import pymbolic.primitives as prim
 import pytest
 
-from conftest import plugin_arguments
+from conftest import claims, plugin_arguments
 from lanky import cli
 from lanky.check import check_path, import_path
 from lanky.ledger import Status
@@ -199,9 +199,18 @@ def test_lanky_check_decides_each_verdict_under_the_axioms_it_applied() -> None:
         assert (fact.status, fact.decided_by) == (Status.ASSUMED, None)
         assert "Colton and R. Kress" in fact.provenance["cite"]
     ids = {owner: fact.id for owner, fact in axioms.items()}
+    # each axiom's reading of its annotations (#91) cannot be checked, since
+    # no boundary can be drawn, and nothing rests on it: an axiom is assumed
+    readings = [fact for fact in facts if fact.is_reading]
+    assert [fact.owner for fact in readings] == AXIOMS
+    for fact in readings:
+        assert fact.status is Status.ASSUMED
+        assert "no sampler for C2Boundary" in fact.provenance["declined"]
+    resting = {entry for fact in facts for entry in fact.rests_on}
+    assert not resting & {fact.id for fact in readings}
     claims: dict[str, dict] = {}
     for fact in facts:
-        if fact.kind != "axiom":
+        if fact.kind != "axiom" and not fact.is_reading:
             claims.setdefault(fact.owner, {})[fact.kind] = fact
     assert list(claims) == list(EXPECTED)
     for owner, (jumps, under) in EXPECTED.items():
@@ -273,7 +282,7 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(capsys) -> None:
         if line.startswith(("$ ", "```")):
             break
         shown.append(line)
-    proved = any(fact.status is Status.PROVED for fact in check_path(DEMO))
+    proved = any(fact.status is Status.PROVED for fact in claims(check_path(DEMO)))
     if proved:
         shown = [_with_lean(line) for line in shown]
     assert cli.main(["check", str(DEMO)]) == 0
@@ -503,7 +512,7 @@ def test_a_jump_relation_copied_down_wrong_refutes_the_rewrite(tmp_path, capsys)
     """The engine applies the axioms as written, so a wrong one shows in what uses it."""
     path = write(tmp_path, MISCOPIED)
     ledger = check_path(path)
-    jump, _compact, rewrite, coefficient, verdict = ledger
+    jump, _compact, rewrite, coefficient, verdict = claims(ledger)
     assert (rewrite.status, rewrite.decided_by) == (Status.REFUTED, "layer-rules")
     assert rewrite.rests_on == (jump.id,)
     assert coefficient.status in (Status.PROVED, Status.TESTED)
@@ -543,7 +552,7 @@ def single():
 
 def test_claiming_the_second_kind_of_a_compact_operator_is_refuted(tmp_path) -> None:
     ledger = check_path(write(tmp_path, SINGLE))
-    _jump, _compact, rewrite, coefficient, verdict = ledger
+    _jump, _compact, rewrite, coefficient, verdict = claims(ledger)
     assert rewrite.status is Status.DECIDED
     assert coefficient.statement == "coefficient of I: 0 != 0"
     assert coefficient.status is Status.REFUTED

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import claims
 from lanky import cli
 from lanky.check import check_path
 from lanky.ledger import Status
@@ -216,15 +217,18 @@ def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order
     assert rows[1].startswith("decided (heuristic)     cas     sumpy_recurrence.py:")
     assert rows[2].startswith("assumed under harmonic  -       sumpy_recurrence.py:")
     assert "every order: reconstructed(a, b) == diff(" in rows[2]
-    (axiom_row,) = [line for line in printed.splitlines() if "  harmonic  " in line]
+    axiom_row, reading_row = [line for line in printed.splitlines() if "  harmonic  " in line]
     assert axiom_row.startswith("assumed (axiom)         -       sumpy_recurrence.py:")
-    assert "4 facts: 2 assumed, 1 decided, 1 tested" in printed
+    # the axiom's annotations, sympy's Laplacian included, run again at drawn
+    # points, compute what its term does (#91)
+    assert reading_row.startswith("tested                  python  sumpy_recurrence.py:")
+    assert "5 facts: 2 assumed, 1 decided, 2 tested" in printed
     assert re.search(r"^CITED harmonic at sumpy_recurrence\.py:\d+: R\. Kress, ", printed, re.M)
 
 
 def _by_owner() -> tuple:
     """The demonstration's ledger: the axiom, then the claim at points, as formulas, every order."""
-    harmonic, sampled, symbolic, every_order = check_path(DEMO)
+    harmonic, sampled, symbolic, every_order = claims(check_path(DEMO))
     assert harmonic.owner == "harmonic"
     assert sampled.owner == symbolic.owner == every_order.owner == "compressed_taylor"
     return harmonic, sampled, symbolic, every_order

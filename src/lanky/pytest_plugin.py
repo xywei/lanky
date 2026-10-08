@@ -11,7 +11,9 @@ skipped as well, with the guard in the reason.
 A theorem bound to a name starting with an underscore is not collected, which
 is how a module keeps a statement it does not want run. A theorem that
 mentions a name nothing in it binds fails, naming it, since no draw gives the
-name a value.
+name a value. So does one whose term is not what its annotations compute,
+which the faithfulness check finds by running them again at drawn points
+(:mod:`lanky.faithful`, #91): the draws would test another statement.
 
 An axiom is collected too. The ledger takes it on its citation, and a
 counterexample to the statement as written is how a citation copied down wrong
@@ -27,6 +29,7 @@ from typing import Any
 
 import pytest
 
+from lanky.ledger import Status
 from lanky.testing import OpenStatement
 from lanky.theory import Theorem
 
@@ -34,7 +37,7 @@ __all__ = ["TheoremItem", "pytest_pycollect_makeitem"]
 
 
 class TheoremFailure(AssertionError):
-    """A theorem was refuted by a draw, or mentions a name nothing in it binds."""
+    """A theorem was refuted by a draw, mentions a name nothing in it binds, or is misread."""
 
 
 class TheoremItem(pytest.Item):
@@ -50,8 +53,21 @@ class TheoremItem(pytest.Item):
         A statement that mentions a name nothing in it binds, a misspelt
         parameter or sort, fails without a draw (see
         :class:`lanky.testing.OpenStatement`): it passed when the name was
-        never evaluated, as in ``(n >= 0) | (m > 0)``.
+        never evaluated, as in ``(n >= 0) | (m > 0)``. So does a statement
+        whose term is not what its annotations compute (see
+        :meth:`lanky.theory.Theorem.faithful_fact`), before a draw of the
+        term is made: ``all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n])``
+        has the term ``f(i)*0 == 1 or True``, which every draw passes.
         """
+        reading = self.theorem.faithful_fact()
+        if reading.status is Status.REFUTED:
+            provenance = reading.provenance
+            raise TheoremFailure(
+                f"{self.theorem.statement}\n"
+                f"the term is not what the annotations compute: {provenance.get('witness')}\n"
+                f"counterexample: {provenance.get('counterexample')}\n"
+                f"{provenance.get('reason')}"
+            )
         try:
             report = self.theorem.report()
         except OpenStatement as exc:

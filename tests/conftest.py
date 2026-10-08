@@ -52,6 +52,21 @@ def cas(monkeypatch):
     return sympy
 
 
+def claims(ledger) -> list:
+    """The facts of a ledger, without the ``faithful`` fact that follows each claim (#91).
+
+    A theorem and an axiom are two facts in a ledger: the claim, and the fact
+    that its term computes what its annotations compute
+    (:mod:`lanky.faithful`). A test about the claim takes the claims. The
+    entries of a ``--json`` ledger are read the same way.
+    """
+    return [
+        fact
+        for fact in ledger
+        if (fact["kind"] if isinstance(fact, dict) else fact.kind) != "faithful"
+    ]
+
+
 def plugin_arguments() -> list[str]:
     """``["-p", "lanky.pytest_plugin"]`` when pytest would not load lanky's plugin itself.
 

@@ -312,14 +312,22 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
 
     A claim read off annotations names the fact that says its term computes
     what the annotations compute (#91, :mod:`lanky.faithful`): its id is the
-    provenance key ``faithful``. A decision or a proof of the claim rests on
-    it, so the ledger counts the reading as the weakest link it may be
-    (:func:`_rest_on_the_reading`). When it is refuted, the claim also
-    carries why, as ``unfaithful``, and is offered to no oracle at all: its
-    term says something else than what was written, so a proof of the term
-    would be a proof of another statement, and a test of it a test of one. It
-    stays ``assumed``, resting on the refuted reading, which fails the check.
+    provenance key ``faithful``. Whatever an oracle establishes about the
+    claim is about its term, and is about the claim only as far as the term
+    reads the annotations, so the claim rests on that fact
+    (:func:`_rest_on_the_reading`) and the ledger counts the reading as the
+    weakest link it may be: a proof under a reading the draws tested is
+    worth ``tested``. When the reading is refuted, the claim carries why, as
+    ``unfaithful``, and is offered to no oracle at all, the property tester
+    included: its term says something else than what was written, so a
+    proof of the term would be a proof of another statement, and a pass a
+    pass of one. It stays ``assumed``, resting on the refuted reading, and
+    the refutation fails the check. The reading's fact itself
+    (:attr:`~lanky.ledger.Fact.is_reading`) was established when it was
+    made, by running the annotations, and is returned as it is.
     """
+    if fact.is_reading:
+        return fact
     if fact.provenance.get("unfaithful"):
         if verbose:
             print("  not offered to the oracles: its term is not what the annotations compute")
@@ -331,7 +339,7 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             for note in gaps:
                 print(f"  semantics: {note}")
     if fact.is_axiom:
-        return _rest_on_the_reading(_examine_axiom(fact, verbose=verbose))
+        return _examine_axiom(fact, verbose=verbose)
     for oracle in registry.sorted_oracles():
         available, reason = oracle_availability(oracle)
         if not available:
@@ -356,24 +364,25 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
 
 
 def _rest_on_the_reading(fact: Fact) -> Fact:
-    """``fact``, resting on its ``faithful`` fact where that is what it is worth.
+    """``fact``, resting on its claim's ``faithful`` fact, where it is worth anything.
 
     A claim read off annotations names its reading's fact as ``faithful`` in
-    its provenance (see :meth:`lanky.theory.Theorem.fact`). A decision or a
-    proof is of the term, and is a decision or a proof of the claim only as
-    far as the term computes what the annotations compute, which the reading's
-    fact establishes by draws at best: so a fact ``decided`` or stronger rests
-    on it, and the ledger shows the weakest link (:meth:`lanky.ledger.Ledger.support`). So
-    does a claim whose reading is refuted, which no oracle was asked about. A
-    test of the term is evidence of the kind the reading's fact is, and a fact
-    left ``assumed`` or refuted is worth no more for resting on it, so neither
-    names it.
+    its provenance (see :meth:`lanky.theory.Theorem.fact`). A pass, a
+    decision and a proof are of the term, and of the claim only as far as
+    the term computes what the annotations compute, which the reading's fact
+    establishes by draws at best. So a fact ``tested`` or stronger rests on
+    it, and the ledger shows the weakest link (see
+    :meth:`lanky.ledger.Ledger.support`): ``proved``, worth ``tested``, or
+    ``proved under faithful:claim`` where the reading could not be checked.
+    So does a claim whose reading is refuted, which no oracle was asked
+    about. A fact left ``assumed`` or ``refuted`` by an oracle is worth no
+    less for it, so it does not name it.
     """
     reading = fact.provenance.get("faithful")
     if not isinstance(reading, str) or reading in fact.rests_on:
         return fact
-    stronger = STATUS_STRENGTH.get(fact.status, 0) > STATUS_STRENGTH[Status.TESTED]
-    if not stronger and not fact.provenance.get("unfaithful"):
+    established = STATUS_STRENGTH.get(fact.status, 0) > STATUS_STRENGTH[Status.ASSUMED]
+    if not established and not fact.provenance.get("unfaithful"):
         return fact
     return replace(fact, rests_on=(*fact.rests_on, reading))
 
@@ -1091,6 +1100,9 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
                 if owned is None and not _recorded_in(fact, path):
                     continue
                 if fact.id in ledger:
+                    if fact.is_reading:
+                        # the claim it reads is the one recorded as refused
+                        continue
                     if verbose:
                         print(
                             f"{fact.where} {fact.owner}: {fact.statement} (not checked: "

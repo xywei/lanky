@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from conftest import ProcessWatch
+from conftest import ProcessWatch, claims
 from lanky import cli
 from lanky.check import check_path, oracle_lines
 from lanky.ledger import Fact, Ledger, Status
@@ -40,9 +40,15 @@ def write_file(tmp_path, text: str = FILE) -> str:
 
 def test_check_path_yields_a_ledger(tmp_path) -> None:
     ledger = check_path(write_file(tmp_path))
-    assert [fact.owner for fact in ledger] == ["true_claim", "false_claim"]
+    # each claim is followed by the fact that its term reads its annotations (#91)
+    assert [(fact.owner, fact.kind) for fact in ledger] == [
+        ("true_claim", "theorem"),
+        ("true_claim", "faithful"),
+        ("false_claim", "theorem"),
+        ("false_claim", "faithful"),
+    ]
 
-    tested = ledger.by_status(Status.TESTED)
+    tested = claims(ledger.by_status(Status.TESTED))
     assert [fact.owner for fact in tested] == ["true_claim"]
     assert tested[0].decided_by == "property-test"
     assert tested[0].provenance["valid"] > 0
@@ -56,8 +62,8 @@ def test_check_path_yields_a_ledger(tmp_path) -> None:
 
 def test_checking_twice_keeps_the_ledgers_apart(tmp_path) -> None:
     path = write_file(tmp_path)
-    assert len(check_path(path)) == 2
-    assert len(check_path(path)) == 2
+    assert len(check_path(path)) == 4
+    assert len(check_path(path)) == 4
 
 
 def test_oracle_lines_name_the_trust_classes() -> None:
@@ -85,7 +91,7 @@ def test_cli_exits_zero_when_nothing_is_refuted(tmp_path, capsys) -> None:
     assert code == 0
     printed = capsys.readouterr().out
     assert "property-test (test): available" in printed
-    assert "1 facts: 1 tested" in printed
+    assert "2 facts: 2 tested" in printed
 
 
 def test_cli_without_a_verb_prints_help(capsys) -> None:
@@ -141,7 +147,7 @@ def test_subtraction_over_nat_is_refuted_with_or_without_lean(
         '    """True where Nat subtraction truncates; false at n = 0 in integers."""\n',
         encoding="utf-8",
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert "semantics" not in fact.provenance
     assert fact.status is Status.REFUTED
     assert fact.decided_by == "property-test"
@@ -196,7 +202,7 @@ def test_cli_exits_one_on_a_false_closed_claim(tmp_path, capsys) -> None:
     ]
     assert "counterexample" not in printed
     (entry,) = [
-        entry for entry in json.loads(out_json.read_text(encoding="utf-8"))
+        entry for entry in claims(json.loads(out_json.read_text(encoding="utf-8")))
         if entry["owner"] == "impossible"
     ]
     assert entry["provenance"]["counterexample"] == {}
@@ -209,7 +215,7 @@ def test_a_true_closed_claim_is_tested_rather_than_assumed(tmp_path, monkeypatch
     path = tmp_path / "closed.py"
     path.write_text(CLOSED.split("@theorem\ndef impossible")[0], encoding="utf-8")
     ledger = check_path(path)
-    (fact,) = list(ledger)
+    (fact,) = claims(ledger)
     assert fact.status is Status.TESTED
     assert fact.decided_by == "property-test"
 
@@ -235,7 +241,7 @@ def test_a_division_by_zero_is_a_gap_the_ledger_records(tmp_path) -> None:
         encoding="utf-8",
     )
     ledger = check_path(path)
-    (fact,) = list(ledger)
+    (fact,) = claims(ledger)
     assert DIVISION_BY_ZERO in fact.provenance["semantics"]
     assert fact.status is not Status.REFUTED
     if fact.status is Status.ASSUMED:
@@ -266,7 +272,7 @@ def test_an_axiom_records_its_division_by_zero_gap_too(tmp_path, capsys) -> None
         '    """Floor division and remainder put a number back together."""\n',
         encoding="utf-8",
     )
-    (fact,) = list(check_path(path, verbose=True))
+    (fact,) = claims(check_path(path, verbose=True))
     assert fact.status is Status.ASSUMED
     assert fact.provenance["semantics"] == [DIVISION_BY_ZERO]
     assert f"  semantics: {DIVISION_BY_ZERO}" in capsys.readouterr().out.splitlines()
@@ -292,7 +298,7 @@ def test_an_application_outside_its_domain_is_never_proved(tmp_path, capsys) -> 
     )
     assert cli.main(["check", str(path)]) == 0
     assert "assumed" in capsys.readouterr().out
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert fact.status is not Status.PROVED
     assert "outside the domain" in fact.provenance["untested"]
@@ -381,7 +387,7 @@ def test_an_oracle_whose_availability_probe_raises_does_not_stop_the_check(
     monkeypatch.setattr(registry, "oracles", [*registry.oracles, BrokenProbe()])
 
     ledger = check_path(write_file(tmp_path))
-    assert [fact.status for fact in ledger] == [Status.TESTED, Status.REFUTED]
+    assert [fact.status for fact in claims(ledger)] == [Status.TESTED, Status.REFUTED]
     (line,) = [line for line in oracle_lines() if line.startswith("broken-probe ")]
     assert line.startswith(
         "broken-probe (decision-procedure): unavailable: its availability check raised "
@@ -442,13 +448,13 @@ def test_a_claim_imported_from_a_neighbour_is_not_collected(tmp_path) -> None:
     neighbour = "lanky_test_neighbour_claims"
     main, helper = _neighbourhood(tmp_path, neighbour)
     try:
-        first = [fact.owner for fact in check_path(main)]
+        first = [fact.owner for fact in claims(check_path(main))]
         cached = sys.modules[neighbour]
-        second = [fact.owner for fact in check_path(main)]
+        second = [fact.owner for fact in claims(check_path(main))]
         assert first == ["true_claim", "false_claim"]
         assert second == first
         assert sys.modules[neighbour] is cached
-        assert [fact.owner for fact in check_path(helper)] == ["helper_claim"]
+        assert [fact.owner for fact in claims(check_path(helper))] == ["helper_claim"]
     finally:
         sys.modules.pop(neighbour, None)
 
@@ -466,7 +472,7 @@ def test_a_neighbour_imported_before_the_check_changes_nothing(tmp_path, monkeyp
     try:
         with registry.collecting():
             importlib.import_module(neighbour)
-        assert [fact.owner for fact in check_path(main)] == ["true_claim", "false_claim"]
+        assert [fact.owner for fact in claims(check_path(main))] == ["true_claim", "false_claim"]
     finally:
         sys.modules.pop(neighbour, None)
 
@@ -493,10 +499,11 @@ def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, monkeypatch, cap
             assert code == 1  # false_claim
             assert printed.startswith(f"==> {files[0]} <==\n")
             assert f"\n\n==> {files[1]} <==\n" in printed
-            assert printed.count("helper_claim") == 1
-            assert "2 facts: 1 refuted, 1 tested" in printed
-            assert "1 facts: 1 tested" in printed
-            data = json.loads(out_json.read_text(encoding="utf-8"))
+            # the claim's row and its reading's, under the helper's heading
+            assert printed.count("helper_claim") == 2
+            assert "4 facts: 1 refuted, 3 tested" in printed
+            assert "2 facts: 2 tested" in printed
+            data = claims(json.loads(out_json.read_text(encoding="utf-8")))
             assert sorted(entry["owner"] for entry in data) == [
                 "false_claim",
                 "helper_claim",
@@ -531,7 +538,7 @@ def test_the_check_verb_reads_a_namespace_with_one_file(tmp_path, capsys) -> Non
     assert cli.CheckVerb().run(namespace) == 0
     printed = capsys.readouterr().out
     assert "==>" not in printed
-    assert "1 facts: 1 tested" in printed
+    assert "2 facts: 2 tested" in printed
 
 
 PLAIN = """
@@ -584,7 +591,7 @@ def test_an_object_with_no_function_is_placed_by_the_path_its_fact_records(
     monkeypatch.setattr(registry, "theories", [*registry.theories, PlainTheory()])
     path = tmp_path / "plain.py"
     path.write_text(PLAIN, encoding="utf-8")
-    assert [fact.owner for fact in check_path(path)] == ["here", "unrecorded"]
+    assert [fact.owner for fact in claims(check_path(path))] == ["here", "unrecorded"]
 
 
 def _package(tmp_path, name: str, init: str = "") -> tuple:
@@ -638,8 +645,8 @@ def test_a_file_inside_a_package_can_import_relatively(tmp_path) -> None:
     try:
         with warnings.catch_warnings():
             warnings.filterwarnings("error", message="__package__ != __spec__")
-            assert [fact.owner for fact in check_path(mod)] == ["mod_claim"]
-            assert [fact.owner for fact in check_path(deep)] == ["deep_claim"]
+            assert [fact.owner for fact in claims(check_path(mod))] == ["mod_claim"]
+            assert [fact.owner for fact in claims(check_path(deep))] == ["deep_claim"]
             with registry.collecting():
                 module = import_path(mod)
                 deeper = import_path(deep)
@@ -667,9 +674,9 @@ def test_a_package_that_imports_the_checked_file_does_not_double_its_claims(tmp_
     name = "lanky_test_pkg_imports_mod"
     mod, _deep = _package(tmp_path, name, init="from . import mod  # noqa: F401\n")
     try:
-        first = [fact.owner for fact in check_path(mod)]
+        first = [fact.owner for fact in claims(check_path(mod))]
         assert f"{name}.mod" in sys.modules
-        second = [fact.owner for fact in check_path(mod)]
+        second = [fact.owner for fact in claims(check_path(mod))]
         assert first == second == ["mod_claim"]
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] == name]:
@@ -696,9 +703,9 @@ def test_a_package_init_is_checked_in_its_own_package(tmp_path) -> None:
     )
     mod, _deep = _package(tmp_path, name, init=init)
     try:
-        first = [fact.owner for fact in check_path(mod.parent / "__init__.py")]
+        first = [fact.owner for fact in claims(check_path(mod.parent / "__init__.py"))]
         assert name in sys.modules
-        second = [fact.owner for fact in check_path(mod.parent / "__init__.py")]
+        second = [fact.owner for fact in claims(check_path(mod.parent / "__init__.py"))]
         assert first == second == ["init_claim"]
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] == name]:
@@ -721,14 +728,14 @@ def test_a_package_of_the_same_name_from_another_tree_is_refused(tmp_path) -> No
     first, _deep = _package(tmp_path / "a", name)
     second, _deep = _package(tmp_path / "b", name)
     try:
-        assert [fact.owner for fact in check_path(first)] == ["mod_claim"]
+        assert [fact.owner for fact in claims(check_path(first))] == ["mod_claim"]
         with pytest.raises(ImportError) as refusal:
             check_path(second)
         assert str(refusal.value).startswith(
             f"{second.resolve()} sits in the package {name!r}, but "
             f"{name!r} is already imported from {first.parent.resolve()} in this process"
         )
-        assert [fact.owner for fact in check_path(first)] == ["mod_claim"]
+        assert [fact.owner for fact in claims(check_path(first))] == ["mod_claim"]
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] == name]:
             sys.modules.pop(key, None)
@@ -754,13 +761,13 @@ def test_the_cli_checks_twin_packages_in_processes_of_their_own(
     first, _deep = _package(tmp_path / "a", name)
     second, _deep = _package(tmp_path / "b", name)
     try:
-        assert [fact.owner for fact in check_path(first)] == ["mod_claim"]
+        assert [fact.owner for fact in claims(check_path(first))] == ["mod_claim"]
         assert cli.main(["check", str(second), str(first)]) == 0
         printed = capsys.readouterr().out
         assert "could not be imported" not in printed
         assert printed.startswith(f"==> {second} <==\n")
         assert f"\n\n==> {first} <==\n" in printed
-        assert printed.count("1 facts: 1 tested") == 2
+        assert printed.count("2 facts: 2 tested") == 2
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] == name]:
             sys.modules.pop(key, None)
@@ -854,14 +861,14 @@ def test_files_from_two_roots_are_checked_against_their_own_helpers(
             assert code == 0
             assert captured.out.startswith(f"==> {files[0]} <==\n")
             assert f"\n\n==> {files[1]} <==\n" in captured.out
-            assert captured.out.count("1 facts: 1 tested") == 2
+            assert captured.out.count("2 facts: 2 tested") == 2
             assert captured.err.count("a line on stderr\n") == 2
             data = json.loads(out_json.read_text(encoding="utf-8"))
-            assert [(entry["owner"], entry["status"]) for entry in data] == [
+            assert [(entry["owner"], entry["status"]) for entry in claims(data)] == [
                 ("own_helper", "tested"),
                 ("own_helper", "tested"),
             ]
-            assert [Path(entry["provenance"]["path"]) for entry in data] == [
+            assert [Path(entry["provenance"]["path"]) for entry in claims(data)] == [
                 files[0].resolve(),
                 files[1].resolve(),
             ]
@@ -916,7 +923,7 @@ def test_files_of_one_root_are_checked_in_this_process(tmp_path, monkeypatch, ca
         assert cli.main(["check", str(x), str(z)]) == 0
         printed = capsys.readouterr().out
         assert _pids(printed) == [os.getpid(), os.getpid()]
-        assert printed.count("1 facts: 1 tested") == 2
+        assert printed.count("2 facts: 2 tested") == 2
         assert sys.modules[ROOTS_HELPER].VALUE == 1  # imported here, and still imported
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
@@ -946,7 +953,7 @@ def test_a_root_whose_process_stops_is_reported_and_the_others_checked(
             f"lanky check: the process checking {stops} stopped with exit code 3 "
             "before it reported\n"
         ) in printed
-        assert printed.count("1 facts: 1 tested") == 1
+        assert printed.count("2 facts: 2 tested") == 1
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
 
@@ -975,7 +982,7 @@ def test_a_root_whose_process_cannot_start_is_reported(tmp_path, monkeypatch, ca
             f"lanky check: could not start a process to check {first}: no processes left\n\n"
             f"==> {second} <==\n"
         )
-        assert printed.count("1 facts: 1 tested") == 1
+        assert printed.count("2 facts: 2 tested") == 1
         assert len(started) == 2
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
@@ -1019,20 +1026,21 @@ def test_exit_codes_and_json_merge_across_roots(tmp_path, monkeypatch, capsys) -
     try:
         assert cli.main(["check", str(good), str(bad), str(broken), "--json", str(out_json)]) == 1
         printed = capsys.readouterr().out
-        assert printed.count("1 facts: 1 tested") == 1
-        assert printed.count("1 facts: 1 refuted") == 1
+        assert printed.count("2 facts: 2 tested") == 1
+        assert printed.count("2 facts: 1 refuted, 1 tested") == 1
         assert "REFUTED own_helper at claims.py:" in printed
         assert f"lanky check: {broken} could not be imported" in printed
         assert "SyntaxError" in printed
         data = json.loads(out_json.read_text(encoding="utf-8"))
-        assert [(entry["owner"], entry["status"]) for entry in data] == [
+        assert [(entry["owner"], entry["status"]) for entry in claims(data)] == [
             ("own_helper", "tested"),
             ("own_helper", "refuted"),
         ]
-        for file, entry in zip((good, bad), data, strict=True):
+        # each file's claim and its reading, in the order the ledgers were printed
+        for file, entries in zip((good, bad), (data[:2], data[2:]), strict=True):
             sys.modules.pop(ROOTS_HELPER, None)
             cli.main(["check", str(file), "--json", str(alone)])
-            assert json.loads(alone.read_text(encoding="utf-8")) == [entry]
+            assert json.loads(alone.read_text(encoding="utf-8")) == entries
 
         assert cli.main(["check", str(broken), str(good)]) == 1
         other = _rooted(tmp_path / "other", 2)
@@ -1064,7 +1072,7 @@ def test_a_child_may_print_what_this_process_cannot_encode(tmp_path, monkeypatch
         out.flush()
         printed = out.buffer.getvalue().decode("ascii")
         assert "caf\\xe9\n" in printed
-        assert printed.count("1 facts: 1 tested") == 1
+        assert printed.count("2 facts: 2 tested") == 1
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
 
@@ -1468,7 +1476,7 @@ def test_a_process_a_checked_file_leaves_running_does_not_hold_the_check_up(
         assert time.monotonic() - started < 30
         printed = capsys.readouterr().out
         assert "left one running\n" in printed
-        assert printed.count("1 facts: 1 tested") == 1
+        assert printed.count("2 facts: 2 tested") == 1
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
         if pidfile.exists():
@@ -1525,7 +1533,7 @@ def test_a_process_that_keeps_writing_does_not_hold_the_check_up(
         before, after = printed.split(f"==> {good} <==\n")
         assert "left one writing\n" in before
         assert "still here" not in after
-        assert after.count("1 facts: 1 tested") == 1
+        assert after.count("2 facts: 2 tested") == 1
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
         if pidfile.exists():
@@ -1577,8 +1585,8 @@ def test_check_path_imports_into_the_calling_process(tmp_path, monkeypatch) -> N
     first = _rooted(tmp_path / "a", 1)
     second = _rooted(tmp_path / "b", 2)
     try:
-        assert [fact.status for fact in check_path(first)] == [Status.TESTED]
-        assert [fact.status for fact in check_path(second)] == [Status.REFUTED]
+        assert [fact.status for fact in claims(check_path(first))] == [Status.TESTED]
+        assert [fact.status for fact in claims(check_path(second))] == [Status.REFUTED]
         assert sys.modules[ROOTS_HELPER].VALUE == 1
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
@@ -1851,7 +1859,7 @@ def test_each_oracle_that_declined_is_named_under_the_table(tmp_path, monkeypatc
     ]
     monkeypatch.setattr(registry, "oracles", [*registry.oracles, *oracles])
     path = write_file(tmp_path, DECLINES)
-    (fact,) = check_path(path)
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert fact.provenance["declined"] == ["solver: outside its fragment", "rules: no rule applies"]
     assert cli.main(["check", path]) == 0
@@ -1927,7 +1935,7 @@ def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> No
     value. A size written after the family it sizes is no free name.
     """
     path = write_file(tmp_path, FREE_NAMES)
-    by_owner = {fact.owner: fact for fact in check_path(path)}
+    by_owner = {fact.owner: fact for fact in claims(check_path(path))}
     declined = (
         ("typo", "m"),
         ("short_circuited", "m"),
@@ -1948,6 +1956,8 @@ def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> No
     for owner, names in declined:
         block = printed.split(f"DECLINED {owner} at claims.py:", 1)[1].splitlines()
         assert block[1].startswith(f"  {_mentions(names)}"), block
+    # the claim's reading of its annotations cannot be run again without the
+    # name either (#91), and nothing rests on it, so it adds no line
     assert printed.count("DECLINED ") == len(declined)
 
 
@@ -1976,7 +1986,7 @@ def test_a_family_whose_values_cannot_be_drawn_is_not_tested_on_its_empty_draws(
     now, so no draw is completed and the fact stays ``assumed``, saying why.
     """
     path = write_file(tmp_path, UNDRAWABLE)
-    (fact,) = check_path(path)
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED, fact.provenance
     assert fact.provenance["valid"] == 0
     assert fact.provenance["unsampleable"] == fact.provenance["samples"]
@@ -2024,7 +2034,7 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
     """
     path = write_file(tmp_path, CITED)
     ledger = check_path(path)
-    gauss, nicomachus, cubes = ledger
+    gauss, gauss_reading, nicomachus, nicomachus_reading, cubes, cubes_reading = ledger
     assert nicomachus.kind == "axiom"
     assert nicomachus.status is Status.ASSUMED
     assert nicomachus.decided_by is None
@@ -2032,7 +2042,13 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
     # sampled for a counterexample, and nothing of a pass is kept
     assert "valid" not in nicomachus.provenance
     assert cubes.status is Status.TESTED
-    assert cubes.rests_on == (nicomachus.id, gauss.id)
+    # each claim's reading of its annotations is tested (#91), and a pass of a
+    # theorem rests on it; an axiom, assumed on its citation, does not
+    for reading in (gauss_reading, nicomachus_reading, cubes_reading):
+        assert (reading.kind, reading.status) == ("faithful", Status.TESTED)
+    assert cubes.rests_on == (nicomachus.id, gauss.id, cubes_reading.id)
+    assert gauss.rests_on == (gauss_reading.id,)
+    assert nicomachus.rests_on == ()
     assert ledger.support(cubes).effective is Status.ASSUMED
     assert ledger.support(cubes).under == (nicomachus.id,)
     assert ledger.support(gauss).effective is Status.TESTED
@@ -2042,21 +2058,22 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].split()[:3] == ["STATUS", "EFFECTIVE", "BY"]
     assert lines[2].startswith("tested                   tested     property-test")
-    assert lines[3].startswith("assumed (axiom)          assumed    -")
-    assert lines[4].startswith("tested under nicomachus  assumed    property-test")
-    assert lines[6] == "3 facts: 1 assumed, 2 tested"
-    assert lines[7:] == [
+    assert lines[3].startswith("tested                   tested     python")
+    assert lines[4].startswith("assumed (axiom)          assumed    -")
+    assert lines[6].startswith("tested under nicomachus  assumed    property-test")
+    assert lines[9] == "6 facts: 1 assumed, 5 tested"
+    assert lines[10:] == [
         "",
         f"CITED nicomachus at {nicomachus.where}: "
         "Nicomachus of Gerasa, Introduction to Arithmetic",
     ]
-    data = json.loads(out.read_text(encoding="utf-8"))
+    data = claims(json.loads(out.read_text(encoding="utf-8")))
     assert [(row["owner"], row["status"], row["effective"], row["under"]) for row in data] == [
         ("gauss", "tested", "tested", []),
         ("nicomachus", "assumed", "assumed", []),
         ("cubes", "tested", "assumed", [nicomachus.id]),
     ]
-    assert data[2]["rests_on"] == [nicomachus.id, gauss.id]
+    assert data[2]["rests_on"] == [nicomachus.id, gauss.id, cubes_reading.id]
     assert data[1]["provenance"]["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
 
 
@@ -2070,7 +2087,7 @@ def test_an_axiom_false_as_written_is_refuted(tmp_path, capsys) -> None:
     cube = "sum(i**3 for i in Fin[n + 1]) =="
     path = write_file(tmp_path, CITED.replace(cube, cube.replace("**3", "**2"), 1))
     ledger = check_path(path)
-    _gauss, nicomachus, cubes = ledger
+    _gauss, nicomachus, cubes = claims(ledger)
     assert nicomachus.status is Status.REFUTED
     assert nicomachus.decided_by == "property-test"
     assert nicomachus.provenance["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
@@ -2113,11 +2130,15 @@ def test_an_axiom_is_never_offered_to_a_stronger_oracle(tmp_path, monkeypatch) -
 
     registry.load_entry_points()
     monkeypatch.setattr(registry, "oracles", [*registry.oracles, ProvesEverything()])
-    _gauss, nicomachus, cubes = check_path(write_file(tmp_path, CITED))
+    ledger = check_path(write_file(tmp_path, CITED))
+    _gauss, nicomachus, cubes = claims(ledger)
     assert nicomachus.status is Status.ASSUMED
     assert cubes.status is Status.PROVED
     assert "axiom" not in shown
     assert shown.count("theorem") >= 2
+    # nor is any claim's reading of its annotations, which the rerun settled (#91)
+    assert "faithful" not in shown
+    assert all(fact.status is Status.TESTED for fact in ledger if fact.is_reading)
 
 
 def test_a_plugin_fact_rests_on_another_facts_id(tmp_path) -> None:
@@ -2173,9 +2194,9 @@ def test_an_id_no_fact_in_the_ledger_has_is_named_under_the_table(tmp_path, caps
         "  counted as an assumption; a fact of another file is in that file's ledger, "
         "not this one"
     )
-    rows = json.loads(out.read_text(encoding="utf-8"))
+    rows = claims(json.loads(out.read_text(encoding="utf-8")))
     nicomachus = rows[1]["id"]
-    assert rows[-1]["rests_on"] == [rows[2]["id"], "theorem:helpers.lemma@12"]
+    assert rows[-1]["rests_on"][:2] == [rows[2]["id"], "theorem:helpers.lemma@12"]
     assert rows[-1]["under"] == [nicomachus, "theorem:helpers.lemma@12"]
     assert rows[-1]["effective"] == "assumed"
     # a file whose facts rest on facts it holds prints no such line
@@ -2302,14 +2323,15 @@ def test_a_theorem_has_one_id_whether_its_file_is_checked_or_imported(
     expected = f"theorem:{name}.lemma@{_decorated_at(LEMMA)}"
     out = tmp_path / "out.json"
     try:
-        (own,) = check_path(helper)
-        (using,) = check_path(user)
+        (own,) = claims(check_path(helper))
+        (using,) = claims(check_path(user))
         assert own.id == expected
-        assert using.rests_on == (expected,)
+        # and on its own reading of its annotations (#91)
+        assert using.rests_on == (expected, using.provenance["faithful"])
         # and it is read off the path, not off where the check was run from
         for directory, relative in ((tmp_path, f"project/{name}.py"), (project, f"{name}.py")):
             monkeypatch.chdir(directory)
-            assert [fact.id for fact in check_path(relative)] == [expected]
+            assert [fact.id for fact in claims(check_path(relative))] == [expected]
 
         assert cli.main(["check", str(user), str(helper), "--json", str(out)]) == 0
         printed = capsys.readouterr().out.splitlines()
@@ -2319,9 +2341,9 @@ def test_a_theorem_has_one_id_whether_its_file_is_checked_or_imported(
             f"{expected}, which this ledger does not hold"
         )
         assert unresolved in printed
-        rows = {row["owner"]: row for row in json.loads(out.read_text(encoding="utf-8"))}
+        rows = {row["owner"]: row for row in claims(json.loads(out.read_text(encoding="utf-8")))}
         assert rows["lemma"]["id"] == expected
-        assert rows["user"]["rests_on"] == [expected]
+        assert rows["user"]["rests_on"] == [expected, rows["user"]["provenance"]["faithful"]]
     finally:
         sys.modules.pop(name, None)
 
@@ -2353,16 +2375,15 @@ def test_a_theorem_in_a_package_has_one_id_however_it_is_reached(tmp_path) -> No
     )
     expected = f"theorem:{package}.{helpers}.lemma@{_decorated_at(LEMMA)}"
     try:
-        (own,) = check_path(helper)
-        (by_relative,) = check_path(relative)
-        (by_absolute,) = check_path(absolute)
+        (own,) = claims(check_path(helper))
+        (by_relative,) = claims(check_path(relative))
+        (by_absolute,) = claims(check_path(absolute))
         assert sys.modules[f"{package}.{helpers}"] is not sys.modules[helpers]
     finally:
         for key in [key for key in sys.modules if key.split(".")[0] in (package, helpers)]:
             sys.modules.pop(key, None)
     assert own.id == expected
-    assert by_relative.rests_on == (expected,)
-    assert by_absolute.rests_on == (expected,)
+    assert by_relative.rests_on[0] == by_absolute.rests_on[0] == expected
     assert by_relative.id == f"theorem:{package}.relative.user@{_decorated_at(USES_LEMMA)}"
 
 
@@ -2416,7 +2437,7 @@ def test_two_claims_with_one_id_are_refused_and_fail_the_check(
     path = tmp_path / "factory.py"
     path.write_text(FACTORY, encoding="utf-8")
     ledger = check_path(path)
-    (fact,) = list(ledger)
+    (fact,) = claims(ledger)
     assert fact.id == "theorem:factory.make.<locals>.claim@10"
     assert fact.statement == "n : Nat |- n + 1 == n"
     assert fact.status is Status.REFUTED
@@ -2434,7 +2455,7 @@ def test_two_claims_with_one_id_are_refused_and_fail_the_check(
         "__qualname__ of its own before it is decorated\n"
     ) in printed
     assert "REFUTED make.<locals>.claim at factory.py:10" in printed
-    (entry,) = json.loads(out_json.read_text(encoding="utf-8"))
+    (entry,) = claims(json.loads(out_json.read_text(encoding="utf-8")))
     assert entry["provenance"]["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
 
     # two claims that are both true fail the check all the same: one of them
@@ -2442,7 +2463,7 @@ def test_two_claims_with_one_id_are_refused_and_fail_the_check(
     path = tmp_path / "true" / "factory.py"
     path.parent.mkdir()
     path.write_text(FACTORY.replace("K = 1", "K = 0"), encoding="utf-8")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.TESTED
     assert fact.provenance["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
     assert cli.main(["check", str(path)]) == 1
@@ -2519,11 +2540,13 @@ def test_claims_a_factory_names_apart_are_two_facts(tmp_path, monkeypatch, capsy
     path = tmp_path / "factory.py"
     path.write_text(NAMED_APART, encoding="utf-8")
     ledger = check_path(path)
-    assert [fact.owner for fact in ledger] == ["claim_two", "claim_none"]
-    assert [fact.statement for fact in ledger] == [
+    assert [fact.owner for fact in claims(ledger)] == ["claim_two", "claim_none"]
+    assert [fact.statement for fact in claims(ledger)] == [
         "n : Nat |- n + 2 >= n",
         "n : Nat |- n + 0 >= n",
     ]
+    # each read in the module as it was when it was decorated, K = 2 and K = 0
+    assert all(fact.status is Status.TESTED for fact in ledger)
     assert not ledger.duplicated()
     assert cli.main(["check", str(path)]) == 0
     assert "DUPLICATE" not in capsys.readouterr().out
@@ -2571,10 +2594,10 @@ def test_lanky_check_prints_each_axioms_citation_under_the_table(tmp_path, capsy
         '@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic,\\nbook II, ch. 20")',
     )
     path = write_file(tmp_path, text)
-    _gauss, nicomachus, _cubes = check_path(path)
+    _gauss, nicomachus, _cubes = claims(check_path(path))
     assert cli.main(["check", path]) == 0
     lines = capsys.readouterr().out.splitlines()
-    summary = lines.index("3 facts: 1 assumed, 2 tested")
+    summary = lines.index("6 facts: 1 assumed, 5 tested")
     assert lines[summary + 1 :] == [
         "",
         f"CITED nicomachus at {nicomachus.where}: "
@@ -2588,7 +2611,7 @@ def test_lanky_check_prints_each_axioms_citation_under_the_table(tmp_path, capsy
 
 def test_the_oracle_that_settles_a_fact_leaves_its_trust_class(tmp_path) -> None:
     """The status says what kind of evidence; ``trust_class`` says how far to trust its decider."""
-    true_claim, false_claim = check_path(write_file(tmp_path))
+    true_claim, false_claim = claims(check_path(write_file(tmp_path)))
     assert true_claim.provenance["trust_class"] == "test"
     assert false_claim.provenance["trust_class"] == "test"
 
@@ -2624,7 +2647,7 @@ def test_a_fact_a_heuristic_decides_is_marked_in_the_table_and_the_json(
     registry.load_entry_points()
     monkeypatch.setattr(registry, "oracles", [*registry.oracles, Simplifier()])
     path = write_file(tmp_path)
-    true_claim, false_claim = check_path(path)
+    true_claim, false_claim = claims(check_path(path))
     assert (true_claim.status, true_claim.decided_by) == (Status.DECIDED, "simplifier")
     assert true_claim.provenance["trust_class"] == "heuristic"
     assert true_claim.is_heuristic
@@ -2637,8 +2660,10 @@ def test_a_fact_a_heuristic_decides_is_marked_in_the_table_and_the_json(
     assert cli.main(["check", path, "--json", str(out)]) == 1
     printed = capsys.readouterr().out
     lines = printed.splitlines()
-    assert lines[2].startswith("decided (heuristic)  simplifier")
-    assert lines[3].startswith("refuted              property-test")
+    # the decision rests on the claim's reading, which the draws tested (#91)
+    assert lines[2].startswith("decided (heuristic)  tested     simplifier")
+    assert lines[3].startswith("tested               tested     python")
+    assert lines[4].startswith("refuted              refuted    property-test")
     heading = f"REFUTED false_claim at {false_claim.where}: {false_claim.statement}"
     block = lines[lines.index(heading) :]
     assert block[1:4] == [
@@ -2646,7 +2671,7 @@ def test_a_fact_a_heuristic_decides_is_marked_in_the_table_and_the_json(
         "  the goal is false at this assignment",
         "  simplifier, a heuristic, decided it, and this draw overrules it",
     ]
-    data = json.loads(out.read_text(encoding="utf-8"))
+    data = claims(json.loads(out.read_text(encoding="utf-8")))
     assert [row["provenance"]["trust_class"] for row in data] == ["heuristic", "test"]
 
 
@@ -2768,7 +2793,7 @@ def test_a_heuristics_answer_is_sampled_once(tmp_path, monkeypatch) -> None:
 
     flaky = Flaky()
     monkeypatch.setattr(registry, "oracles", [flaky, Hasty()])
-    (fact,) = check_path(write_file(tmp_path, GUARDED))
+    (fact,) = claims(check_path(write_file(tmp_path, GUARDED)))
     assert flaky.asked == 1
     assert (fact.status, fact.decided_by) == (Status.DECIDED, "hasty")
     assert "semantics_disagreement" not in fact.provenance
@@ -2804,8 +2829,9 @@ def test_what_a_heuristic_added_goes_with_its_overruled_answer(tmp_path, monkeyp
     registry.load_entry_points()
     tester = [oracle for oracle in registry.oracles if oracle.trust_class() == "test"]
     monkeypatch.setattr(registry, "oracles", [*tester, Leaning()])
-    true_claim, false_claim = check_path(write_file(tmp_path))
-    assert (true_claim.status, true_claim.rests_on) == (Status.DECIDED, ("lemma",))
+    true_claim, false_claim = claims(check_path(write_file(tmp_path)))
+    reading = true_claim.provenance["faithful"]
+    assert (true_claim.status, true_claim.rests_on) == (Status.DECIDED, ("lemma", reading))
     assert true_claim.provenance["detail"] == "by the lemma"
     assert (false_claim.status, false_claim.decided_by) == (Status.REFUTED, "property-test")
     assert false_claim.rests_on == ()
@@ -2854,7 +2880,7 @@ def test_a_heuristic_is_not_enough_to_make_a_fact_vacuous(tmp_path, monkeypatch,
     registry.load_entry_points()
     monkeypatch.setattr(registry, "oracles", [*registry.oracles, RashSimplifier()])
     path = write_file(tmp_path, RARE)
-    (fact,) = check_path(path)
+    (fact,) = claims(check_path(path))
     assert not fact.is_vacuous
     assert fact.provenance["unsatisfied"]
     assert cli.main(["check", path]) == 0

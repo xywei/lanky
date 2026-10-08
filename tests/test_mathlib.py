@@ -24,6 +24,7 @@ from typing import NoReturn
 import pymbolic.primitives as prim
 import pytest
 
+from conftest import claims
 from lanky import exp, log, sqrt, theorem
 from lanky import mathlib as mathlib_mode
 from lanky.check import goal_guard_fact, hypotheses_fact
@@ -987,7 +988,7 @@ def test_identities_rounding_broke_are_tested(tmp_path) -> None:
     from lanky import cli
     from lanky.check import check_path
 
-    assert [fact.status for fact in check_path(str(path))] == [Status.TESTED, Status.TESTED]
+    assert [fact.status for fact in claims(check_path(str(path)))] == [Status.TESTED, Status.TESTED]
     assert cli.main(["check", str(path)]) == 0
 
 
@@ -1450,6 +1451,45 @@ def test_mathlib_does_not_prove_a_statement_about_its_own_round(
     declined = mathlib_oracle.establish(fact)
     assert declined.status is Status.ASSUMED
     assert "mentions round" in declined.provenance["declined"]
+
+
+def _table(i: object) -> int:
+    """A lookup a claim calls, which answers from a term's hash while the claim is read (#80)."""
+    return {0: 1}.get(i, 0)
+
+
+def _misread() -> tuple:
+    """#88 and #80: two claims whose term says something else than the annotation."""
+
+    @theorem
+    def identity(
+        n: Nat, f: Fn[Fin[n], Nat]
+    ) -> all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n]):  # noqa: F632
+        """False at i = 0, where 0 is not 0 is False."""
+
+    @theorem
+    def through_helper(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == _table(i) for i in Fin[n]):
+        """False at i = 0, where the lookup gives 1."""
+
+    return identity, through_helper
+
+
+def test_mathlib_is_never_asked_about_a_claim_whose_reading_is_refuted(
+    mathlib_oracle: LeanOracle, monkeypatch
+) -> None:
+    """#91 in Mathlib mode: Lean proves the misread term, and is not asked about the claim."""
+    from lanky.check import establish
+    from lanky.plugins import registry
+
+    monkeypatch.setattr(registry, "oracles", [mathlib_oracle])
+    for claim in _misread():
+        proved = mathlib_oracle.establish(claim.fact())
+        assert (proved.status, proved.decided_by) == (Status.PROVED, "lean"), claim.__name__
+        reading = claim.faithful_fact()
+        assert reading.status is Status.REFUTED, reading.provenance
+        fact = establish(claim.fact(reading))
+        assert (fact.status, fact.decided_by) == (Status.ASSUMED, None)
+        assert fact.rests_on == (reading.id,)
 
 
 def test_a_killed_server_is_started_again_with_mathlib(mathlib_oracle: LeanOracle) -> None:

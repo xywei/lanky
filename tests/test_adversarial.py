@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from conftest import claims
 from lanky import cli, theorem
 from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status
@@ -143,7 +144,7 @@ def test_a_vacuous_pass_is_assumed_in_the_ledger(tmp_path, oracles, capsys) -> N
     oracles(TestOracle())
     path = _write(tmp_path, VACUOUS)
     ledger = check_path(path)
-    (fact,) = list(ledger)
+    (fact,) = claims(ledger)
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
     assert fact.provenance["valid"] == 0
@@ -174,7 +175,7 @@ def test_a_proof_from_inconsistent_hypotheses_is_marked_vacuous(
     oracles(ProvesEverything(trust), TestOracle())
     path = _write(tmp_path, VACUOUS)
     ledger = check_path(path)
-    (fact,) = list(ledger)
+    (fact,) = claims(ledger)
     assert fact.status is Status.PROVED
     assert fact.decided_by == "stub-kernel"
     assert fact.is_vacuous
@@ -183,8 +184,9 @@ def test_a_proof_from_inconsistent_hypotheses_is_marked_vacuous(
     assert fact.provenance["vacuous_evidence"] == {"tactic": "stub"}
     assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
     rendered = ledger.render()
-    assert "proved (vacuous)  stub-kernel" in rendered
-    assert "1 facts: 1 proved; 1 vacuous" in rendered
+    # the proof rests on the claim's reading, which the draws tested (#91)
+    assert "proved (vacuous)  tested     stub-kernel" in rendered
+    assert "2 facts: 1 proved, 1 tested; 1 vacuous" in rendered
 
     out_json = tmp_path / "ledger.json"
     assert cli.main(["check", path, "--json", str(out_json)]) == 1
@@ -192,7 +194,7 @@ def test_a_proof_from_inconsistent_hypotheses_is_marked_vacuous(
     assert "VACUOUS vacuous at vacuous.py:7: n : Nat | n > 2 and n < 1 |- n == n + 1" in printed
     assert "the hypotheses are inconsistent: proved by stub-kernel" in printed
     assert "WARNING" not in printed
-    (entry,) = json.loads(out_json.read_text(encoding="utf-8"))
+    (entry,) = claims(json.loads(out_json.read_text(encoding="utf-8")))
     assert entry["status"] == "proved"
     assert entry["provenance"]["vacuous"]
 
@@ -203,7 +205,7 @@ def test_a_satisfiable_hypothesis_under_a_proved_goal_carries_no_flag(
     """``h: n > 2`` with the goal ``n > 1``: a draw satisfies it, nothing changes."""
     oracles(ProvesEverything(), TestOracle())
     path = _write(tmp_path, SATISFIABLE)
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert not fact.is_vacuous
     assert "unsatisfied" not in fact.provenance
@@ -224,7 +226,7 @@ def test_hypotheses_no_oracle_can_refute_leave_a_warning(tmp_path, oracles, caps
     """
     oracles(ProvesAllButInconsistency(), TestOracle())
     path = _write(tmp_path, VACUOUS)
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert not fact.is_vacuous
     assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
@@ -263,7 +265,7 @@ def test_an_axiom_with_inconsistent_hypotheses_is_vacuous(tmp_path, oracles, cap
 
     oracles(Recording(), TestOracle())
     path = _write(tmp_path, VACUOUS_AXIOM)
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert shown == ["hypotheses"]
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
@@ -283,7 +285,7 @@ def test_an_axiom_whose_hypotheses_no_draw_satisfied_is_warned_about(
     """With nothing to show them inconsistent, the axiom gets the theorem's warning."""
     oracles(TestOracle())
     path = _write(tmp_path, VACUOUS_AXIOM)
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert not fact.is_vacuous
     assert "valid" not in fact.provenance
@@ -293,8 +295,8 @@ def test_an_axiom_whose_hypotheses_no_draw_satisfied_is_warned_about(
     # a satisfiable axiom leaves nothing of its sampling behind
     satisfiable = VACUOUS_AXIOM.replace("(n > 2) & (n < 1)) -> n == n + 1", "n > 2) -> n > 1")
     path = _write(tmp_path, satisfiable)
-    (fact,) = list(check_path(path))
-    assert set(fact.provenance) == {"path", "line", "cite"}
+    (fact,) = claims(check_path(path))
+    assert set(fact.provenance) == {"path", "line", "cite", "faithful"}
 
 
 def test_a_goal_no_oracle_can_state_does_not_hide_vacuous_hypotheses(
@@ -311,7 +313,7 @@ def test_a_goal_no_oracle_can_state_does_not_hide_vacuous_hypotheses(
         tmp_path,
         VACUOUS.replace("-> n == n + 1", "-> 2 * sum(i for i in Fin[n + 1]) == 7"),
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert fact.is_vacuous
     assert cli.main(["check", path]) == 1
@@ -325,7 +327,7 @@ def test_an_empty_domain_is_an_inconsistent_hypothesis(tmp_path, oracles) -> Non
         tmp_path,
         VACUOUS.replace("n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1", "i: Fin[0]) -> i == 1"),
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.is_vacuous
     assert fact.provenance["unsatisfied_detail"] == "a draw could not be completed: Fin(0) is empty"
 
@@ -350,7 +352,7 @@ def test_a_family_with_nowhere_to_put_its_values_is_an_inconsistent_hypothesis(
             "f: Fn[Fin[1], Nat & False]) -> f(0) == 1",
         ).replace("import Fin, Nat", "import Fin, Fn, Nat"),
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
     assert cli.main(["check", path]) == 0
     assert "WARNING vacuous at vacuous.py:7" in capsys.readouterr().out
@@ -377,7 +379,7 @@ def test_a_refinement_that_never_evaluates_is_undecided_not_unsatisfied(
         tmp_path,
         VACUOUS.replace("n: Nat, h: (n > 2) & (n < 1))", "n: Nat & (10 // (n - n) > 1))"),
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert not fact.is_vacuous
     assert "unsatisfied" not in fact.provenance
@@ -413,7 +415,7 @@ def test_a_sort_the_tester_cannot_draw_is_not_unsatisfied_hypotheses(
     else:
         oracles(TestOracle())
     path = _write(tmp_path, UNTABULATED)
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is (Status.PROVED if stronger else Status.ASSUMED)
     assert "unsatisfied" not in fact.provenance
     assert not fact.is_vacuous
@@ -448,7 +450,7 @@ def test_inconsistent_hypotheses_over_a_sort_the_tester_cannot_draw_are_vacuous(
             "import Fin, Nat", "import Fin, Fn, Nat"
         ),
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.is_vacuous
     assert "unsatisfied" not in fact.provenance
     assert cli.main(["check", path]) == 1
@@ -467,7 +469,7 @@ def test_a_refutation_under_a_stronger_proof_is_recorded(tmp_path, oracles, caps
     """
     oracles(ProvesEverything(), TestOracle())
     path = _write(tmp_path, VACUOUS.replace("(n > 2) & (n < 1)) -> n == n + 1", "n > 2) -> n > 5"))
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert "semantics" not in fact.provenance
     assert fact.provenance["semantics_counterexample"]["n"] in (3, 4, 5)
@@ -815,7 +817,7 @@ def test_two_same_named_theorems_are_two_facts(tmp_path, monkeypatch) -> None:
     for name in ("first", "second"):
         path = tmp_path / f"{name}.py"
         path.write_text(source, encoding="utf-8")
-        facts += [fact for fact in check_path(path)]
+        facts += claims(check_path(path))
 
     assert [fact.owner for fact in facts] == ["claim", "claim"]
     assert len({fact.id for fact in facts}) == 2
@@ -1755,7 +1757,7 @@ def test_a_guard_no_draw_passes_leaves_the_fact_assumed(tmp_path, oracles, capsy
     """
     oracles(TestOracle())
     path = _write(tmp_path, GUARD_PROBE, "guard_probe.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
     assert fact.provenance["valid"] == 0
@@ -1861,7 +1863,7 @@ def test_a_sampled_universal_that_is_not_asserted_is_never_refuted(
     """
     oracles(TestOracle())
     path = _write(tmp_path, POLARITY, "polarity.py")
-    facts = {fact.owner: fact for fact in check_path(path)}
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
     for fact in facts.values():
         assert fact.status is Status.ASSUMED, fact.owner
         assert fact.provenance["valid"] == 0
@@ -2095,7 +2097,7 @@ def test_a_goal_whose_guard_never_holds_is_warned_about(tmp_path, oracles, capsy
     """
     oracles(TestOracle())
     path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.TESTED
     assert fact.provenance["goal_reached"] == 0
     assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
@@ -2120,7 +2122,7 @@ def test_a_proof_of_a_goal_whose_guard_is_empty_is_vacuous(tmp_path, oracles, ca
     oracles(_recording(shown), TestOracle())
     path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
     ledger = check_path(path)
-    (fact,) = list(ledger)
+    (fact,) = claims(ledger)
     assert shown == ["theorem", "goal-guard"]
     assert fact.status is Status.PROVED
     assert fact.is_vacuous
@@ -2130,7 +2132,7 @@ def test_a_proof_of_a_goal_whose_guard_is_empty_is_vacuous(tmp_path, oracles, ca
     assert fact.provenance["vacuous_by"] == "stub-kernel"
     assert fact.provenance["vacuous_evidence"] == {"tactic": "stub"}
     assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
-    assert "proved (vacuous)  stub-kernel" in ledger.render()
+    assert "proved (vacuous)  tested     stub-kernel" in ledger.render()
     out_json = tmp_path / "ledger.json"
     assert cli.main(["check", path, "--json", str(out_json)]) == 1
     printed = capsys.readouterr().out
@@ -2141,7 +2143,7 @@ def test_a_proof_of_a_goal_whose_guard_is_empty_is_vacuous(tmp_path, oracles, ca
     ) in printed
     assert f"  {FLIPPED_WARNING}" in printed
     assert "WARNING" not in printed
-    (entry,) = json.loads(out_json.read_text(encoding="utf-8"))
+    (entry,) = claims(json.loads(out_json.read_text(encoding="utf-8")))
     assert entry["provenance"]["vacuous"]
     assert entry["provenance"]["goal_reached"] == 0
 
@@ -2150,7 +2152,7 @@ def test_a_goal_guard_no_oracle_can_show_empty_leaves_a_warning(tmp_path, oracle
     """The guard may hold where the sampler does not look: warn, and exit 0."""
     oracles(ProvesAllButGoalGuard(), TestOracle())
     path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert not fact.is_vacuous
     assert fact.provenance["goal_unreached"] == FLIPPED_WARNING
@@ -2175,7 +2177,7 @@ def test_a_guard_empty_only_for_some_outer_values_is_never_flagged(
         SCAN_GUARD.replace("(p < q) & (p > q)", "p <= q"),
         "scan_guard.py",
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert shown == ["theorem"]
     assert not fact.is_vacuous
     assert "goal_reached" not in fact.provenance
@@ -2204,11 +2206,11 @@ def test_a_guard_a_point_got_through_at_an_undecided_draw_is_not_empty(
     path = _write(tmp_path, source)
     shown: list[str] = []
     oracles(_recording(shown), TestOracle())
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert shown == ["theorem"]
     assert "goal_reached" not in fact.provenance
     oracles(TestOracle())
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.TESTED
     assert fact.provenance["undecided"] > 0
     assert "goal_reached" not in fact.provenance
@@ -2232,7 +2234,7 @@ def test_a_proof_of_a_universal_goal_is_sampled_for_a_disagreement(
     )
     oracles(ProvesEverything(), TestOracle())
     path = _write(tmp_path, source)
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert fact.provenance["semantics_disagreement"] == (
         "property-test refutes this statement under lanky's Python reading"
@@ -2268,7 +2270,7 @@ def test_a_proof_over_the_reals_is_not_contradicted_by_rounding(
     )
     oracles(ProvesEverything(), TestOracle())
     path = _write(tmp_path, source, "reals.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert "semantics_disagreement" not in fact.provenance
     assert "semantics_counterexample" not in fact.provenance
@@ -2283,14 +2285,14 @@ def test_a_goal_whose_domain_is_always_empty_is_vacuous_too(tmp_path, oracles, c
     )
     oracles(TestOracle())
     path = _write(tmp_path, source)
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.TESTED
     unreached = "the goal's quantifier reached no point of its domain in 200 valid draws"
     assert fact.provenance["goal_unreached"] == unreached
     assert cli.main(["check", path]) == 0
     assert f"WARNING vacuous at vacuous.py:7: {unreached}" in capsys.readouterr().out
     oracles(ProvesEverything(), TestOracle())
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.is_vacuous
     assert fact.provenance["vacuous"].startswith(
         "the goal's domain is empty wherever the hypotheses hold"
@@ -2317,13 +2319,13 @@ def test_a_sampled_goal_whose_guard_is_empty_is_vacuous_under_a_proof(
     path = _write(tmp_path, source)
     shown: list[str] = []
     oracles(_recording(shown), TestOracle())
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert shown == ["theorem", "goal-guard"]
     assert fact.is_vacuous
     assert "goal_unreached" not in fact.provenance
     assert cli.main(["check", path]) == 1
     oracles(TestOracle())
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert "passed the guard" in fact.provenance["untested"]
     assert fact.provenance["goal_reached"] == 0
@@ -2339,7 +2341,7 @@ def test_an_axiom_whose_goal_guard_is_empty_is_vacuous(tmp_path, oracles, capsys
         "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
     )
     path = _write(tmp_path, source, "scan_guard.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert shown == ["goal-guard"]
     assert fact.status is Status.ASSUMED
     assert fact.is_vacuous
@@ -2383,7 +2385,7 @@ def test_an_axiom_goal_guard_is_examined_past_a_test_oracle_that_counts_nothing(
         "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
     )
     path = _write(tmp_path, source, "scan_guard.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert shown == ["goal-guard"]
     assert fact.provenance["goal_reached"] == 0
     assert fact.is_vacuous
@@ -2447,7 +2449,7 @@ def test_a_parameterless_theorems_goal_is_read_as_its_goal(tmp_path, oracles, ca
     """
     oracles(TestOracle())
     path = _write(tmp_path, CLOSED, "closed.py")
-    facts = {fact.owner: fact for fact in check_path(path)}
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
     for owner in ("closed_flipped", "closed_rare"):
         fact = facts[owner]
         assert fact.status is Status.ASSUMED
@@ -2486,7 +2488,7 @@ def test_a_parameterless_theorems_empty_goal_guard_is_the_goals(tmp_path, oracle
     shown: list[str] = []
     oracles(_recording(shown), TestOracle())
     path = _write(tmp_path, CLOSED, "closed.py")
-    facts = {fact.owner: fact for fact in check_path(path)}
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
     flipped = facts["closed_flipped"]
     assert flipped.status is Status.PROVED
     assert flipped.provenance["vacuous"] == (
@@ -2533,7 +2535,7 @@ def test_the_order_of_two_disjuncts_does_not_change_the_status(tmp_path, oracles
     """
     oracles(TestOracle())
     path = _write(tmp_path, ORDER, "order_probe.py")
-    facts = {fact.owner: fact for fact in check_path(path)}
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
     assert facts["left"].status is Status.TESTED
     assert facts["right"].status is Status.TESTED
 
@@ -2594,7 +2596,7 @@ def test_a_quantifier_and_its_points_spelled_out_agree(tmp_path, oracles) -> Non
     """
     oracles(TestOracle())
     path = _write(tmp_path, POINTS, "points_probe.py")
-    facts = {fact.owner: fact for fact in check_path(path)}
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
     assert facts["spelled"].status is Status.REFUTED
     assert facts["pointwise"].status is Status.REFUTED
     assert facts["pointwise"].provenance["counterexample"]["i"] == 1
@@ -2680,7 +2682,7 @@ def test_a_refinement_over_a_sampled_domain_skips_the_draw(tmp_path, oracles, ca
     """
     oracles(TestOracle())
     path = _write(tmp_path, REFINED, "refined.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert "reason" not in fact.provenance
     assert fact.provenance["untested"].startswith(
@@ -2712,7 +2714,7 @@ def test_a_refinement_a_draw_breaks_rejects_that_draw(tmp_path, oracles, capsys)
     # budget keeps this quick
     oracles(TestOracle(samples=10))
     path = _write(tmp_path, REFINED.replace("k < n + 100", "k < 0"), "refined.py")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 200 draws"
     assert cli.main(["check", path]) == 0
@@ -2721,7 +2723,7 @@ def test_a_refinement_a_draw_breaks_rejects_that_draw(tmp_path, oracles, capsys)
     path = _write(
         tmp_path, REFINED.replace("all(k < n + 100 for k in Nat)", "any(k >= n for k in Nat)")
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.TESTED
 
 
@@ -2787,7 +2789,7 @@ def test_a_pass_on_thin_evidence_says_so_and_stays_tested(tmp_path, oracles, cap
     """
     oracles(TestOracle())
     path = _write(tmp_path, THIN, "thin.py")
-    facts = {fact.owner: fact for fact in check_path(path)}
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
     for owner, at in (("exp_neg", "{'x': Fraction(0, 1)}"), ("exp_log", "{'x': Fraction(1, 1)}")):
         fact = facts[owner]
         assert fact.status is Status.TESTED
@@ -2822,7 +2824,9 @@ def test_a_pass_on_thin_evidence_says_so_and_stays_tested(tmp_path, oracles, cap
     ) in printed
     assert "WARNING two_points at thin.py:17: the pass rests on thin evidence" in printed
     assert "WARNING one_gap" not in printed
-    entries = {entry["owner"]: entry for entry in json.loads(out_json.read_text("utf-8"))}
+    entries = {
+        entry["owner"]: entry for entry in claims(json.loads(out_json.read_text("utf-8")))
+    }
     assert entries["exp_neg"]["status"] == "tested"
     assert entries["exp_neg"]["provenance"]["reason"] == facts["exp_neg"].provenance["reason"]
 
@@ -2836,7 +2840,7 @@ def test_a_proof_says_nothing_about_a_thin_sample(tmp_path, oracles, capsys) -> 
     """
     oracles(ProvesEverything(), TestOracle())
     path = _write(tmp_path, THIN, "thin.py")
-    for fact in check_path(path):
+    for fact in claims(check_path(path)):
         assert fact.status is Status.PROVED
         assert "reason" not in fact.provenance
     assert cli.main(["check", path]) == 0
@@ -2914,7 +2918,7 @@ def test_an_ordinary_pass_says_nothing_about_thin_evidence(tmp_path, oracles, ca
     """#55's reason is for a thin pass only: these decide every draw, or have few assignments."""
     oracles(TestOracle())
     path = _write(tmp_path, ORDINARY, "ordinary.py")
-    for fact in check_path(path):
+    for fact in claims(check_path(path)):
         assert fact.status is Status.TESTED, fact.owner
         assert "reason" not in fact.provenance, fact.owner
     assert cli.main(["check", path]) == 0
