@@ -938,11 +938,12 @@ $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py
 STATUS                 EFFECTIVE            BY      WHERE                    OWNER              STATEMENT
 ---------------------  -------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
 assumed (axiom)        assumed              -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested                 tested               python  sumpy_recurrence.py:128  harmonic           the term computes what the annotations compute
 tested                 tested               mpmath  sumpy_recurrence.py:712  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
 decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:712  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
 proved under harmonic  assumed              lean    sumpy_recurrence.py:712  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
 
-4 facts: 1 assumed, 1 decided, 1 proved, 1 tested
+5 facts: 1 assumed, 1 decided, 1 proved, 2 tested
 
 CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```

@@ -68,19 +68,20 @@ readings are compared whether or not the hypotheses hold.
 the same truth value, or the same value, and a truth value against a number
 is a disagreement. So is an exception on one side only, ``i.name`` raising at
 a number where its term has a value, with one exception: where Python stops
-at no answer, a family applied outside its domain, a division by zero, an
-elementary function outside its domain or an overflow, lanky's reading may
-settle the point three-valued, as a quantifier does at a point past one with
-no answer, so such a point is not compared (``open``). Where both sides stop
-there for one reason, with the same exception, neither has a value, and they
-agree: ``n // 0 == 0`` is read faithfully, and what Lean's total division
-makes of it is the semantics gap :mod:`lanky.semantics` notes. Two other
-exceptions are no comparison. A disagreement in a truth value at a draw where the term
-compared two floating-point numbers that agree to :data:`TOLERANCE` is put
-down to rounding and not counted (``rounding``): Python's ``sum`` rounds as
-it adds, and the evaluator as pymbolic keeps the term, which can differ in
-the last bit where the claim is read over the reals. A value is compared to
-the same tolerance when it is a floating-point number.
+with no answer, at a family applied outside its domain, a division by zero,
+an elementary function outside its domain or an overflow, lanky's reading
+may settle the point three-valued, as a quantifier does at a point past one
+with no answer, so such a point is not compared (``open``). Where both sides
+stop there for one reason, with the same exception, neither has a value, and
+they agree: ``n // 0 == 0`` is read faithfully, and what Lean's total
+division makes of it is the semantics gap :mod:`lanky.semantics` notes. Two
+other exceptions are no comparison (``silent``). A disagreement in a truth
+value at a draw where the term compared two floating-point numbers that
+agree to :data:`TOLERANCE` is put down to rounding and not counted
+(``rounding``): Python's ``sum`` compensates as it adds, and the evaluator
+adds the term's sum one by one, which can differ in the last bit, where the
+claim is read over the reals. A value is compared to the same tolerance when
+it is a floating-point number.
 
 *The fact.* Its kind is ``faithful`` (:data:`lanky.ledger.FAITHFUL`), its id
 is the claim's with that kind (``faithful:gauss.gauss@31``), and it has the
@@ -762,9 +763,10 @@ def _judge(python: _Outcome, term: _Outcome, fragile: bool) -> str:
     ``agreed``, the same value, or no value on either side for one reason
     (one of :data:`_OPEN`, of one type); ``differed``; ``open``, where Python
     stopped with no answer that lanky's reading may settle; ``silent``, where
-    both raised otherwise; ``rounding``, a truth value that differs where the term compared
-    two floating-point numbers that agree to :data:`TOLERANCE`; or
-    ``uncomparable``, a value that holds a term or that ``==`` cannot compare.
+    both raised otherwise; ``rounding``, a truth value that differs where the
+    term compared two floating-point numbers that agree to :data:`TOLERANCE`;
+    or ``uncomparable``, a value that holds a term or that ``==`` cannot
+    compare.
     """
     if python.error is not None and term.error is not None:
         if isinstance(python.error, _OPEN) and type(python.error) is type(term.error):

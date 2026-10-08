@@ -6,6 +6,100 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+Every claim's reading of its annotations is checked (#91), which closes the
+class the 0.1.0 Known limits named: an operation that answers from a term
+object rather than through its overloads, `is`, an attribute, a hash, a text
+or a truth value inside a helper or a library, a comparison of types (#79,
+#80, #88), is refuted at a point instead of proved. Every ledger changes
+shape: each theorem and axiom is followed by its reading, and a proof is
+worth the `tested` reading it rests on.
+
+### Added
+
+- **The `faithful` fact (#91).** lanky reads an annotation by running its
+  Python on symbolic terms, and every oracle is handed the term that run
+  builds. `lanky.faithful.faithful_fact(theorem)` checks that reading by its
+  results: each annotation, the goal, each hypothesis and each variable's
+  sort, is run again as plain Python at drawn values, in the function's
+  globals as they were when it was read (`Theorem.namespace`), and the term
+  is evaluated at the same values, and the two have to agree.
+  - The draws: six of small values and domain ends first (`CORNERS`, every
+    natural the tester draws and a domain's first and last points, smallest
+    first, so a refutation names a small point), then 32 of the property
+    tester's (`SAMPLES`), with definitional hypotheses satisfied by
+    construction. A bounded quantifier is enumerated, and one over a sort
+    runs over a sample of it, the same on both sides
+    (`lanky.terms.concrete_sorts`). A family over a sort, `Fn[Nat, Real]`,
+    which the tester cannot tabulate, is drawn at each point as either reading
+    applies it (`DrawnFamily`). A refinement no draw satisfies is drawn from
+    what it refines: the readings are compared whether or not the hypotheses
+    hold.
+  - The rerun reads `~`, `&` and `|` of truth values as lanky's `not`, `and`
+    and `or`, three-valued: Python's `~True` is `-2`, and its `|` asked
+    `f(-1)` of `(i == 0) | (f(i - 1) <= f(i))` at `i = 0`.
+  - Agreement: the same truth value or the same value. A truth value against
+    a number disagrees, and so does an exception on one side only. Where
+    Python stops with no answer that lanky's reading settles three-valued (a
+    family outside its domain, a division by zero, an elementary function
+    outside its domain), the point is not compared, and where both stop for
+    one reason they agree. A truth value that differs where the term
+    compared two floating-point numbers that agree to `1e-9` (`TOLERANCE`) is
+    put down to rounding: Python's `sum` compensates as it adds.
+  - The fact, of kind `faithful` (`lanky.ledger.FAITHFUL`), id
+    `faithful:module.name@line`, owner and location the claim's, statement
+    `the term computes what the annotations compute`, is `refuted` by
+    `python` at the first draw that disagrees, with the draw as
+    `counterexample`, the annotation as written as `witness`, and both
+    answers in the `reason` (and as `python_answer`, `term_answer`);
+    `tested` by `python` when every annotation was compared at some draw and
+    none disagreed, with the counts; and `assumed`, with the reason as
+    `declined`, when one cannot be compared: a free name, a sort no value can
+    be drawn of, an annotation Python evaluated when the function was
+    defined, one with no answer on both sides at any draw.
+- `Theorem.faithful_fact()`, made once per claim; `Theorem.fact(reading)`,
+  which records the reading's id as `faithful` and, when it is refuted, why,
+  as `unfaithful`; `Theorem.namespace`; `Fact.is_reading`.
+- `lanky.terms.concrete_sorts`, `sort_points` and `rerunning`: what a sort
+  iterates while an annotation is run again at concrete values.
+- **The pytest plugin fails a theorem whose reading is refuted**, with the
+  annotation, the draw and the reason, before any draw of its term, which
+  would test another statement.
+
+### Changed
+
+- **Each theorem and axiom is two facts.** `TheoremTheory.facts` yields the
+  claim and then its reading, so every ledger has a row under each claim,
+  `tested python ... the term computes what the annotations compute`, and its
+  count of facts doubles for theorems; `--json` has the reading as an entry
+  of kind `faithful`. A plugin's facts are not read, so loopty's kernels and
+  programs have no such row (they have `trace-faithful`), and a theorem a
+  loopty file holds has one.
+- **Every pass, decision and proof of a claim rests on its reading**
+  (`rests_on` gains the reading's id), so the ledger's weakest link shows
+  it: a proof is worth `tested` in the `EFFECTIVE` column, which every
+  ledger with a proof now has, and `proved under faithful:name` where the
+  reading could not be run. An axiom does not rest on its reading, since it
+  is `assumed` on its citation whatever that is worth, unless the reading is
+  refuted.
+- **A claim whose reading is refuted is offered to no oracle**, the property
+  tester included, and stays `assumed`, resting on the refuted reading, so it
+  is worth `refuted` and `lanky check` exits 1. `lanky.check.establish`
+  returns a reading's fact as it is: it was established when it was made.
+- The table names a reading `faithful:owner` where it names a fact, and
+  counts readings apart from claims, so `proved under harmonic` still names
+  the axiom `harmonic` and not its reading.
+- A reading left `assumed` gets a `DECLINED` line only where something rests
+  on it, a pass or a proof of its claim. Otherwise its claim is an axiom, or
+  is `assumed` itself, and its own line says why; the pytential
+  demonstration's eight axioms about boundaries, which no draw can make,
+  print none.
+- A later claim of an id that is refused as a duplicate (#52) takes its
+  reading with it.
+- The README's Known limits section says what the check leaves: points no
+  draw reaches, claims whose annotations cannot be run at a point, and the
+  points Python cannot answer at or rounding decides. The quickstart has a
+  Check the reading section, and every ledger in both is run again.
+
 ## [0.1.0] - 2026-10-08
 
 The first release on PyPI, where only the 0.0.1 placeholder that reserved the

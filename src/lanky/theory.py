@@ -366,10 +366,10 @@ class Theorem:
 
         ``reading`` is the claim's ``faithful`` fact (:meth:`faithful_fact`),
         which ``lanky check`` passes: its id is recorded as ``faithful``, so
-        that :func:`lanky.check.establish` rests a decision or a proof of the
-        claim on it, and when it is refuted, why, as ``unfaithful``, so that
-        no oracle is asked about a term that says something else than the
-        claim. Without it the fact is the claim alone, as it always was.
+        that :func:`lanky.check.establish` rests a pass, a decision or a proof
+        of the claim on it, and when it is refuted, why, as ``unfaithful``, so
+        that no oracle is asked about a term that says something else than
+        the claim. Without it the fact is the claim alone, as it always was.
         """
         provenance: dict[str, Any] = {"path": self.path, "line": self.line}
         if reading is not None:
@@ -594,8 +594,8 @@ class TheoremTheory:
         The claim comes first, as written, and its reading after it: whether
         the term computes what the annotations compute (#91, see
         :mod:`lanky.faithful`). The claim's fact names the reading, so that
-        :func:`lanky.check.establish` rests a decision or a proof on it, and
-        offers a claim whose reading is refuted to no oracle.
+        :func:`lanky.check.establish` rests a pass, a decision or a proof on
+        it, and offers a claim whose reading is refuted to no oracle.
         """
         if not isinstance(obj, Theorem):
             return ()
