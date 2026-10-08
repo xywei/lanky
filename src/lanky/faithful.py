@@ -656,14 +656,22 @@ def _draw(
 
 
 def _described(value: Any) -> Any:
-    """A drawn value as a counterexample shows it: a family as its values."""
+    """A drawn value as a counterexample shows it: a family as its values.
+
+    A family drawn as it was applied is its values by point, and a point that
+    is not an ``int``, ``Fraction(1, 2)`` of a family over ``Real``, is named
+    by its text, since a JSON object's keys are strings and numbers.
+    """
     if isinstance(value, Table):
         return [_described(item) for item in value.values]
     if isinstance(value, DrawnFamily):
-        return {point: _described(item) for point, item in value.values.items()}
-    if isinstance(value, dict):
-        return {point: _described(item) for point, item in value.items()}
+        return {_key(point): _described(item) for point, item in value.values.items()}
     return value
+
+
+def _key(point: Any) -> Any:
+    """A point of a drawn family as a counterexample's key: an ``int`` as it is, else its text."""
+    return point if isinstance(point, int) and not _is_truth(point) else str(point)
 
 
 @dataclass

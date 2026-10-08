@@ -529,6 +529,23 @@ def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
     assert claim.status is Status.ASSUMED
 
 
+def test_a_refutation_over_a_family_of_reals_is_written_as_json(tmp_path) -> None:
+    """A family over ``Real`` is applied at fractions, which a JSON object cannot key by."""
+    path = _write(
+        tmp_path,
+        "\n\ndef table(x):\n    return {0: 1}.get(x, 0)\n\n\n"
+        "@theorem\n"
+        "def halved(f: Fn[Real, Nat]) -> all(f(x / 2) * 0 == table(x) for x in Real):\n"
+        '    """Misread: the table gives 0 for a term, and 1 at x = 0."""\n',
+    )
+    out = tmp_path / "out.json"
+    assert cli.main(["check", path, "--json", str(out)]) == 1
+    rows = json.loads(out.read_text(encoding="utf-8"))
+    (reading,) = [row for row in rows if row["kind"] == "faithful"]
+    assert reading["status"] == "refuted"
+    assert all(isinstance(key, str) for key in reading["provenance"]["counterexample"]["f"])
+
+
 def test_a_drawn_family_has_no_value_outside_its_domain() -> None:
     """``f(-1)`` of an ``f`` over ``Nat`` is no point of it, as a table's ``f(n)`` is not."""
     import random
