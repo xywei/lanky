@@ -108,7 +108,7 @@ def sympy_module() -> Any:
         import sympy
     except ImportError as exc:
         raise ImportError(
-            "sympy is not installed; the CAS bridge needs it (pip install lanky[cas])"
+            'sympy is not installed; the CAS bridge needs it (pip install "lanky[cas]")'
         ) from exc
     return sympy
 

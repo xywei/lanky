@@ -4,11 +4,30 @@ All notable changes to lanky are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [PEP 440](https://peps.python.org/pep-0440/).
 
-## [0.1.0.dev1] - 2026-09-30
+## [Unreleased]
 
-A fact id changed, and loopty builds its ids with the same function, so the
-version moves: lanky goes to the next `0.1.0.devN` whenever an interface
-loopty uses changes, and loopty's floor follows it.
+## [0.1.0] - 2026-10-08
+
+The first release on PyPI, where only the 0.0.1 placeholder that reserved the
+name was before. `lanky check` prints one ledger of the claims in a file, each
+with its status and who established it: tested by the property tester,
+decided (heuristic) by the CAS oracle where sympy is installed (the `cas`
+extra), and proved by Lean where the `lean` extra and a toolchain are, in
+core Lean or, with the Mathlib project `python -m lanky.mathlib` sets up,
+over the reals and the complex numbers and by induction over families of
+expressions. A fact can rest on others, a theorem on the axioms it cites,
+and a row says what it is worth given what it rests on. The README's Known
+limits section says where a proof can be of something other than the claim:
+an annotation is traced Python, and an operation that answers from a term
+object rather than through its overloads (`is`, an attribute, a hash or a
+text inside a helper or a library, a comparison of types) is not checked yet
+(#79, #80, #88). The check that closes the class, a `faithful` fact for every
+claim (#91), is planned for 0.2.0.
+
+The entries below are every change since 0.1.0.dev0. Neither development
+version was published. 0.1.0.dev1 was the version on `main` from 2026-09-30,
+when a fact id changed, and loopty, which builds its ids with the same
+function, raised its floor to match.
 
 ### Added
 
@@ -161,6 +180,19 @@ loopty uses changes, and loopty's floor follows it.
 
 ### Changed
 
+- **Packaged for the first release.** The version is 0.1.0, the classifiers
+  say `Development Status :: 3 - Alpha` and `Framework :: Pytest`, and the
+  project's URLs name the quickstart, this file and the issue tracker. The
+  sdist holds the package, the tests, the examples and the documentation the
+  tests compare with a real run, named in `pyproject.toml` rather than every
+  file git does not ignore, and hatchling 1.27 or later builds it, for the
+  license metadata. The publish workflow stops on a tag that is not the
+  package's version in `pyproject.toml` and `lanky.__version__`, checks that
+  it built one sdist and one wheel of that version, and runs `twine check`
+  on them before it publishes. The README installs from PyPI with `pip`,
+  extras, Lean and Mathlib included, says where the project stands, has a
+  Known limits section, and links the quickstart, this file and the license
+  by their full addresses, so that the links work on PyPI as well.
 - **Mathlib mode no longer spends minutes on the sumpy demonstration** (#71).
   The CAS's row, 28 equations through order 6, is declined for Lean
   (`decline`), since Lean's row is the claim for every order, and the ladder

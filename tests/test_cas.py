@@ -112,7 +112,7 @@ def test_the_oracle_says_why_it_is_not_there(monkeypatch) -> None:
     monkeypatch.setattr("lanky.oracles.cas.find_spec", lambda name: None)
     assert CasOracle().availability() == (
         False,
-        "sympy is not installed (pip install lanky[cas])",
+        'sympy is not installed (pip install "lanky[cas]")',
     )
 
 
