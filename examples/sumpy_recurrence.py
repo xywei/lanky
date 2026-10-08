@@ -11,13 +11,16 @@ Run it as ``gauss.py`` and ``pytential_skie.py`` are run, where sumpy imports.
 
 ``uv run lanky check examples/sumpy_recurrence.py``
     The ledger: one claim, that every coefficient the wrangler reconstructs
-    is the kernel's derivative, at two statuses. ``tested`` by mpmath, which
-    takes the derivatives numerically at random points; and ``decided
+    is the kernel's derivative, at three statuses. ``tested`` by mpmath, which
+    takes the derivatives numerically at random points; ``decided
     (heuristic)`` by the CAS oracle, which simplifies the difference of the
-    two sides of each equation to zero with sympy (the ``cas`` extra). Without
-    the oracle the second row reads ``tested`` by the property tester, which
-    evaluates the same equations exactly, in rational arithmetic. Above them
-    is the kernel's harmonicity, ``assumed`` on its citation.
+    two sides of each equation to zero with sympy (the ``cas`` extra); and,
+    for every order and not only through ``ORDER``, ``proved under harmonic``
+    by Lean, where Mathlib is installed (see :mod:`lanky.mathlib`). Without
+    the CAS oracle the second row reads ``tested`` by the property tester,
+    which evaluates the same equations exactly, in rational arithmetic, and
+    without Mathlib the third reads ``assumed``. Above them is the kernel's
+    harmonicity, ``assumed`` on its citation.
 
 The mathematics. A Taylor expansion of a kernel ``G`` needs every derivative
 ``d^(a+b) G / dx^a dy^b`` with ``a + b`` up to the order. When ``G`` satisfies a
@@ -32,10 +35,32 @@ equals the derivative it stands for. The constant factor ``-1/(2 pi)`` of the
 kernel is left out, since the reconstruction is linear.
 
 The harmonicity is an axiom here, ``harmonic``, taken on its citation and
-sampled for a counterexample. Neither row rests on it: each checks the
-reconstruction against the derivatives themselves, one order at a time. A
-proof for every order would rest on it, since the recurrence is the PDE
-differentiated, and that is the row the ledger does not have yet.
+sampled for a counterexample. The first two rows do not rest on it: each
+checks the reconstruction against the derivatives themselves, one order at a
+time. The third does. For every order, the claim is an induction on ``a``:
+the coefficient ``(a + 2, b)`` is minus the one at ``(a, b + 2)``, which by
+the induction hypothesis is the derivative ``D(a, b + 2)``, and the PDE,
+differentiated ``a`` times in ``x`` and ``b`` in ``y``, says that ``D(a + 2, b)
++ D(a, b + 2) == 0``. That step is algebra, which Lean checks with
+``linear_combination`` once Python has found which hypotheses to combine, at
+which points, with which multipliers (see :mod:`lanky.induction`). What is not
+algebra is that the derivatives of the kernel satisfy the PDE at every order:
+that is the harmonicity, differentiated, which the kernel's smoothness away
+from the origin allows, and it is the hypothesis the proof takes and the axiom
+the row rests on. So the third row's term is a statement about any table
+``D`` of numbers indexed by ``(a, b)`` that satisfies the PDE at every order,
+and any table ``R`` that agrees with it where the wrangler stores and follows
+the recurrence elsewhere: ``R`` is ``D``. The derivatives of ``log r`` at a
+point are such a ``D``, by ``harmonic``, and the wrangler's reconstruction is
+such an ``R``, by the recurrence, which is read off the PDE sumpy declares for
+the kernel, as the wrangler reads it, and checked against the wrangler's
+weights through ``ORDER``; a wrangler whose weights do not follow it makes no
+claim for every order.
+
+The CAS's row is the claim through ``ORDER``, 28 equations, and Lean is not
+asked about it (:func:`lanky.oracles.lean.decline`): Lean's row is the one for
+every order, and the ladder would spend minutes on a conjunction it has no
+strategy for before the CAS oracle decides it in a second.
 
 The recurrence is read off the wrangler, not written here: it is handed
 symbols for the stored derivatives and returns, for each coefficient, the
@@ -47,7 +72,8 @@ sampled one, so the two rows rest on no common computation but the weights.
 sumpy, and sympy and mpmath through it, are imported inside the functions that
 use them. None of them is a dependency of lanky: the oracle that asks sympy is
 lanky's, behind the ``cas`` extra, and the one that asks mpmath is here, where
-a plugin's would be.
+a plugin's would be. So is the search for the induction's multipliers, which
+is sympy's, and so lanky's ``cas`` extra too.
 """
 
 from __future__ import annotations
@@ -63,9 +89,11 @@ from lanky import axiom
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
+from lanky.oracles.lean import decline
 from lanky.plugins import registry
-from lanky.prelude import Real
-from lanky.terms import Add, Comparison, Forall, LogicalAnd, Product, Var
+from lanky.prelude import Fn, Nat, Real
+from lanky.terms import Add, Comparison, Forall, LogicalAnd, LogicalOr, Product, Var
+from lanky.theory import fact_ids
 
 #: The order through which every coefficient is checked.
 ORDER = 6
@@ -101,8 +129,10 @@ def laplacian(kernel: Any, x: Var, y: Var) -> Any:
 def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) == 0:
     """The 2-D Laplace kernel is harmonic away from the origin: ``G_xx + G_yy == 0``.
 
-    The PDE the wrangler reconstructs by, and what a proof of the claim for
-    every order would rest on.
+    The PDE the wrangler reconstructs by, and what the proof of the claim for
+    every order rests on: the kernel is smooth away from the origin, so its
+    derivatives commute with the Laplacian, and every one of them is harmonic
+    too, which is the hypothesis that proof takes.
     """
 
 
@@ -136,17 +166,33 @@ class Reconstruction:
         weights: For each coefficient, the rational weight of each stored one
             in the combination the wrangler reconstructs it by, by the stored
             one's place in ``stored``.
+        pde: The PDE sumpy declares for the kernel, as the rational
+            coefficient of each derivative in it, ``{(2, 0): 1, (0, 2): 1}``
+            for Laplace's; ``None`` when there is no claim for every order
+            (see :func:`_read_pde`).
+        leading: The derivative of the PDE the wrangler solves it for, the
+            first one it does not store: ``(2, 0)``.
+        uses: The facts the claim for every order rests on, ``harmonic``'s.
     """
 
     noun = "reconstruction"
 
     def __init__(
-        self, fn: Any, *, kernel: Any, order: int, points: int, digits: int, seed: int = 0
+        self,
+        fn: Any,
+        *,
+        kernel: Any,
+        order: int,
+        points: int,
+        digits: int,
+        seed: int = 0,
+        uses: Any = (),
     ) -> None:
         self.fn = fn
         functools.update_wrapper(self, fn)
         self.kernel, self.order = kernel, order
         self.points, self.digits, self.seed = points, digits, seed
+        self.uses = fact_ids(uses)
         code = fn.__code__
         self.path, self.line = code.co_filename, code.co_firstlineno
         self.where = f"{os.path.basename(self.path)}:{self.line}"
@@ -161,13 +207,41 @@ class Reconstruction:
             ) from exc
         self.identifiers, self.stored, self.weights = _read_recurrence(wrangler)
         self.derivatives = _derivatives(kernel, self.identifiers)
+        found = _read_pde(wrangler, self.identifiers, self.stored, self.weights)
+        self.pde, self.leading = found if found is not None else (None, None)
 
-    def statement(self, prefix: str = "") -> str:
+    def statement(self, prefix: str = "", scope: str | None = None) -> str:
         """``reconstructed(a, b) == diff(G, x, a, y, b) for a + b <= p``, after ``prefix``."""
         return (
             f"{prefix}reconstructed(a, b) == diff({self.kernel_text}, x, a, y, b) "
-            f"for a + b <= {self.order}"
+            f"{scope or f'for a + b <= {self.order}'}"
         )
+
+    def recurrence_text(self) -> str:
+        """The recurrence, ``reconstructed(a + 2, b) == -reconstructed(a, b + 2)`` for Laplace."""
+        assert self.pde is not None and self.leading is not None
+        left = _shifted("reconstructed", self.leading)
+        parts = []
+        for mi, coefficient in self.pde.items():
+            if mi == self.leading:
+                continue
+            weight = -coefficient / self.pde[self.leading]
+            size = "" if abs(weight) == 1 else f"{abs(weight)}*"
+            parts.append(f"{'-' if weight < 0 else '+'} {size}{_shifted('reconstructed', mi)}")
+        right = " ".join(parts)
+        right = right[2:] if right.startswith("+ ") else "-" + right[2:]
+        return f"{left} == {right}"
+
+    def pde_text(self) -> str:
+        """The PDE as the derivatives of ``G`` it combines: ``G_xx + G_yy == 0`` for Laplace."""
+        assert self.pde is not None
+        parts = []
+        for mi, coefficient in self.pde.items():
+            size = "" if abs(coefficient) == 1 else f"{abs(coefficient)}*"
+            parts.append(f"{'-' if coefficient < 0 else '+'} {size}{_derivative_name(mi)}")
+        text = " ".join(parts)
+        text = text[2:] if text.startswith("+ ") else "-" + text[2:]
+        return f"{text} == 0"
 
     @property
     def kernel_text(self) -> str:
@@ -193,15 +267,20 @@ class Reconstruction:
 
     # {{{ facts
 
-    def _fact(self, detail: str, statement: str, term: Any) -> Fact:
+    def fact_id(self, detail: str) -> str:
+        """The id of one of the claim's facts: ``sampled``, ``symbolic`` or ``every-order``."""
+        return fact_id(self.noun, self.qualname, module=self.module, line=self.line, detail=detail)
+
+    def _fact(self, detail: str, statement: str, term: Any, rests_on: tuple = ()) -> Fact:
         return Fact(
-            id=fact_id(self.noun, self.qualname, module=self.module, line=self.line, detail=detail),
+            id=self.fact_id(detail),
             kind=self.noun,
             statement=statement,
             term=term,
             provenance={"path": self.path, "line": self.line},
             where=self.where,
             owner=self.qualname,
+            rests_on=rests_on,
         )
 
     def term(self) -> Forall:
@@ -221,16 +300,92 @@ class Reconstruction:
             equations.append(Comparison(reconstructed, "==", direct[index]))
         return Forall(((x, Real), (y, Real)), LogicalAnd(tuple(equations)), x**2 + y**2 > 0)
 
+    def every_order_term(self) -> Forall:
+        """The claim for every order: a table that follows the recurrence is the derivatives'.
+
+        Over two tables of reals indexed by ``(a, b)``, the derivatives ``D``
+        and the reconstruction ``R``: if ``D`` satisfies the PDE at every
+        order, ``R`` agrees with ``D`` where the wrangler stores, and ``R``
+        follows the recurrence everywhere else, then ``R`` is ``D``. For
+        Laplace's PDE, with ``R(a + 2)(b) == -R(a)(b + 2)``.
+        """
+        assert self.pde is not None and self.leading is not None
+        a, b = Var("a"), Var("b")
+        derivatives, reconstructed = Var("D"), Var("R")
+        table = Fn[Nat, Fn[Nat, Real]]
+        orders = ((a, Nat), (b, Nat))
+
+        def at(family: Var, shift: tuple[int, int]) -> Any:
+            return family(a + shift[0] if shift[0] else a)(b + shift[1] if shift[1] else b)
+
+        def weighted(weight: Fraction, term: Any) -> Any:
+            return term if weight == 1 else Product((_number(weight), term))
+
+        def total(parts: list[Any]) -> Any:
+            return parts[0] if len(parts) == 1 else Add(tuple(parts))
+
+        pde = Forall(
+            orders,
+            Comparison(
+                total([weighted(c, at(derivatives, mi)) for mi, c in self.pde.items()]), "==", 0
+            ),
+        )
+        below = [
+            Comparison(v, "<", bound)
+            for v, bound in zip((a, b), self.leading, strict=True)
+            if bound
+        ]
+        stored = Forall(
+            orders,
+            Comparison(at(reconstructed, (0, 0)), "==", at(derivatives, (0, 0))),
+            below[0] if len(below) == 1 else LogicalOr(tuple(below)),
+        )
+        lead = self.pde[self.leading]
+        recurrence = Forall(
+            orders,
+            Comparison(
+                at(reconstructed, self.leading),
+                "==",
+                total(
+                    [
+                        weighted(-c / lead, at(reconstructed, mi))
+                        for mi, c in self.pde.items()
+                        if mi != self.leading
+                    ]
+                ),
+            ),
+        )
+        goal = Forall(orders, Comparison(at(reconstructed, (0, 0)), "==", at(derivatives, (0, 0))))
+        return Forall(
+            ((derivatives, table), (reconstructed, table)),
+            goal,
+            LogicalAnd((pde, stored, recurrence)),
+        )
+
     def facts(self) -> tuple[Fact, ...]:
-        """The claim at points, for mpmath, and as formulas, for the CAS oracle."""
-        return (
+        """The claim at points, for mpmath; as formulas, for the CAS; for every order, for Lean.
+
+        The last only where the wrangler's weights follow the recurrence the
+        PDE gives (see :func:`_read_pde`).
+        """
+        facts = [
             self._fact("sampled", str(Sampled(self)), Sampled(self)),
             self._fact(
                 "symbolic",
                 self.statement("x : Real, y : Real | x**2 + y**2 > 0 |- "),
                 self.term(),
             ),
-        )
+        ]
+        if self.pde is not None:
+            facts.append(
+                self._fact(
+                    "every-order",
+                    self.statement("every order: ", f"for every a, b, by {self.recurrence_text()}"),
+                    self.every_order_term(),
+                    rests_on=self.uses,
+                )
+            )
+        return tuple(facts)
 
     # }}}
 
@@ -355,6 +510,96 @@ def _read_recurrence(wrangler: Any) -> tuple[list[tuple[int, int]], list[tuple[i
     return identifiers, stored, weights
 
 
+def _read_pde(
+    wrangler: Any, identifiers: list[tuple[int, int]], stored: list[tuple[int, int]], weights: list
+) -> tuple[dict[tuple[int, int], Fraction], tuple[int, int]] | None:
+    """The PDE the wrangler reconstructs by, and the derivative it is solved for; or ``None``.
+
+    The PDE is the one sumpy declares for the wrangler's kernel
+    (``get_pde_as_diff_op``), a rational coefficient for each derivative in
+    it. The wrangler stores every derivative that is not a derivative of one
+    of them, the leading one, and reconstructs the others from it: a
+    derivative ``m`` beyond ``L`` is minus the PDE's other terms, shifted by
+    ``m - L`` and divided by ``L``'s coefficient. The leading derivative is
+    the one whose shifts are exactly what the wrangler does not store.
+
+    That is the recurrence the claim for every order is about, so the
+    wrangler's weights through its order are checked against it, exactly:
+    a stored coefficient is itself, and every other is the recurrence's
+    combination of the weights it names. ``None``, and no claim for every
+    order, for a wrangler with no kernel to read a PDE off, a PDE with a
+    coefficient that is not a rational number (Helmholtz's ``k``), a stored
+    set no derivative of the PDE gives, a recurrence that reaches past the
+    order for some coefficient, where the wrangler cannot follow it, or
+    weights that do not follow the recurrence: the rows at points and as
+    formulas still check such a wrangler, and refute one that is wrong.
+    """
+    import sympy
+
+    kernel = getattr(wrangler, "knl", None)
+    get_pde = getattr(kernel, "get_pde_as_diff_op", None)
+    if get_pde is None:
+        return None
+    try:
+        operator = get_pde()
+    except NotImplementedError:
+        return None
+    if len(operator.eqs) != 1:
+        return None
+    pde: dict[tuple[int, int], Fraction] = {}
+    for derivative, coefficient in operator.eqs[0].items():
+        value = sympy.sympify(coefficient)
+        if getattr(derivative, "vec_idx", 0) != 0 or not value.is_Rational:
+            return None
+        pde[tuple(derivative.mi)] = Fraction(int(value.p), int(value.q))
+    # in a fixed order, x's before y's, whatever order sumpy keeps them in
+    pde = dict(sorted(pde.items(), reverse=True))
+    kept = set(stored)
+    for leading in pde:
+        shifts = {mi for mi in identifiers if all(m >= n for m, n in zip(mi, leading, strict=True))}
+        if set(identifiers) - shifts == kept:
+            break
+    else:
+        return None
+    place = {mi: index for index, mi in enumerate(identifiers)}
+    for index, mi in enumerate(identifiers):
+        if mi in kept:
+            expected = {stored.index(mi): Fraction(1)}
+        else:
+            expected = {}
+            for other, coefficient in pde.items():
+                if other == leading:
+                    continue
+                source = tuple(m - n + o for m, n, o in zip(mi, leading, other, strict=True))
+                if source not in place:
+                    # the recurrence reaches past the order, where the wrangler
+                    # has nothing, so it cannot follow it here
+                    return None
+                for stored_place, weight in weights[place[source]].items():
+                    share = -coefficient / pde[leading] * weight
+                    expected[stored_place] = expected.get(stored_place, 0) + share
+        actual = {key: Fraction(value) for key, value in weights[index].items() if value != 0}
+        if {key: value for key, value in expected.items() if value != 0} != actual:
+            return None
+    return pde, leading
+
+
+def _derivative_name(mi: tuple[int, int]) -> str:
+    """``G_xx`` for ``(2, 0)``, and ``G`` for ``(0, 0)``."""
+    return "G" + ("_" + "x" * mi[0] + "y" * mi[1] if any(mi) else "")
+
+
+def _shifted(name: str, mi: tuple[int, int]) -> str:
+    """``name(a + 2, b)`` for the shift ``(2, 0)``."""
+    shifted = [f"{v} + {m}" if m else v for v, m in zip("ab", mi, strict=True)]
+    return f"{name}({', '.join(shifted)})"
+
+
+def _number(value: Fraction) -> int | Fraction:
+    """A weight as the plain number it is: an integer where it is one."""
+    return int(value) if value.denominator == 1 else value
+
+
 def _derivatives(kernel: Any, identifiers: list[tuple[int, int]]) -> list[Any]:
     """sympy's derivative of the kernel for each multi-index, over real ``x`` and ``y``."""
     import sympy
@@ -428,17 +673,34 @@ registry.register_theory(ReconstructionTheory(), replace=True)
 registry.register_oracle(Mpmath(), replace=True)
 
 
-def reconstructs(kernel: Any, *, order: int, points: int = POINTS, digits: int = DIGITS) -> Any:
+#: Why Lean is not asked about the claim through ``ORDER`` (see the module docstring).
+FOR_THE_CAS = (
+    "the claim through the order checked is the CAS oracle's, one equation per "
+    "coefficient; Lean's is the claim for every order"
+)
+
+
+def reconstructs(
+    kernel: Any, *, order: int, uses: Any = (), points: int = POINTS, digits: int = DIGITS
+) -> Any:
     """Claim that the wrangler the decorated function returns reconstructs ``kernel``'s derivatives.
 
     The function takes no arguments and returns the wrangler. It runs once,
     where it is decorated, and the claim is read off what it returns: the
     coefficients through ``order``, the ones the wrangler stores, and the
-    combination of those it reconstructs each of the others by.
+    combination of those it reconstructs each of the others by. ``uses``
+    names what the claim for every order rests on, as ``@theorem(uses=...)``
+    does: the kernel's harmonicity.
     """
 
     def decorate(fn: Any) -> Reconstruction:
-        claim = Reconstruction(fn, kernel=kernel, order=order, points=points, digits=digits)
+        claim = Reconstruction(
+            fn, kernel=kernel, order=order, points=points, digits=digits, uses=uses
+        )
+        try:
+            decline(claim.fact_id("symbolic"), FOR_THE_CAS)
+        except LookupError:  # no Lean oracle registered, so none to keep away
+            pass
         return registry.register_object(claim)
 
     return decorate
@@ -447,7 +709,7 @@ def reconstructs(kernel: Any, *, order: int, points: int = POINTS, digits: int =
 # }}}
 
 
-@reconstructs(log_r, order=ORDER)
+@reconstructs(log_r, order=ORDER, uses=harmonic)
 def compressed_taylor():
     """sumpy's compressed Taylor wrangler for the 2-D Laplace kernel."""
     from sumpy.expansion import LinearPDEBasedExpansionTermsWrangler
@@ -536,9 +798,20 @@ def main() -> int:
         if found is not None:
             print(f"mpmath: {found}")
     print()
+    if claim.pde is not None:
+        print(
+            f"Through order {claim.order} the wrangler follows the recurrence\n"
+            f"{claim.recurrence_text()}, which is the PDE sumpy\n"
+            f"declares for the kernel, {claim.pde_text()}, solved for "
+            f"{_derivative_name(claim.leading)}."
+        )
+    else:
+        print("The wrangler's weights do not follow the recurrence its kernel's PDE gives.")
+    print()
     print(
         "`lanky check examples/sumpy_recurrence.py` puts the claim in the ledger: tested by\n"
-        "mpmath, and decided by the CAS oracle where sympy is installed."
+        "mpmath, decided by the CAS oracle where sympy is installed, and proved for every\n"
+        "order by Lean where Mathlib is, under the kernel's harmonicity."
     )
     return 0 if agree else 1
 

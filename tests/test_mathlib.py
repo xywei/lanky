@@ -187,6 +187,115 @@ def exp_log_of_a_positive(x: Real) -> exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j
     """The logarithm undone on the positive real axis, which is off the cut."""
 
 
+@theorem
+def every_order(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """A table that follows Laplace's recurrence is a harmonic function's derivatives."""
+
+
+@theorem
+def every_order_helmholtz(
+    k: Real,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) + k**2 * D(a)(b) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) - k**2 * R(a)(b) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """The same for Helmholtz's PDE: a multiplier of the step is ``-k**2``."""
+
+
+@theorem
+def every_order_from_zero(
+    k: Real,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) + k**2 * D(a)(b) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) - k**2 * R(a)(b) for a in Nat for b in Nat),
+) -> all(0 == R(a)(b) - D(a)(b) for a in Nat for b in Nat):
+    """Helmholtz's, with a literal left side: the multiplier is ascribed ``ℝ`` all the same."""
+
+
+@theorem
+def telescoping(
+    f: Fn[Nat, Real],
+    start: f(0) == 0,
+    step: all(f(n + 1) == f(n) + 1 / ((n + 1) * (n + 2)) for n in Nat),
+) -> all(f(n) == n / (n + 1) for n in Nat):
+    """A sum of ``1 / ((n + 1)(n + 2))``: the step is closed by ``field_simp``."""
+
+
+@theorem
+def every_order_along_b(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if b < 2),
+    recurrence: all(R(a)(b + 2) == -R(a + 2)(b) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """Laplace's recurrence solved for ``G_yy``: induced on ``b``, at every ``a``."""
+
+
+@theorem
+def counting(
+    n: Nat,
+    f: Fn[Nat, Fn[Nat, Real]],
+    start: all(f(0)(b) == b for b in Nat),
+    step: all(f(i + 1)(b) == f(i)(b) + 1 for i in Nat for b in Nat),
+) -> all(f(i)(b) == i + b for i in Fin[n] for b in Nat):
+    """Induced on a point of ``Fin[n]``, whose bound the hypothesis takes before ``b``."""
+
+
+@theorem
+def _lost_sign(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: with its sign lost the recurrence gives ``R(2)(0) == D(0)(2) == -D(2)(0)``."""
+
+
+@theorem
+def _shifted_index(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 1) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: the recurrence takes one ``y`` too few."""
+
+
+@theorem
+def _doubled(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2),
+    recurrence: all(R(a + 2)(b) == -2 * R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: the recurrence's coefficient is twice the PDE's."""
+
+
+@theorem
+def _short_base(
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 1),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
+    """False: nothing says what ``R(1)(b)`` is."""
+
+
 #: False in Python, ``log x - πi`` against ``log x + πi``, and true in Lean. A
 #: term built here and not an annotation, where ``complex`` would be a variable.
 _ACROSS_THE_CUT = Forall(
@@ -1527,6 +1636,127 @@ def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOr
         result = mathlib_oracle.establish(fact)
         assert result.status is Status.ASSUMED, fact.kind
         assert result.provenance["lean_declined"].startswith("Lean could not prove ∀ ")
+
+
+# }}}
+
+
+# {{{ induction over families, each case closed by a certificate Lean checks
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        every_order,
+        every_order_helmholtz,
+        every_order_from_zero,
+        telescoping,
+        every_order_along_b,
+        counting,
+    ],
+    ids=lambda claim: claim.__name__,
+)
+def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, claim) -> None:
+    """By strong induction on the order, with the step a linear combination Python found.
+
+    ``every_order`` is the claim the sumpy demonstration makes for every
+    order; Helmholtz's step needs a multiplier that is not a number, and the
+    telescoping sum's needs ``field_simp``. ``every_order_along_b`` is induced
+    on its second variable, and its step takes the hypothesis at ``a + 2``,
+    which holds there because the first is generalized too; ``counting``'s
+    order is a point of ``Fin[n]``, whose bound comes before the later
+    variable.
+    """
+    pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
+    proved = mathlib_oracle.establish(claim.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    tactic = proved.provenance["tactic"]
+    assert " using Nat.strong_induction_on with\n" in tactic
+    assert "linear_combination (norm := " in tactic
+    source = proved.provenance["lean_source"]
+    assert source.startswith("import Mathlib\n\n")
+    assert "\ntheorem Lanky." in source
+
+
+def test_lean_checks_a_certificate_and_refuses_a_wrong_one(mathlib_oracle: LeanOracle) -> None:
+    """Python searches and Lean checks: a certificate with one sign wrong is no proof."""
+    pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
+    from lanky.induction import Use
+    from lanky.oracles.lean import family_induction_scripts
+
+    statement = statement_of(every_order.term, "every_order", mathlib=True)
+    a, b, k = Var("a"), Var("b"), Var("k")
+
+    def found(sign: int):
+        def finder(case):
+            if (case.order, case.step) != ("a", 2):
+                return None
+            if case.name == "base":
+                return (Use("h1", (a, b)),)
+            return (Use("h2", (k, b)), Use("h0", (k, b), -1), Use("ih", (k, b + 2), sign))
+
+        return finder
+
+    (right,) = family_induction_scripts(statement, found(-1))
+    (wrong,) = family_induction_scripts(statement, found(1))
+    closed, detail = mathlib_oracle.session.run(statement.source(right))
+    assert closed, detail
+    closed, detail = mathlib_oracle.session.run(statement.source(wrong))
+    assert not closed
+    assert "ring" in detail or "linarith" in detail or "failed" in detail
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [_lost_sign, _shifted_index, _doubled, _short_base],
+    ids=lambda claim: claim.__name__,
+)
+def test_a_claim_for_every_order_from_a_wrong_recurrence_is_not_proved(
+    mathlib_oracle: LeanOracle, claim
+) -> None:
+    """No certificate is found for it, and nothing else in the ladder proves it.
+
+    The recurrence with its sign lost, an index off by one, a coefficient
+    doubled, and a base that leaves ``R(1)(b)`` unsaid.
+    """
+    from lanky.oracles.lean import family_induction_scripts
+
+    statement = statement_of(claim.term, claim.__name__, mathlib=True)
+    assert family_induction_scripts(statement) == []
+    result = mathlib_oracle.establish(claim.fact())
+    assert result.status is Status.ASSUMED
+
+
+def test_a_certificate_that_uses_the_claim_where_it_is_proved_is_refused(
+    mathlib_oracle: LeanOracle, monkeypatch
+) -> None:
+    """A hook that hands the induction hypothesis at the order being proved proves nothing.
+
+    lanky's search never proposes that use, and a hook is not trusted to keep
+    from it: the hypothesis takes a proof that its order is below the one
+    being proved, which ``omega`` cannot give, so Lean refuses every script,
+    and the false claim stays unproved however its certificate is written.
+    """
+    pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
+    from lanky.induction import Use
+    from lanky.oracles.lean import family_induction_scripts
+
+    a, b, k = Var("a"), Var("b"), Var("k")
+
+    def circular(case):
+        if case.name == "base":
+            return (Use("h1", (a, b)),)
+        return (Use("ih", (k + case.step, b)),)
+
+    statement = statement_of(_lost_sign.term, "_lost_sign", mathlib=True)
+    scripts = family_induction_scripts(statement, circular)
+    assert scripts
+    for script in scripts:
+        closed, _detail = mathlib_oracle.session.run(statement.source(script))
+        assert not closed, script
+    fact = _lost_sign.fact()
+    monkeypatch.setitem(mathlib_oracle.certificates, fact.id, circular)
+    assert mathlib_oracle.establish(fact).status is Status.ASSUMED
 
 
 # }}}

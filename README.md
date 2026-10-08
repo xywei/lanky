@@ -84,8 +84,9 @@ says how much the claim is worth, and nothing else changes.
   representations give a boundary equation of the second kind. And
   `examples/sumpy_recurrence.py` is a third: sumpy's compressed Taylor
   wrangler for the 2-D Laplace kernel claims that its recurrence reconstructs
-  every derivative through order 6, and the ledger has the claim `tested` by
-  mpmath and `decided (heuristic)` by sympy, under the kernel's harmonicity,
+  every derivative, and the ledger has the claim `tested` by mpmath and
+  `decided (heuristic)` by sympy through order 6, and, with Mathlib, `proved
+  under harmonic` by Lean for every order, the kernel's harmonicity
   `assumed` on its citation.
 
 ## Status
@@ -264,6 +265,18 @@ lanky's `main`.
   `proved lean`. With the variable unset, the oracle
   is the core one, exactly. [docs/quickstart.md](docs/quickstart.md#prove-it-with-mathlib)
   walks through it.
+- Induction over families, in Mathlib mode: a claim about every order, a
+  universal over naturals whose body is an equation between applications of
+  the statement's families, is proved by strong induction on the order, and
+  each case is closed by `linear_combination` over the hypotheses and the
+  induction hypothesis, normalized by `ring`, or by `field_simp` and `ring`.
+  Python finds the combination (`lanky.induction`, with sympy, the `cas`
+  extra): which hypothesis to use at which point, and the multipliers, which
+  may be expressions in the statement's other variables; Lean checks it.
+  `lanky.oracles.lean.use_certificate` is the hook through which a plugin
+  hands over multipliers of its own, and `lanky.oracles.lean.decline` leaves
+  a claim to the oracles after Lean, saying why. The sumpy demonstration's
+  claim for every order is proved this way.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
 
@@ -296,7 +309,15 @@ lanky's `main`.
   two `if` clauses in the bytecode. Write `&`.
 - The Lean induction strategy is a shape matcher, not proof search. A statement
   needing a different induction or a lemma falls through to the tester;
-  `lanky.oracles.lean.use_tactic` pins a script by hand.
+  `lanky.oracles.lean.use_tactic` pins a script by hand. The induction over
+  families searches, but only for a linear combination: a step that needs a
+  hypothesis used other than as an equation to combine, an inequality, or an
+  instance whose guards are not linear arithmetic over the integers is not
+  found, nor is a base case that holds only because the goal's own guard
+  excludes it (`all(f(n) == n for n in Nat if n >= 1)`, whose order 0 is no
+  equation to combine). A function Mathlib does not have, a Bessel or Hankel
+  function, has no form yet in which its recurrence is declared and a proof
+  rests on it (#82).
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real`, true division and
   an exponent that could be negative raise rather than emit source Lean would
   reject. In Mathlib mode all but the last are printed, and what is still
@@ -460,8 +481,10 @@ row as `tested property-test` in the main one.
 A third job, `test with Lean and Mathlib`, is optional: it may fail without
 failing the run, since it depends on fetching Mathlib from outside GitHub. It
 sets up the pinned project with `python -m lanky.mathlib`, caching Mathlib's
-compiled files between runs, runs `tests/test_mathlib.py` with the project
-required, and checks that `lanky check examples/gauss.py` proves both rows.
+compiled files between runs, installs sumpy, runs `tests/test_mathlib.py`
+and `tests/test_sumpy_recurrence.py` with the project required, and checks
+that `lanky check examples/gauss.py` proves both rows and that the sumpy
+demonstration's claim for every order is `proved under harmonic`.
 The suite otherwise runs in core-Lean mode wherever it runs: it takes
 `LANKY_LEAN_MATHLIB` out of its environment and hands it to the Mathlib tests
 alone.
@@ -535,7 +558,8 @@ changes what the code means.
   the output the commands actually print, a second one with an axiom, the
   pytential demonstration, where a rule engine checks a derivation under the
   axioms it rests on, and the sumpy demonstration, where a recurrence is
-  tested by mpmath and decided by sympy.
+  tested by mpmath and decided by sympy through an order, and proved by Lean
+  with Mathlib for every order.
 - [CHANGELOG.md](CHANGELOG.md).
 - [loopty](https://github.com/xywei/loopty): the sister project and lanky's
   first plugin: a typed polyhedral layer over loopy, where the facts are about
