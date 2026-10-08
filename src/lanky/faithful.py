@@ -26,43 +26,61 @@ file run as a program. A parameter that is a variable is its drawn value, a
 family a :class:`~lanky.testing.Table` or a family drawn as it is applied
 (:class:`DrawnFamily`), both callable, and a parameter that is a hypothesis is
 the variable lanky's reading makes of it. ``all``, ``any``, ``sum`` and
-``abs`` are Python's, which is what lanky's are at concrete values. The
-prelude's types iterate concretely while the rerun runs
+``abs`` are Python's, which is what lanky's are at concrete values, whatever
+the module binds the names to, since lanky's reading takes them as its own
+there too. The prelude's types iterate concretely while the rerun runs
 (:func:`lanky.terms.concrete_sorts`): ``Fin[n]`` at a drawn ``n`` is
 ``range(n)`` already, and a sort with no end, ``Nat`` say, iterates a finite
 sample of itself, drawn once per draw, which is the same list wherever and
 however often the annotation iterates it.
 
-The connectives are lanky's, as an annotation means them: ``~``, ``&`` and
-``|`` of truth values are ``not``, ``and`` and ``or``, where Python's ``~`` of
-a ``bool`` is the bitwise complement of an integer, ``~True == -2``, and they
-are read three-valued, as lanky reads them (:func:`lanky.terms.disjoin`): ``(i
-== 0) | (f(i - 1) <= f(i))`` is true at ``i = 0``, where Python's ``|``
-evaluates ``f(-1)`` first and stops. Of anything but truth values they are
-Python's own operators. A term the rerun builds anyway, from a module-level
-variable or a function that makes terms on purpose
+The connectives and the quantifiers are lanky's, as an annotation means them,
+read three-valued, and both readings read them alike (:func:`_kleene`).
+``~``, ``&`` and ``|`` of truth values are ``not``, ``and`` and ``or``, where
+Python's ``~`` of a ``bool`` is the bitwise complement of an integer, ``~True
+== -2``; an operand that settles one settles it, whatever the other raised,
+so ``(i == 0) | (f(i - 1) <= f(i))`` is true at ``i = 0``, where Python's
+``|`` evaluates ``f(-1)`` first and stops. Of anything but truth values they
+are Python's own operators. ``all`` and ``any`` over a generator, or a list
+comprehension, walk its points in order (:func:`_quantify`): at each the
+``if`` clauses, all of them, are one conjunction of guards, read once the
+binders are bound, as lanky's term holds them, and then the body. A point
+whose domain, guard or body has no answer, whatever Python raised there, is
+passed over, and a later point that settles the quantifier settles it; when
+none does, the first such answer is raised again. Python's ``all`` stops at
+the first point that raises, and so would a comparison that read the term
+the same way, so that a point after it, where a misreading may show, would
+never be compared on either side: ``all(f(i) * 0 + (1 // i) * 0 == table(i)
+for i in Fin[n])`` stops at ``i = 0``, and its term, ``f(i)*0 + (1 // i)*0 ==
+0``, is what Lean proves, while ``table(1)`` is ``1``. ``sum`` over a
+generator walks every point the same way, and has no value where a point has
+none, as Python's has none; what it came to at each point is compared on both
+sides all the same (:func:`_add`). A term the rerun builds anyway, from a
+module-level variable or a function that makes terms on purpose
 (:func:`lanky.cas.from_sympy`), is read at the draw by the evaluator.
 
 *The term.* The term is evaluated at the same values by lanky's evaluator
 (:class:`lanky.terms.LankyEvaluationMapper`) in the Python reading, the one
 :meth:`lanky.theory.Theorem.__call__` uses, so that Python's numbers and its
-rounding are on both sides. A quantifier is read as Python's ``all`` and
-``any`` read the generator it was written as (:class:`_Reading`): its points
-in order, the guard at each before the body, stopping at the first point that
-settles it or that has no answer. The property tester reads a quantifier
-three-valued, as a conjunction of its points, so that a counterexample after a
-point with no answer is one all the same; the comparison reads it as the
-rerun does, so that both readings stop where Python stops, and a point where
-only one of them stops is a disagreement like any other. A quantifier over a
-sort ranges over the same sample the rerun iterated, read as the whole
-domain. A variable's sort is compared too, as it is at the draw: a ``Fin``'s
-bound, a refinement's truth values, a family's domain and values.
+rounding are on both sides, with its quantifiers and connectives read as the
+rerun reads them (:class:`_Reading`). A quantifier over a sort ranges over the
+same sample the rerun iterated, read as the whole domain. A sum is added by
+Python's ``sum``, over the values of the body in the order of the walk, so
+that it rounds as the rerun's ``sum`` does, which compensates as it adds since
+Python 3.12. A variable's sort is compared too, as it is at the draw: a
+``Fin``'s bound, a refinement's truth values, a family's domain and values.
 
 *The points.* First come :data:`CORNERS` draws of small values and domain
 ends, every natural the tester draws, a ``Fin``'s first and last points,
-zero, one and minus one, and then :data:`SAMPLES` of the property tester's
-draws (:func:`lanky.testing.sample_value`, from its seed), with the
-definitional hypotheses satisfied by construction
+zero, one and minus one. Then come draws at the integers written in the
+claim, in its annotations and in the functions they call, and next to them
+(:func:`_written`), up to :data:`WRITTEN` of them and none past
+:data:`WRITTEN_MAX`: a helper that answers otherwise at ``1000`` is reached
+there. A variable that sizes a domain the claim walks takes such a value only
+up to a size that keeps the walk to about :data:`SIZE_POINTS` points, and the
+values join the samples of the sorts. Then come :data:`SAMPLES` of the
+property tester's draws (:func:`lanky.testing.sample_value`, from its seed).
+The definitional hypotheses are satisfied by construction
 (:func:`lanky.testing.satisfy_hypotheses`) so that a scan is one. A bounded
 quantifier enumerates every point of its domain anyway. A family over a sort
 with no end, ``Fn[Nat, Real]``, which the tester cannot tabulate, is drawn
@@ -71,24 +89,22 @@ both. A refinement no draw satisfies is drawn from what it refines: the
 readings are compared whether or not the hypotheses hold.
 
 *Agreement.* At a draw each annotation has to compute the same on both sides:
-the same truth value, or the same value, and a truth value against a number
-is a disagreement. So is an exception on one side only, whatever it is:
-``i.name`` raising at a number where its term has a value, and a division by
-zero or a family applied outside its domain where Python stops and the term
-does not, as ``(f(i) * 0 == 1 // i + 1) | (i is not 0)`` does at ``i = 0``,
-where its term reads ``or True``. Where both sides stop with no answer for
-one reason, the same exception of :data:`_OPEN`, a family applied outside its
-domain, a division by zero, an elementary function outside its domain or an
-overflow, neither has a value, and they agree: ``n // 0 == 0`` is read
-faithfully, and what Lean's total division makes of it is the semantics gap
-:mod:`lanky.semantics` notes. Two other exceptions are no comparison
-(``silent``). A disagreement in a truth
-value at a draw where the term compared two floating-point numbers that
-agree to :data:`TOLERANCE` is put down to rounding and not counted
-(``rounding``): Python's ``sum`` compensates as it adds, and the evaluator
-adds the term's sum one by one, which can differ in the last bit, where the
-claim is read over the reals. A value is compared to the same tolerance when
-it is a floating-point number.
+the same truth value, or the same value, compared exactly, and a truth value
+against a number is a disagreement. So is an exception on one side only,
+whatever it is: ``i.name`` raising at a number where its term has a value, and
+a division by zero or a family applied outside its domain where Python stops
+and the term does not, as ``(f(i) * 0 == 1 // i + 1) | (i is not 0)`` does at
+``i = 0``, where its term reads ``or True``. Where both sides stop with no
+answer for one reason, the same exception of :data:`_OPEN`, a family applied
+outside its domain, a division by zero, an elementary function outside its
+domain or an overflow, neither has a value, and they agree: ``n // 0 == 0`` is
+read faithfully, and what Lean's total division makes of it is the semantics
+gap :mod:`lanky.semantics` notes. Two other exceptions are no comparison
+(``silent``). Nothing is put down to rounding: the two readings make the same
+operations in the same order, a sum included, so a truth value that differs is
+a disagreement, and a claim that is true over the reals and false in the
+floating-point numbers both readings compute, where they round alike, reads
+the same on both sides.
 
 *The fact.* Its kind is ``faithful`` (:data:`lanky.ledger.FAITHFUL`), its id
 is the claim's with that kind (``faithful:gauss.gauss@31``), and it has the
@@ -106,23 +122,30 @@ claim's owner and location. It is
   sides at any draw.
 
 The check is sampled: a disagreement only at a point no draw reaches escapes
-it. :meth:`lanky.theory.Theorem.faithful_fact` makes the fact once per claim,
-and :func:`lanky.check.establish` rests every pass, decision and proof of the
-claim on it, and offers a claim whose reading is refuted to no oracle.
+it, and so does one in a part of an annotation that comes after a point where
+both readings stop with no answer, in a sum or in an operation that is not a
+connective or a quantifier. :meth:`lanky.theory.Theorem.faithful_fact` makes
+the fact once per claim, and :func:`lanky.check.establish` rests every pass,
+decision and proof of the claim on it, and offers a claim whose reading is
+refuted to no oracle.
 """
 
 from __future__ import annotations
 
 import ast
+import builtins
+import functools
 import inspect
 import itertools
+import math
 import numbers
 import operator
 import random
+import types
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import Any
 
@@ -132,8 +155,8 @@ import pymbolic.primitives as prim
 from lanky.intervals import ComplexValue
 from lanky.ledger import FAITHFUL, Fact, Status, fact_id
 from lanky.prelude import FinType, FnType, LankyType, Refined, Sort, SumType
-from lanky.terms import _OPEN as _CONNECTIVES_PASS_OVER
 from lanky.terms import (
+    BUILTIN_OVERRIDES,
     Exists,
     Forall,
     LankyEvaluationMapper,
@@ -142,8 +165,11 @@ from lanky.terms import (
     Var,
     concrete_sorts,
     evaluate,
+    init_args,
     render,
+    sort_free_names,
 )
+from lanky.terms import Sum as SumTerm
 from lanky.testing import (
     MAX_NAT,
     SAMPLED_SORTS,
@@ -164,9 +190,11 @@ __all__ = [
     "KIND",
     "SAMPLES",
     "SEED",
+    "SIZE_POINTS",
     "SORT_POINTS",
     "STATEMENT",
-    "TOLERANCE",
+    "WRITTEN",
+    "WRITTEN_MAX",
     "DrawnFamily",
     "faithful_fact",
 ]
@@ -197,9 +225,20 @@ SEED = 0
 #: How many drawn points a sort's sample holds besides its small values.
 SORT_POINTS = 2
 
-#: How close two floating-point numbers are, relative to the larger, for a
-#: disagreement at them to be put down to rounding (see the module docstring).
-TOLERANCE = 1e-9
+#: How many integers written in a claim, or next to one, are drawn at, the
+#: nearest to zero first (see :func:`_written`).
+WRITTEN = 12
+
+#: The largest integer written in a claim that is drawn at, in magnitude: an
+#: annotation computes at the values it is drawn at, and ``2 ** n`` at a
+#: written ``2 ** 63`` would not end.
+WRITTEN_MAX = 4096
+
+#: About how many points a walk over the claim's domains may take at a draw
+#: at a written value: a variable that sizes a domain, the ``n`` of
+#: ``Fin[n]``, takes a written value only up to the size at which the domains
+#: nested in the claim, each that large, hold this many points.
+SIZE_POINTS = 1024
 
 #: The small values each sort's sample starts with.
 _SMALL: dict[str, tuple[Any, ...]] = {
@@ -218,29 +257,51 @@ _SMALL: dict[str, tuple[Any, ...]] = {
 #: there.
 _OPEN = (Undecided, ArithmeticError)
 
-#: What an operand of lanky's connectives raises that they pass over, as
-#: having no answer here (see :func:`lanky.terms.conjoin`): an undecided
-#: quantifier, a division by zero and an elementary function outside its
-#: domain, and not an overflow, which stops them.
-_PASSED_OVER = _CONNECTIVES_PASS_OVER
-
-#: What a comparison's operator is, as the function Python applies for it.
-_COMPARISONS: dict[str, Callable[[Any, Any], Any]] = {
-    "==": operator.eq,
-    "!=": operator.ne,
-    "<": operator.lt,
-    "<=": operator.le,
-    ">": operator.gt,
-    ">=": operator.ge,
-}
-
-
 # {{{ the rerun
 
 
 def _is_truth(value: Any) -> bool:
     """Whether ``value`` is a truth value, Python's or numpy's."""
     return isinstance(value, bool | numpy.bool_)
+
+
+def _kleene(settles: bool, operands: Iterable[Callable[[], Any]]) -> bool:
+    """A conjunction (``settles`` false) or a disjunction of truth values, read three-valued.
+
+    Each operand is a thunk, asked in order. The first that answers
+    ``settles`` answers the whole, whatever an operand before it raised; an
+    operand that raises, whatever it raises, is passed over as having no
+    answer here, and when nothing settles the whole the first such exception
+    is raised again. That is how lanky reads its connectives
+    (:func:`lanky.terms.conjoin`), there for the answers lanky knows to be
+    open; here, where only a comparison of two readings is made, for every
+    exception, so that an exception never keeps an operand after it from
+    being compared on both sides.
+
+    Raises:
+        TypeError: If an operand answers something that is not a truth
+            value, which is passed over like any other exception.
+    """
+    pending: Exception | None = None
+    for operand in operands:
+        try:
+            value = _truth(operand())
+        except Exception as exc:  # noqa: BLE001 - an operand with no answer is passed over
+            if pending is None:
+                pending = exc
+            continue
+        if value == settles:
+            return settles
+    if pending is not None:
+        raise pending
+    return not settles
+
+
+def _truth(value: Any) -> bool:
+    """``value`` as a truth value, or :exc:`TypeError` where it is none, as lanky reads it."""
+    if _is_truth(value):
+        return bool(value)
+    raise TypeError(f"{_shown(value)} is not a truth value")
 
 
 def _not(value: Any) -> Any:
@@ -258,15 +319,11 @@ def _connective(settles: bool) -> Callable[[Callable[[], Any], Callable[[], Any]
     """``&`` (``settles`` false) or ``|`` (true) as lanky reads them, of two operands not yet run.
 
     Of two truth values it is ``and`` or ``or``, read three-valued, as
-    :func:`lanky.terms.conjoin` and :func:`lanky.terms.disjoin` read them: an
-    operand that settles it settles it, whatever the other could not answer,
-    and an operand with no answer is raised again when nothing settles it.
-    What counts as no answer is what lanky's connectives pass over
-    (:data:`_PASSED_OVER`), so that the two readings stop at the same
-    operands. Python's ``|`` runs both operands first, so ``(i == 0) | (f(i -
-    1) <= f(i))`` stopped at ``f(-1)`` where lanky's reading is true. Of
-    anything else it is Python's own operator, the bitwise one on two
-    integers.
+    :func:`_kleene` reads them, and as the term's reading does
+    (:class:`_Reading`). Python's ``|`` runs both operands first, so ``(i ==
+    0) | (f(i - 1) <= f(i))`` stopped at ``f(-1)`` where lanky's reading is
+    true. Of anything else it is Python's own operator, the bitwise one on
+    two integers.
     """
     python = operator.or_ if settles else operator.and_
 
@@ -274,7 +331,7 @@ def _connective(settles: bool) -> Callable[[Callable[[], Any], Callable[[], Any]
         pending: Exception | None = None
         try:
             first = left()
-        except _PASSED_OVER as exc:
+        except Exception as exc:  # noqa: BLE001 - an operand with no answer is passed over
             pending, first = exc, _MISSING
         if first is not _MISSING and not _is_truth(first):
             return python(first, right())
@@ -282,7 +339,7 @@ def _connective(settles: bool) -> Callable[[Callable[[], Any], Callable[[], Any]
             return settles
         try:
             second = right()
-        except _PASSED_OVER:
+        except Exception:
             if pending is not None:
                 raise pending from None
             raise
@@ -299,34 +356,242 @@ def _connective(settles: bool) -> Callable[[Callable[[], Any], Callable[[], Any]
     return apply
 
 
-#: The names the rerun calls the connectives by, and Python's builtins that
-#: lanky's own stand for at concrete values (see :class:`_Connectives`).
+def _both(*operands: Callable[[], Any]) -> bool:
+    """``and`` in a generator's ``if`` clause, read three-valued as one conjunction of guards.
+
+    lanky's reading records each operand of such an ``and`` as a guard of its
+    own, one conjunction of them all (#97), so the rerun reads it the same
+    way. A value that is not a truth value is read by its truthiness, as
+    Python's ``and`` reads it.
+    """
+    return _kleene(False, (lambda op=op: _truthy(op()) for op in operands))
+
+
+def _truthy(value: Any) -> bool:
+    """A truth value as it is, and anything else by its truthiness, as ``and`` reads it."""
+    return bool(value) if not _is_truth(value) else value
+
+
+def _domain(opened: list[Exception], thunk: Callable[[], Any]) -> Iterator[Any]:
+    """The points of one ``for`` clause of a quantifier's generator, or none, noting why.
+
+    ``thunk`` is the clause's iterable, not yet evaluated. Where evaluating
+    it, or walking it, raises, the domain has no points to give here, and the
+    exception is put in ``opened`` (see :func:`_quantify`), as lanky's reading
+    makes an open point of a domain it cannot enumerate, ``Fin[10 // i]`` at
+    ``i = 0``.
+    """
+    try:
+        points = iter(thunk())
+    except Exception as exc:  # noqa: BLE001 - a domain with no points here
+        opened.append(exc)
+        return
+    while True:
+        try:
+            point = next(points)
+        except StopIteration:
+            return
+        except Exception as exc:  # noqa: BLE001 - a domain that stopped giving points
+            opened.append(exc)
+            return
+        yield point
+
+
+def _quantify(settles: bool, make: Callable[[list[Exception]], Iterable[Any]]) -> bool:
+    """``all`` (``settles`` false) or ``any`` of a generator, read as lanky's reading reads it.
+
+    ``make`` makes the generator, rewritten by :class:`_Rerun`: each point is
+    the ``if`` clauses of every ``for`` clause, as thunks, and the body, as a
+    thunk, and a domain that has no points to give puts what it raised in the
+    list ``make`` is handed (:func:`_domain`). The points are read in order,
+    as :meth:`_Reading._quantify` reads the term's: a point whose guards
+    reject it is skipped, and one whose body settles the quantifier, a
+    counterexample to a universal or a witness to an existential, settles it
+    when its guards hold. A point where a domain, a guard or the body has no
+    answer is passed over, and so is one with a guard that has no answer and a
+    body that would settle it; when nothing settles the quantifier, the first
+    of these answers is raised again.
+    """
+    opened: list[Exception] = []
+    pending: Exception | None = None
+    seen = 0
+
+    def note_opened() -> None:
+        nonlocal pending, seen
+        while seen < len(opened):
+            pending = pending or opened[seen]
+            seen += 1
+
+    points = make(opened)
+    try:
+        for guards, body in points:
+            note_opened()
+            try:
+                admitted: bool | Exception = _kleene(False, guards)
+            except Exception as exc:  # noqa: BLE001 - a guard with no answer here
+                admitted = exc
+            if admitted is False:
+                continue
+            try:
+                value = _truth(body())
+            except Exception as exc:  # noqa: BLE001 - a body with no answer here
+                pending = pending or exc
+                continue
+            if value != settles:
+                continue
+            if admitted is True:
+                return settles
+            pending = pending or admitted
+    finally:
+        close = getattr(points, "close", None)
+        if close is not None:
+            close()
+    note_opened()
+    if pending is not None:
+        raise pending
+    return not settles
+
+
+def _add(log: list[list[tuple[str, Any]]], make: Callable[[list[Exception]], Any]) -> Any:
+    """``sum`` of a generator, rewritten by :class:`_Rerun` as for :func:`_quantify`.
+
+    Every point is walked, and the body's values at the points the guards
+    admit are added with Python's ``sum``, which is what the rerun's ``sum``
+    computes. A point where a domain, a guard or the body has no answer
+    leaves the sum with none, as it leaves Python's, and the first such
+    exception is raised; the points after it are walked all the same, and
+    what the sum came to at each point (:func:`_points_of`) is put in ``log``,
+    so that a misreading at a point after one where both readings stop is
+    compared all the same (see :func:`_compare`).
+    """
+    opened: list[Exception] = []
+    outcomes: list[tuple[str, Any]] = []
+    values: list[Any] = []
+    pending: Exception | None = None
+    seen = 0
+
+    def note_opened() -> None:
+        nonlocal pending, seen
+        while seen < len(opened):
+            pending = pending or opened[seen]
+            outcomes.append(("no points", type(opened[seen]).__name__))
+            seen += 1
+
+    points = make(opened)
+    try:
+        for guards, body in points:
+            note_opened()
+            try:
+                admitted = _kleene(False, guards)
+            except Exception as exc:  # noqa: BLE001 - a guard with no answer here
+                pending = pending or exc
+                outcomes.append(("no guard", type(exc).__name__))
+                continue
+            if not admitted:
+                continue
+            try:
+                value = body()
+            except Exception as exc:  # noqa: BLE001 - a body with no answer here
+                pending = pending or exc
+                outcomes.append(("no value", type(exc).__name__))
+                continue
+            outcomes.append(("value", value))
+            values.append(value)
+    finally:
+        close = getattr(points, "close", None)
+        if close is not None:
+            close()
+    note_opened()
+    if pending is not None:
+        log.append(outcomes)
+        raise pending
+    return builtins.sum(values)
+
+
+#: The names the rerun calls its own functions by (see :class:`_Rerun`).
 _RERUN_NAMES: dict[str, Any] = {
     "__lanky_not__": _not,
     "__lanky_and__": _connective(False),
     "__lanky_or__": _connective(True),
-    "all": all,
-    "any": any,
-    "sum": sum,
-    "abs": abs,
+    "__lanky_both__": _both,
+    "__lanky_domain__": _domain,
+    "__lanky_quantify__": _quantify,
 }
 
+#: Stands for a binder that had no value before the walk bound it.
+_ABSENT = object()
 
-class _Connectives(ast.NodeTransformer):
-    """Read ``~``, ``&`` and ``|`` in an annotation's source as lanky's connectives.
+
+def _reduction_names(namespace: dict[str, Any]) -> dict[str, str]:
+    """The names an annotation quantifies and sums by: ``"all"``, ``"any"`` or ``"sum"`` for each.
+
+    ``all``, ``any`` and ``sum`` are lanky's in an annotation whatever the
+    module binds them to (:data:`lanky.terms.BUILTIN_OVERRIDES`), and so is a
+    name the module binds to lanky's own :func:`~lanky.terms.forall`,
+    :func:`~lanky.terms.exists` or :func:`~lanky.terms.sum_`, such as
+    loopty's ``reduce_sum``.
+    """
+    names = {name: name for name in ("all", "any", "sum")}
+    ours = {id(BUILTIN_OVERRIDES[name]): name for name in ("all", "any", "sum")}
+    for name, value in namespace.items():
+        if id(value) in ours:
+            names[name] = ours[id(value)]
+    return names
+
+
+def _scope(namespace: dict[str, Any]) -> dict[str, Any]:
+    """The globals the rerun evaluates an annotation in: the module's, and the rerun's own names.
+
+    ``all``, ``any``, ``sum`` and ``abs`` are lanky's in an annotation
+    whatever the module binds them to, as :func:`lanky.terms.evaluate_annotations`
+    reads them, and lanky's at concrete values are Python's.
+    """
+    scope = dict(namespace)
+    scope.update(_RERUN_NAMES)
+    for name in BUILTIN_OVERRIDES:
+        scope[name] = getattr(builtins, name)
+    return scope
+
+
+def _thunk(node: ast.expr) -> ast.Lambda:
+    """``lambda: node``."""
+    arguments = ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[])
+    return ast.Lambda(arguments, node)
+
+
+def _call(name: str, *args: ast.expr) -> ast.Call:
+    """``name(*args)``."""
+    return ast.Call(ast.Name(name, ast.Load()), list(args), [])
+
+
+class _Rerun(ast.NodeTransformer):
+    """Rewrite an annotation's source so that its connectives and quantifiers are lanky's.
 
     ``~operand`` becomes ``__lanky_not__(operand)``, and ``left | right``
     becomes ``__lanky_or__(lambda: left, lambda: right)``, so that an operand
     is run only when it is asked for (see :func:`_connective`).
+
+    ``all(body for i in D if g for j in E(i) if h)``, called by a name in
+    ``names`` (:func:`_reduction_names`), becomes
+    ``__lanky_quantify__(False, lambda opened: (((lambda: g, lambda: h),
+    lambda: body) for i in __lanky_domain__(opened, lambda: D) for j in
+    __lanky_domain__(opened, lambda: E(i))))``: the same clauses, with every
+    ``if`` moved to the point, as lanky's term holds them, and each piece run
+    when :func:`_quantify` asks for it, so that what one raises does not end
+    the walk. ``sum`` over a generator becomes ``__lanky_sum__`` of the same
+    points (:func:`_add`). An ``and`` in an ``if`` clause is read three-valued
+    too (:func:`_both`).
     """
+
+    def __init__(self, names: dict[str, str]) -> None:
+        self.names = names
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         """``~operand`` as ``__lanky_not__(operand)``; any other operator as it is."""
         self.generic_visit(node)
         if not isinstance(node.op, ast.Invert):
             return node
-        call = ast.Call(ast.Name("__lanky_not__", ast.Load()), [node.operand], [])
-        return ast.copy_location(call, node)
+        return ast.copy_location(_call("__lanky_not__", node.operand), node)
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
         """``left & right`` and ``left | right`` as calls on thunks; anything else as it is."""
@@ -334,18 +599,65 @@ class _Connectives(ast.NodeTransformer):
         name = {ast.BitAnd: "__lanky_and__", ast.BitOr: "__lanky_or__"}.get(type(node.op))
         if name is None:
             return node
-        thunks = [
-            ast.Lambda(
-                ast.arguments(posonlyargs=[], args=[], kwonlyargs=[], kw_defaults=[], defaults=[]),
-                side,
+        return ast.copy_location(_call(name, _thunk(node.left), _thunk(node.right)), node)
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        """A quantifier or a sum over a generator as the rerun reads it; any other call as it is."""
+        self.generic_visit(node)
+        kind = self.names.get(node.func.id) if isinstance(node.func, ast.Name) else None
+        if kind is None or len(node.args) != 1 or node.keywords:
+            return node
+        (generator,) = node.args
+        readable = ast.GeneratorExp if kind == "sum" else ast.GeneratorExp | ast.ListComp
+        if not isinstance(generator, readable) or any(
+            clause.is_async for clause in generator.generators
+        ):
+            return node
+        guards = [_guard(test) for clause in generator.generators for test in clause.ifs]
+        clauses = [
+            ast.comprehension(
+                target=clause.target,
+                iter=_call(
+                    "__lanky_domain__",
+                    ast.Name("__lanky_opened__", ast.Load()),
+                    _thunk(clause.iter),
+                ),
+                ifs=[],
+                is_async=0,
             )
-            for side in (node.left, node.right)
+            for clause in generator.generators
         ]
-        return ast.copy_location(ast.Call(ast.Name(name, ast.Load()), thunks, []), node)
+        point = ast.Tuple(
+            [ast.Tuple([_thunk(guard) for guard in guards], ast.Load()), _thunk(generator.elt)],
+            ast.Load(),
+        )
+        arguments = ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg("__lanky_opened__")],
+            kwonlyargs=[],
+            kw_defaults=[],
+            defaults=[],
+        )
+        make = ast.Lambda(arguments, ast.GeneratorExp(point, clauses))
+        if kind == "sum":
+            return ast.copy_location(_call("__lanky_sum__", make), node)
+        settles = ast.Constant(kind == "any")
+        return ast.copy_location(_call("__lanky_quantify__", settles, make), node)
 
 
-def _compiled(source: str) -> Any:
-    """An annotation's source compiled for the rerun, its connectives read as lanky's.
+def _guard(test: ast.expr) -> ast.expr:
+    """An ``if`` clause's test, an ``and`` at its top read three-valued (:func:`_both`).
+
+    lanky's reading refuses an ``or`` of propositions there, so an ``or`` is
+    left as Python's.
+    """
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+        return _call("__lanky_both__", *(_thunk(_guard(value)) for value in test.values))
+    return test
+
+
+def _compiled(source: str, names: dict[str, str]) -> Any:
+    """An annotation's source compiled for the rerun, its connectives, quantifiers and sums lanky's.
 
     ``eval`` strips the spaces and tabs a string starts with and ``compile``
     does not, so they are stripped here as :func:`lanky.terms.evaluate_annotations`
@@ -356,7 +668,7 @@ def _compiled(source: str) -> Any:
         # a literal say, and saying it twice says nothing more.
         warnings.simplefilter("ignore", SyntaxWarning)
         tree = ast.parse(source.lstrip(" \t"), "<string>", "eval")
-        tree = ast.fix_missing_locations(_Connectives().visit(tree))
+        tree = ast.fix_missing_locations(_Rerun(names).visit(tree))
         return compile(tree, "<string>", "eval")
 
 
@@ -366,12 +678,18 @@ class _Outcome:
 
     value: Any = None
     error: Exception | None = None
+    #: What a sum with no value came to at its points, where that is the difference.
+    sums: str = ""
 
     def text(self) -> str:
         """The outcome as a reason says it."""
         if self.error is not None:
-            return f"raises {type(self.error).__name__}: {self.error}"
-        return f"computes {_shown(self.value)}"
+            said = f"raises {type(self.error).__name__}: {self.error}"
+        else:
+            said = f"computes {_shown(self.value)}"
+        if self.sums:
+            said += f", its sums with no value coming to {self.sums} at their points"
+        return said
 
 
 def _shown(value: Any) -> str:
@@ -391,79 +709,181 @@ def _shown(value: Any) -> str:
 # {{{ the term, at a draw
 
 
-def _inexact(value: Any) -> bool:
-    """Whether ``value`` is a floating-point number, real or complex."""
-    return isinstance(value, float | complex | numpy.inexact)
+class _Unbound:
+    """A point of the term's walk where a binder's domain had no points to give, and why."""
 
-
-def _close(left: Any, right: Any) -> bool:
-    """Whether two numbers, one of them floating-point, agree to :data:`TOLERANCE`."""
-    if not (_inexact(left) or _inexact(right)):
-        return False
-    if not (isinstance(left, numbers.Number) and isinstance(right, numbers.Number)):
-        return False
-    if _is_truth(left) or _is_truth(right):
-        return False
-    try:
-        scale = max(abs(left), abs(right))
-        return bool(abs(left - right) <= TOLERANCE * scale)
-    except (TypeError, ArithmeticError):
-        return False
+    def __init__(self, reason: Exception) -> None:
+        self.reason = reason
 
 
 class _Reading(LankyEvaluationMapper):
-    """lanky's evaluator in the Python reading, with quantifiers read as ``all`` and ``any``.
+    """lanky's evaluator in the Python reading, its quantifiers and connectives read as the rerun's.
 
-    A sort is read as the sample the rerun iterated, and a quantifier walks
-    its points in order and stops where Python's ``all`` and ``any`` stop
-    (:meth:`_quantify`). ``fragile`` records whether a comparison it made was
-    between two floating-point numbers that agree to :data:`TOLERANCE`, where
-    rounding can decide the answer (see the module docstring).
+    A sort is read as the sample the rerun iterated. A quantifier walks its
+    points in order (:meth:`_quantify`) and a connective its operands
+    (:func:`_kleene`), passing over whatever a point or an operand raised, as
+    the rerun does (:func:`_quantify`, :func:`_connective`). A sum is added
+    by Python's ``sum`` (:meth:`map_lanky_sum`).
+
+    Attributes:
+        unsummed: What each sum that had no value came to at each point, in
+            the order the sums were met (see :func:`_add`).
     """
 
     def __init__(self, context: dict[str, Any], samples: _Samples) -> None:
         super().__init__(context, samples, Polarity.POSITIVE)
         self.exact = False
-        self.fragile = False
+        #: What each sum that had no value came to at each of its points.
+        self.unsummed: list[list[tuple[str, Any]]] = []
 
     @staticmethod
     def is_exhaustive(domain: Any) -> bool:
         """Every domain is walked whole: a sort's sample is its domain here."""
         return True
 
+    def map_logical_and(self, expr: prim.LogicalAnd) -> bool:
+        """The conjunction, read three-valued as the rerun reads ``&`` (:func:`_kleene`)."""
+        return _kleene(False, (lambda child=child: self._truth(child) for child in expr.children))
+
+    def map_logical_or(self, expr: prim.LogicalOr) -> bool:
+        """The disjunction, read three-valued as the rerun reads ``|`` (:func:`_kleene`)."""
+        return _kleene(True, (lambda child=child: self._truth(child) for child in expr.children))
+
+    def _every(
+        self, binders: Sequence[tuple[Var, Any]], polarity: Polarity, unsure: Any = None
+    ) -> Iterator[Any]:
+        """Bind the binders at each point in turn, as the rerun's ``for`` clauses walk them.
+
+        Each assignment is yielded as ``None``, or as the exception a
+        refinement of a domain raised there, which leaves the point's guard
+        without an answer; a domain that had no points to give, or stopped
+        giving them, is yielded once as an :class:`_Unbound`, with nothing
+        bound, as :func:`_domain` notes it. The bindings are restored on the
+        way out, as :meth:`~lanky.terms.LankyEvaluationMapper.assignments`
+        restores them.
+        """
+        if not binders:
+            yield unsure
+            return
+        (var, domain), rest = binders[0], binders[1:]
+        saved = self.context.get(var.name, _ABSENT)
+        try:
+            try:
+                points = iter(self._points(domain))
+            except Exception as exc:  # noqa: BLE001 - a domain with no points here
+                yield _Unbound(exc)
+                return
+            while True:
+                try:
+                    point = next(points)
+                except StopIteration:
+                    break
+                except Exception as exc:  # noqa: BLE001 - a domain that stopped giving points
+                    yield _Unbound(exc)
+                    break
+                self.context[var.name] = point
+                here = unsure
+                try:
+                    if not self._admits(domain, polarity):
+                        continue
+                except Exception as exc:  # noqa: BLE001 - a refinement with no answer here
+                    here = here or exc
+                yield from self._every(rest, polarity, here)
+        finally:
+            if saved is _ABSENT:
+                self.context.pop(var.name, None)
+            else:
+                self.context[var.name] = saved
+
     def _quantify(self, expr: Forall | Exists) -> bool:
-        """A quantifier as Python's ``all`` or ``any`` reads the generator it was written as.
+        """A quantifier read as the rerun reads the generator it was written as (:func:`_quantify`).
 
         The points come in the order the rerun walks them, and at each the
-        guard is read before the body, as a generator's ``if`` clause is. The
-        walk stops at the first point whose body settles the quantifier, a
-        counterexample to a universal or a witness to an existential, and at
-        the first point where the domain, the guard or the body has no answer,
-        raising what Python raises there. The evaluator's own reading is
-        three-valued, so that a counterexample after a point with no answer
-        settles a universal all the same (see
-        :class:`~lanky.terms.LankyEvaluationMapper`); Python's ``all`` stops at
-        that point. The term is compared with the rerun as the rerun reads it,
-        so that a point where only one of them stops is a disagreement, and
-        not a difference between two readings of one quantifier.
+        guard, the ``if`` clauses as one conjunction, is read before the
+        body. A point whose body settles the quantifier, a counterexample to
+        a universal or a witness to an existential, settles it when its
+        guard holds. A point where a domain, a refinement, the guard or the
+        body has no answer, whatever it raised, is passed over, and so is one
+        whose guard has no answer and whose body would settle it; when
+        nothing settles the quantifier, the first of these answers is raised
+        again. The evaluator's own reading passes over only the answers lanky
+        knows to be open; this one is made to compare with the rerun, which
+        passes over every exception, so that one stops neither reading
+        before the points after it are compared.
         """
         settles = isinstance(expr, Exists)
         antecedent = self.polarity if settles else self.polarity.flipped()
-        with closing(self.assignments(expr.binders, antecedent)) as points:
-            for _ in points:
-                if not self._holds(expr.guard, antecedent):
+        pending: Exception | None = None
+        with closing(self._every(list(expr.binders), antecedent)) as points:
+            for point in points:
+                if isinstance(point, _Unbound):
+                    pending = pending or point.reason
                     continue
-                if self._truth(expr.body) == settles:
+                admitted: bool | Exception = True if point is None else point
+                try:
+                    if not self._holds(expr.guard, antecedent):
+                        continue
+                except Exception as exc:  # noqa: BLE001 - a guard with no answer here
+                    admitted = admitted if admitted is not True else exc
+                try:
+                    body = self._truth(expr.body)
+                except Exception as exc:  # noqa: BLE001 - a body with no answer here
+                    pending = pending or exc
+                    continue
+                if body != settles:
+                    continue
+                if admitted is True:
                     return settles
+                pending = pending or admitted
+        if pending is not None:
+            raise pending
         return not settles
 
-    def map_comparison(self, expr: prim.Comparison) -> Any:
-        """Compare the two sides as Python does, noting a comparison rounding can decide."""
-        left = self._at(Polarity.MIXED, expr.left)
-        right = self._at(Polarity.MIXED, expr.right)
-        if _close(left, right):
-            self.fragile = True
-        return _COMPARISONS[expr.operator](left, right)
+    def map_lanky_sum(self, expr: SumTerm) -> Any:
+        """Add the body over the guarded domain with Python's ``sum``, as :func:`_add` adds.
+
+        The values are those of the body at each point the guard admits, in
+        the order of the walk, and Python's ``sum`` over them is what Python's
+        ``sum`` over the annotation's generator computes, to the last bit:
+        since Python 3.12 it compensates as it adds floating-point numbers,
+        where adding them one by one, as the evaluator does, can differ in the
+        last bit, and a comparison of the sum with ``1.0`` with it. A point
+        where a domain, the guard or the body has no answer leaves the sum
+        with none, and the first such exception is raised once every point
+        has been walked; what the sum came to at each point goes in
+        :attr:`unsummed`, as :func:`_add` puts the rerun's.
+        """
+        outcomes: list[tuple[str, Any]] = []
+        values: list[Any] = []
+        pending: Exception | None = None
+        with closing(self._every(list(expr.binders), self.polarity)) as points:
+            for point in points:
+                if isinstance(point, _Unbound):
+                    pending = pending or point.reason
+                    outcomes.append(("no points", type(point.reason).__name__))
+                    continue
+                try:
+                    if point is not None:
+                        raise point
+                    admitted = self._holds(expr.guard, self.polarity)
+                except Exception as exc:  # noqa: BLE001 - a guard with no answer here
+                    pending = pending or exc
+                    outcomes.append(("no guard", type(exc).__name__))
+                    continue
+                if not admitted:
+                    continue
+                try:
+                    value = self.rec(expr.body)
+                except Exception as exc:  # noqa: BLE001 - a body with no answer here
+                    pending = pending or exc
+                    outcomes.append(("no value", type(exc).__name__))
+                    continue
+                outcomes.append(("value", value))
+                values.append(value)
+        if pending is not None:
+            self.unsummed.append(outcomes)
+            raise pending
+        return builtins.sum(values)
 
 
 def _sort_at(sort: Any, reading: _Reading) -> Any:
@@ -517,17 +937,38 @@ def _holds_term(value: Any) -> bool:
 # {{{ the draws
 
 
+@dataclass(frozen=True)
+class _Extent:
+    """The integers a claim's draws take besides the corners, and how large a size may be.
+
+    Attributes:
+        written: The integers written in the claim and next to them
+            (:func:`_written`), nearest to zero first.
+        sizes: The names that size a domain the claim walks, a ``Fin``'s bound
+            in a variable's sort or a binder's domain (:func:`_extent`).
+        largest: The largest magnitude a written value gives a variable in
+            ``sizes``, or an entry of a family in it, or a point of a sort's
+            sample, any of which can size a domain.
+    """
+
+    written: tuple[int, ...] = ()
+    sizes: frozenset[str] = frozenset()
+    largest: int = SIZE_POINTS
+
+
 class _Samples:
     """The finite sample each sort iterates at one draw, the same for both readings.
 
-    A sort's sample is its small values (:data:`_SMALL`) and
-    :data:`SORT_POINTS` of the tester's draws of it, drawn the first time the
-    sort is iterated at the draw and kept, so that the rerun and the term
-    range over the same points wherever and however often they iterate it.
+    A sort's sample is its small values (:data:`_SMALL`), :data:`SORT_POINTS`
+    of the tester's draws of it and the integers written in the claim
+    (:class:`_Extent`), drawn the first time the sort is iterated at the draw
+    and kept, so that the rerun and the term range over the same points
+    wherever and however often they iterate it.
     """
 
-    def __init__(self, rng: random.Random) -> None:
+    def __init__(self, rng: random.Random, extent: _Extent | None = None) -> None:
         self.rng = rng
+        self.extent = extent or _Extent()
         self.drawn: list[tuple[Any, list[Any]]] = []
 
     def __call__(self, sort: Any) -> list[Any]:
@@ -545,8 +986,15 @@ class _Samples:
             raise Unsampleable(f"no sampler for {sort!r}")
         points = list(_SMALL[sort.name])
         if sort.name not in ("Bool", "Prop"):
-            for _ in range(SORT_POINTS):
-                point = _python(sample_value(sort, self.rng, {}))
+            drawn = [_python(sample_value(sort, self.rng, {})) for _ in range(SORT_POINTS)]
+            written = [
+                _at(value, sort.name)
+                for value in self.extent.written
+                if sort.name in ("Real", "Complex") or abs(value) <= self.extent.largest
+            ]
+            for point in (*drawn, *written):
+                if point is None:
+                    continue
                 if not any(type(point) is type(seen) and point == seen for seen in points):
                     points.append(point)
         self.drawn.append((sort, points))
@@ -555,6 +1003,23 @@ class _Samples:
     def described(self) -> dict[str, list[Any]]:
         """The samples drawn, by sort, as a reason shows them."""
         return {str(sort): list(points) for sort, points in self.drawn}
+
+
+def _at(value: int, sort: str) -> Any:
+    """The written integer ``value`` as a value of the sort named ``sort``, or ``None``.
+
+    A natural takes its magnitude, so that a written ``-7`` reaches ``7``
+    too; a truth value has no integer to take.
+    """
+    if sort == "Nat":
+        return abs(value)
+    if sort == "Int":
+        return value
+    if sort == "Real":
+        return Fraction(value)
+    if sort == "Complex":
+        return complex(value)
+    return None
 
 
 class _Corners(random.Random):
@@ -600,6 +1065,42 @@ class _Corners(random.Random):
         return 0.0 if self.k % 2 == 0 else 0.75
 
 
+class _Pinned(random.Random):
+    """A stand-in for the tester's random source that draws every value at one written integer.
+
+    A natural, an integer, a real or a complex number is the integer itself
+    (:func:`_at`), up to :attr:`_Extent.largest` in magnitude where it sizes a
+    domain; a point of a ``Fin`` is the point nearest to it, the domain's last
+    one when it is past the end; a truth value is whether it is odd.
+    """
+
+    def __init__(self, value: int, extent: _Extent) -> None:
+        super().__init__(value)
+        self.value = value
+        self.extent = extent
+
+    def at(self, sort: Sort, size: bool) -> Any:
+        """The value of ``sort``, a sort the tester samples, for a variable or an entry."""
+        if sort.name in ("Bool", "Prop"):
+            return self.value % 2 == 1
+        value = self.value
+        if size:
+            value = max(-self.extent.largest, min(value, self.extent.largest))
+        return _at(value, sort.name)
+
+    def randrange(self, start: int, stop: int | None = None, step: int = 1) -> int:  # type: ignore[override]
+        """The value of the range nearest to the written integer."""
+        if stop is None:
+            start, stop = 0, start
+        if stop <= start:
+            raise ValueError(f"empty range for randrange({start}, {stop})")
+        return max(start, min(self.value, stop - 1))
+
+    def random(self) -> float:
+        """``0``, whatever the value."""
+        return 0.0
+
+
 class DrawnFamily:
     """A family over a domain the tester cannot tabulate, drawn at each point as it is applied.
 
@@ -617,13 +1118,20 @@ class DrawnFamily:
     """
 
     def __init__(
-        self, domain: Any, codomain: Any, source: random.Random, context: dict[str, Any], name: str
+        self,
+        domain: Any,
+        codomain: Any,
+        source: random.Random,
+        context: dict[str, Any],
+        name: str,
+        size: bool = False,
     ) -> None:
         self.domain = domain
         self.codomain = codomain
         self.source = source
         self.context = context
         self.name = name
+        self.size = size
         self.values: dict[Any, Any] = {}
 
     def __call__(self, point: Any) -> Any:
@@ -638,7 +1146,7 @@ class DrawnFamily:
                 f"{self.domain} it declares, so this draw decides nothing"
             )
         if point not in self.values:
-            self.values[point] = _draw(self.codomain, self.source, self.context)
+            self.values[point] = _draw(self.codomain, self.source, self.context, size=self.size)
         return self.values[point]
 
     __getitem__ = __call__
@@ -668,7 +1176,11 @@ def _unrefined(sort: Any) -> Any:
 
 
 def _draw(
-    sort: Any, source: random.Random, context: dict[str, Any], name: str | None = None
+    sort: Any,
+    source: random.Random,
+    context: dict[str, Any],
+    name: str | None = None,
+    size: bool = False,
 ) -> Any:
     """One value of ``sort`` for the comparison, drawn as the tester draws it where it can.
 
@@ -677,7 +1189,9 @@ def _draw(
     refines, since an entry has no name to read a refinement of. A variable
     of a refined sort is drawn as the tester draws it, and from what the sort
     refines when no draw satisfies the refinement: the readings are compared
-    whether or not a draw satisfies the hypotheses.
+    whether or not a draw satisfies the hypotheses. At a written integer
+    (:class:`_Pinned`) the value is drawn from what the sort refines at once.
+    ``size`` says whether the value, or a family's entries, size a domain.
 
     Raises:
         SkipSample: If no value can be drawn: an empty ``Fin``, a family over
@@ -691,9 +1205,15 @@ def _draw(
             if bound < 0:
                 raise SkipSample(f"{domain} has a negative size")
             return Table(
-                [_draw(codomain, source, context) for _ in range(bound)], name=name or "a family"
+                [_draw(codomain, source, context, size=size) for _ in range(bound)],
+                name=name or "a family",
             )
-        return DrawnFamily(domain, codomain, source, dict(context), name or "a family")
+        return DrawnFamily(domain, codomain, source, dict(context), name or "a family", size)
+    if isinstance(source, _Pinned):
+        base = _unrefined(sort)
+        if isinstance(base, Sort) and base.name in SAMPLED_SORTS:
+            return source.at(base, size)
+        return _python(sample_value(base, source, context))
     if isinstance(sort, Refined):
         if name is not None:
             try:
@@ -732,20 +1252,29 @@ class _Draw:
     samples: _Samples
 
 
-def _draws(variables: Sequence[tuple[str, Any]], hypotheses: Sequence[Any]) -> Iterator[Any]:
+def _draws(
+    variables: Sequence[tuple[str, Any]],
+    hypotheses: Sequence[Any],
+    extent: _Extent | None = None,
+) -> Iterator[Any]:
     """The draws to compare at, corner draws first; for one that could not be made, why not.
 
-    Each draw takes a value of every variable, a size before what it sizes
+    The corners come first, then a draw at each integer written in the claim
+    (``extent``, see :func:`_written`), then the tester's draws. Each draw
+    takes a value of every variable, a size before what it sizes
     (:func:`lanky.testing.sampling_order`), and then assigns the definitional
     hypotheses, as the tester does, so that a family that is a scan of
     another is one. A statement with no variables has one draw, the empty one.
     """
+    extent = extent or _Extent()
     ordered = sampling_order(variables)
     sorts = dict(ordered)
     rng = random.Random(SEED)
     sources: list[tuple[str, random.Random]] = [
         (f"corner {k}", _Corners(k)) for k in range(CORNERS if ordered else 1)
     ]
+    if ordered:
+        sources += [(f"written {value}", _Pinned(value, extent)) for value in extent.written]
     made = 0
     attempt = 0
     while sources or (ordered and made < SAMPLES and attempt < SAMPLES * ATTEMPTS):
@@ -754,18 +1283,154 @@ def _draws(variables: Sequence[tuple[str, Any]], hypotheses: Sequence[Any]) -> I
         else:
             label, source = f"draw {attempt}", rng
             attempt += 1
-        samples = _Samples(random.Random(f"{SEED}:{label}"))
+        samples = _Samples(random.Random(f"{SEED}:{label}"), extent)
         context: dict[str, Any] = {}
         try:
             for name, sort in ordered:
-                context[name] = _draw(sort, source, context, name)
+                context[name] = _draw(sort, source, context, name, size=name in extent.sizes)
             satisfy_hypotheses(hypotheses, context, sorts, samples)
         except Exception as exc:  # noqa: BLE001 - a draw that cannot be made is skipped
             yield str(exc) or type(exc).__name__
             continue
-        if not label.startswith("corner"):
+        if label.startswith("draw"):
             made += 1
         yield _Draw(label, context, samples)
+
+
+#: How deep the functions an annotation calls are read for the integers they hold.
+_CALL_DEPTH = 3
+
+#: How many items of a module-level container are read for the integers they hold.
+_CONTAINER_ITEMS = 256
+
+
+def _written(codes: Sequence[Any], namespace: dict[str, Any]) -> tuple[int, ...]:
+    """The integers written in a claim and next to them, to draw at, nearest to zero first.
+
+    ``codes`` are the claim's annotations compiled for the rerun, read in
+    ``namespace``. An annotation reaches a value through what it is written
+    with: its constants, the functions it calls and the constants, defaults
+    and closures of those, :data:`_CALL_DEPTH` calls deep, and the integers a
+    module-level name or container holds (``{1000: 1}`` in a helper, ``K =
+    6``). Each such integer ``c`` gives ``c - 1``, ``c`` and ``c + 1``, which
+    are kept where the corners do not reach them, past ``MAX_NAT`` or below
+    ``-1``, and up to :data:`WRITTEN_MAX` in magnitude; the :data:`WRITTEN`
+    nearest to zero are drawn at.
+    """
+    found: set[int] = set()
+    seen: set[int] = set()
+
+    def take(value: Any) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, int):
+            found.add(value)
+        elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+            found.add(int(value))
+        elif isinstance(value, Fraction) and value.denominator == 1:
+            found.add(int(value))
+
+    def read_code(code: types.CodeType, globals_: dict[str, Any], depth: int) -> None:
+        if id(code) in seen:
+            return
+        seen.add(id(code))
+        for constant in code.co_consts:
+            if isinstance(constant, types.CodeType):
+                read_code(constant, globals_, depth)
+            elif isinstance(constant, tuple | frozenset):
+                for item in constant:
+                    take(item)
+            else:
+                take(constant)
+        for name in code.co_names:
+            read_object(globals_.get(name), depth)
+
+    def read_object(value: Any, depth: int) -> None:
+        if value is None or isinstance(value, bool) or id(value) in seen:
+            return
+        if isinstance(value, int | float | Fraction):
+            take(value)
+            return
+        seen.add(id(value))
+        function = getattr(value, "__wrapped__", value)
+        if isinstance(function, types.FunctionType):
+            # lanky's own functions, such as lanky.sum, hold no value of the claim's;
+            # a checked file's module is named lanky_checked_..., which is not one
+            if depth >= _CALL_DEPTH or str(function.__module__).split(".")[0] == "lanky":
+                return
+            read_code(function.__code__, function.__globals__, depth + 1)
+            for default in function.__defaults__ or ():
+                take(default)
+            for cell in function.__closure__ or ():
+                try:
+                    read_object(cell.cell_contents, depth + 1)
+                except ValueError:  # an empty cell
+                    pass
+        elif isinstance(value, dict) and len(value) <= _CONTAINER_ITEMS:
+            for key, item in value.items():
+                take(key)
+                take(item)
+        elif isinstance(value, list | tuple | set | frozenset) and len(value) <= _CONTAINER_ITEMS:
+            for item in value:
+                take(item)
+
+    for code in codes:
+        read_code(code, namespace, 0)
+    near = {c + step for c in found for step in (-1, 0, 1)}
+    kept = sorted(
+        (v for v in near if (v > MAX_NAT or v < -1) and abs(v) <= WRITTEN_MAX),
+        key=lambda v: (abs(v), v < 0),
+    )
+    return tuple(kept[:WRITTEN])
+
+
+def _extent(theorem: Any, codes: Sequence[Any]) -> _Extent:
+    """What the claim's draws take besides the corners (see :class:`_Extent`).
+
+    A name sizes a domain where it is free in the bound of a ``Fin`` the claim
+    holds, in a variable's sort or in a quantifier's or a sum's domain. A
+    walk at a draw takes about the product of its nested domains' sizes, so
+    a size takes a written value only up to the root of :data:`SIZE_POINTS`
+    by how deeply the claim nests its domains and its families.
+    """
+    sizes: set[str] = set()
+
+    def sort_depth(sort: Any) -> int:
+        if isinstance(sort, FinType):
+            names = sort_free_names(sort)
+            sizes.update(names)
+            return 1 if names else 0
+        if isinstance(sort, FnType):
+            return sort_depth(sort.domain) + sort_depth(sort.codomain)
+        if isinstance(sort, Refined):
+            return max(sort_depth(sort.base), *(term_depth(prop) for prop in sort.props))
+        if isinstance(sort, SumType):
+            return max((sort_depth(piece) for piece in sort.pieces), default=0)
+        return 0
+
+    def term_depth(expr: Any) -> int:
+        if isinstance(expr, Forall | Exists | SumTerm):
+            for _var, domain in expr.binders:
+                sort_depth(domain)
+            return len(expr.binders) + max(term_depth(expr.body), term_depth(expr.guard))
+        if isinstance(expr, prim.ExpressionNode):
+            return max((term_depth(child) for child in init_args(expr)), default=0)
+        if isinstance(expr, tuple | list):
+            return max((term_depth(item) for item in expr), default=0)
+        if isinstance(expr, LankyType):
+            return sort_depth(expr)
+        return 0
+
+    depth = max(
+        [
+            *(sort_depth(sort) for _, sort in theorem.variables),
+            *(term_depth(prop) for _, prop in theorem.hypotheses),
+            term_depth(theorem.goal),
+        ],
+        default=0,
+    )
+    largest = max(MAX_NAT + 1, int(SIZE_POINTS ** (1 / depth))) if depth else SIZE_POINTS
+    return _Extent(_written(codes, theorem.namespace), frozenset(sizes), largest)
 
 
 # }}}
@@ -795,16 +1460,24 @@ class _Annotation:
         return f"the hypothesis {self.name}"
 
 
+def _nan(value: Any) -> bool:
+    """Whether ``value`` is a floating-point NaN, real or complex."""
+    if isinstance(value, complex | numpy.complexfloating):
+        return bool(numpy.isnan(value))
+    if isinstance(value, float | numpy.floating):
+        return math.isnan(value)
+    return False
+
+
 def _same(left: Any, right: Any) -> bool | None:
     """Whether two values the readings computed are the same; ``None`` where ``==`` cannot say.
 
-    A floating-point number is the same as one that agrees with it to
-    :data:`TOLERANCE`. Anything else is compared with ``==``: a number, a
-    table by its values, a type by its parts.
+    They are compared with ``==``, exactly: a number, a table by its values, a
+    type by its parts. Two NaNs are the same value, which ``==`` says of no
+    NaN.
     """
-    if _inexact(left) or _inexact(right):
-        if isinstance(left, numbers.Number) and isinstance(right, numbers.Number):
-            return bool(left == right) or _close(left, right)
+    if _nan(left) and _nan(right):
+        return True
     try:
         answer = left == right
     except Exception:  # noqa: BLE001 - values == cannot compare are not compared
@@ -814,16 +1487,14 @@ def _same(left: Any, right: Any) -> bool | None:
     return bool(answer)
 
 
-def _judge(python: _Outcome, term: _Outcome, fragile: bool) -> str:
+def _judge(python: _Outcome, term: _Outcome) -> str:
     """How the two readings of one annotation compare at one draw.
 
     ``agreed``, the same value, or no value on either side for one reason
     (one of :data:`_OPEN`, of one type); ``differed``, which an exception on
     one side only is too, whatever it is; ``silent``, where both raised
-    otherwise; ``rounding``, a truth value that differs where the term
-    compared two floating-point numbers that agree to :data:`TOLERANCE`; or
-    ``uncomparable``, a value that holds a term or that ``==`` cannot
-    compare.
+    otherwise; or ``uncomparable``, a value that holds a term or that ``==``
+    cannot compare.
     """
     if python.error is not None and term.error is not None:
         if isinstance(python.error, _OPEN) and type(python.error) is type(term.error):
@@ -843,9 +1514,7 @@ def _judge(python: _Outcome, term: _Outcome, fragile: bool) -> str:
         # other is not, which the tester and Lean read differently
         return "differed"
     if _is_truth(left):
-        if bool(left) == bool(right):
-            return "agreed"
-        return "rounding" if fragile else "differed"
+        return "agreed" if bool(left) == bool(right) else "differed"
     same = _same(left, right)
     if same is None:
         return "uncomparable"
@@ -861,30 +1530,68 @@ def _compare(
     """Each annotation, how its two readings compare at ``draw``, and the two outcomes.
 
     ``namespace`` is the function's globals as they were when lanky read the
-    annotations (:attr:`lanky.theory.Theorem.namespace`).
+    annotations (:attr:`lanky.theory.Theorem.namespace`), and the rerun runs
+    in it (:func:`_scope`).
     """
-    scope = dict(namespace)
-    scope.update(_RERUN_NAMES)
+    scope = _scope(namespace)
     for name in parameters:
         scope[name] = draw.context[name] if name in draw.context else Var(name)
     for annotation in annotations:
-        reading = _Reading(dict(draw.context), draw.samples)
+        unsummed: list[list[tuple[str, Any]]] = []
+        scope["__lanky_sum__"] = functools.partial(_add, unsummed)
         with concrete_sorts(draw.samples):
             try:
                 if annotation.code is not None:
                     value = eval(annotation.code, scope, None)
                 else:
                     value = annotation.given
-                python = _Outcome(_value_at(value, reading))
+                python = _Outcome(_value_at(value, _Reading(dict(draw.context), draw.samples)))
             except Exception as exc:  # noqa: BLE001 - what the annotation raises is its answer
                 python = _Outcome(error=exc)
-        # only the comparisons the term makes say whether rounding decided it
-        reading.fragile = False
+        reading = _Reading(dict(draw.context), draw.samples)
         try:
             term = _Outcome(_value_at(annotation.term, reading))
         except Exception as exc:  # noqa: BLE001 - what the term raises is its answer
             term = _Outcome(error=exc)
-        yield annotation, _judge(python, term, reading.fragile), python, term
+        if not _same_points(unsummed, reading.unsummed):
+            # a sum had no value on both sides, or on one, and its points differ
+            python = replace(python, sums=_points_of(unsummed))
+            term = replace(term, sums=_points_of(reading.unsummed))
+            yield annotation, "differed", python, term
+            continue
+        yield annotation, _judge(python, term), python, term
+
+
+def _same_points(left: list[list[tuple[str, Any]]], right: list[list[tuple[str, Any]]]) -> bool:
+    """Whether the sums that had no value came to the same at each point on both sides.
+
+    A value is compared as :func:`_same` compares it, and a point with no
+    answer by where it had none, its domain, its guard or its body, and not
+    by what was raised there, as two readings that raise otherwise are not a
+    disagreement either (see :func:`_judge`).
+    """
+    if len(left) != len(right):
+        return False
+    for ours, theirs in zip(left, right, strict=True):
+        if len(ours) != len(theirs):
+            return False
+        for (tag, value), (other_tag, other) in zip(ours, theirs, strict=True):
+            if tag != other_tag:
+                return False
+            if tag == "value" and not (_holds_term(value) or _same(value, other)):
+                return False
+    return True
+
+
+def _points_of(unsummed: list[list[tuple[str, Any]]]) -> str:
+    """What the sums with no value came to at their points, as a reason says it."""
+    if not unsummed:
+        return "no sum without a value"
+    shown = [
+        ", ".join(_shown(value) if tag == "value" else f"{tag} ({value})" for tag, value in sum_)
+        for sum_ in unsummed
+    ]
+    return "; ".join(f"[{points}]" for points in shown)
 
 
 @dataclass
@@ -926,13 +1633,14 @@ def _annotations(theorem: Any) -> list[_Annotation] | str:
     terms: dict[str, tuple[str, Any]] = {name: ("sort", sort) for name, sort in theorem.variables}
     terms.update((name, ("hypothesis", prop)) for name, prop in theorem.hypotheses)
     terms["return"] = ("goal", theorem.goal)
+    names = _reduction_names(theorem.namespace)
     out: list[_Annotation] = []
     for name, annotation in raw.items():
         if name not in terms:
             continue
         role, term = terms[name]
         if isinstance(annotation, str):
-            code = _compiled(annotation)
+            code = _compiled(annotation, names)
             out.append(_Annotation(name, role, term, annotation.strip(), code=code))
             continue
         if _holds_term(annotation):
@@ -988,7 +1696,8 @@ def faithful_fact(theorem: Any) -> Fact:
         if isinstance(annotations, str):
             return declined(annotations)
         parameters = list(inspect.signature(theorem.fn).parameters)
-        for draw in _draws(theorem.variables, hypotheses):
+        extent = _extent(theorem, [a.code for a in annotations if a.code is not None])
+        for draw in _draws(theorem.variables, hypotheses, extent):
             if isinstance(draw, str):
                 tally.skipped.append(draw)
                 continue

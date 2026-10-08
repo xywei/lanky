@@ -470,34 +470,51 @@ def test_every_example_reads_its_annotations_faithfully(capsys) -> None:
 # {{{ what is compared, and how
 
 
-def test_a_disagreement_rounding_explains_is_not_counted(tmp_path) -> None:
-    """Python's ``sum`` rounds as it adds, the evaluator as pymbolic keeps the term.
+def test_a_sum_rounds_alike_and_nothing_is_put_down_to_rounding(prover, tmp_path) -> None:
+    """The term's sum is added by Python's ``sum``, and a close disagreement is one all the same.
 
     ``sum(0.1 for i in Fin[2 * n])`` is ``1.0`` in Python 3.12 and later at
     ``n = 5``, which compensates as it adds, and ``0.9999999999999999`` added
-    one by one, as the evaluator adds the term's sum, so the truth of ``== n /
-    5`` differs in the last bit, where the term compared two numbers that agree
-    to the tolerance. That is not counted. Two floats far apart are a
-    disagreement all the same.
+    one by one. The term's sum is added by Python's ``sum`` over the same
+    values, so both readings compare ``1.0 == 1.0`` and agree. Nothing is put
+    down to rounding any more: a helper that answers ``x * (1 + 1e-12)`` at a
+    number and ``x`` at a term left the term ``1.0*x == x``, whose truth
+    differed only where the term compared two numbers within ``1e-9`` of each
+    other, which a tolerance did not count, and the CAS decided the term.
     """
     assert sum([0.1] * 10) == 1.0  # compensated, since Python 3.12
     path = _write(
         tmp_path,
-        "\n\n@theorem\n"
+        "\nfrom fractions import Fraction\n\n\n"
+        "def nudged(x):\n"
+        "    if isinstance(x, int | float | Fraction) and x > 0:\n"
+        "        return x * (1 + 1e-12)\n"
+        "    return x\n\n\n"
+        "@theorem\n"
         "def tenths(n: Nat) -> sum(0.1 for i in Fin[2 * n]) == n / 5:\n"
-        '    """Rounding decides it, either way."""\n\n\n'
+        '    """Rounding decides it, alike on both sides."""\n\n\n'
         "@theorem\n"
         "def halves(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all((f(i) * 0.5 == 1.0) | (i is not 0) for i in Fin[n]):\n"
-        '    """A float in the claim does not hide a misreading."""\n',
+        '    """A float in the claim does not hide a misreading."""\n\n\n'
+        "@theorem\n"
+        "def close(x: Real) -> 1.0 * x == nudged(x):\n"
+        '    """False wherever x > 0; its term is 1.0*x == x."""\n',
     )
     pairs = _pairs(check_path(path))
     tenths = pairs["tenths"][1]
     assert tenths.status is Status.TESTED, tenths.provenance
-    assert tenths.provenance["rounding"] > 0
+    assert "rounding" not in tenths.provenance
     halves = pairs["halves"][1]
     assert halves.status is Status.REFUTED
     assert halves.provenance["counterexample"] == {"n": 1, "f": [1]}
+    claim, close = pairs["close"]
+    assert close.status is Status.REFUTED, close.provenance
+    assert close.provenance["counterexample"]["x"] > 0
+    assert close.provenance["python_answer"] == "computes False"
+    assert close.provenance["term_answer"] == "computes True"
+    assert claim.status is Status.ASSUMED
+    assert prover.shown == ["tenths"]
 
 
 def test_an_exception_on_one_side_only_is_a_disagreement(prover, tmp_path) -> None:
@@ -526,17 +543,15 @@ def test_an_exception_on_one_side_only_is_a_disagreement(prover, tmp_path) -> No
     assert prover.shown == []
 
 
-def test_both_readings_stop_where_python_stops(tmp_path) -> None:
-    """A quantifier is read as ``all`` reads it, and an overflow stops ``|`` on both sides.
+def test_both_readings_pass_over_a_point_with_no_answer(tmp_path) -> None:
+    """A quantifier and a connective pass over what a point raised, on both sides alike.
 
-    ``all(f(i - 1) <= f(i) for i in Fin[n])`` has no value in Python at any
-    ``n >= 1``: ``all`` stops at ``i = 0``, where ``f(-1)`` is outside the
-    domain. Read three-valued, as the tester reads it, the term is false
-    wherever ``f`` decreases later on, which is an answer where Python has
-    none; read as ``all`` reads it, the term stops at ``i = 0`` too, and the
-    two agree. Likewise lanky's ``|`` passes over a division by zero but not
-    an overflow, so the rerun's ``|`` stops at Python's ``OverflowError``
-    as the term's does, and does not answer ``x == x`` in its place.
+    ``all(f(i - 1) <= f(i) for i in Fin[n])`` has no value at ``i = 0``,
+    where ``f(-1)`` is outside the domain. Read three-valued, as lanky reads
+    it, both readings pass over that point and are false wherever ``f``
+    decreases later on, and agree. Python's ``**`` overflows past ``1`` on
+    both sides, and both readings of ``|`` pass over it and answer ``x ==
+    x``.
     """
     path = _write(
         tmp_path,
@@ -552,6 +567,199 @@ def test_both_readings_stop_where_python_stops(tmp_path) -> None:
         reading = pairs[owner][1]
         assert reading.status is Status.TESTED, (owner, reading.provenance)
         assert "silent" not in reading.provenance, owner
+
+
+#: Claims whose term says something else only after a point where both
+#: readings have no answer, each false, and the point where the check finds it.
+PAST_A_STOP = """
+
+def table(i):
+    return {1: 1}.get(i, 0)
+
+
+@theorem
+def divides(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 + (1 // i) * 0 == table(i) for i in Fin[n]
+):
+    \"\"\"False at i = 1, after both readings stop at i = 0.\"\"\"
+
+
+@theorem
+def overflows(n: Nat) -> ((1.0 * n + 2) ** 2000 >= 0) & (n * 0 == table(n)):
+    \"\"\"False at n = 1, where 3.0 ** 2000 overflows first.\"\"\"
+
+
+@theorem
+def sums(n: Nat, f: Fn[Fin[n], Nat]) -> sum(f(i - 1) * 0 + table(i) for i in Fin[n]) == 0:
+    \"\"\"f(-1) leaves the sum with no value; at i = 1 the term adds 0 where Python adds 1.\"\"\"
+"""
+
+
+def test_a_point_after_one_where_both_readings_stop_is_compared(prover, tmp_path) -> None:
+    """A point where both readings have no answer does not hide the points after it.
+
+    Python's ``all`` stops at the first point that raises, and a term read as
+    ``all`` reads it stopped there too, so ``1 // i`` stopped both readings at
+    ``i = 0`` at every draw, and ``table(1)``, misread as ``0``, was never
+    compared: the reading was ``tested``, and Lean proved the term ``f(i)*0 +
+    (1 // i)*0 == 0`` with ``omega``. Both readings now pass over such a
+    point, as lanky reads a quantifier, and reach ``i = 1``. So do ``&`` and
+    ``|`` past any exception, an overflow included, and a sum, which has no
+    value at such a draw, is compared point by point.
+    """
+    path = _write(tmp_path, PAST_A_STOP)
+    pairs = _pairs(check_path(path))
+    assert prover.shown == []
+    fives = [5] * 5
+    expected = {
+        "divides": {"n": 5, "f": fives},
+        "overflows": {"n": 1},
+        "sums": {"n": 5, "f": fives},
+    }
+    for owner, point in expected.items():
+        claim, reading = pairs[owner]
+        assert reading.status is Status.REFUTED, (owner, reading.provenance)
+        assert reading.provenance["counterexample"] == point, owner
+        assert claim.status is Status.ASSUMED
+    divides = pairs["divides"][1].provenance
+    assert divides["python_answer"] == "computes False"
+    assert divides["term_answer"].startswith("raises ZeroDivisionError")
+    sums = pairs["sums"][1].provenance
+    assert sums["python_answer"].endswith(
+        "its sums with no value coming to [no value (Undecided), 1, 0, 0, 0] at their points"
+    )
+    assert sums["term_answer"].endswith(
+        "its sums with no value coming to [no value (Undecided), 0, 0, 0, 0] at their points"
+    )
+
+
+#: Claims misread only at a value the claim writes, past the corners and the
+#: tester's draws, and the point where the check finds each.
+WRITTEN_VALUES = """
+
+TABLE = {1000: 1}
+
+
+def past(i):
+    return 1 if isinstance(i, int) and i == 6 else 0
+
+
+def last(i):
+    return 1 if isinstance(i, int) and i == 5 else 0
+
+
+def far(i):
+    return TABLE.get(i, 0)
+
+
+@theorem
+def just_past(n: Nat) -> n * 0 == past(n):
+    \"\"\"False at n = 6, one past the largest natural the tester draws.\"\"\"
+
+
+@theorem
+def at_the_end(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == last(i) for i in Fin[n]):
+    \"\"\"False at i = 5, past the last point of any Fin the tester draws.\"\"\"
+
+
+@theorem
+def in_a_table(n: Nat) -> n * 0 == far(n):
+    \"\"\"False at n = 1000, a key of a module-level table the helper reads.\"\"\"
+
+
+@theorem
+def over_a_sort() -> all(k * 0 == past(k) for k in Nat):
+    \"\"\"False at k = 6, which the sample of Nat now holds.\"\"\"
+"""
+
+
+def test_a_value_written_in_the_claim_is_drawn_at(prover, tmp_path) -> None:
+    """A helper that answers otherwise only at a value the claim writes is reached there.
+
+    The corners take a natural up to ``5``, and so do the tester's draws, so a
+    point of a ``Fin`` is at most ``4``. A misreading only at ``6``, at ``5``
+    as a point, or at a key ``1000`` of a table a helper reads, was compared
+    nowhere, and the CAS decided ``n*0 == 0``. The integers written in the
+    claim, in the helpers it calls and in what they read, and next to them,
+    are drawn at, and join the samples of the sorts.
+    """
+    path = _write(tmp_path, WRITTEN_VALUES)
+    pairs = _pairs(check_path(path))
+    assert prover.shown == []
+    expected = {
+        "just_past": ({"n": 6}, "written 6"),
+        "at_the_end": ({"n": 6, "f": [6] * 6}, "written 6"),
+        "in_a_table": ({"n": 1000}, "written 1000"),
+        "over_a_sort": ({}, "corner 0"),
+    }
+    for owner, (point, draw) in expected.items():
+        claim, reading = pairs[owner]
+        assert reading.status is Status.REFUTED, (owner, reading.provenance)
+        assert (reading.provenance["counterexample"], reading.provenance["draw"]) == (
+            point,
+            draw,
+        ), owner
+        assert claim.status is Status.ASSUMED
+    assert "{'Nat': [0, 1, 2" in pairs["over_a_sort"][1].provenance["reason"]
+
+
+def test_a_written_value_keeps_a_draw_small_enough_to_run(tmp_path) -> None:
+    """A written value is drawn at only up to a size the check can walk, and to a bound.
+
+    ``2 ** n`` at a written ``2 ** 63`` would not end, so no value past
+    :data:`~lanky.faithful.WRITTEN_MAX` is drawn at, while ``63`` and next to
+    it are. A size takes a written value only up to the root of
+    :data:`~lanky.faithful.SIZE_POINTS` by how deeply the claim nests its
+    domains: a misreading at ``1000`` under two nested quantifiers over
+    ``Fin[n]`` is past what a draw walks, a limit of the check, and the
+    reading is ``tested``.
+    """
+    from lanky import faithful
+
+    path = _write(
+        tmp_path,
+        "\n\ndef thousand(i):\n"
+        "    return 1 if isinstance(i, int) and i == 1000 else 0\n\n\n"
+        "@theorem\n"
+        "def powers(n: Nat, h: n < 63) -> 2 ** n < 2 ** 63:\n"
+        '    """Drawn at 62, 63 and 64, and not at 2 ** 63."""\n\n\n'
+        "@theorem\n"
+        "def nested(n: Nat, f: Fn[Fin[n], Nat]) -> all(\n"
+        "    all(f(i) * 0 + f(j) * 0 == thousand(i) for j in Fin[n]) for i in Fin[n]\n"
+        "):\n"
+        '    """Misread at i = 1000, past the size a draw walks here."""\n',
+    )
+    pairs = _pairs(check_path(path))
+    powers = pairs["powers"][1]
+    assert powers.status is Status.TESTED, powers.provenance
+    assert powers.provenance["draws"] == faithful.CORNERS + 3 + faithful.SAMPLES
+    nested = pairs["nested"][1]
+    assert nested.status is Status.TESTED, nested.provenance
+    assert nested.provenance["draws"] == faithful.CORNERS + 3 + faithful.SAMPLES
+
+
+def test_the_if_clauses_are_one_conjunction_in_either_order(tmp_path) -> None:
+    """Both readings read the ``if`` clauses as one conjunction of guards, three-valued (#97).
+
+    Python asks the clauses in order and stops at the first with no answer,
+    so ``if f(i - 1) > 0 if i > 0`` stops at ``f(-1)`` at ``i = 0``, where the
+    term, one conjunction, is false and skips the point. Read as the term
+    holds it on both sides, the later clause rejects the point either way.
+    So does ``and`` in one clause, which lanky records as two guards.
+    """
+    path = _write(
+        tmp_path,
+        "\n\n@theorem\n"
+        "def later_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
+        "all(f(i) >= 0 for i in Fin[n] if f(i - 1) > 0 if i > 0):\n"
+        '    """Python stops at f(-1) at i = 0; the term skips i = 0."""\n\n\n'
+        "@theorem\n"
+        "def and_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
+        "all(f(i) >= 0 for i in Fin[n] if (f(i - 1) > 0) and (i > 0)):\n"
+        '    """The same, in one clause."""\n',
+    )
+    for owner, (_claim, reading) in _pairs(check_path(path)).items():
+        assert reading.status is Status.TESTED, (owner, reading.provenance)
 
 
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
