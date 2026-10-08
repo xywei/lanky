@@ -22,8 +22,9 @@ worth the `tested` reading it rests on.
   results: each annotation, the goal, each hypothesis and each variable's
   sort, is run again as plain Python at drawn values, in the function's
   globals as they were when it was read (`Theorem.namespace`), with the
-  module's own functions bound to them, so that a helper reads what it read
-  then; the term is evaluated at the same values, and the two have to agree.
+  module's own functions bound to them and to what they closed over then
+  (`Theorem.closures`), so that a helper reads what it read then; the term is
+  evaluated at the same values, and the two have to agree.
   - The draws: six of small values and domain ends first (`CORNERS`, every
     natural the tester draws and a domain's first and last points, smallest
     first, so a refutation names a small point); then one at each integer
@@ -81,7 +82,8 @@ worth the `tested` reading it rests on.
     defined, one with no answer on both sides at any draw.
 - `Theorem.faithful_fact()`, made once per claim; `Theorem.fact(reading)`,
   which records the reading's id as `faithful` and, when it is refuted, why,
-  as `unfaithful`; `Theorem.namespace`; `Fact.is_reading`.
+  as `unfaithful`; `Theorem.namespace` and `Theorem.closures`;
+  `Fact.is_reading`.
 - `lanky.terms.concrete_sorts`, `sort_points` and `rerunning`: what a sort
   iterates while an annotation is run again at concrete values.
 - **The pytest plugin fails a theorem whose reading is refuted**, with the
