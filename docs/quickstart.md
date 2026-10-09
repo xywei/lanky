@@ -2,16 +2,17 @@
 
 One file, four commands, and the output each one prints, then a second file
 with an axiom in it, and a third in which a rule engine checks a derivation.
-Everything below was run in this repository with `uv run`, the last section on
-2026-09-26 and the rest on 2026-09-25; the numbers and the Lean source are
-copied from the terminal, not written from memory. The one thing that drifts
+Everything below was run in this repository with `uv run`, the `lanky check`
+tables last on 2026-10-08; the numbers and the Lean source are copied from the
+terminal, not written from memory. The one thing that drifts
 is a timing, which is a property of the machine and not of the claim. The
 `lanky check` tables are held to more than that: the test suite compares them
 with a real run, `gauss.py`'s as it stands where Lean is installed (CI has a
 job for that) and with its `proved` row read as `tested` where it is not, and
 the demonstration's the other way round. That holds for the `gap.py` blocks in
 [One reading of arithmetic](#one-reading-of-arithmetic) too: the suite writes
-`gap.py` from the snippet shown there and checks it both ways.
+`gap.py` from the snippet shown there and checks it both ways, and for
+`misread.py` in [Check the reading](#check-the-reading).
 
 To use lanky in a project of your own, `pip install lanky`; the README's
 [Install](../README.md#install) section has the extras, Lean and Mathlib. To
@@ -52,9 +53,12 @@ hypothesis (a parameter whose annotation is a proposition), and the return
 annotation is the goal. The annotations are Python expressions that lanky
 evaluates: `==` on a lanky term builds a proposition rather than answering a
 bool, `all(...)` over a generator becomes a universal quantifier, the generator's
-`if` clause becomes its guard, and `sum(...)` becomes a reduction. A file like
-this needs `from __future__ import annotations` so the annotations are not
-evaluated by Python first.
+`if` clause becomes its guard, and `sum(...)` becomes a reduction. In an
+annotation `all`, `any`, `sum` and `abs` are lanky's, so an annotation that
+calls one of them in a module that binds the name to a function of its own,
+as `from numpy import abs` does, is refused; call that one by another name,
+`np.abs`. A file like this needs `from __future__ import annotations` so the
+annotations are not evaluated by Python first.
 
 The bodies are docstrings. A theorem's body is never executed by lanky.
 
@@ -102,17 +106,21 @@ theorem in a collected module becomes a test item.
 
 ```console
 $ uv run lanky check examples/gauss.py
-STATUS  BY             WHERE        OWNER          STATEMENT
-------  -------------  -----------  -------------  ------------------------------------------------------------------------
-tested  property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
-proved  lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0) ==...
+STATUS  EFFECTIVE  BY             WHERE        OWNER          STATEMENT
+------  ---------  -------------  -----------  -------------  ------------------------------------------------------------------------
+tested  tested     property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested  tested     python         gauss.py:31  gauss          the term computes what the annotations compute
+proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0) ==...
+tested  tested     python         gauss.py:39  scan_monotone  the term computes what the annotations compute
 
-2 facts: 1 proved, 1 tested
+4 facts: 1 proved, 3 tested
 ```
 
 This is the command the project exists for. It imported the file, read the
 registry the decorators filled, turned each theorem into a `Fact`, and offered
-each fact to the oracles strongest first.
+each fact to the oracles strongest first. Each theorem is two rows: the claim,
+and under it its reading, which [Check the reading](#check-the-reading) below
+is about.
 
 The table holds the claims defined in `gauss.py` itself. A theorem the file
 imports from another module is not in it, whether or not that module was
@@ -132,7 +140,7 @@ that calls it. A child runs with the interpreter options the command was
 started with, as in `python -O -m lanky.cli check ...`, and ends with the
 command.
 
-The two rows differ, and the difference is the product.
+The two claims differ, and the difference is the product.
 
 - `scan_monotone` is `proved` by `lean`. The Lean oracle printed the statement as
   core Lean 4, found a tactic script, and elaborated the whole declaration in a
@@ -141,10 +149,18 @@ The two rows differ, and the difference is the product.
   needs Mathlib, so the Lean printer declines the term and the next oracle down
   takes it. In Mathlib mode Lean proves it too; see
   [Prove it with Mathlib](#prove-it-with-mathlib).
+- Under each claim, `tested python` is its reading: the term every oracle is
+  handed is what lanky's run of the annotations on symbolic terms built, and
+  the annotations, run again as plain Python at drawn values, computed what
+  the term computes at every draw. A proof is of the term, so it rests on its
+  reading, and the `EFFECTIVE` column says what it is worth: `proved`,
+  worth `tested`.
 
-Without the Lean extra installed, or with `LANKY_LEAN_DISABLE=1`, both rows read
-`tested property-test` and the exit code is 0 either way. Nothing about the code
-changes; only the strength of the evidence does, and the table says which.
+Without the Lean extra installed, or with `LANKY_LEAN_DISABLE=1`, both claims
+read `tested property-test`, the `EFFECTIVE` column is not printed, since
+nothing is then worth less than its own status, and the exit code is 0 either
+way. Nothing about the code changes; only the strength of the evidence does,
+and the table says which.
 
 `--verbose` prints the oracles and their availability first:
 
@@ -254,10 +270,11 @@ def truncated(n: Nat) -> n - 1 >= 0:
 ```console
 $ uv run lanky check gap.py
 STATUS   BY             WHERE     OWNER      STATEMENT
--------  -------------  --------  ---------  ---------------------
+-------  -------------  --------  ---------  ----------------------------------------------
 refuted  property-test  gap.py:7  truncated  n : Nat |- n - 1 >= 0
+tested   python         gap.py:7  truncated  the term computes what the annotations compute
 
-1 facts: 1 refuted
+2 facts: 1 refuted, 1 tested
 
 REFUTED truncated at gap.py:7: n : Nat |- n - 1 >= 0
   counterexample: {'n': 0}
@@ -273,8 +290,8 @@ reading is true keeps its proof: `n - 1 <= n` reads `proved lean`.
 One gap is left. Division by anything that is not a nonzero literal is total in
 Lean, where `Int.fdiv n 0` is `0`, and an exception in Python. Put
 `def div_zero(n: Nat) -> n // 0 == 0` in the same `gap.py` in place of
-`truncated`, and with Lean the row reads `proved lean` with this under the
-table:
+`truncated`, and with Lean the row reads `proved` by `lean`, worth its
+`tested` reading, with this under the table:
 
 ```text
 SEMANTICS div_zero at gap.py:7: no draw could decide the statement: the statement divides by zero at this draw, which Python raises on and Lean's total integer division does not, so the two readings differ here rather than the statement being false
@@ -285,7 +302,109 @@ SEMANTICS div_zero at gap.py:7: no draw could decide the statement: the statemen
 The sampled reading is not a counterexample there, and it is not agreement
 either: it is a reading that could not be run, which is worth saying. Without
 Lean the row is `assumed`, and the exit code is 0 both ways, because nothing
-was refuted. `lanky.semantics.notes(term)` is the check.
+was refuted. `lanky.semantics.notes(term)` is the check. The reading is
+`tested` both ways: run again as Python, the annotation raises
+`ZeroDivisionError` at every draw, and so does its term, and two readings
+with no value at a point for one reason agree there.
+
+## Check the reading
+
+An annotation is Python, and lanky reads it by running it on symbolic terms:
+`==` builds a proposition, `all(...)` a quantifier, `f(i)` an application.
+Most of Python goes through a term's overloads and builds more of the term.
+Some of it answers from the term object instead, the same at every value the
+term stands for, and then the term every oracle is handed says something else
+than what was written: `is`, an attribute, a hash, a text, a number's truth
+value, a comparison of two types, in the annotation or in a function or a
+library it calls. lanky refuses the cases it can see while it reads, and
+checks the rest by their results. Put this in `misread.py`, with the same two
+imports:
+
+```python
+def table(i):
+    return {0: 1}.get(i, 0)
+
+
+@theorem
+def looked_up(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):
+    """False at i = 0, where the table gives 1."""
+```
+
+```console
+$ uv run lanky check misread.py
+STATUS                            EFFECTIVE  BY      WHERE          OWNER      STATEMENT
+--------------------------------  ---------  ------  -------------  ---------  ---------------------------------------------------------------
+assumed under faithful:looked_up  refuted    -       misread.py:11  looked_up  n : Nat, f : Fn[Fin(n), Nat] |- forall i in Fin(n). f(i)*0 == 0
+refuted                           refuted    python  misread.py:11  looked_up  the term computes what the annotations compute
+
+2 facts: 1 assumed, 1 refuted
+
+REFUTED looked_up at misread.py:11: the term computes what the annotations compute
+  counterexample: {'n': 1, 'f': [1]}
+  witness: the goal, all(f(i) * 0 == table(i) for i in Fin[n])
+  the goal, run again as Python at these values, computes False, and its term, forall i in Fin(n). f(i)*0 == 0, computes True: the term says something else than what was written, so no oracle that decides or proves is asked about the claim
+```
+
+While the annotation is read, `i` is a term, the dict has no key it hashes
+to, and `table(i)` is `0`, so the term is `f(i)*0 == 0`, which Lean proves
+with `omega`. Each claim also gets a fact of kind `faithful`, its reading:
+the annotations are run again as plain Python at drawn values, the term is
+evaluated at the same values, and the two have to agree. At `n = 1`,
+`table(0)` is `1`, and the goal is false where its term is true. So the
+reading is refuted, with the draw, the annotation as written and both
+answers; the claim is offered to no oracle, Lean included, and stays
+`assumed` under its refuted reading, worth `refuted`; and `lanky check` exits
+1. That is the output with Lean and without it. `pytest misread.py` fails the
+theorem with the same draw.
+
+- **The draws.** Six of small values and domain ends come first, every
+  natural the tester draws and a domain's first and last points, smallest
+  first, so a refutation names a small point; then one at each integer
+  written in the claim, or in a helper it calls, and next to it, so that a
+  helper that answers otherwise only at `1000` is reached there; then 32 of
+  the property tester's, with a definitional hypothesis satisfied by
+  construction, as the tester satisfies it. The readings are compared whether
+  or not a draw satisfies the hypotheses. A bounded quantifier is enumerated,
+  as Python enumerates it, and one over a sort, `for k in Nat`, runs over a
+  sample of about five of its values and the integers the claim writes, the
+  same on both sides. A family over a sort, `Fn[Nat, Real]`, which the tester
+  cannot tabulate, is drawn at each point as either reading applies it.
+- **The module as it was.** The annotations run again in a copy of what
+  they reach, taken just before the claim was read: the names they read, the
+  functions of this module and of the modules beside it that they call, and
+  the tables, lists and arrays those read and close over. So a
+  `TABLE.clear()` after the claim does not change what `table(0)` gives the
+  rerun, and each draw starts from that copy, whatever a helper changed at
+  the draw before. What the copy cannot hold as it was, an object of a class
+  of yours, a class that holds methods or data, a structure past the budget,
+  leaves the reading `assumed`, naming it.
+- **Agreement.** The same truth value, or the same value, for every
+  annotation: the goal, each hypothesis and each variable's sort. A truth
+  value against a number disagrees, and so does an exception on one side
+  only, whatever it is: `i.name` raising at a number where its term has a
+  value, or `1 // i` leaving Python with no answer at `i = 0` where the term
+  has one. Where both have no answer for one reason, a family applied outside
+  its domain or a division by zero, they agree. `~`, `&` and `|` of truth
+  values are lanky's `not`, `and` and `or` there too, and not Python's
+  `~True`, which is `-2`, and they and the quantifiers are read three-valued
+  on both sides, as lanky reads them: an operand or a point with no answer,
+  whatever was raised, is passed over, and one after it that settles the
+  whole settles it. So `(i == 0) | (f(i - 1) <= f(i))` is true at `i = 0`,
+  and a misreading at `i = 1` is compared even where both readings have no
+  answer at `i = 0`, where Python's `all` would stop. The two readings make
+  the same operations in the same order, a sum included, so nothing is put
+  down to rounding.
+- **What rests on it.** Every pass, decision and proof of a claim rests on
+  its reading, which is why `scan_monotone`'s proof above is worth `tested`.
+  A reading that cannot be run at a point is `assumed`, with the reason: a
+  variable of a sort no value can be drawn of, an annotation Python evaluated
+  when the function was defined, without `from __future__ import
+  annotations`, one that had no answer on both sides at any draw, or one that
+  reaches what the copy could not hold as it was. A proof
+  of such a claim reads `proved under faithful:name`, worth `assumed`, and a
+  `DECLINED` line under the table gives the reason.
+- **It is sampled.** A disagreement only at a point no draw reaches escapes
+  it, as a counterexample no draw reaches escapes the tester.
 
 ## Take a result on a citation
 
@@ -316,10 +435,13 @@ $ uv run lanky check examples/nicomachus.py
 STATUS                   EFFECTIVE  BY             WHERE             OWNER       STATEMENT
 -----------------------  ---------  -------------  ----------------  ----------  ------------------------------------------------------------------------
 tested                   tested     property-test  nicomachus.py:33  gauss       n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested                   tested     python         nicomachus.py:33  gauss       the term computes what the annotations compute
 assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1)...
+tested                   tested     python         nicomachus.py:38  nicomachus  the term computes what the annotations compute
 tested under nicomachus  assumed    property-test  nicomachus.py:43  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
+tested                   tested     python         nicomachus.py:43  cubes       the term computes what the annotations compute
 
-3 facts: 1 assumed, 2 tested
+6 facts: 1 assumed, 5 tested
 
 CITED nicomachus at nicomachus.py:38: Nicomachus of Gerasa, Introduction to Arithmetic
 ```
@@ -345,11 +467,17 @@ are new.
 - The `EFFECTIVE` column. What each fact is worth once what it rests on is
   counted: the weakest status over the fact and everything below it, so a
   proof from an assumption is worth the assumption. The column is there only
-  when some fact is worth less than its own status says, so a ledger in which
-  nothing rests on anything, like `gauss.py`'s, looks as it always did.
+  when some fact is worth less than its own status says: in `gauss.py`'s
+  ledger where Lean proves `scan_monotone`, whose proof is worth the
+  `tested` reading it rests on, and not where it does not.
 - The `CITED` line. Each axiom is named under the table with the citation it
   is taken on, one line per axiom in the table's order, since that is what
   stands behind its row and behind every `under` that names it.
+
+An axiom has a reading too, `tested` here. Nothing about the axiom rests on
+it, since the axiom is `assumed` on its citation whatever its reading is
+worth, but a refuted one would fail the check, and leave everything that rests
+on the axiom worth `refuted`.
 
 The status column is still each fact's own. `tested` says how strongly `cubes`
 is established given what it uses; the oracles decide it as they decide any
@@ -441,13 +569,21 @@ $ uv run lanky check examples/pytential_skie.py
 STATUS                                                        EFFECTIVE  BY             WHERE                  OWNER                     STATEMENT
 ------------------------------------------------------------  ---------  -------------  ---------------------  ------------------------  ------------------------------------------------------------------------
 assumed (axiom)                                               assumed    -              pytential_skie.py:94   jump_S                    gamma : C2Boundary, s : Side |- trace(S, s) == S
+assumed                                                       assumed    -              pytential_skie.py:94   jump_S                    the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:99   jump_D                    gamma : C2Boundary, s : Side |- trace(D, s) == 1/2*s*I + D
+assumed                                                       assumed    -              pytential_skie.py:99   jump_D                    the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:104  jump_Sp                   gamma : C2Boundary, s : Side |- normal_derivative(S, s) == -1/2*s*I + S'
+assumed                                                       assumed    -              pytential_skie.py:104  jump_Sp                   the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:109  jump_Dp                   gamma : C2Boundary, s : Side |- normal_derivative(D, s) == D'
+assumed                                                       assumed    -              pytential_skie.py:109  jump_Dp                   the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:114  compact_S                 gamma : C2Boundary |- compact(S)
+assumed                                                       assumed    -              pytential_skie.py:114  compact_S                 the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:119  compact_D                 gamma : C2Boundary |- compact(D)
+assumed                                                       assumed    -              pytential_skie.py:119  compact_D                 the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:124  compact_Sp                gamma : C2Boundary |- compact(S')
+assumed                                                       assumed    -              pytential_skie.py:124  compact_Sp                the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:129  hypersingular_Dp          gamma : C2Boundary |- ~scalar_plus_compact(D')
+assumed                                                       assumed    -              pytential_skie.py:129  hypersingular_Dp          the term computes what the annotations compute
 decided under jump_D                                          assumed    layer-rules    pytential_skie.py:151  laplace_dirichlet_dlp     trace(D, INTERIOR) ~> -1/2*I + D (jump relations)
 tested                                                        tested     property-test  pytential_skie.py:151  laplace_dirichlet_dlp     coefficient of I: -1/2 != 0
 decided under jump_D, compact_D                               assumed    layer-rules    pytential_skie.py:151  laplace_dirichlet_dlp     -1/2*I + D is second kind
@@ -462,7 +598,7 @@ decided under jump_D, jump_S, compact_D, compact_S            assumed    layer-r
 decided under jump_Dp, jump_Sp                                assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   normal_derivative(D - 1j*eta*S, EXTERIOR) ~> 1j/2*eta*I + D' - 1j*eta...
 decided under jump_Dp, jump_Sp, compact_Sp, hypersingular_Dp  assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   1j/2*eta*I + D' - 1j*eta*S' is not second kind: D' is not c*I + compact
 
-21 facts: 8 assumed, 10 decided, 3 tested
+29 facts: 16 assumed, 10 decided, 3 tested
 
 CITED jump_S at pytential_skie.py:94: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
 CITED jump_D at pytential_skie.py:99: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6 (Laplace); D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3 (Helmholtz)
@@ -474,8 +610,10 @@ CITED compact_Sp at pytential_skie.py:124: R. Kress, Linear Integral Equations, 
 CITED hypersingular_Dp at pytential_skie.py:129: D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3
 ```
 
-That is the output without Lean. With the `lean` extra the three coefficient
-rows read `proved  lean`: `coefficient of I: -1/2 != 0` goes to Lean as
+That is the output without Lean. Each axiom's reading is `assumed`: no
+boundary can be drawn, so its annotations cannot be run again at a point, and
+nothing rests on it, so no `DECLINED` line says so. With the `lean` extra
+the three coefficient rows read `proved  lean`: `coefficient of I: -1/2 != 0` goes to Lean as
 `(-1 : Int) ≠ 0`, the numerator's being nonzero, since core Lean has no
 rationals, and that arithmetic is the one part of the argument Lean touches.
 Nothing about compactness is claimed proved. Those are the `assumed (axiom)`
@@ -633,11 +771,12 @@ $ uv run lanky check examples/sumpy_recurrence.py
 STATUS                  BY      WHERE                    OWNER              STATEMENT
 ----------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
 assumed (axiom)         -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested                  python  sumpy_recurrence.py:128  harmonic           the term computes what the annotations compute
 tested                  mpmath  sumpy_recurrence.py:712  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
 decided (heuristic)     cas     sumpy_recurrence.py:712  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
 assumed under harmonic  -       sumpy_recurrence.py:712  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
 
-4 facts: 2 assumed, 1 decided, 1 tested
+5 facts: 2 assumed, 1 decided, 2 tested
 
 CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
@@ -645,9 +784,11 @@ CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 
 - **The harmonicity.** `harmonic` is an axiom: `G_xx + G_yy == 0` away from
   the origin, with the second derivatives sympy's, taken on its citation and
   sampled for a counterexample. It is the PDE the wrangler's recurrence comes
-  from. The first two rows below do not rest on it, since each checks the
+  from. The claim's first two rows do not rest on it, since each checks the
   reconstruction against the derivatives themselves, one order at a time; the
-  third, the claim for every order, does.
+  third, the claim for every order, does. Its reading is `tested`: the
+  annotation, sympy's Laplacian included, run again as Python at drawn
+  points, computes what its term does.
 - **The claim at points.** mpmath takes every derivative numerically, by
   finite differences at 30 digits, at 20 points away from the origin, and
   finds each reconstructed one within `1e-20` of the derivative it stands
@@ -711,15 +852,18 @@ builds goes where `LANKY_LEAN_CACHE_DIR` says, as in core mode. Then:
 
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/gauss.py
-STATUS  BY    WHERE        OWNER          STATEMENT
-------  ----  -----------  -------------  ------------------------------------------------------------------------
-proved  lean  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
-proved  lean  gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0) ==...
+STATUS  EFFECTIVE  BY      WHERE        OWNER          STATEMENT
+------  ---------  ------  -----------  -------------  ------------------------------------------------------------------------
+proved  tested     lean    gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested  tested     python  gauss.py:31  gauss          the term computes what the annotations compute
+proved  tested     lean    gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0) ==...
+tested  tested     python  gauss.py:39  scan_monotone  the term computes what the annotations compute
 
-2 facts: 2 proved
+4 facts: 2 proved, 2 tested
 ```
 
-Both rows are proved now. The oracle started its REPL in the project, imported
+Both claims are proved now, each worth the `tested` reading it rests on. The
+oracle started its REPL in the project, imported
 Mathlib once (seconds, and about 1.5 GB of memory), and elaborated each attempt
 in the environment the import left. `scan_monotone` is proved as before, by the
 same induction: a statement core Lean could print is printed the same way, and
@@ -813,11 +957,12 @@ $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py
 STATUS                 EFFECTIVE            BY      WHERE                    OWNER              STATEMENT
 ---------------------  -------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
 assumed (axiom)        assumed              -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested                 tested               python  sumpy_recurrence.py:128  harmonic           the term computes what the annotations compute
 tested                 tested               mpmath  sumpy_recurrence.py:712  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
 decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:712  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
 proved under harmonic  assumed              lean    sumpy_recurrence.py:712  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
 
-4 facts: 1 assumed, 1 decided, 1 proved, 1 tested
+5 facts: 1 assumed, 1 decided, 1 proved, 2 tested
 
 CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
@@ -921,7 +1066,9 @@ are inconsistent and its goal's domain empty, which they are not.
   refused where it is defined (`i was hashed by the annotation, as a dict or
   a set lookup or display there hashes its keys`), and so is `i in {0, 1}`.
   A table indexed by a point is a family, with hypotheses that give its
-  values.
+  values. Put the lookup in a function the claim calls, and the refusal does
+  not see it; the reading's check does, as
+  [Check the reading](#check-the-reading) shows.
 - Misspell a name: `def typo(n: Nat) -> n + m >= n`. No parameter binds `m`,
   so no draw gives it a value, and the tester draws nothing; Lean is not
   handed it either. The row reads `assumed`, and the tester says why under
@@ -1054,6 +1201,7 @@ are inconsistent and its goal's domain empty, which they are not.
 | `@theorem`, `@axiom`, `Theorem` and `Axiom` | `src/lanky/theory.py` |
 | `@rewrite`, `Rewrite`, `RewriteTerm` and `rewrite_fact` | `src/lanky/rewrites.py` |
 | samplers and the property tester | `src/lanky/testing.py` |
+| a claim's reading, checked by running its annotations again at drawn values | `src/lanky/faithful.py` |
 | where the readings still differ: division by zero, `log`, `sqrt` | `src/lanky/semantics.py` |
 | the Lean printer, core Lean's dialect and Mathlib's | `src/lanky/lean.py` |
 | Mathlib mode: the pinned project and its setup | `src/lanky/mathlib.py`, `src/lanky/mathlib-project/` |

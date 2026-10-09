@@ -6,8 +6,166 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+Every claim's reading of its annotations is checked (#91), which closes the
+class the 0.1.0 Known limits named: an operation that answers from a term
+object rather than through its overloads, `is`, an attribute, a hash, a text
+or a truth value inside a helper or a library, a comparison of types (#79,
+#80, #88), is refuted at a point instead of proved. Every ledger changes
+shape: each theorem and axiom is followed by its reading, and a proof is
+worth the `tested` reading it rests on.
+
+### Added
+
+- **The `faithful` fact (#91).** lanky reads an annotation by running its
+  Python on symbolic terms, and every oracle is handed the term that run
+  builds. `lanky.faithful.faithful_fact(theorem)` checks that reading by its
+  results: each annotation, the goal, each hypothesis and each variable's
+  sort, is run again as plain Python at drawn values, in the module as lanky
+  found it when it read the claim (`Theorem.snapshot`, below); the term is
+  evaluated at the same values, and the two have to agree.
+  - The snapshot (`lanky.faithful.capture`, `Snapshot`; #102, #103). Just
+    before a claim is read, what its annotations reach is copied: the names
+    they read, the functions of the user's modules they call (the claim's
+    module and the modules beside it, under the file's source roots), the
+    names those read, their defaults and what they close over, with tables,
+    lists, sets, tuples and numpy arrays copied item by item and nested, up
+    to `COPY_ITEMS = 65536` items and `COPY_ELEMENTS = 2 ** 20` array
+    elements. The functions are bound to the copy, two that closed over one
+    cell close over one copy of it, a view of an array is made again over
+    the copy of the array it views, so that a write through one view is read
+    through another, and a `functools.partial`, a function behind an empty
+    `functools.lru_cache` and a method bound to a copied table (`TABLE.get`)
+    are made again around the copies. Every draw runs in a
+    copy of that copy, so a helper reads what it read when the claim was
+    read, whatever the module rebinds or changes in place after the claim
+    (`TABLE.clear()`, `list.append`, `ARRAY[:] = 0`), and whatever a helper
+    changed at the draw before.
+  - What the copy cannot hold as it was is not pretended: an object of a type
+    it does not know (an instance of a class of the user's, a random
+    generator), a structure past the budget, a class of the user's that holds
+    a method or data, a value read off a class or an installed module by name
+    that would need a copy (`Rules.table`), a function behind
+    `functools.lru_cache` whose cache holds entries, and a module of the
+    user's that a function imports as it runs. A reading that reaches any of it and agrees
+    at every draw is `assumed`, not `tested`, with each such object and why
+    in the reason, so a proof of the claim reads `proved under
+    faithful:name`. Libraries, lanky included, are read as they are.
+  - The draws: six of small values and domain ends first (`CORNERS`, every
+    natural the tester draws and a domain's first and last points, smallest
+    first, so a refutation names a small point); then one at each integer
+    written in the claim, in the helpers it calls and in what they read, and
+    next to it (up to `WRITTEN` of them, none past `WRITTEN_MAX = 4096`, and
+    for a value that sizes a domain, none past the size at which the claim's
+    nested domains hold about `SIZE_POINTS = 1024` points, a draw at which a
+    reading walks more than `WALK_POINTS = 32768` all the same being given up
+    as `unwalked`), so that a helper misread only at `6`, or at a key `1000`
+    of a table, is reached; then 32
+    of the property tester's (`SAMPLES`), with definitional hypotheses
+    satisfied by construction. A bounded quantifier is enumerated, and one
+    over a sort runs over a sample of it, the written integers included, the
+    same on both sides (`lanky.terms.concrete_sorts`). A family over a sort,
+    `Fn[Nat, Real]`, which the tester cannot tabulate, is drawn at each point
+    as either reading applies it (`DrawnFamily`). A refinement no draw
+    satisfies is drawn from what it refines: the readings are compared
+    whether or not the hypotheses hold.
+  - Both readings read the connectives and the quantifiers as lanky does,
+    three-valued, passing over whatever an operand or a point raised: the
+    rerun's `~`, `&` and `|` of truth values are `not`, `and` and `or`
+    (Python's `~True` is `-2`, and its `|` asked `f(-1)` of `(i == 0) | (f(i -
+    1) <= f(i))` at `i = 0`), and its `all` and `any` over a generator walk
+    every point, with the `if` clauses as one conjunction of guards, as the
+    term holds them, so an earlier clause with no answer and a later one that
+    rejects the point read alike in either order (#97). Python's `all` stops
+    at the first point that raises, and a comparison that stopped there on
+    both sides never compared the points after it: `all(f(i) * 0 + (1 // i) *
+    0 == table(i) for i in Fin[n])`, misread at `table(1)`, read `tested` and
+    Lean proved its term. A `sum` walks every point too, has no value where a
+    point has none, and is then compared point by point.
+  - The term is evaluated at the same values in Python's arithmetic, its
+    sums added with Python's `sum` over the same values, which compensates as
+    it adds since 3.12, so that both readings round alike.
+  - Agreement: the same truth value or the same value, exactly. A truth value
+    against a number disagrees, and so does an exception on one side only,
+    whatever it is: `i.name` raising at a number where the term has a value,
+    and a division by zero where Python has no answer and the term has one,
+    as `(f(i) * 0 == 1 // i + 1) | (i is not 0)` at `i = 0`, whose term reads
+    `or True`. Where both have no answer for one reason (a family outside its
+    domain, a division by zero, an elementary function outside its domain, an
+    overflow), they agree. Nothing is put down to rounding: a helper
+    answering `x * (1 + 1e-12)` at a number and `x` at a term is refuted, where
+    a tolerance would have let the CAS decide `1.0*x == x`.
+  - The fact, of kind `faithful` (`lanky.ledger.FAITHFUL`), id
+    `faithful:module.name@line`, owner and location the claim's, statement
+    `the term computes what the annotations compute`, is `refuted` by
+    `python` at the first draw that disagrees, with the draw as
+    `counterexample`, the annotation as written as `witness`, and both
+    answers in the `reason` (and as `python_answer`, `term_answer`);
+    `tested` by `python` when every annotation was compared at some draw and
+    none disagreed, with the counts; and `assumed`, with the reason as
+    `declined`, when one cannot be compared: a free name, a sort no value can
+    be drawn of, an annotation Python evaluated when the function was
+    defined, one with no answer on both sides at any draw.
+- `Theorem.faithful_fact()`, made once per claim; `Theorem.fact(reading)`,
+  which records the reading's id as `faithful` and, when it is refuted, why,
+  as `unfaithful`; `Theorem.snapshot` and `Theorem.namespace`, the
+  snapshot's copy of the module's globals; `Fact.is_reading`.
+- `lanky.terms.code_reads(code)` and `CodeReads`: the names a code object
+  and the code compiled inside it read from their globals, which of them
+  only to read an attribute off (`helpers.TABLE`), what they close over and
+  import, read off the instructions.
+- `lanky.terms.concrete_sorts`, `sort_points` and `rerunning`: what a sort
+  iterates while an annotation is run again at concrete values.
+- **The pytest plugin fails a theorem whose reading is refuted**, with the
+  annotation, the draw and the reason, before any draw of its term, which
+  would test another statement.
+
 ### Changed
 
+- **Each theorem and axiom is two facts.** `TheoremTheory.facts` yields the
+  claim and then its reading, so every ledger has a row under each claim,
+  `tested python ... the term computes what the annotations compute`, and its
+  count of facts doubles for theorems; `--json` has the reading as an entry
+  of kind `faithful`. A plugin's facts are not read, so loopty's kernels and
+  programs have no such row (they have `trace-faithful`), and a theorem a
+  loopty file holds has one.
+- **Every pass, decision and proof of a claim rests on its reading**
+  (`rests_on` gains the reading's id), so the ledger's weakest link shows
+  it: a proof is worth `tested` in the `EFFECTIVE` column, which every
+  ledger with a proof now has, and `proved under faithful:name` where the
+  reading could not be run. An axiom does not rest on its reading, since it
+  is `assumed` on its citation whatever that is worth, unless the reading is
+  refuted.
+- **A claim whose reading is refuted is offered to no oracle**, the property
+  tester included, and stays `assumed`, resting on the refuted reading, so it
+  is worth `refuted` and `lanky check` exits 1. `lanky.check.establish`
+  returns a reading's fact as it is: it was established when it was made.
+- The table names a reading `faithful:owner` where it names a fact, and
+  counts readings apart from claims, so `proved under harmonic` still names
+  the axiom `harmonic` and not its reading.
+- A reading left `assumed` gets a `DECLINED` line only where something rests
+  on it, a pass or a proof of its claim. Otherwise its claim is an axiom, or
+  is `assumed` itself, and its own line says why; the pytential
+  demonstration's eight axioms about boundaries, which no draw can make,
+  print none.
+- A later claim of an id that is refused as a duplicate (#52) takes its
+  reading with it.
+- **An annotation that reads `all`, `any`, `sum` or `abs` in a module that
+  binds the name to anything but Python's builtin or lanky's own is refused
+  while it is read** (#100), naming the binding and the fix: leave the
+  builtin unbound in a module of claims, or call the module's function under
+  another name (`np.abs`). lanky reads these four names in an annotation as
+  its own, put in the scope after the module's globals, so a module's own
+  `def all(gen): return False`, or numpy's `abs` from `from numpy import
+  abs`, was passed over and the claim proved under lanky's reading.
+  `from lanky import sum` is lanky's own and still reads, and a name the
+  annotation does not read, one a helper calls, is no matter: the helper
+  calls the module's binding in both readings.
+- The README's Known limits section says what the check leaves: points no
+  draw reaches, claims whose annotations cannot be run at a point, a part of
+  an annotation after a point where both readings have no answer, and what
+  the snapshot does not copy. The
+  quickstart has a Check the reading section, and every ledger in both is run
+  again.
 - The publish workflow builds in a job that can only read the repository, with
   a checkout that keeps no credentials, and uploads from a second job that
   alone may ask for the token PyPI trusts and runs no checkout or build. Before,

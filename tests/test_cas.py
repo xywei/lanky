@@ -17,6 +17,7 @@ from fractions import Fraction
 
 import pytest
 
+from conftest import claims
 from lanky import cli
 from lanky.cas import Untranslatable, equations, from_sympy, symbol_for, to_sympy
 from lanky.check import check_path
@@ -119,7 +120,7 @@ def test_a_check_without_the_oracle_reads_as_it_did(tmp_path, monkeypatch) -> No
     """With the oracle off, an identity sympy decides is the property tester's, as before."""
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     path = write(tmp_path, "@theorem\ndef double(x: Real) -> x + x == 2 * x:\n    pass\n")
-    (fact,) = check_path(path)
+    (fact,) = claims(check_path(path))
     assert (fact.status, fact.decided_by) == (Status.TESTED, "property-test")
     assert "declined" not in fact.provenance
 
@@ -501,7 +502,7 @@ def test_a_check_decides_an_identity_and_says_it_is_a_heuristic(
         "def order(x: Real) -> x <= x + 1:\n"
         "    pass\n",
     )
-    product, order = check_path(path)
+    product, order = claims(check_path(path))
     assert (product.status, product.decided_by) == (Status.DECIDED, "cas")
     assert product.provenance["trust_class"] == "heuristic"
     assert (order.status, order.decided_by) == (Status.TESTED, "property-test")
@@ -510,7 +511,8 @@ def test_a_check_decides_an_identity_and_says_it_is_a_heuristic(
     printed = capsys.readouterr().out
     assert f"cas (heuristic): available (sympy {cas.__version__})" in printed
     rows = [line for line in printed.splitlines() if "product" in line and "|-" in line]
-    assert rows[-1].startswith("decided (heuristic)  cas ")
+    # the decision rests on the claim's reading, which the draws tested (#91)
+    assert rows[-1].startswith("decided (heuristic)  tested     cas ")
 
 
 def test_a_check_leaves_a_square_root_of_what_may_be_negative_to_the_tester(
@@ -530,7 +532,7 @@ def test_a_check_leaves_a_square_root_of_what_may_be_negative_to_the_tester(
         "def natural(n: Nat) -> sqrt(n) ** 2 == n:\n"
         "    pass\n",
     )
-    real, nowhere, natural = check_path(path)
+    real, nowhere, natural = claims(check_path(path))
     assert (real.status, real.decided_by) == (Status.TESTED, "property-test")
     assert (nowhere.status, nowhere.decided_by) == (Status.ASSUMED, None)
     for fact in (real, nowhere):
@@ -550,7 +552,7 @@ def test_a_counterexample_overrules_a_wrong_simplification(cas, tmp_path, monkey
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     monkeypatch.setattr(cas, "simplify", lambda expression: 0)
     path = write(tmp_path, "@theorem\ndef wrong(x: Real) -> x + 1 == x:\n    pass\n")
-    (fact,) = check_path(path)
+    (fact,) = claims(check_path(path))
     assert (fact.status, fact.decided_by) == (Status.REFUTED, "property-test")
     assert fact.provenance["overruled"] == "cas, a heuristic, decided it"
 
@@ -559,7 +561,7 @@ def test_a_decline_is_kept_when_the_tester_settles_the_fact(cas, tmp_path, monke
     """``x + 1 == x``: sympy leaves ``1``, and the tester refutes it, with the decline kept."""
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     path = write(tmp_path, "@theorem\ndef off_by_one(x: Real) -> x + 1 == x:\n    pass\n")
-    (fact,) = check_path(path)
+    (fact,) = claims(check_path(path))
     assert (fact.status, fact.decided_by) == (Status.REFUTED, "property-test")
     assert fact.provenance["declined"] == (
         "cas: sympy simplifies the difference of the sides of x + 1 == x to 1, not 0"

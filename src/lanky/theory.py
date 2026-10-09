@@ -157,6 +157,17 @@ class Theorem:
             (see :func:`fact_ids`). They go into its fact's ``rests_on``. No
             oracle is handed the statements they name: what ``uses=`` records
             is what the theorem is worth, not a hypothesis for its proof.
+        snapshot: What the annotations reach, copied just before they were
+            read (:func:`lanky.faithful.capture`): the names they read, the
+            functions of the user's modules they call, bound to the copy,
+            and what those read and close over, tables, lists and arrays
+            included. The faithfulness check runs the annotations again in a
+            copy of it at each draw (:meth:`faithful_fact`), so a module that
+            rebinds a name later, or changes a table in place, does not
+            change what the annotation said; what could not be copied is
+            listed, and leaves the reading untested.
+        namespace: The function's globals as they were when the annotations
+            were read, the snapshot's (:attr:`lanky.faithful.Snapshot.namespace`).
 
     Raises:
         TypeError: If the function has no return annotation (or ``-> None``).
@@ -167,7 +178,11 @@ class Theorem:
             parameter or the goal is annotated with a builtin of Python's,
             ``x: int``, or names one anywhere in its annotation without
             calling it, ``f: Fn[Fin[n], float]`` (see
-            :func:`_refuse_a_builtin_annotation`).
+            :func:`_refuse_a_builtin_annotation`). And if an annotation reads
+            ``all``, ``any``, ``sum`` or ``abs`` and the module binds that
+            name to something other than Python's builtin or lanky's own,
+            which lanky would read in its place (see
+            :func:`lanky.terms.evaluate_annotations`, #100).
     """
 
     #: What the statement is called in messages, in its fact's kind and id.
@@ -177,6 +192,12 @@ class Theorem:
         self.fn = fn
         functools.update_wrapper(self, fn)
         self.uses = fact_ids(uses)
+        from lanky.faithful import capture
+
+        # taken before the annotations are read, which may run a helper that
+        # changes what it reads
+        self.snapshot = capture(fn)
+        self.namespace = self.snapshot.namespace
         annotations = evaluate_annotations(fn)
         self.goal = annotations.pop("return", None)
         if self.goal is None:
@@ -209,6 +230,7 @@ class Theorem:
         self.where = f"{os.path.basename(code.co_filename)}:{code.co_firstlineno}"
         self.qualname = getattr(fn, "__qualname__", fn.__name__)
         self.module = _module_of(fn)
+        self._faithful: Fact | None = None
 
     # {{{ the statement
 
@@ -353,8 +375,23 @@ class Theorem:
         """
         return fact_id(self.noun, self.qualname, module=self.module, line=self.line)
 
-    def fact(self) -> Fact:
-        """This theorem as a ledger entry, before any oracle has seen it."""
+    def fact(self, reading: Fact | None = None) -> Fact:
+        """This theorem as a ledger entry, before any oracle has seen it.
+
+        ``reading`` is the claim's ``faithful`` fact (:meth:`faithful_fact`),
+        which ``lanky check`` passes: its id is recorded as ``faithful``, so
+        that :func:`lanky.check.establish` rests a pass, a decision or a proof
+        of the claim on it, and when it is refuted, why, as ``unfaithful``, so
+        that no oracle is asked about a term that says something else than
+        the claim. Without it the fact is the claim alone, as it always was.
+        """
+        provenance: dict[str, Any] = {"path": self.path, "line": self.line}
+        if reading is not None:
+            provenance["faithful"] = reading.id
+            if reading.status is Status.REFUTED:
+                provenance["unfaithful"] = reading.provenance.get("reason") or (
+                    "its faithful fact is refuted"
+                )
         return Fact(
             id=self.fact_id,
             kind=self.noun,
@@ -362,11 +399,25 @@ class Theorem:
             term=self.term,
             status=Status.ASSUMED,
             decided_by=None,
-            provenance={"path": self.path, "line": self.line},
+            provenance=provenance,
             where=self.where,
             owner=self.qualname,
             rests_on=self.uses,
         )
+
+    def faithful_fact(self) -> Fact:
+        """The claim's ``faithful`` fact: whether the term computes what the annotations do.
+
+        Each annotation is run again as Python at drawn concrete values, and
+        the term evaluated there, and the two have to agree (see
+        :mod:`lanky.faithful`, #91). The comparison is made once per theorem
+        and kept.
+        """
+        if self._faithful is None:
+            from lanky.faithful import faithful_fact
+
+            self._faithful = faithful_fact(self)
+        return self._faithful
 
     def lean(self, mathlib: bool = False) -> str:
         """The statement in Lean 4 syntax, when the printer supports it.
@@ -522,9 +573,9 @@ class Axiom(Theorem):
         self.cite = _citation(name, cite)
         super().__init__(fn, uses=uses)
 
-    def fact(self) -> Fact:
+    def fact(self, reading: Fact | None = None) -> Fact:
         """This axiom as a ledger entry: ``assumed``, with its citation."""
-        fact = super().fact()
+        fact = super().fact(reading)
         return fact.with_status(Status.ASSUMED, cite=self.cite)
 
 
@@ -552,8 +603,18 @@ class TheoremTheory:
         return registry.register_object(Theorem(obj))
 
     def facts(self, obj: Any, /) -> tuple:
-        """The one fact a theorem or an axiom claims, or nothing for an object it does not own."""
-        return (obj.fact(),) if isinstance(obj, Theorem) else ()
+        """The claim of a theorem or an axiom and its ``faithful`` fact; nothing for anything else.
+
+        The claim comes first, as written, and its reading after it: whether
+        the term computes what the annotations compute (#91, see
+        :mod:`lanky.faithful`). The claim's fact names the reading, so that
+        :func:`lanky.check.establish` rests a pass, a decision or a proof on
+        it, and offers a claim whose reading is refuted to no oracle.
+        """
+        if not isinstance(obj, Theorem):
+            return ()
+        reading = obj.faithful_fact()
+        return (obj.fact(reading), reading)
 
 
 #: The theory itself, also usable as the ``@theorem`` decorator.

@@ -19,7 +19,7 @@ from typing import NoReturn
 import pymbolic.primitives as prim
 import pytest
 
-from conftest import ProcessWatch
+from conftest import ProcessWatch, claims
 from lanky import theorem
 from lanky.check import import_path
 from lanky.lean import (
@@ -1895,10 +1895,24 @@ def _assert_abridged(readme: list[str], printed: list[str]) -> None:
         assert _abridges(shown, line, statement_at), (shown, line)
 
 
+#: The ``EFFECTIVE`` cells of the documented table, each with the two spaces
+#: after it: the header, the rule under it, and what every row is worth.
+_EFFECTIVE_CELLS = ("EFFECTIVE  ", "---------  ", "tested     ")
+
+
 def _read_as_tested(line: str) -> str:
-    """A line of the documented table as a machine without Lean prints it."""
+    """A line of the documented table as a machine without Lean prints it.
+
+    With Lean the proof of ``scan_monotone`` rests on its reading, which the
+    draws tested (#91), so it is worth ``tested`` and the table has an
+    ``EFFECTIVE`` column after the status. Without Lean nothing is worth less
+    than its own status, and the column is not there; it is the eleven
+    characters after the status column's eight, in every row of the table.
+    """
+    if line[8:19] in _EFFECTIVE_CELLS:
+        line = line[:8] + line[19:]
     return line.replace(f"proved  {'lean':13}", f"tested  {'property-test':13}").replace(
-        "2 facts: 1 proved, 1 tested", "2 facts: 2 tested"
+        "4 facts: 1 proved, 3 tested", "4 facts: 4 tested"
     )
 
 
@@ -1929,11 +1943,13 @@ def test_an_abridged_row_keeps_every_column_but_the_statement() -> None:
 def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) -> None:
     """On a machine without Lean the README's ``proved lean`` row reads ``tested``.
 
-    That is the README's other claim about the table: the status column changes
-    and nothing else does, the exit code included. The columns keep their
-    widths, because the property tester decided the other row already. Both
-    documents are held to it, so the README's rows are checked here too and not
-    only where Lean is installed.
+    That is the README's other claim about the table: the status column changes,
+    and the ``EFFECTIVE`` column, which says that the proof is worth the
+    ``tested`` reading it rests on, is not needed, and nothing else changes,
+    the exit code included. The other columns keep their widths, because the
+    property tester decided the other row already. Both documents are held to
+    it, so the README's rows are checked here too and not only where Lean is
+    installed.
     """
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     printed = _check_gauss(capsys)
@@ -2449,7 +2465,7 @@ def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_pat
 
     path = tmp_path / "p8_keywords.py"
     path.write_text(_KEYWORD_CLAIMS, encoding="utf-8")
-    by_owner = {fact.owner: fact for fact in check_path(path)}
+    by_owner = {fact.owner: fact for fact in claims(check_path(path))}
     for owner in ("commutes", "scoped", "binders", "named", "scan"):
         fact = by_owner[owner]
         assert (fact.status, fact.decided_by) == (Status.PROVED, "lean"), (
@@ -2501,7 +2517,7 @@ def test_lean_proves_no_claim_python_refutes(lean_oracle: LeanOracle, tmp_path) 
 
     path = tmp_path / "wrong_proofs.py"
     path.write_text(_WRONG_PROOF_CLAIMS, encoding="utf-8")
-    by_owner = {fact.owner: fact for fact in check_path(path)}
+    by_owner = {fact.owner: fact for fact in claims(check_path(path))}
     free = by_owner["free_goal"]
     assert free.status is Status.ASSUMED, free.provenance
     assert free.decided_by is None
@@ -2511,6 +2527,77 @@ def test_lean_proves_no_claim_python_refutes(lean_oracle: LeanOracle, tmp_path) 
             owner,
             fact.provenance,
         )
+
+
+
+#: #79, #80 and #88: claims whose term says something else than the annotation,
+#: each proved by Lean on ``main`` (see ``tests/test_faithful.py`` for them all).
+_MISREAD_CLAIMS = """\
+from __future__ import annotations
+
+import collections
+
+from lanky import theorem
+from lanky.prelude import Fin, Fn, Nat
+
+
+def table(i):
+    return {0: 1}.get(i, 0)
+
+
+@theorem
+def types_differ(n: Nat) -> (Fin[n] != Fin[3]) | (n == 4):
+    \"\"\"#79: False at n = 3.\"\"\"
+
+
+@theorem
+def through_helper(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):
+    \"\"\"#80: False at i = 0.\"\"\"
+
+
+@theorem
+def counted(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 == collections.Counter([i, 0])[0] - 1 for i in Fin[n]
+):
+    \"\"\"#80: False at i = 0.\"\"\"
+
+
+@theorem
+def identity(n: Nat, f: Fn[Fin[n], Nat]) -> all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n]):
+    \"\"\"#88: False at i = 0.\"\"\"
+
+
+@theorem
+def named(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == {"i": 0}.get(i.name, 1) for i in Fin[n]):
+    \"\"\"#88: a number has no name.\"\"\"
+"""
+
+
+def test_lean_proves_no_claim_whose_reading_is_refuted(lean_oracle: LeanOracle, tmp_path) -> None:
+    """#91: what #79, #80 and #88 made Lean prove is kept from it.
+
+    Asked about the term alone, Lean proves each, as it did on ``main``
+    through ``lanky check``: the term is true, and says something else than
+    the annotation. Through ``lanky check`` each claim's reading is refuted
+    at a point now, and the claim is offered to no oracle, Lean included.
+    """
+    from lanky.check import check_path
+    from lanky.plugins import registry
+
+    path = tmp_path / "misread.py"
+    path.write_text(_MISREAD_CLAIMS, encoding="utf-8")
+    with registry.collecting():
+        module = import_path(path)
+    for name in ("types_differ", "through_helper", "counted", "identity", "named"):
+        proved = lean_oracle.establish(getattr(module, name).fact())
+        assert (proved.status, proved.decided_by) == (Status.PROVED, "lean"), name
+    ledger = check_path(path)
+    for fact in ledger:
+        if fact.is_reading:
+            assert fact.status is Status.REFUTED, (fact.owner, fact.provenance)
+        else:
+            assert (fact.status, fact.decided_by) == (Status.ASSUMED, None), fact.owner
+            assert "lean_tried" not in fact.provenance and "tactic" not in fact.provenance
 
 
 def _disjunctive_guard():
@@ -2654,7 +2741,7 @@ def test_lean_proves_claims_named_like_what_lean_declares(
 
     path = tmp_path / "root_names.py"
     path.write_text(_ROOT_NAME_CLAIMS, encoding="utf-8")
-    by_owner = {fact.owner: fact for fact in check_path(path)}
+    by_owner = {fact.owner: fact for fact in claims(check_path(path))}
     assert len(by_owner) == 10
     for owner, fact in by_owner.items():
         assert (fact.status, fact.decided_by) == (Status.PROVED, "lean"), (
@@ -2750,7 +2837,7 @@ def test_checking_the_example_file_proves_the_scan(lean_oracle: LeanOracle) -> N
 
     example = Path(__file__).resolve().parent.parent / "examples" / "gauss.py"
     ledger = check_path(example)
-    by_owner = {fact.owner: fact for fact in ledger}
+    by_owner = {fact.owner: fact for fact in claims(ledger)}
     assert by_owner["scan_monotone"].status is Status.PROVED
     assert by_owner["scan_monotone"].decided_by == "lean"
     # Gauss's sum is outside core Lean, so the property tester keeps it.
@@ -2769,7 +2856,10 @@ def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, 
     assert _printed_after("docs/quickstart.md", CHECK_GAUSS) == printed
     readme = _printed_after("README.md", "lanky check examples/gauss.py")
     _assert_abridged(readme, printed)
-    assert any(line.startswith("proved  lean ") and "scan_monotone" in line for line in readme)
+    # the proof, worth the reading it rests on, which the draws tested (#91)
+    assert any(
+        line.startswith("proved  tested     lean ") and "scan_monotone" in line for line in readme
+    )
 
 
 def test_the_quickstart_gap_transcripts_are_what_check_prints(
@@ -2784,7 +2874,7 @@ def test_the_quickstart_gap_transcripts_are_what_check_prints(
     """
     truncated, div_zero = _gap_rows(tmp_path, capsys)
     assert truncated == _printed_after("docs/quickstart.md", CHECK_GAP)
-    assert div_zero[2].split()[:4] == ["proved", "lean", "gap.py:7", "div_zero"]
+    assert div_zero[2].split()[:5] == ["proved", "tested", "lean", "gap.py:7", "div_zero"]
     semantics = _block_from("docs/quickstart.md", "SEMANTICS div_zero")
     assert semantics[0] in div_zero
     at = div_zero.index(semantics[0])
@@ -2964,7 +3054,7 @@ def test_a_variable_only_in_an_exponent_does_not_make_the_claim_natural(
         '    """False at m = 1."""\n',
         encoding="utf-8",
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.REFUTED
     assert fact.decided_by == "property-test"
     assert cli.main(["check", str(path)]) == 1
@@ -3097,14 +3187,15 @@ def test_lean_shows_a_vacuous_claim_vacuous(lean_oracle: LeanOracle, tmp_path, c
 
     path = tmp_path / "vacuous.py"
     path.write_text(_VACUOUS, encoding="utf-8")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert fact.decided_by == "lean"
     assert fact.is_vacuous
     assert fact.provenance["vacuous_by"] == "lean"
     assert ": False := by" in fact.provenance["vacuous_evidence"]["lean_source"]
     assert cli.main(["check", str(path)]) == 1
-    assert "proved (vacuous)  lean" in capsys.readouterr().out
+    # worth the reading it rests on, which the draws tested (#91)
+    assert "proved (vacuous)  tested     lean" in capsys.readouterr().out
 
 
 _CLOSED = (
@@ -3140,7 +3231,7 @@ def test_lean_reads_a_parameterless_theorems_goal_as_its_goal(
 
     path = tmp_path / "closed.py"
     path.write_text(_CLOSED, encoding="utf-8")
-    facts = {fact.owner: fact for fact in check_path(path)}
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
     for fact in facts.values():
         assert fact.status is Status.PROVED
         assert fact.decided_by == "lean"
@@ -3177,7 +3268,7 @@ def test_lean_shows_a_vacuous_axiom_vacuous_without_being_shown_the_axiom(
         ),
         encoding="utf-8",
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.kind == "axiom"
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
@@ -3199,7 +3290,7 @@ def test_lean_leaves_hypotheses_the_sampler_misses_to_a_warning(
         _VACUOUS.replace("(n > 2) & (n < 1)) -> n == n + 1", "n == 1000) -> n > 999"),
         encoding="utf-8",
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert not fact.is_vacuous
     assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 4000 draws"
@@ -3219,7 +3310,7 @@ def test_lean_refutes_hypotheses_under_a_goal_it_cannot_state(
         _VACUOUS.replace("-> n == n + 1", "-> 2 * sum(i for i in Fin[n + 1]) == 7"),
         encoding="utf-8",
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.ASSUMED
     assert fact.is_vacuous
     assert cli.main(["check", str(path)]) == 1
@@ -3255,7 +3346,7 @@ def test_lean_shows_a_goal_guard_empty_and_the_claim_vacuous(
 
     path = tmp_path / "flipped.py"
     path.write_text(_FLIPPED, encoding="utf-8")
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert fact.decided_by == "lean"
     assert fact.is_vacuous
@@ -3265,7 +3356,7 @@ def test_lean_shows_a_goal_guard_empty_and_the_claim_vacuous(
     assert "p < q → p > q → False := by" in source
     assert cli.main(["check", str(path)]) == 1
     printed = capsys.readouterr().out
-    assert "proved (vacuous)  lean" in printed
+    assert "proved (vacuous)  tested     lean" in printed
     assert "VACUOUS flipped at flipped.py:7" in printed
 
 
@@ -3284,7 +3375,7 @@ def test_lean_leaves_a_goal_guard_the_sampler_misses_to_a_warning(
         ),
         encoding="utf-8",
     )
-    (fact,) = list(check_path(path))
+    (fact,) = claims(check_path(path))
     assert fact.status is Status.PROVED
     assert not fact.is_vacuous
     assert fact.provenance["goal_unreached"] == (
@@ -3322,7 +3413,7 @@ def test_lean_asks_whether_a_goal_guard_is_empty_under_the_hypotheses(
 
     scoped = tmp_path / "scoped.py"
     scoped.write_text(_SCOPED, encoding="utf-8")
-    (fact,) = list(check_path(scoped))
+    (fact,) = claims(check_path(scoped))
     assert fact.status is Status.PROVED
     assert fact.is_vacuous
     assert fact.provenance["vacuous"] == (
@@ -3333,7 +3424,7 @@ def test_lean_asks_whether_a_goal_guard_is_empty_under_the_hypotheses(
 
     unscoped = tmp_path / "unscoped.py"
     unscoped.write_text(_SCOPED.replace(", h: n < 3", ""), encoding="utf-8")
-    (fact,) = list(check_path(unscoped))
+    (fact,) = claims(check_path(unscoped))
     assert fact.status is Status.PROVED
     assert not fact.is_vacuous
     assert fact.provenance["goal_unreached"] == (
@@ -3351,7 +3442,7 @@ def test_lean_shows_the_quickstart_flipped_goal_guard_vacuous(
     """What the quickstart says Lean does with the flipped guard: vacuous, and exit 1."""
     printed = _check_flipped_gauss(tmp_path / "flipped", capsys, 1)
     row = next(line for line in printed if "scan_monotone" in line and "gauss.py:39" in line)
-    assert row.startswith("proved (vacuous)  lean")
+    assert row.startswith("proved (vacuous)  tested     lean")
     assert any(line.startswith("VACUOUS scan_monotone at gauss.py:39") for line in printed)
     assert not any(line.startswith("WARNING") for line in printed)
 

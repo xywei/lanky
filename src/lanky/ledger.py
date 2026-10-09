@@ -34,6 +34,13 @@ over everything it rests on, directly or through other facts, a heuristic's
 being the weaker of two alike, and the assumptions among those are what it is
 established *under*. The table prints ``proved under jump, compact``, and an
 ``EFFECTIVE`` column when some fact is weaker than its own status says.
+
+A claim lanky reads off a function's annotations is followed by a second
+fact, of kind ``faithful`` (:data:`FAITHFUL`): that the term the oracles are
+handed computes what the annotations compute (:mod:`lanky.faithful`, #91).
+It belongs to the claim, and every decision or proof of the claim rests on
+it. The table names it ``faithful:owner`` where it names a fact, so that the
+claim's owner still names the claim.
 """
 
 from __future__ import annotations
@@ -45,7 +52,11 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-__all__ = ["Fact", "Ledger", "Status", "Support", "fact_id"]
+__all__ = ["FAITHFUL", "Fact", "Ledger", "Status", "Support", "fact_id"]
+
+#: The kind of the fact that says a claim's term computes what its annotations
+#: compute (see :mod:`lanky.faithful`).
+FAITHFUL = "faithful"
 
 
 def fact_id(
@@ -209,6 +220,17 @@ class Fact:
         no oracle could establish it.
         """
         return self.kind == "axiom"
+
+    @property
+    def is_reading(self) -> bool:
+        """Whether this fact says that a claim's term computes what its annotations do.
+
+        That is the ``faithful`` fact :mod:`lanky.faithful` makes for every
+        theorem and axiom (#91). It is established when it is made, by
+        running the annotations again at drawn points, and no oracle is
+        asked about it.
+        """
+        return self.kind == FAITHFUL
 
     def with_status(
         self,
@@ -468,12 +490,15 @@ class Ledger:
         By its owner when that names one fact in the ledger, which is the
         readable case of a theorem or an axiom, and by its id otherwise: a
         plugin's kernel owns many facts, and an id the ledger does not hold
-        has no owner to show.
+        has no owner to show. A claim's ``faithful`` fact (:attr:`Fact.is_reading`)
+        is counted apart from the claim it belongs to, and named
+        ``faithful:owner``, so that ``proved under harmonic`` still names the
+        axiom ``harmonic`` and not its reading.
         """
         fact = self._facts.get(fact_id)
-        if fact is not None and fact.owner and owners[fact.owner] == 1:
-            return fact.owner
-        return fact_id
+        if fact is None or not fact.owner or owners[(fact.is_reading, fact.owner)] != 1:
+            return fact_id
+        return f"{FAITHFUL}:{fact.owner}" if fact.is_reading else fact.owner
 
     # }}}
 
@@ -545,7 +570,7 @@ class Ledger:
         if not facts:
             return "ledger is empty"
         locations = _locations(facts)
-        owners = Counter(fact.owner for fact in facts)
+        owners = Counter((fact.is_reading, fact.owner) for fact in facts)
         supports = [self.support(fact) for fact in facts]
         weaker = any(
             support.effective is not fact.status or support.heuristic is not fact.is_heuristic

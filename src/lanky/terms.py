@@ -47,6 +47,7 @@ import itertools
 import math
 import numbers
 import operator
+import os
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
@@ -64,6 +65,7 @@ __all__ = [
     "BUILTIN_OVERRIDES",
     "BuiltinName",
     "Call",
+    "CodeReads",
     "Comparison",
     "ELEMENTARY_FUNCTIONS",
     "EVALUATED_BUILTINS",
@@ -84,6 +86,8 @@ __all__ = [
     "Var",
     "binder_assignments",
     "binders",
+    "code_reads",
+    "concrete_sorts",
     "conjoin",
     "conjuncts",
     "disjoin",
@@ -99,7 +103,9 @@ __all__ = [
     "init_args",
     "log",
     "render",
+    "rerunning",
     "sort_free_names",
+    "sort_points",
     "sqrt",
     "structurally_equal",
     "sum_",
@@ -825,6 +831,111 @@ def _nested_code(code: Any) -> dict[int, Any]:
     return found
 
 
+#: The builtins whose call reads a module's globals by a name the code does not
+#: spell: code that calls one can read any name of its module.
+_DYNAMIC_READS = frozenset({"globals", "vars", "eval", "exec"})
+
+
+@dataclasses.dataclass(frozen=True)
+class CodeReads:
+    """What a code object, and the code compiled inside it, reads by name.
+
+    Attributes:
+        names: The names it reads, writes or deletes in its globals, in the
+            order the code first names them.
+        bare: Those of them it reads as a value, and not only to read an
+            attribute off it: ``helpers`` of ``f(helpers)``, not of
+            ``helpers.TABLE``.
+        chains: A global it reads and then the attributes it reads off it,
+            ``("helpers", "TABLE", "get")`` for ``helpers.TABLE.get(i)``.
+        free_chains: The same, rooted at a variable it closes over.
+        free_bare: The variables it closes over that it reads as a value.
+        dynamic: Whether it calls ``globals``, ``vars``, ``eval`` or
+            ``exec``, and so can read any name of its globals.
+        imports: The names it imports as it runs, a module or a name in
+            one: ``helpers`` of ``import helpers`` and of ``from . import
+            helpers``.
+    """
+
+    names: tuple[str, ...]
+    bare: frozenset[str]
+    chains: tuple[tuple[str, ...], ...]
+    free_chains: tuple[tuple[str, ...], ...]
+    free_bare: frozenset[str]
+    dynamic: bool
+    imports: tuple[str, ...] = ()
+
+
+#: The instructions that read a name in a code object's globals.
+_GLOBAL_LOADS = frozenset({"LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS"})
+
+#: The instructions that bind or unbind a name in a code object's globals.
+_GLOBAL_STORES = frozenset({"STORE_GLOBAL", "DELETE_GLOBAL", "STORE_NAME", "DELETE_NAME"})
+
+#: The instructions that read a variable a code object closes over.
+_FREE_LOADS = frozenset({"LOAD_DEREF", "LOAD_CLASSDEREF", "LOAD_FROM_DICT_OR_DEREF"})
+
+#: The instructions that read an attribute off what the instruction before left.
+_ATTRIBUTE_LOADS = frozenset({"LOAD_ATTR", "LOAD_METHOD"})
+
+#: Instructions that leave what the instruction before them left as it is.
+_PASSING = frozenset({"CACHE", "EXTENDED_ARG", "NOP", "NOT_TAKEN"})
+
+
+@functools.lru_cache(maxsize=4096)
+def code_reads(code: Any) -> CodeReads:
+    """What ``code`` and the code compiled inside it read by name (see :class:`CodeReads`).
+
+    It is read off the instructions, so a name the code only reads as an
+    attribute, ``sum`` of ``np.sum``, is no global it reads.
+    """
+    names: dict[str, None] = {}
+    imports: dict[str, None] = {}
+    # a chain is a name read, global or free, and the attributes read off it
+    # since, as (free, [name, attribute, ...])
+    read: dict[bool, tuple[set[str], dict[tuple[str, ...], None]]] = {
+        False: (set(), {}),
+        True: (set(), {}),
+    }
+    for nested in _nested_code(code).values():
+        chain: tuple[bool, list[str]] | None = None
+        for instruction in (*dis.get_instructions(nested), None):
+            opname = instruction.opname if instruction is not None else ""
+            if opname in _PASSING:
+                continue
+            if opname in _ATTRIBUTE_LOADS and chain is not None:
+                chain[1].append(instruction.argval)
+                continue
+            if chain is not None:
+                free, path = chain
+                single, longer = read[free]
+                if len(path) == 1:
+                    single.add(path[0])
+                else:
+                    longer[tuple(path)] = None
+            chain = None
+            if opname in _GLOBAL_LOADS:
+                names[instruction.argval] = None
+                chain = (False, [instruction.argval])
+            elif opname in _GLOBAL_STORES:
+                names[instruction.argval] = None
+            elif opname in _FREE_LOADS:
+                chain = (True, [instruction.argval])
+            elif opname in ("IMPORT_NAME", "IMPORT_FROM"):
+                imports[instruction.argval] = None
+    bare, chains = read[False]
+    free_bare, free_chains = read[True]
+    return CodeReads(
+        names=tuple(names),
+        bare=frozenset(bare),
+        chains=tuple(chains),
+        free_chains=tuple(free_chains),
+        free_bare=frozenset(free_bare),
+        dynamic=not _DYNAMIC_READS.isdisjoint(names),
+        imports=tuple(imports),
+    )
+
+
 @contextmanager
 def _reading(code: Any) -> Iterator[None]:
     """Mark ``code``, an annotation compiled, as the annotation being evaluated."""
@@ -1242,6 +1353,47 @@ def current_trace() -> _Trace | None:
     generic point or to enumerate concretely.
     """
     return _TRACE_STACK[-1] if _TRACE_STACK else None
+
+
+#: What an unbounded sort iterates while an annotation is rerun at concrete
+#: values (see :func:`concrete_sorts`), or ``None`` outside such a rerun.
+_SORT_POINTS: ContextVar[Callable[[Any], Sequence[Any]] | None] = ContextVar(
+    "lanky_sort_points", default=None
+)
+
+
+@contextmanager
+def concrete_sorts(points: Callable[[Any], Sequence[Any]]) -> Iterator[None]:
+    """Iterate every sort concretely while the block runs: an annotation rerun at a point.
+
+    An annotation is read once on terms, where ``for k in Nat`` binds one
+    generic point. The faithfulness check (:mod:`lanky.faithful`) runs the
+    same annotation again at concrete values of its parameters, and there a
+    sort is a domain to walk like any other: ``Nat``, which has no end,
+    iterates ``points(Nat)``, a finite sample of it, which the check then
+    evaluates the term over too, and a ``Fin`` whose bound is a number that
+    is not an ``int`` is walked as the evaluator walks it, to the bound's
+    integer part.
+    """
+    token = _SORT_POINTS.set(points)
+    try:
+        yield
+    finally:
+        _SORT_POINTS.reset(token)
+
+
+def sort_points(sort: Any) -> Sequence[Any] | None:
+    """The points ``sort`` iterates in a rerun at concrete values, or ``None`` outside one.
+
+    See :func:`concrete_sorts`.
+    """
+    points = _SORT_POINTS.get()
+    return None if points is None else points(sort)
+
+
+def rerunning() -> bool:
+    """Whether an annotation is being rerun at concrete values (see :func:`concrete_sorts`)."""
+    return _SORT_POINTS.get() is not None
 
 
 class _Driven:
@@ -1705,9 +1857,16 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
     While a string is evaluated, a term is unhashable to its code, so that a
     dict or a set lookup keyed by one is refused rather than answered as if
     the key were absent (see :func:`_refuse_hashing`).
+
+    Raises:
+        TypeError: If an annotation reads ``all``, ``any``, ``sum`` or ``abs``
+            and the function's module binds that name to something other
+            than Python's builtin or lanky's own (see
+            :func:`_refuse_a_shadowed_override`).
     """
     raw = inspect.get_annotations(fn, eval_str=False)
-    scope = Scope(getattr(fn, "__globals__", {}))
+    namespace = getattr(fn, "__globals__", {})
+    scope = Scope(namespace)
     scope.update(BUILTIN_OVERRIDES)
     for name in inspect.signature(fn).parameters:
         scope[name] = Var(name)
@@ -1722,9 +1881,76 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
         # eval strips the spaces and tabs a string starts with, and compile
         # does not
         code = compile(annotation.lstrip(" \t"), "<string>", "eval")
+        _refuse_a_shadowed_override(fn, name, code, namespace)
         with _reading(code):
             out[name] = eval(code, scope, None)
     return out
+
+
+#: What lanky reads each name of :data:`BUILTIN_OVERRIDES` as in an annotation.
+_OVERRIDE_MEANING = {
+    "all": "universal quantifier",
+    "any": "existential quantifier",
+    "sum": "sum",
+    "abs": "absolute value",
+}
+
+
+def _refuse_a_shadowed_override(fn: Any, parameter: str, code: Any, namespace: Any) -> None:
+    """Refuse an annotation that reads a name lanky overrides and its module binds otherwise (#100).
+
+    In an annotation ``all``, ``any``, ``sum`` and ``abs`` are lanky's
+    (:data:`BUILTIN_OVERRIDES`), put in the scope after the module's globals,
+    so a module's own ``def all(gen): return False``, or numpy's ``abs`` from
+    ``from numpy import abs``, was passed over: the claim was read with
+    lanky's ``all``, the tester passed it and Lean proved it, while Python,
+    running the annotation as the module has it, calls the module's. lanky's
+    ``all`` is Python's at concrete values, so the module's binding is
+    honored where it is Python's builtin, and where it is lanky's own
+    (``from lanky import sum``), which is what lanky reads anyway. A name the
+    annotation does not read, ``sum`` of ``np.sum`` included, is no matter:
+    a helper the annotation calls reads its module's binding in the reading
+    as when it is run again, and the faithful fact compares the two
+    (:mod:`lanky.faithful`).
+
+    Raises:
+        TypeError: If ``code``, the annotation of ``parameter`` compiled,
+            reads such a name and ``namespace`` binds it to anything else.
+    """
+    reads = code_reads(code).names
+    for name, ours in BUILTIN_OVERRIDES.items():
+        if name not in reads or name not in namespace:
+            continue
+        bound = namespace[name]
+        if bound is ours or bound is getattr(builtins, name):
+            continue
+        what = "the goal" if parameter == "return" else f"the annotation of {parameter}"
+        where = getattr(fn, "__code__", None)
+        at = (
+            f"{getattr(fn, '__qualname__', fn.__name__)} at "
+            f"{os.path.basename(where.co_filename)}:{where.co_firstlineno}: "
+            if where is not None
+            else ""
+        )
+        raise TypeError(
+            f"{at}{what} calls {name}, which this module binds to {_binding(bound)}, "
+            f"and in an annotation lanky reads {name} as its own "
+            f"{_OVERRIDE_MEANING[name]}, Python's {name} at concrete values, whatever "
+            "the module binds the name to, so the claim lanky reads would not be the "
+            f"one Python runs. Leave the builtin {name} unbound in a module of claims, "
+            f"or call the module's function under another name, as `import numpy as "
+            f"np` and `np.{name}(...)`"
+        )
+
+
+def _binding(value: Any) -> str:
+    """What a name is bound to, as a message names it: a function by its qualified name."""
+    name = getattr(value, "__qualname__", None) or getattr(value, "__name__", None)
+    module = getattr(value, "__module__", None)
+    if isinstance(name, str) and callable(value):
+        return f"{module}.{name}" if isinstance(module, str) else name
+    shown = repr(value)
+    return shown if len(shown) <= 60 else f"a {type(value).__name__}"
 
 
 # }}}

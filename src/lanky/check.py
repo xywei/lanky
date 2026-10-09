@@ -32,6 +32,7 @@ import importlib.util
 import inspect
 import keyword
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -308,7 +309,29 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     status from one would make it a theorem that says it is an axiom. Its
     semantics gaps are noted all the same, since the sampling that looks for
     a counterexample to it is the reading a gap leaves without an answer.
+
+    A claim read off annotations names the fact that says its term computes
+    what the annotations compute (#91, :mod:`lanky.faithful`): its id is the
+    provenance key ``faithful``. Whatever an oracle establishes about the
+    claim is about its term, and is about the claim only as far as the term
+    reads the annotations, so the claim rests on that fact
+    (:func:`_rest_on_the_reading`) and the ledger counts the reading as the
+    weakest link it may be: a proof under a reading the draws tested is
+    worth ``tested``. When the reading is refuted, the claim carries why, as
+    ``unfaithful``, and is offered to no oracle at all, the property tester
+    included: its term says something else than what was written, so a
+    proof of the term would be a proof of another statement, and a pass a
+    pass of one. It stays ``assumed``, resting on the refuted reading, and
+    the refutation fails the check. The reading's fact itself
+    (:attr:`~lanky.ledger.Fact.is_reading`) was established when it was
+    made, by running the annotations, and is returned as it is.
     """
+    if fact.is_reading:
+        return fact
+    if fact.provenance.get("unfaithful"):
+        if verbose:
+            print("  not offered to the oracles: its term is not what the annotations compute")
+        return _rest_on_the_reading(fact)
     gaps = semantics.notes(fact.term)
     if gaps:
         fact = fact.with_status(fact.status, semantics=list(gaps))
@@ -336,7 +359,32 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             fact = _cross_check(result, gaps, handed=fact, verbose=verbose)
             break
         fact = _keep_declines(fact, result)
-    return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
+    fact = _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
+    return _rest_on_the_reading(fact)
+
+
+def _rest_on_the_reading(fact: Fact) -> Fact:
+    """``fact``, resting on its claim's ``faithful`` fact, where it is worth anything.
+
+    A claim read off annotations names its reading's fact as ``faithful`` in
+    its provenance (see :meth:`lanky.theory.Theorem.fact`). A pass, a
+    decision and a proof are of the term, and of the claim only as far as
+    the term computes what the annotations compute, which the reading's fact
+    establishes by draws at best. So a fact ``tested`` or stronger rests on
+    it, and the ledger shows the weakest link (see
+    :meth:`lanky.ledger.Ledger.support`): ``proved``, worth ``tested``, or
+    ``proved under faithful:claim`` where the reading could not be checked.
+    So does a claim whose reading is refuted, which no oracle was asked
+    about. A fact left ``assumed`` or ``refuted`` by an oracle is worth no
+    less for it, so it does not name it.
+    """
+    reading = fact.provenance.get("faithful")
+    if not isinstance(reading, str) or reading in fact.rests_on:
+        return fact
+    established = STATUS_STRENGTH.get(fact.status, 0) > STATUS_STRENGTH[Status.ASSUMED]
+    if not established and not fact.provenance.get("unfaithful"):
+        return fact
+    return replace(fact, rests_on=(*fact.rests_on, reading))
 
 
 def _declines(value: Any) -> list[Any]:
@@ -1052,6 +1100,9 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
                 if owned is None and not _recorded_in(fact, path):
                     continue
                 if fact.id in ledger:
+                    if fact.is_reading:
+                        # the claim it reads is the one recorded as refused
+                        continue
                     if verbose:
                         print(
                             f"{fact.where} {fact.owner}: {fact.statement} (not checked: "

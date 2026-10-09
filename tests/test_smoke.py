@@ -70,7 +70,13 @@ def test_checking_the_worked_example() -> None:
 
     example = Path(__file__).resolve().parent.parent / "examples" / "gauss.py"
     ledger = lanky.check_path(example)
-    assert [fact.owner for fact in ledger] == ["gauss", "scan_monotone"]
+    # each claim, and after it the fact that its term reads its annotations
+    assert [(fact.owner, fact.kind) for fact in ledger] == [
+        ("gauss", "theorem"),
+        ("gauss", "faithful"),
+        ("scan_monotone", "theorem"),
+        ("scan_monotone", "faithful"),
+    ]
     # Every claim is established by someone. Which oracle depends on what is
     # installed: with Lean present, scan_monotone is PROVED rather than TESTED.
     established = {lanky.Status.TESTED, lanky.Status.DECIDED, lanky.Status.PROVED}

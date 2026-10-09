@@ -27,12 +27,16 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
+import pymbolic.primitives as prim
+
 from lanky.terms import (
     Polarity,
     conjoin,
     current_trace,
     evaluate,
     render,
+    rerunning,
+    sort_points,
     structurally_equal,
     truth_value,
 )
@@ -93,8 +97,13 @@ class Sort(LankyType):
 
         A sort has no extent, so this only makes sense symbolically: it is what
         lets a statement quantify over all naturals. A property test samples
-        such a binder rather than enumerating it.
+        such a binder rather than enumerating it. While an annotation is rerun
+        at concrete values (:func:`lanky.terms.concrete_sorts`), the sort
+        iterates the finite sample of it that the rerun was given.
         """
+        points = sort_points(self)
+        if points is not None:
+            return iter(points)
         return _GenericPoint(self)
 
     def with_exactness(self, exactness: str) -> Sort:
@@ -167,9 +176,18 @@ class FinType(LankyType):
         return isinstance(self.bound, int)
 
     def __iter__(self) -> Any:
-        """Walk the points, or yield the one generic point of a symbolic domain."""
+        """Walk the points, or yield the one generic point of a symbolic domain.
+
+        While an annotation is rerun at concrete values
+        (:func:`lanky.terms.concrete_sorts`), a bound that is a number but not
+        an ``int``, a ``Fraction`` or a numpy integer, is walked as
+        :meth:`points` walks it, to its integer part, which is how the
+        evaluator reads the same domain.
+        """
         if self.is_concrete:
             return iter(range(self.bound))
+        if rerunning() and not isinstance(self.bound, prim.ExpressionNode):
+            return iter(range(int(self.bound)))
         return _GenericPoint(self)
 
     def __len__(self) -> int:
