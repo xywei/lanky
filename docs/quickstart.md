@@ -53,9 +53,12 @@ hypothesis (a parameter whose annotation is a proposition), and the return
 annotation is the goal. The annotations are Python expressions that lanky
 evaluates: `==` on a lanky term builds a proposition rather than answering a
 bool, `all(...)` over a generator becomes a universal quantifier, the generator's
-`if` clause becomes its guard, and `sum(...)` becomes a reduction. A file like
-this needs `from __future__ import annotations` so the annotations are not
-evaluated by Python first.
+`if` clause becomes its guard, and `sum(...)` becomes a reduction. In an
+annotation `all`, `any`, `sum` and `abs` are lanky's, so an annotation that
+calls one of them in a module that binds the name to a function of its own,
+as `from numpy import abs` does, is refused; call that one by another name,
+`np.abs`. A file like this needs `from __future__ import annotations` so the
+annotations are not evaluated by Python first.
 
 The bodies are docstrings. A theorem's body is never executed by lanky.
 
@@ -366,6 +369,15 @@ theorem with the same draw.
   sample of about five of its values and the integers the claim writes, the
   same on both sides. A family over a sort, `Fn[Nat, Real]`, which the tester
   cannot tabulate, is drawn at each point as either reading applies it.
+- **The module as it was.** The annotations run again in a copy of what
+  they reach, taken just before the claim was read: the names they read, the
+  functions of this module and of the modules beside it that they call, and
+  the tables, lists and arrays those read and close over. So a
+  `TABLE.clear()` after the claim does not change what `table(0)` gives the
+  rerun, and each draw starts from that copy, whatever a helper changed at
+  the draw before. What the copy cannot hold as it was, an object of a class
+  of yours, a class that holds methods or data, a structure past the budget,
+  leaves the reading `assumed`, naming it.
 - **Agreement.** The same truth value, or the same value, for every
   annotation: the goal, each hypothesis and each variable's sort. A truth
   value against a number disagrees, and so does an exception on one side
@@ -387,7 +399,8 @@ theorem with the same draw.
   A reading that cannot be run at a point is `assumed`, with the reason: a
   variable of a sort no value can be drawn of, an annotation Python evaluated
   when the function was defined, without `from __future__ import
-  annotations`, or one that had no answer on both sides at any draw. A proof
+  annotations`, one that had no answer on both sides at any draw, or one that
+  reaches what the copy could not hold as it was. A proof
   of such a claim reads `proved under faithful:name`, worth `assumed`, and a
   `DECLINED` line under the table gives the reason.
 - **It is sampled.** A disagreement only at a point no draw reaches escapes

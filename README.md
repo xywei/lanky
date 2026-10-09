@@ -145,10 +145,13 @@ to match.
   the annotations are run again as plain Python at drawn values, six draws of
   small values and domain ends, one at each integer written in the claim or
   in a helper it calls and next to it, and then 32 of the property tester's,
-  the term is evaluated at the same values, and the two have to agree. Both
-  readings read the connectives and the quantifiers three-valued, as lanky
-  does, so a point where both have no answer does not keep the points after
-  it from being compared. A disagreement
+  the term is evaluated at the same values, and the two have to agree. The
+  annotations run again in a copy of the module taken just before the claim
+  was read, its tables and arrays included, so a table the module changes
+  after the claim is read as it was, and each draw starts from that copy.
+  Both readings read the connectives and the quantifiers three-valued, as
+  lanky does, so a point where both have no answer does not keep the points
+  after it from being compared. A disagreement
   refutes the reading, with the draw, the annotation as written and both
   answers, and the claim is offered to no oracle and fails the check: a hash,
   a text, `is`, an attribute or a comparison of types that answered from the
@@ -437,7 +440,10 @@ value asked for inside a helper function or a library
 types ([#79](https://github.com/xywei/lanky/issues/79)). lanky refuses the
 cases it can see while it reads, a term's hash, text or truth value asked for
 in the annotation's own code, an `if` statement in a function the annotation
-calls, a builtin of Python's at a variable, and checks the rest by their
+calls, a builtin of Python's at a variable, an `all`, `any`, `sum` or `abs`
+that the module binds to a function of its own
+([#100](https://github.com/xywei/lanky/issues/100)), since in an annotation
+lanky reads these four as its own, and checks the rest by their
 results ([#91](https://github.com/xywei/lanky/issues/91)): each claim's
 `faithful` fact runs the annotations again as Python at drawn values and
 compares the term there, so `all((f(i) * 0 == 1) | (i is not 0) for i in
@@ -470,9 +476,26 @@ proved. The check is sampled, and that leaves these limits:
 - The rerun runs inside lanky, as the reading does, so a helper that answers
   otherwise when it finds lanky on its caller's stack answers alike in both.
   The check is against misreadings, not against code written to evade it.
+- The annotations run again in a copy of the module taken just before the
+  claim was read ([#102](https://github.com/xywei/lanky/issues/102)): the
+  names they read, the functions of the claim's module and of the modules
+  beside it under its source root that they call, and what those read and
+  close over, tables, lists and numpy arrays copied up to 65536 items and
+  1048576 array elements. Each draw runs in a copy of that copy
+  ([#103](https://github.com/xywei/lanky/issues/103)). What the copy cannot
+  hold as it was leaves the reading `assumed` where it would be `tested`,
+  naming it: an object of a type it does not know, such as an instance of a
+  class of the user's or a random generator, a class of the user's that
+  holds methods or data, a structure past the budget, a table read off a
+  class or an installed module by name, and a module of the user's that a
+  helper imports as it runs. An installed library, lanky included, is read as
+  it is when the check runs, and so is what code reaches through
+  `sys.modules` or `importlib`.
 - The check runs the annotations' Python, helpers included, at every draw,
-  about forty times a claim, so a helper with a side effect has it that often,
-  and one that never returns at some value stops the check there.
+  about forty times a claim. A helper's changes to the module's data are made
+  to the copy and are gone at the next draw, but a side effect outside the
+  module, a file written or a line printed, happens that often, and a helper
+  that never returns at some value stops the check there.
 - `lanky check` and the pytest plugin make the check. A theorem called or
   sampled directly, `gauss(n=4)` or `gauss.report()`, as `python
   examples/gauss.py` does, evaluates its term as before;
