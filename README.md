@@ -490,7 +490,8 @@ proved. The check is sampled, and that leaves these limits:
   class or an installed module by name, and a module of the user's that a
   helper imports as it runs. An installed library, lanky included, is read as
   it is when the check runs, and so is what code reaches through
-  `sys.modules` or `importlib`.
+  `sys.modules` or `importlib`
+  ([#104](https://github.com/xywei/lanky/issues/104)).
 - The check runs the annotations' Python, helpers included, at every draw,
   about forty times a claim. A helper's changes to the module's data are made
   to the copy and are gone at the next draw, but a side effect outside the
