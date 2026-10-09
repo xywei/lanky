@@ -487,8 +487,9 @@ proved. The check is sampled, and that leaves these limits:
   naming it: an object of a type it does not know, such as an instance of a
   class of the user's or a random generator, a class of the user's that
   holds methods or data, a structure past the budget, a table read off a
-  class or an installed module by name, and a module of the user's that a
-  helper imports as it runs. An installed library, lanky included, is read as
+  class or an installed module by name, a function behind
+  `functools.lru_cache` whose cache holds entries, and a module of the
+  user's that a helper imports as it runs. An installed library, lanky included, is read as
   it is when the check runs, and so is what code reaches through
   `sys.modules` or `importlib`
   ([#104](https://github.com/xywei/lanky/issues/104)).

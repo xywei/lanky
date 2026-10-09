@@ -967,11 +967,13 @@ class _Copier:
     * data: a dict, a list, a set, a tuple, a deque, a bytearray, a numpy
       array, item by item and nested, up to :data:`COPY_ITEMS` items and
       :data:`COPY_ELEMENTS` elements of arrays in all; one object reached
-      twice is copied once;
-    * a ``functools.partial``, a function behind ``functools.lru_cache``, a
-      method bound to a copied object (``TABLE.get``), and a library's
-      function that closes over a function of the user's (a decorator's
-      wrapper) are made again around the copies.
+      twice is copied once, and a view of an array is made again over the
+      copy of the array it views (:meth:`array`);
+    * a ``functools.partial``, a function behind ``functools.lru_cache``
+      whose cache is empty, a method bound to a copied object
+      (``TABLE.get``), and a library's function that closes over a function
+      of the user's (a decorator's wrapper) are made again around the
+      copies.
 
     Numbers, texts, terms, lanky's types, the modules, the classes and the
     functions of libraries need no copy (:func:`_unchanging`). A module of
@@ -990,6 +992,9 @@ class _Copier:
       instances and methods read it, and their module, as they are;
     * a value read off a class or a library's module by name that would
       need a copy, ``Rules.table``, since the check copies neither;
+    * a function behind ``functools.lru_cache`` whose cache holds entries,
+      which answer as the function might no longer, and a view the copy
+      cannot make again;
     * a module of the user's that a function imports as it runs
       (:meth:`imported`), which binds the module and not its copy.
     """
@@ -1268,15 +1273,7 @@ class _Copier:
                 return self.remember(value, kind._make(items))
             return self.share(value, path, f"a {kind.__qualname__} that holds what needs a copy")
         if isinstance(value, numpy.ndarray):
-            objects = value.dtype == object
-            if not self.spend(value, path, items=value.size if objects else 0, elements=value.size):
-                return value
-            if not objects:
-                return self.remember(value, value.copy())
-            out = self.remember(value, numpy.empty_like(value))
-            for index, item in numpy.ndenumerate(value):
-                out[index] = self.copy(item, inner)
-            return out
+            return self.array(value, path)
         if isinstance(value, functools.partial) and kind is functools.partial:
             out = functools.partial(
                 self.copy(value.func, f"{path}.func"),
@@ -1288,6 +1285,17 @@ class _Copier:
             wrapped = self.copy(value.__wrapped__, path)
             if wrapped is value.__wrapped__:
                 return value
+            # a cache is state: an entry it holds answers where the function
+            # would answer otherwise now, and an empty cache made again
+            # would not, so only an empty one is made again
+            held = value.cache_info().currsize
+            if held:
+                return self.share(
+                    value,
+                    path,
+                    f"a function behind functools.lru_cache whose cache holds {held} "
+                    "entries, which the check does not copy",
+                )
             return self.remember(value, functools.lru_cache(**value.cache_parameters())(wrapped))
         if isinstance(value, types.MethodType):
             owner = self.copy(value.__self__, path)
@@ -1308,6 +1316,49 @@ class _Copier:
             path,
             f"an object of type {kind.__qualname__}, whose state the check does not copy",
         )
+
+    def array(self, value: numpy.ndarray, path: str) -> Any:
+        """A numpy array as the copy has it: copied, a view made again over the copy it views.
+
+        Two views of one array, or a view and the array, share their memory,
+        so a helper that writes through one reads the write through the
+        other. Each is therefore made over one copy of the array that owns
+        the memory, at the same offset and with the same strides, rather
+        than copied apart. A view of an array of objects, or of one that is
+        not laid out in C order, is shared.
+        """
+        base = value
+        while isinstance(base.base, numpy.ndarray):
+            base = base.base
+        if base is value:
+            objects = value.dtype == object
+            if not self.spend(value, path, items=value.size if objects else 0, elements=value.size):
+                return value
+            if not objects:
+                return self.remember(value, value.copy())
+            out = self.remember(value, numpy.empty_like(value))
+            for index, item in numpy.ndenumerate(value):
+                out[index] = self.copy(item, f"{path}[...]")
+            return out
+        if (
+            value.dtype == object
+            or base.dtype == object
+            or type(value) is not numpy.ndarray
+            or not base.flags.c_contiguous
+        ):
+            return self.share(
+                value, path, "a view of another array, which the check cannot make again"
+            )
+        copied = self.copy(base, f"the array {path} views")
+        if copied is base:
+            return self.share(value, path, "a view of an array the check does not copy")
+        offset = value.__array_interface__["data"][0] - base.__array_interface__["data"][0]
+        view = numpy.ndarray(
+            value.shape, value.dtype, buffer=copied, offset=offset, strides=value.strides
+        )
+        if not value.flags.writeable:
+            view.flags.writeable = False
+        return self.remember(value, view)
 
     def function(self, value: types.FunctionType, path: str) -> Any:
         """A function as the copy has it.

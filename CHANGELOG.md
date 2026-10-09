@@ -31,9 +31,11 @@ worth the `tested` reading it rests on.
     lists, sets, tuples and numpy arrays copied item by item and nested, up
     to `COPY_ITEMS = 65536` items and `COPY_ELEMENTS = 2 ** 20` array
     elements. The functions are bound to the copy, two that closed over one
-    cell close over one copy of it, and a `functools.partial`, a function
-    behind `functools.lru_cache` and a method bound to a copied table
-    (`TABLE.get`) are made again around the copies. Every draw runs in a
+    cell close over one copy of it, a view of an array is made again over
+    the copy of the array it views, so that a write through one view is read
+    through another, and a `functools.partial`, a function behind an empty
+    `functools.lru_cache` and a method bound to a copied table (`TABLE.get`)
+    are made again around the copies. Every draw runs in a
     copy of that copy, so a helper reads what it read when the claim was
     read, whatever the module rebinds or changes in place after the claim
     (`TABLE.clear()`, `list.append`, `ARRAY[:] = 0`), and whatever a helper
@@ -42,8 +44,9 @@ worth the `tested` reading it rests on.
     it does not know (an instance of a class of the user's, a random
     generator), a structure past the budget, a class of the user's that holds
     a method or data, a value read off a class or an installed module by name
-    that would need a copy (`Rules.table`), and a module of the user's that a
-    function imports as it runs. A reading that reaches any of it and agrees
+    that would need a copy (`Rules.table`), a function behind
+    `functools.lru_cache` whose cache holds entries, and a module of the
+    user's that a function imports as it runs. A reading that reaches any of it and agrees
     at every draw is `assumed`, not `tested`, with each such object and why
     in the reason, so a proof of the claim reads `proved under
     faithful:name`. Libraries, lanky included, are read as they are.

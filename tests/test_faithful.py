@@ -1302,6 +1302,119 @@ def test_an_annotation_that_reads_a_builtin_its_module_binds_otherwise_is_refuse
         assert reading.status is Status.TESTED, (owner, reading.provenance)
 
 
+#: A cache that holds an entry from before the claim, an empty one, and two
+#: views of one array, each read through a helper (Codex on #95).
+CACHES_AND_VIEWS = """
+import functools
+
+import numpy
+
+STATE = [1]
+
+
+@functools.lru_cache(maxsize=None)
+def stale(k):
+    return STATE[0]
+
+
+stale(0)
+STATE[0] = 0
+
+
+@functools.lru_cache(maxsize=None)
+def fresh(k):
+    return k * 0
+
+
+def from_the_cache(i):
+    return stale(0) if isinstance(i, int) else 0
+
+
+def through_fresh(n):
+    return fresh(n)
+
+
+BASE = numpy.zeros(4, dtype=int)
+HEAD = BASE[:2]
+OTHER = numpy.zeros(4, dtype=int)
+FRONT = OTHER[:2]
+
+
+def poked(i):
+    HEAD[0] = 1
+    return i * 0 + int(BASE[0])
+
+
+def poked_at_a_number(i):
+    if isinstance(i, int):
+        FRONT[0] = 1
+        return int(OTHER[0])
+    return 0
+
+
+@theorem
+def cached_misread(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 == from_the_cache(i) for i in Fin[n]
+):
+    \"\"\"Misread at i = 0, where Python finds 1 in stale's cache.\"\"\"
+
+
+@theorem
+def cached_hit(n: Nat) -> n * 0 + stale(0) == 1:
+    \"\"\"True as Python reads it: stale(0) is the 1 its cache holds.\"\"\"
+
+
+@theorem
+def cached_empty(n: Nat) -> through_fresh(n) == 0:
+    \"\"\"True, and read faithfully: fresh's cache is empty when the claim is read.\"\"\"
+
+
+@theorem
+def through_a_view(n: Nat) -> poked(n) == 1:
+    \"\"\"True: poked writes through HEAD and reads the write through BASE.\"\"\"
+
+
+@theorem
+def misread_through_a_view(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 == poked_at_a_number(i) for i in Fin[n]
+):
+    \"\"\"Misread at i = 0, where Python reads 1 through OTHER.\"\"\"
+"""
+
+
+def test_a_cache_and_two_views_of_one_array_are_read_as_python_reads_them(
+    prover, tmp_path
+) -> None:
+    """A cache with entries is not made again empty, and a view is made over the copy it views.
+
+    A cache that holds an entry from before the claim answers from it, as
+    Python does, where a cache made again empty would answer as the
+    function does now: ``stale(0)`` is the ``1`` its cache holds, while
+    ``STATE`` holds ``0``. Made again, it hid the misreading of
+    ``cached_misread`` and refuted the faithful ``cached_hit``; now the
+    cache is shared, the misreading is refuted, and the faithful reading is
+    declined, naming the cache. Two views of one array were copied apart,
+    so a write through one was not read through the other: that hid the
+    misreading of ``misread_through_a_view`` and refuted the faithful
+    ``through_a_view``. Each view is now made over one copy of the array.
+    """
+    pairs = _pairs(check_path(_write(tmp_path, CACHES_AND_VIEWS)))
+    status = {owner: reading.status for owner, (_claim, reading) in pairs.items()}
+    assert status == {
+        "cached_misread": Status.REFUTED,
+        "cached_hit": Status.ASSUMED,
+        "cached_empty": Status.TESTED,
+        "through_a_view": Status.TESTED,
+        "misread_through_a_view": Status.REFUTED,
+    }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
+    assert (
+        "stale, a function behind functools.lru_cache whose cache holds 1 entries"
+        in pairs["cached_hit"][1].provenance["declined"]
+    )
+    assert "cached_misread" not in prover.shown
+    assert "misread_through_a_view" not in prover.shown
+
+
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
     """The tester cannot tabulate ``Fn[Nat, Nat]``; the check draws it point by point.
 
