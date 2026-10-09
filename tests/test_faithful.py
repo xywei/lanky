@@ -19,7 +19,7 @@ import json
 import pytest
 
 from conftest import claims, plugin_arguments
-from lanky import cli, terms
+from lanky import cli, faithful, terms
 from lanky.check import check_path, establish
 from lanky.faithful import CORNERS, DrawnFamily
 from lanky.ledger import Fact, Status
@@ -834,6 +834,472 @@ def test_a_helper_reads_the_module_as_it_was_when_the_claim_was_read(tmp_path) -
         reading = pairs[owner][1]
         assert reading.status is Status.REFUTED, (owner, reading.provenance)
         assert reading.provenance["counterexample"] == {"n": 1, "f": [1]}
+
+
+#: Claims a helper misreads at a term, each reading data the module changes in
+#: place after the claim, so that the data then agrees with the misread term
+#: at every point (#102): a dict cleared, a list appended to, a dict assigned
+#: to, a numpy array written over, a list inside a dict cleared, and a dict a
+#: factory's helper closes over cleared.
+CHANGED_IN_PLACE = """
+import numpy
+
+TABLE = {0: 1}
+ZEROS = []
+ZERO_AT = {}
+ARRAY = numpy.ones(64, dtype=int)
+TABLES = {"ones": [0]}
+
+
+def table(i):
+    return TABLE.get(i, 0)
+
+
+def zeroed(i):
+    return 0 if not isinstance(i, int) or i in ZEROS else 1
+
+
+def zero_at(i):
+    return ZERO_AT.get(i, 1) if isinstance(i, int) else 0
+
+
+def entry(i):
+    return int(ARRAY[i]) if isinstance(i, int) else 0
+
+
+def one_at(i):
+    return 1 if isinstance(i, int) and i in TABLES["ones"] else 0
+
+
+def make():
+    held = {0: 1}
+
+    def held_at(i):
+        return held.get(i, 0)
+
+    def clear():
+        held.clear()
+
+    return held_at, clear
+
+
+held_at, clear_held = make()
+
+
+@theorem
+def cleared(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):
+    \"\"\"#102: the table gives 1 at i = 0 when the claim is read.\"\"\"
+
+
+@theorem
+def appended(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == zeroed(i) for i in Fin[n]):
+    \"\"\"1 at every point when the claim is read.\"\"\"
+
+
+@theorem
+def assigned(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == zero_at(i) for i in Fin[n]):
+    \"\"\"1 at every point when the claim is read.\"\"\"
+
+
+@theorem
+def written_over(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == entry(i) for i in Fin[n]):
+    \"\"\"1 at every point when the claim is read.\"\"\"
+
+
+@theorem
+def nested(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == one_at(i) for i in Fin[n]):
+    \"\"\"1 at i = 0 when the claim is read.\"\"\"
+
+
+@theorem
+def closed_over(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == held_at(i) for i in Fin[n]):
+    \"\"\"1 at i = 0 when the claim is read.\"\"\"
+
+
+TABLE.clear()
+for k in range(64):
+    ZEROS.append(k)
+    ZERO_AT[k] = 0
+ARRAY[:] = 0
+TABLES["ones"].clear()
+clear_held()
+"""
+
+
+def test_data_changed_in_place_after_the_claim_hides_no_misreading(prover, tmp_path) -> None:
+    """The rerun reads the data a helper reads as it was when the claim was read (#102).
+
+    Each helper misses the term key, or finds a term no integer, while the
+    claim is read, so each term is ``f(i)*0 == 0``, which the stand-in
+    prover proves, as core Lean did. The module then changes the data in
+    place so that it gives ``0`` everywhere. The snapshot took a copy of the
+    data when the claim was read, so the rerun finds ``1`` at ``i = 0`` and
+    the reading is refuted; before, the snapshot was a shallow copy of the
+    globals and of the cells, which held the module's own dict, list and
+    array, changed in place, so the reading was ``tested`` and the term
+    proved.
+    """
+    path = _write(tmp_path, CHANGED_IN_PLACE)
+    pairs = _pairs(check_path(path))
+    assert list(pairs) == [
+        "cleared",
+        "appended",
+        "assigned",
+        "written_over",
+        "nested",
+        "closed_over",
+    ]
+    assert prover.shown == []
+    for owner, (claim, reading) in pairs.items():
+        assert reading.status is Status.REFUTED, (owner, reading.provenance)
+        assert reading.provenance["counterexample"]["n"] == 1, owner
+        assert reading.provenance["python_answer"] == "computes False", owner
+        assert claim.status is Status.ASSUMED, owner
+
+
+#: Claims whose helpers read what the snapshot cannot copy: an object of a
+#: class, a dict a class holds, a class whose instances read its table, and a
+#: dict past the budget, which the test lowers to 16 items.
+UNCOPIED = """
+
+class Config:
+    def __init__(self):
+        self.ones = {0}
+
+
+class Rules:
+    table = {0: 1}
+
+
+class Tables:
+    ones = {0}
+
+    def one(self, i):
+        return 1 if isinstance(i, int) and i in self.ones else 0
+
+
+CONFIG = Config()
+BIG = dict.fromkeys(range(20), 0)
+
+
+def one_at(i):
+    return 1 if isinstance(i, int) and i in CONFIG.ones else 0
+
+
+def ruled(i):
+    return Rules.table.get(i, 0)
+
+
+def big(i):
+    return BIG.get(i, 0)
+
+
+def through_an_instance(i):
+    return Tables().one(i)
+
+
+@theorem
+def configured(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == one_at(i) for i in Fin[n]):
+    \"\"\"Misread at i = 0, and CONFIG is emptied after the claim.\"\"\"
+
+
+@theorem
+def ruled_by(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == ruled(i) for i in Fin[n]):
+    \"\"\"Misread at i = 0, and the class's table is cleared after the claim.\"\"\"
+
+
+@theorem
+def instanced(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 == through_an_instance(i) for i in Fin[n]
+):
+    \"\"\"Misread at i = 0, and the class's table is emptied after the claim.\"\"\"
+
+
+@theorem
+def large(n: Nat) -> n * 0 == big(n):
+    \"\"\"True, and read faithfully, but past the copy's budget.\"\"\"
+
+
+CONFIG.ones.clear()
+Rules.table.clear()
+Tables.ones.clear()
+"""
+
+
+def test_what_the_snapshot_cannot_copy_leaves_the_reading_assumed(
+    prover, tmp_path, monkeypatch, capsys
+) -> None:
+    """A reading that reaches what was not copied is declined, naming it, and never tested.
+
+    The rerun reads such an object as it is when the check runs, which the
+    module may have changed since the claim was read: here it did, so the
+    rerun agrees with the misread term at every draw. The reading is then
+    ``assumed``, with the object and the reason as ``declined``, and a proof
+    of the claim is worth ``assumed`` (``proved under faithful:...``), where
+    it was worth ``tested`` before.
+    """
+    monkeypatch.setattr(faithful, "COPY_ITEMS", 16)
+    path = _write(tmp_path, UNCOPIED)
+    ledger = check_path(path)
+    pairs = _pairs(ledger)
+    named = {
+        "configured": "CONFIG, an object of type Config, whose state the check does not copy",
+        "ruled_by": "Rules.table, read off the class Rules, and the check copies no class",
+        "instanced": "Tables, a class of the user's that holds 2 attributes, which the check",
+        "large": "BIG, a dict of 20 items, past the 16 the check copies",
+    }
+    for owner, (claim, reading) in pairs.items():
+        assert reading.status is Status.ASSUMED, (owner, reading.provenance)
+        declined = reading.provenance["declined"]
+        assert declined.startswith("python: the annotations reach what the check could not copy")
+        assert named[owner] in declined, (owner, declined)
+        assert claim.status is Status.PROVED, owner
+        assert ledger.support(claim).under == (reading.id,), owner
+    assert sorted(prover.shown) == sorted(named)
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    for owner in named:
+        assert f"proved under faithful:{owner}" in printed
+        assert f"DECLINED {owner} at " in printed
+
+
+#: A module of the user's beside the claims, which they read through.
+BESIDE = """
+ONES = {0}
+
+
+def one_at(i):
+    return 1 if isinstance(i, int) and i in ONES else 0
+
+
+def zero(i):
+    return 0
+"""
+
+#: Data the module leaves as it is, and a module beside it that it changes.
+UNCHANGED = """
+import numpy
+
+import faithful_beside_102 as beside
+
+TABLE = {0: 0, 3: 0}
+ARRAY = numpy.zeros(8, dtype=int)
+NESTED = {"zeros": [0, 0, 0]}
+
+
+def zero(i):
+    return TABLE.get(i, 0) + int(ARRAY[0]) + NESTED["zeros"][0]
+
+
+def imported_one_at(i):
+    import faithful_beside_102
+
+    return faithful_beside_102.one_at(i)
+
+
+@theorem
+def zeros(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == zero(i) for i in Fin[n]):
+    \"\"\"True, and read faithfully: every table gives 0.\"\"\"
+
+
+@theorem
+def through_beside(n: Nat) -> n * 0 == beside.zero(n):
+    \"\"\"True, and read faithfully, through the module beside.\"\"\"
+
+
+@theorem
+def misread_beside(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 == beside.one_at(i) for i in Fin[n]
+):
+    \"\"\"Misread at i = 0 by the module beside, which is emptied after the claim.\"\"\"
+
+
+@theorem
+def misread_imported(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 == imported_one_at(i) for i in Fin[n]
+):
+    \"\"\"The same, through a helper that imports the module beside as it runs.\"\"\"
+
+
+beside.ONES.clear()
+"""
+
+
+def test_data_the_module_leaves_as_it_is_reads_tested_and_a_module_beside_is_copied(
+    tmp_path,
+) -> None:
+    """A table, an array and a nested container read faithfully stay ``tested``.
+
+    A module of the user's beside the claim's file, one the claim's source
+    root holds, is copied with the claim's module: its table changed in
+    place after the claim does not hide a misreading there either. A helper
+    that imports it as it runs gets the module as it is, not the copy, so
+    that reading is declined.
+    """
+    import sys
+
+    (tmp_path / "faithful_beside_102.py").write_text(BESIDE, encoding="utf-8")
+    path = _write(tmp_path, UNCHANGED)
+    try:
+        pairs = _pairs(check_path(path))
+    finally:
+        sys.modules.pop("faithful_beside_102", None)
+    for owner in ("zeros", "through_beside"):
+        reading = pairs[owner][1]
+        assert reading.status is Status.TESTED, (owner, reading.provenance)
+    reading = pairs["misread_beside"][1]
+    assert reading.status is Status.REFUTED, reading.provenance
+    assert reading.provenance["counterexample"]["n"] == 1
+    reading = pairs["misread_imported"][1]
+    assert reading.status is Status.ASSUMED, reading.provenance
+    assert (
+        "faithful_beside_102, a module of the user's that a function imports as it runs"
+        in reading.provenance["declined"]
+    )
+
+
+#: Helpers with state: two that share a cell, and three that count their calls
+#: in a cell, in a list and in a global (#103).
+STATEFUL = """
+CALLS = [0]
+COUNT = 0
+
+
+def make():
+    seen = 0
+
+    def bump(x):
+        nonlocal seen
+        seen = x
+        return x
+
+    def current():
+        return seen
+
+    return bump, current
+
+
+bump, current = make()
+
+
+def counter():
+    calls = 0
+
+    def tick(x):
+        nonlocal calls
+        calls += 1
+        return x * 0 + calls
+
+    return tick
+
+
+tick = counter()
+
+
+def listed(x):
+    CALLS[0] += 1
+    return x * 0 + CALLS[0]
+
+
+def counted(x):
+    global COUNT
+    COUNT += 1
+    return x * 0 + COUNT
+
+
+@theorem
+def shared(n: Nat) -> bump(n) * 0 + current() == n:
+    \"\"\"True: current reads the cell bump sets, as it does when the claim is read.\"\"\"
+
+
+@theorem
+def ticks(n: Nat) -> tick(n) == 1:
+    \"\"\"True: the claim calls tick once, as each draw does.\"\"\"
+
+
+@theorem
+def lists(n: Nat) -> listed(n) == 1:
+    \"\"\"True: the claim calls listed once, as each draw does.\"\"\"
+
+
+@theorem
+def counts(n: Nat) -> counted(n) == 1:
+    \"\"\"True: the claim calls counted once, as each draw does.\"\"\"
+"""
+
+
+def test_helpers_share_their_cells_and_each_draw_starts_afresh(tmp_path) -> None:
+    """Two helpers over one cell share its copy, and a draw starts where the reading started (#103).
+
+    Both were false alarms that refuted a faithful reading. The copies of
+    ``bump`` and ``current`` each closed over a cell of their own, so
+    ``current`` never saw what ``bump`` set; and the copies were made once
+    per claim, so a helper that counts its calls, in a cell, a list or a
+    global, answered ``2`` at the second draw.
+    """
+    pairs = _pairs(check_path(_write(tmp_path, STATEFUL)))
+    for owner in ("shared", "ticks", "lists", "counts"):
+        reading = pairs[owner][1]
+        assert reading.status is Status.TESTED, (owner, reading.provenance)
+        assert reading.provenance["draws"] > 1, owner
+
+
+def test_an_annotation_that_reads_a_builtin_its_module_binds_otherwise_is_refused(
+    tmp_path, capsys
+) -> None:
+    """A module's own ``all``, ``any``, ``sum`` or ``abs`` an annotation reads is refused (#100).
+
+    lanky read ``all(...)`` with its own ``all`` whatever the module bound
+    the name to, and the claim was proved while Python, running the
+    annotation, called the module's. Python's builtin and lanky's own are
+    the same reading, and a name the annotation does not read is no matter:
+    a helper calls its module's binding in both readings.
+    """
+    shadowing = _write(
+        tmp_path,
+        "\n\ndef all(gen):\n    return False\n\n\n"
+        "@theorem\n"
+        "def everywhere(n: Nat) -> all(i >= 0 for i in Fin[n]):\n"
+        '    """The module\'s all answers False."""\n',
+        name="shadowing.py",
+    )
+    with pytest.raises(
+        TypeError,
+        match=r"everywhere at shadowing\.py:\d+: the goal calls all, which this module binds "
+        r"to .*\.all, and in an annotation lanky reads all as its own universal quantifier",
+    ):
+        check_path(shadowing)
+    assert cli.main(["check", shadowing]) == 1
+    printed = capsys.readouterr().out
+    assert "could not be imported" in printed
+    assert "Leave the builtin all unbound in a module of claims" in printed
+
+    numpy_abs = _write(
+        tmp_path,
+        "\nfrom numpy import abs\n\n\n"
+        "@theorem\n"
+        "def magnitude(x: Real) -> abs(x) >= 0:\n"
+        '    """numpy\'s abs, which lanky would read as its own."""\n',
+        name="numpy_abs.py",
+    )
+    with pytest.raises(TypeError, match=r"magnitude at numpy_abs\.py:\d+: the goal calls abs"):
+        check_path(numpy_abs)
+
+    allowed = _write(
+        tmp_path,
+        "\nfrom lanky import sum\n\n\n"
+        "def any(*args):\n    return \"the module's\"\n\n\n"
+        "def helper(n):\n    return 0 if any() == \"the module's\" else 1\n\n\n"
+        "@theorem\n"
+        "def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):\n"
+        '    """sum is lanky\'s own."""\n\n\n'
+        "@theorem\n"
+        "def through_helper(n: Nat) -> n * 0 == helper(n):\n"
+        '    """The annotation reads no any; the helper calls the module\'s."""\n',
+        name="allowed.py",
+    )
+    for owner, (_claim, reading) in _pairs(check_path(allowed)).items():
+        assert reading.status is Status.TESTED, (owner, reading.provenance)
 
 
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:

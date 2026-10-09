@@ -19,22 +19,30 @@ values, and the two have to agree. Whatever answered from the term rather
 than from its value shows up as a point where they do not.
 
 *The rerun.* An annotation is compiled from its source again and evaluated as
-Python evaluates it, in a copy of the function's globals as they were when
-lanky read it (:attr:`lanky.theory.Theorem.namespace`), with the module's own
-functions bound to that copy (:func:`_snapshot`), so a helper function the
-annotation calls, a library and a dict lookup run on numbers, as in the file
-run as a program, and a helper reads what it read when the claim was read.
+Python evaluates it, so a helper function the annotation calls, a library and
+a dict lookup run on numbers, as in the file run as a program. It runs in
+the module as lanky found it when it read the claim (:class:`Snapshot`): what
+the annotations reach, the names they read, the functions of the user's
+modules they call, the names those read and what they close over, tables,
+lists and numpy arrays included, is copied then, the functions bound to the
+copy (:func:`capture`), and each draw runs in a copy of that copy
+(:meth:`Snapshot.fresh`). So a helper reads what it read when the claim was
+read, whatever the module rebinds or changes in place after the claim, and
+whatever a helper changed at the draw before. What the copy cannot hold as
+it was, an object of a type it does not know, a structure past
+:data:`COPY_ITEMS`, leaves the reading untested: it is ``assumed``, naming
+the object, where it would otherwise be ``tested``.
 A parameter that is a variable is its drawn value, a family a
 :class:`~lanky.testing.Table` or a family drawn as it is applied
 (:class:`DrawnFamily`), both callable, and a parameter that is a hypothesis is
 the variable lanky's reading makes of it. ``all``, ``any``, ``sum`` and
-``abs`` are Python's, which is what lanky's are at concrete values, whatever
-the module binds the names to, since lanky's reading takes them as its own
-there too. The prelude's types iterate concretely while the rerun runs
-(:func:`lanky.terms.concrete_sorts`): ``Fin[n]`` at a drawn ``n`` is
-``range(n)`` already, and a sort with no end, ``Nat`` say, iterates a finite
-sample of itself, drawn once per draw, which is the same list wherever and
-however often the annotation iterates it.
+``abs`` are Python's, which is what lanky's are at concrete values; an
+annotation that reads one of them in a module that binds it to anything else
+is refused while it is read (#100). The prelude's types iterate concretely
+while the rerun runs (:func:`lanky.terms.concrete_sorts`): ``Fin[n]`` at a
+drawn ``n`` is ``range(n)`` already, and a sort with no end, ``Nat`` say,
+iterates a finite sample of itself, drawn once per draw, which is the same
+list wherever and however often the annotation iterates it.
 
 The connectives and the quantifiers are lanky's, as an annotation means them,
 read three-valued, and both readings read them alike (:func:`_kleene`).
@@ -121,8 +129,9 @@ claim's owner and location. It is
 * ``assumed``, with the reason as ``declined``, when an annotation could not
   be compared at all: a statement with a free name, a variable of a sort no
   draw can be made of, an annotation Python evaluated when the function was
-  defined that holds a term, or an annotation that had no answer on both
-  sides at any draw.
+  defined that holds a term, an annotation that had no answer on both
+  sides at any draw, or, where they agreed at every draw, annotations that
+  reach what the snapshot could not copy (:attr:`Snapshot.shared`).
 
 The check is sampled: a disagreement only at a point no draw reaches escapes
 it, and so does one in a part of an annotation that comes after a point where
@@ -137,13 +146,20 @@ from __future__ import annotations
 
 import ast
 import builtins
+import collections
+import enum
 import functools
 import inspect
 import itertools
 import math
 import numbers
 import operator
+import os
 import random
+import re
+import site
+import sys
+import sysconfig
 import types
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -151,6 +167,7 @@ from contextlib import closing
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
+from pathlib import Path
 from typing import Any
 
 import numpy
@@ -167,6 +184,7 @@ from lanky.terms import (
     Polarity,
     Undecided,
     Var,
+    code_reads,
     concrete_sorts,
     evaluate,
     init_args,
@@ -189,6 +207,8 @@ from lanky.testing import (
 )
 
 __all__ = [
+    "COPY_ELEMENTS",
+    "COPY_ITEMS",
     "CORNERS",
     "DECIDED_BY",
     "KIND",
@@ -201,7 +221,8 @@ __all__ = [
     "WRITTEN",
     "WRITTEN_MAX",
     "DrawnFamily",
-    "closure_contents",
+    "Snapshot",
+    "capture",
     "faithful_fact",
 ]
 
@@ -592,85 +613,18 @@ def _reduction_names(namespace: dict[str, Any]) -> dict[str, str]:
 def _scope(namespace: dict[str, Any]) -> dict[str, Any]:
     """The globals the rerun evaluates an annotation in: the module's, and the rerun's own names.
 
-    ``all``, ``any``, ``sum`` and ``abs`` are lanky's in an annotation
-    whatever the module binds them to, as :func:`lanky.terms.evaluate_annotations`
-    reads them, and lanky's at concrete values are Python's.
+    ``all``, ``any``, ``sum`` and ``abs`` are lanky's in an annotation, as
+    :func:`lanky.terms.evaluate_annotations` reads them, and lanky's at
+    concrete values are Python's. An annotation that reads one of them in a
+    module that binds it to anything but Python's builtin or lanky's own is
+    refused while it is read (#100), so these are what the module means by
+    them too.
     """
     scope = dict(namespace)
     scope.update(_RERUN_NAMES)
     for name in BUILTIN_OVERRIDES:
         scope[name] = getattr(builtins, name)
     return scope
-
-
-#: Stands for a closure cell that held nothing when the claim was read.
-_EMPTY_CELL = object()
-
-
-def closure_contents(namespace: dict[str, Any], live: Any) -> dict[str, tuple[Any, ...]]:
-    """What each function of the module in ``namespace`` closes over now, by name.
-
-    ``live`` is the module's globals; a function whose globals they are and
-    that closes over something, a helper a factory made, has the contents of
-    its cells taken, an empty cell as :data:`_EMPTY_CELL`.
-    :class:`lanky.theory.Theorem` takes them when it reads a claim, beside
-    :attr:`~lanky.theory.Theorem.namespace`, so that the faithfulness check
-    binds its copies of the helpers to what they closed over then
-    (:func:`_snapshot`): a ``nonlocal`` rebound later would otherwise change
-    what the rerun reads.
-    """
-    out: dict[str, tuple[Any, ...]] = {}
-    for name, value in namespace.items():
-        if not isinstance(value, types.FunctionType) or value.__globals__ is not live:
-            continue
-        if not value.__closure__:
-            continue
-        contents = []
-        for cell in value.__closure__:
-            try:
-                contents.append(cell.cell_contents)
-            except ValueError:  # an empty cell
-                contents.append(_EMPTY_CELL)
-        out[name] = tuple(contents)
-    return out
-
-
-def _snapshot(theorem: Any) -> dict[str, Any]:
-    """The module's globals as they were when lanky read the claim, its helpers bound to them.
-
-    :attr:`lanky.theory.Theorem.namespace` is a copy of the module's globals
-    taken then, but a function defined in the module reads the module's
-    globals as they are when it is called: a helper that reads ``K``, with
-    ``K = 0`` when the claim was read and ``K = 1`` later in the module, would
-    answer at ``1`` in the rerun where the reading saw ``0``, which refutes a
-    reading that was faithful, and a table a helper reads, rebound to one
-    without the key the reading missed, would hide a misreading. So each
-    function of the module is copied, its globals the copy here, and the
-    copy is what the annotation and the other helpers call, closing over
-    what the function closed over then (:func:`closure_contents`). A
-    function defined in another module, or behind a wrapper such as
-    :func:`functools.lru_cache`, reads its module's globals as they are.
-    """
-    namespace = dict(theorem.namespace)
-    live = getattr(theorem.fn, "__globals__", None)
-    closures = getattr(theorem, "closures", {})
-    for name, value in list(namespace.items()):
-        if isinstance(value, types.FunctionType) and value.__globals__ is live:
-            cells = value.__closure__
-            if name in closures and cells is not None:
-                cells = tuple(
-                    types.CellType() if held is _EMPTY_CELL else types.CellType(held)
-                    for held in closures[name]
-                )
-            copy = types.FunctionType(
-                value.__code__, namespace, value.__name__, value.__defaults__, cells
-            )
-            copy.__kwdefaults__ = value.__kwdefaults__
-            copy.__dict__.update(value.__dict__)
-            copy.__qualname__ = value.__qualname__
-            copy.__module__ = value.__module__
-            namespace[name] = copy
-    return namespace
 
 
 def _thunk(node: ast.expr) -> ast.Lambda:
@@ -834,6 +788,694 @@ def _shown(value: Any) -> str:
     else:
         text = repr(value)
     return text if len(text) <= 120 else text[:117] + "..."
+
+
+# }}}
+
+
+# {{{ the snapshot
+
+#: How many items, the entries of dicts and the items of lists, sets, tuples
+#: and object arrays, the snapshot of one claim copies (:func:`capture`). A
+#: structure past that is not copied, and the claim's reading is declined.
+COPY_ITEMS = 1 << 16
+
+#: How many elements of numpy arrays the snapshot of one claim copies.
+COPY_ELEMENTS = 1 << 20
+
+#: The values that need no copy: they cannot change, or they are code, read
+#: as they are. A class and a library's module are code, and so is a
+#: function of a library, which reads its module as it is (see
+#: :class:`_Copier`).
+_UNCHANGING: tuple[type, ...] = (
+    type(None),
+    bool,
+    numbers.Number,
+    str,
+    bytes,
+    range,
+    slice,
+    type(Ellipsis),
+    type(NotImplemented),
+    types.CodeType,
+    numpy.generic,
+    numpy.dtype,
+    numpy.ufunc,
+    re.Pattern,
+    enum.Enum,
+    prim.ExpressionNode,
+    LankyType,
+    type,
+    types.MethodDescriptorType,
+    types.WrapperDescriptorType,
+    types.ClassMethodDescriptorType,
+    types.GetSetDescriptorType,
+    types.MemberDescriptorType,
+    property,
+    staticmethod,
+    classmethod,
+)
+
+#: Stands for an attribute a module or a class does not have.
+_NO_ATTRIBUTE = object()
+
+#: What Python and the standard decorators put in a class body, which holds
+#: no state of the class's (see :meth:`_Copier.cls`).
+_CLASS_BOOKKEEPING = frozenset(
+    """
+    __module__ __qualname__ __doc__ __dict__ __weakref__ __annotations__
+    __annotate__ __slots__ __firstlineno__ __static_attributes__
+    __orig_bases__ __parameters__ __type_params__ __match_args__
+    __dataclass_fields__ __dataclass_params__ __abstractmethods__ _abc_impl
+    """.split()
+)
+
+
+def _class_state(item: Any) -> bool:
+    """Whether ``item``, from a class body, is state of the class: a method, or changing data."""
+    if isinstance(item, staticmethod | classmethod):
+        return True
+    if isinstance(item, property):
+        return True
+    return isinstance(item, types.FunctionType) or not _unchanging(item)
+
+
+#: The mappings copied entry by entry, each into a new one of its type.
+_MAPPINGS = (dict, collections.OrderedDict, collections.Counter)
+
+#: The type of a function :func:`functools.lru_cache` wraps.
+_CACHED = type(functools.lru_cache(maxsize=None)(lambda: None))
+
+
+def _unchanging(value: Any) -> bool:
+    """Whether ``value`` needs no copy: a number, a text, a term, a lanky type, or code.
+
+    lanky's own objects, ``Fin`` among them, a term built with sympy, and
+    ``typing``'s are values too; a bare ``object()`` holds nothing.
+    """
+    if isinstance(value, _UNCHANGING) or type(value) is object:
+        return True
+    module = getattr(type(value), "__module__", "")
+    if module == "typing" or module.split(".")[0] == "lanky":
+        return True
+    sympy = sys.modules.get("sympy")
+    return sympy is not None and isinstance(value, sympy.Basic)
+
+
+@functools.cache
+def _library_directories() -> tuple[Path, ...]:
+    """Where Python and the packages installed for it live: no module there is the user's."""
+    directories = {sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix}
+    paths = sysconfig.get_paths()
+    directories.update(paths.get(key) for key in ("stdlib", "platstdlib", "purelib", "platlib"))
+    try:
+        directories.update(site.getsitepackages())
+        directories.add(site.getusersitepackages())
+    except AttributeError:  # pragma: no cover - a site module without them
+        pass
+    return tuple(Path(directory).resolve() for directory in directories if directory)
+
+
+@functools.lru_cache(maxsize=1024)
+def _users_file(file: str, roots: tuple[Path, ...]) -> bool:
+    """Whether ``file`` lies under ``roots`` and not where Python or a package is installed."""
+    path = Path(file).resolve()
+    if any(path.is_relative_to(directory) for directory in _library_directories()):
+        return False
+    return any(path.is_relative_to(root) for root in roots)
+
+
+@functools.lru_cache(maxsize=256)
+def _roots(file: str) -> tuple[Path, ...]:
+    """The source roots of the file a claim was compiled from, or none for one that is no file."""
+    if not os.path.isfile(file):
+        return ()
+    from lanky.check import source_roots
+
+    return source_roots(file)
+
+
+def _users(globals_: dict[str, Any], roots: tuple[Path, ...]) -> bool:
+    """Whether ``globals_`` are those of a module of the user's, copied with the claim's.
+
+    That is a module whose file lies under the claim's source roots
+    (:func:`lanky.check.source_roots`, the directories ``lanky check`` puts on
+    ``sys.path``), a helper module beside the claim's file say, and not
+    where Python or an installed package lives, nor lanky.
+    """
+    name, file = globals_.get("__name__"), globals_.get("__file__")
+    if not roots or not isinstance(name, str) or not isinstance(file, str):
+        return False
+    return name.split(".")[0] != "lanky" and _users_file(file, roots)
+
+
+@dataclass
+class _World:
+    """The copy of one module's globals: a module of its own, which its copied functions read."""
+
+    source: dict[str, Any]
+    module: types.ModuleType
+    prefix: str
+    reached: set[str] = field(default_factory=set)
+    everything: bool = False
+
+    @property
+    def target(self) -> dict[str, Any]:
+        """The copy of the globals: the copied functions' globals."""
+        return self.module.__dict__
+
+
+class _Copier:
+    """One copy of the part of the user's modules that a claim's annotations reach.
+
+    ``copied`` says which modules' globals are copied, given the globals.
+    When lanky reads a claim they are the claim's module and the user's
+    modules beside it (:func:`capture`), and at a draw they are the copies
+    taken then (:meth:`Snapshot.fresh`). ``kept`` are the objects left as they
+    are when the claim was read, by ``id``, which a draw leaves as they are
+    too.
+
+    What is copied, and how:
+
+    * the names of a copied module's globals that the annotations read, and
+      that the functions of the module they call read, at any depth, each in
+      a copy of that module's globals, a module of its own (:class:`_World`);
+    * a function of a copied module is bound to the copy of its globals,
+      closing over new cells, one for each cell of the function's, so that
+      two functions that closed over one cell close over one copy of it, and
+      with copies of its defaults and its attributes;
+    * data: a dict, a list, a set, a tuple, a deque, a bytearray, a numpy
+      array, item by item and nested, up to :data:`COPY_ITEMS` items and
+      :data:`COPY_ELEMENTS` elements of arrays in all; one object reached
+      twice is copied once;
+    * a ``functools.partial``, a function behind ``functools.lru_cache``, a
+      method bound to a copied object (``TABLE.get``), and a library's
+      function that closes over a function of the user's (a decorator's
+      wrapper) are made again around the copies.
+
+    Numbers, texts, terms, lanky's types, the modules, the classes and the
+    functions of libraries need no copy (:func:`_unchanging`). A module of
+    the user's is its copy, and code that reads a name off it,
+    ``helpers.TABLE``, reads the copy of that name; where it is passed
+    around as a value its every name is copied, as is every name of a
+    module whose code calls ``globals``, ``vars``, ``eval`` or ``exec``.
+
+    What is not copied is shared, with the reason, in :attr:`shared`:
+
+    * an object of any other type, which may hold state the check does not
+      know how to copy (an instance of a class of the user's, a random
+      generator);
+    * a structure past the budget;
+    * a class of the user's that holds a method or data (:meth:`cls`), whose
+      instances and methods read it, and their module, as they are;
+    * a value read off a class or a library's module by name that would
+      need a copy, ``Rules.table``, since the check copies neither;
+    * a module of the user's that a function imports as it runs
+      (:meth:`imported`), which binds the module and not its copy.
+    """
+
+    def __init__(
+        self, copied: Callable[[dict[str, Any]], bool], kept: frozenset[int] = frozenset()
+    ) -> None:
+        self.copied = copied
+        self.kept = set(kept)
+        self.worlds: dict[int, _World] = {}
+        self.memo: dict[int, Any] = {}
+        # the originals the memo is keyed by, kept alive so that no other
+        # object takes an id of theirs while the copy is made
+        self.originals: list[Any] = []
+        self.left: list[Any] = []
+        self.items = 0
+        self.elements = 0
+        self.shared: list[str] = []
+
+    # {{{ modules and names
+
+    def world(self, globals_: Any, prefix: str | None = None) -> _World | None:
+        """The copy of the module whose globals are ``globals_``, if it is copied."""
+        if not isinstance(globals_, dict):
+            return None
+        key = id(globals_)
+        if key in self.worlds:
+            return self.worlds[key]
+        if not self.copied(globals_):
+            return None
+        name = globals_.get("__name__")
+        name = name if isinstance(name, str) else "module"
+        module = types.ModuleType(name)
+        module.__dict__.update(globals_)
+        world = _World(globals_, module, f"{name}." if prefix is None else prefix)
+        self.worlds[key] = world
+        self.originals.append(globals_)
+        return world
+
+    def reach(self, code: Any, world: _World, skip: frozenset[str] = frozenset()) -> None:
+        """Copy into ``world`` each name of it that ``code`` reads, and what they reach."""
+        reads = code_reads(code)
+        if reads.dynamic:
+            self.everything(world)
+        chained = {chain[0] for chain in reads.chains}
+        for name in reads.names:
+            if name not in skip:
+                self.name(world, name, bare=name in reads.bare or name not in chained)
+        for root, *attributes in reads.chains:
+            if root not in skip and root in world.source:
+                self.chain(world.source[root], attributes, world.prefix + root)
+        for name in reads.imports:
+            self.imported(world, name)
+
+    def imported(self, world: _World, name: str) -> None:
+        """Share a module of the user's that code imports where it runs: the import is not copied.
+
+        ``import helpers`` in a helper's body binds the module as it is in
+        ``sys.modules`` when the rerun runs it, never the copy, so what it
+        reads there is read as it is now. ``name`` is what the code imports,
+        and is looked up as a module and as one of the module's package.
+        """
+        package = world.source.get("__package__")
+        candidates = [name.lstrip(".")]
+        if isinstance(package, str) and package:
+            candidates.append(f"{package}.{name.lstrip('.')}")
+        for candidate in candidates:
+            module = sys.modules.get(candidate)
+            if isinstance(module, types.ModuleType) and self.world(module.__dict__) is not None:
+                if id(module) not in self.kept:
+                    self.share(
+                        module,
+                        f"{world.prefix}{name}",
+                        "a module of the user's that a function imports as it runs, "
+                        "which reads the module as it is",
+                    )
+
+    def name(self, world: _World, name: str, bare: bool = True) -> None:
+        """Copy one name of ``world``'s module, if it has it."""
+        if name not in world.source:
+            return
+        value = world.source[name]
+        if name in world.reached:
+            if bare and isinstance(value, types.ModuleType):
+                self.module(value, bare=True)
+            return
+        world.reached.add(name)
+        world.target[name] = self.copy(value, world.prefix + name, bare=bare)
+
+    def everything(self, world: _World) -> None:
+        """Copy every name of ``world``'s module: code reads them by names it does not spell."""
+        if world.everything:
+            return
+        world.everything = True
+        for name in list(world.source):
+            if not (name.startswith("__") and name.endswith("__")):
+                self.name(world, name)
+
+    def module(self, value: types.ModuleType, bare: bool) -> Any:
+        """A module as the copy has it: its copy, if it is one of the user's."""
+        world = self.world(value.__dict__)
+        if world is None:
+            return value
+        if bare:
+            self.everything(world)
+        return world.module
+
+    def chain(self, value: Any, attributes: Sequence[str], path: str) -> None:
+        """Follow what code reads off a module or a class by name, ``helpers.TABLE`` say.
+
+        What is read off a module of the user's is copied there. A library's
+        module and a class are not copied, so what is read off one has to
+        need no copy, and anything else is shared (:meth:`share`).
+        """
+        for attribute in attributes:
+            if isinstance(value, types.ModuleType):
+                world = self.world(value.__dict__)
+                if world is not None:
+                    if attribute not in world.source:
+                        return
+                    self.name(world, attribute, bare=False)
+                    value, path = world.source[attribute], f"{path}.{attribute}"
+                    continue
+                held = value.__dict__.get(attribute, _NO_ATTRIBUTE)
+                holder = f"the module {value.__name__}, which the check does not copy"
+            elif isinstance(value, type):
+                held = inspect.getattr_static(value, attribute, _NO_ATTRIBUTE)
+                holder = f"the class {value.__qualname__}, and the check copies no class"
+            else:
+                return
+            if held is _NO_ATTRIBUTE:
+                return
+            if isinstance(held, staticmethod | classmethod):
+                held = held.__func__
+            path = f"{path}.{attribute}"
+            if isinstance(held, types.ModuleType | type):
+                value = held
+                continue
+            if self.copy(held, path) is not held:
+                self.share(held, path, f"read off {holder}")
+            return
+
+    # }}}
+
+    # {{{ values
+
+    def copy(self, value: Any, path: str, bare: bool = True) -> Any:
+        """``value`` as the copy has it: copied, made again around copies, or as it is.
+
+        ``path`` names it in a reason, ``bare`` says whether a module is
+        passed around as a value rather than read names off.
+        """
+        if isinstance(value, types.ModuleType):
+            return self.module(value, bare)
+        if isinstance(value, type):
+            return self.cls(value, path)
+        if _unchanging(value):
+            return value
+        key = id(value)
+        if key in self.memo:
+            return self.memo[key]
+        if key in self.kept:
+            return value
+        try:
+            return self._copy(value, path)
+        except Exception as exc:  # noqa: BLE001 - what cannot be copied is shared, saying why
+            why = f"which could not be copied ({type(exc).__name__}: {exc})"
+            return self.share(value, path, why)
+
+    def cls(self, value: type, path: str) -> type:
+        """A class as the copy has it: itself, shared where it is the user's and holds state.
+
+        A class is not copied. Its instances read its attributes, and its
+        methods read their module's globals, as they are when they are
+        called, not as the copy has them; so a class of the user's whose
+        body holds a method or anything but a number, a text or a term
+        (:func:`_unchanging`) is shared, with what it holds named. One with
+        none, an exception or a marker, is read as it is, and so is a
+        library's class.
+        """
+        if id(value) in self.memo:
+            return value
+        self.remember(value, value)
+        for klass in value.__mro__:
+            if not self.users_class(klass):
+                continue
+            held = [
+                name
+                for name, item in vars(klass).items()
+                if name not in _CLASS_BOOKKEEPING and _class_state(item)
+            ]
+            if held:
+                what = f"{len(held)} attributes" if len(held) > 1 else held[0]
+                self.share(
+                    value,
+                    path,
+                    f"a class of the user's that holds {what}, which the check does not copy, "
+                    "and its instances and methods read as they are",
+                )
+                break
+        return value
+
+    def users_class(self, klass: type) -> bool:
+        """Whether ``klass`` was defined in a copied module, the claim's or one beside it."""
+        name = getattr(klass, "__module__", None)
+        if not isinstance(name, str):
+            return False
+        if any(world.source.get("__name__") == name for world in self.worlds.values()):
+            return True
+        module = sys.modules.get(name)
+        return isinstance(module, types.ModuleType) and self.world(module.__dict__) is not None
+
+    def remember(self, original: Any, copy: Any) -> Any:
+        """Record ``copy`` as the copy of ``original``, and return it."""
+        self.memo[id(original)] = copy
+        self.originals.append(original)
+        return copy
+
+    def share(self, value: Any, path: str, why: str) -> Any:
+        """Leave ``value`` as it is, and say why it is not copied."""
+        self.memo[id(value)] = value
+        self.kept.add(id(value))
+        self.left.append(value)
+        self.shared.append(f"{path}, {why}")
+        return value
+
+    def spend(self, value: Any, path: str, items: int = 0, elements: int = 0) -> bool:
+        """Count ``value``'s items and elements against the budget; share it past it."""
+        if self.items + items > COPY_ITEMS:
+            what = f"a {type(value).__name__} of {items} items"
+            self.share(value, path, f"{what}, past the {COPY_ITEMS} the check copies")
+            return False
+        if self.elements + elements > COPY_ELEMENTS:
+            what = f"an array of {elements} elements"
+            self.share(value, path, f"{what}, past the {COPY_ELEMENTS} the check copies")
+            return False
+        self.items += items
+        self.elements += elements
+        return True
+
+    def _copy(self, value: Any, path: str) -> Any:
+        """A copy of ``value``, which is neither unchanging nor copied yet (see :meth:`copy`)."""
+        kind = type(value)
+        inner = f"{path}[...]"
+        if isinstance(value, types.FunctionType):
+            return self.function(value, path)
+        if kind in _MAPPINGS or kind is collections.defaultdict:
+            if not self.spend(value, path, items=len(value)):
+                return value
+            out = self.remember(value, kind())
+            if kind is collections.defaultdict:
+                out.default_factory = self.copy(value.default_factory, f"{path}.default_factory")
+            for key, item in value.items():
+                out[self.copy(key, inner)] = self.copy(item, inner)
+            return out
+        if kind in (list, set, collections.deque, bytearray):
+            if not self.spend(value, path, items=len(value)):
+                return value
+            if kind is bytearray:
+                return self.remember(value, bytearray(value))
+            if kind is collections.deque:
+                out = self.remember(value, collections.deque(maxlen=value.maxlen))
+            else:
+                out = self.remember(value, kind())
+            (out.update if kind is set else out.extend)(self.copy(item, inner) for item in value)
+            return out
+        if isinstance(value, tuple | frozenset):
+            if not self.spend(value, path, items=len(value)):
+                return value
+            items = [self.copy(item, inner) for item in value]
+            if all(new is old for new, old in zip(items, value, strict=True)):
+                return self.remember(value, value)
+            if kind is tuple or kind is frozenset:
+                return self.remember(value, kind(items))
+            if isinstance(value, tuple) and hasattr(kind, "_make"):
+                return self.remember(value, kind._make(items))
+            return self.share(value, path, f"a {kind.__qualname__} that holds what needs a copy")
+        if isinstance(value, numpy.ndarray):
+            objects = value.dtype == object
+            if not self.spend(value, path, items=value.size if objects else 0, elements=value.size):
+                return value
+            if not objects:
+                return self.remember(value, value.copy())
+            out = self.remember(value, numpy.empty_like(value))
+            for index, item in numpy.ndenumerate(value):
+                out[index] = self.copy(item, inner)
+            return out
+        if isinstance(value, functools.partial) and kind is functools.partial:
+            out = functools.partial(
+                self.copy(value.func, f"{path}.func"),
+                *self.copy(value.args, f"{path}.args"),
+                **self.copy(value.keywords, f"{path}.keywords"),
+            )
+            return self.remember(value, out)
+        if isinstance(value, _CACHED):
+            wrapped = self.copy(value.__wrapped__, path)
+            if wrapped is value.__wrapped__:
+                return value
+            return self.remember(value, functools.lru_cache(**value.cache_parameters())(wrapped))
+        if isinstance(value, types.MethodType):
+            owner = self.copy(value.__self__, path)
+            function = self.copy(value.__func__, path)
+            if owner is value.__self__ and function is value.__func__:
+                return value
+            return self.remember(value, types.MethodType(function, owner))
+        if isinstance(value, types.BuiltinMethodType | types.MethodWrapperType):
+            owner = getattr(value, "__self__", None)
+            if owner is None or isinstance(owner, types.ModuleType | type):
+                return value
+            copied = self.copy(owner, path)
+            if copied is owner:
+                return value
+            return self.remember(value, getattr(copied, value.__name__))
+        return self.share(
+            value,
+            path,
+            f"an object of type {kind.__qualname__}, whose state the check does not copy",
+        )
+
+    def function(self, value: types.FunctionType, path: str) -> Any:
+        """A function as the copy has it.
+
+        One of a copied module is bound to the copy of its globals, and what
+        it reads is copied there. A library's function reads its module as
+        it is, and is made again only where it closes over a function of the
+        user's, as a decorator's wrapper does, so that it calls the copy.
+        """
+        world = self.world(value.__globals__)
+        closure = value.__closure__ or ()
+        if world is None and not any(self._closes_over_ours(cell) for cell in closure):
+            return value
+        code = value.__code__
+        cells: list[Any] = []
+        pending: list[tuple[str, Any, Any]] = []
+        for variable, cell in zip(code.co_freevars, closure, strict=True):
+            if id(cell) in self.memo:
+                cells.append(self.memo[id(cell)])
+                continue
+            new = self.remember(cell, types.CellType())
+            cells.append(new)
+            pending.append((variable, cell, new))
+        globals_ = world.target if world is not None else value.__globals__
+        out = types.FunctionType(code, globals_, value.__name__, None, tuple(cells) or None)
+        self.remember(value, out)
+        out.__qualname__ = value.__qualname__
+        out.__module__ = value.__module__
+        out.__doc__ = value.__doc__
+        try:
+            out.__annotations__ = value.__annotations__
+        except Exception:  # noqa: BLE001 - annotations that do not evaluate are left out
+            pass
+        out.__defaults__ = self.copy(value.__defaults__, f"a default of {value.__qualname__}")
+        out.__kwdefaults__ = self.copy(value.__kwdefaults__, f"a default of {value.__qualname__}")
+        out.__dict__.update(self.copy(value.__dict__, f"an attribute of {value.__qualname__}"))
+        reads = code_reads(code)
+        chained = {chain[0] for chain in reads.free_chains}
+        for variable, cell, new in pending:
+            try:
+                contents = cell.cell_contents
+            except ValueError:  # an empty cell stays empty
+                continue
+            bare = variable in reads.free_bare or variable not in chained
+            new.cell_contents = self.copy(
+                contents, f"{variable}, which {value.__qualname__} closes over", bare=bare
+            )
+        for variable, *attributes in reads.free_chains:
+            if variable in code.co_freevars:
+                cell = closure[code.co_freevars.index(variable)]
+                try:
+                    contents = cell.cell_contents
+                except ValueError:
+                    continue
+                self.chain(contents, attributes, variable)
+        if world is not None:
+            self.reach(code, world)
+        return out
+
+    def _closes_over_ours(self, cell: Any) -> bool:
+        """Whether ``cell`` holds a function of a copied module."""
+        try:
+            contents = cell.cell_contents
+        except ValueError:
+            return False
+        return (
+            isinstance(contents, types.FunctionType)
+            and self.world(contents.__globals__) is not None
+        )
+
+    # }}}
+
+
+@dataclass(frozen=True, eq=False)
+class Snapshot:
+    """The user's modules as a claim's annotations reach them, copied when lanky read the claim.
+
+    lanky reads a claim when its module runs the decorator, and the
+    faithfulness check runs the annotations again later, when the module has
+    run to its end: a module that rebinds a name, ``K = 1`` after ``K = 0``,
+    or changes a table in place, ``TABLE.clear()``, would have the rerun read
+    something else than the reading read, and a misreading could hide there
+    (#102). So what the annotations reach, through the functions they call,
+    the names those read and what they close over, is copied when the claim
+    is read (:func:`capture`, :class:`_Copier`), and every draw runs in a
+    copy of that copy (:meth:`fresh`), so that a draw starts where the
+    reading started, whatever a helper changed at the draw before (#103).
+
+    Attributes:
+        namespace: The claim's module's globals, a copy, with what the
+            annotations reach copied and its functions bound to it.
+        shared: What the annotations reach that is not copied, each with the
+            reason. A reading that reaches any of it is not tested: the rerun
+            reads it as it is, not as it was when the claim was read.
+        codes: The annotations, compiled, whose reads the copy follows.
+    """
+
+    namespace: dict[str, Any]
+    shared: tuple[str, ...] = ()
+    codes: tuple[Any, ...] = ()
+    skip: frozenset[str] = frozenset()
+    worlds: frozenset[int] = frozenset()
+    kept: frozenset[int] = frozenset()
+    held: tuple[Any, ...] = ()
+
+    def fresh(self) -> dict[str, Any]:
+        """A copy for one draw: the module's globals, with what is reached copied again."""
+        copier = _Copier(lambda globals_: id(globals_) in self.worlds, self.kept)
+        world = copier.world(self.namespace, "")
+        if world is None:
+            return dict(self.namespace)
+        for code in self.codes:
+            copier.reach(code, world, self.skip)
+        return world.target
+
+
+def _annotation_codes(fn: Any) -> tuple[Any, ...]:
+    """The annotations of ``fn`` that are sources, compiled as lanky compiles them to read them."""
+    try:
+        raw = inspect.get_annotations(fn, eval_str=False)
+    except Exception:  # noqa: BLE001 - the reading says what is wrong with them
+        return ()
+    codes = []
+    for annotation in raw.values():
+        if isinstance(annotation, str):
+            try:
+                codes.append(compile(annotation.lstrip(" \t"), "<string>", "eval"))
+            except (SyntaxError, ValueError):
+                continue
+    return tuple(codes)
+
+
+def capture(fn: Any) -> Snapshot:
+    """The :class:`Snapshot` of what ``fn``'s annotations reach, as it is now.
+
+    :class:`lanky.theory.Theorem` takes it before it reads the claim. The
+    copy is of the claim's module and of the user's modules beside it
+    (:func:`_users`), and what cannot be copied is listed with the reason.
+    Nothing here raises: a snapshot that could not be taken lists why.
+    """
+    live = getattr(fn, "__globals__", None)
+    if not isinstance(live, dict):
+        return Snapshot({})
+    try:
+        code = getattr(fn, "__code__", None)
+        roots = _roots(code.co_filename) if code is not None else ()
+        copier = _Copier(lambda globals_: globals_ is live or _users(globals_, roots))
+        world = copier.world(live, "")
+        assert world is not None
+        codes = _annotation_codes(fn)
+        skip = frozenset(inspect.signature(fn).parameters)
+        for annotation in codes:
+            copier.reach(annotation, world, skip)
+    except Exception as exc:  # noqa: BLE001 - a snapshot that could not be taken says why
+        return Snapshot(
+            dict(live),
+            shared=(f"the module, which could not be copied ({type(exc).__name__}: {exc})",),
+        )
+    worlds = tuple(copier.worlds.values())
+    return Snapshot(
+        world.target,
+        shared=tuple(dict.fromkeys(copier.shared)),
+        codes=codes,
+        skip=skip,
+        worlds=frozenset(id(each.target) for each in worlds),
+        kept=frozenset(copier.kept),
+        held=(*(each.module for each in worlds), *copier.left),
+    )
 
 
 # }}}
@@ -1532,7 +2174,7 @@ def _extent(theorem: Any, codes: Sequence[Any], namespace: dict[str, Any]) -> _E
     """What the claim's draws take besides the corners (see :class:`_Extent`).
 
     ``namespace`` is the module's globals as the claim was read
-    (:func:`_snapshot`), where the integers it writes are read.
+    (:attr:`Snapshot.namespace`), where the integers it writes are read.
 
     A name sizes a domain where it is free in the bound of a ``Fin`` the claim
     holds, in a variable's sort or in a quantifier's or a sum's domain. A
@@ -1677,8 +2319,9 @@ def _compare(
     """Each annotation, how its two readings compare at ``draw``, and the two outcomes.
 
     ``namespace`` is the function's globals as they were when lanky read the
-    annotations, its helpers bound to them (:func:`_snapshot`), and the rerun
-    runs in it (:func:`_scope`).
+    annotations, what they reach copied for this draw and its helpers bound
+    to it (:meth:`Snapshot.fresh`), and the rerun runs in it
+    (:func:`_scope`).
     """
     scope = _scope(namespace)
     for name in parameters:
@@ -1881,16 +2524,17 @@ def faithful_fact(theorem: Any) -> Fact:
         if isinstance(annotations, str):
             return declined(annotations)
         parameters = list(inspect.signature(theorem.fn).parameters)
-        namespace = _snapshot(theorem)
+        snapshot = theorem.snapshot
         codes = [annotation.code for annotation in annotations if annotation.code is not None]
-        extent = _extent(theorem, codes, namespace)
+        extent = _extent(theorem, codes, snapshot.namespace)
         for draw in _draws(theorem.variables, hypotheses, extent):
             if isinstance(draw, str):
                 tally.skipped.append(draw)
                 continue
             tally.draws += 1
+            # each draw starts from the module as the reading found it (#103)
             for annotation, verdict, python, term in _compare(
-                namespace, parameters, annotations, draw
+                snapshot.fresh(), parameters, annotations, draw
             ):
                 if verdict == "differed":
                     return _refuted(fact, annotation, draw, python, term)
@@ -1914,12 +2558,26 @@ def faithful_fact(theorem: Any) -> Fact:
                 f"{annotation.what} had no answer on both sides at any of {tally.draws} "
                 f"draws, so its reading was not compared ({tally.unanswered[annotation.name]})"
             )
+    if snapshot.shared:
+        return declined(_not_copied(snapshot.shared))
     return fact(
         Status.TESTED,
         draws=tally.draws,
         compared=sum(tally.agreed.values()),
         seed=SEED,
         **tally.counts,
+    )
+
+
+def _not_copied(shared: Sequence[str]) -> str:
+    """Why a reading that agreed at every draw is not tested: what it reaches was not copied."""
+    listing = "; ".join(shared[:3])
+    if len(shared) > 3:
+        listing += f"; and {len(shared) - 3} more"
+    return (
+        "the annotations reach what the check could not copy as it was when the claim "
+        f"was read: {listing}. The rerun reads it as it is now, which may have changed "
+        "since, so agreeing at every draw does not test the reading"
     )
 
 

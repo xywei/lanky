@@ -157,17 +157,17 @@ class Theorem:
             (see :func:`fact_ids`). They go into its fact's ``rests_on``. No
             oracle is handed the statements they name: what ``uses=`` records
             is what the theorem is worth, not a hypothesis for its proof.
+        snapshot: What the annotations reach, copied just before they were
+            read (:func:`lanky.faithful.capture`): the names they read, the
+            functions of the user's modules they call, bound to the copy,
+            and what those read and close over, tables, lists and arrays
+            included. The faithfulness check runs the annotations again in a
+            copy of it at each draw (:meth:`faithful_fact`), so a module that
+            rebinds a name later, or changes a table in place, does not
+            change what the annotation said; what could not be copied is
+            listed, and leaves the reading untested.
         namespace: The function's globals as they were when the annotations
-            were read, a shallow copy, which the faithfulness check runs them
-            in again (:meth:`faithful_fact`), with the module's own functions
-            bound to it: a module that binds a name the annotation, or a
-            helper it calls, reads to another value later, as a factory's
-            ``K = 0`` after a first claim read ``K = 1``, does not change what
-            the annotation said.
-        closures: What each of the module's functions in ``namespace``
-            closed over when the annotations were read, by name
-            (:func:`lanky.faithful.closure_contents`), which the faithfulness
-            check binds its copies of them to.
+            were read, the snapshot's (:attr:`lanky.faithful.Snapshot.namespace`).
 
     Raises:
         TypeError: If the function has no return annotation (or ``-> None``).
@@ -178,7 +178,11 @@ class Theorem:
             parameter or the goal is annotated with a builtin of Python's,
             ``x: int``, or names one anywhere in its annotation without
             calling it, ``f: Fn[Fin[n], float]`` (see
-            :func:`_refuse_a_builtin_annotation`).
+            :func:`_refuse_a_builtin_annotation`). And if an annotation reads
+            ``all``, ``any``, ``sum`` or ``abs`` and the module binds that
+            name to something other than Python's builtin or lanky's own,
+            which lanky would read in its place (see
+            :func:`lanky.terms.evaluate_annotations`, #100).
     """
 
     #: What the statement is called in messages, in its fact's kind and id.
@@ -188,10 +192,12 @@ class Theorem:
         self.fn = fn
         functools.update_wrapper(self, fn)
         self.uses = fact_ids(uses)
-        self.namespace = dict(getattr(fn, "__globals__", {}))
-        from lanky.faithful import closure_contents
+        from lanky.faithful import capture
 
-        self.closures = closure_contents(self.namespace, getattr(fn, "__globals__", None))
+        # taken before the annotations are read, which may run a helper that
+        # changes what it reads
+        self.snapshot = capture(fn)
+        self.namespace = self.snapshot.namespace
         annotations = evaluate_annotations(fn)
         self.goal = annotations.pop("return", None)
         if self.goal is None:
