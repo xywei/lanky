@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import itertools
 import numbers
+import time
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
@@ -171,7 +172,7 @@ def _mentions(expr: Any, names: set[str]) -> bool:
     return False
 
 
-def orders(left: Spread, right: Spread) -> list[tuple[int, ...]]:
+def orders(left: Spread, right: Spread, until: float | None = None) -> list[tuple[int, ...]]:
     """The orders of the left side's sums under which its summand is the right side's.
 
     An order lists, for each sum of the right side from the outermost, which
@@ -185,12 +186,18 @@ def orders(left: Spread, right: Spread) -> list[tuple[int, ...]]:
     :data:`_UNVERIFIED` orders whose domains agree are proposed, for Lean to
     judge. Empty when the two sides have different numbers of sums, none,
     more than :data:`MAX_SUMS`, or no order sympy accepts.
+
+    ``until``, a time on :func:`time.monotonic`'s clock, ends the search: it
+    is the claim's budget, which the search counts against, and what has
+    been proposed by then is returned.
     """
     size = len(left.binders)
     if size != len(right.binders) or size == 0 or size > MAX_SUMS:
         return []
     unverified: list[tuple[int, ...]] = []
     for order in itertools.permutations(range(size)):
+        if until is not None and time.monotonic() > until:
+            break
         if not all(
             left.binders[order[place]][1] == right.binders[place][1] for place in range(size)
         ):

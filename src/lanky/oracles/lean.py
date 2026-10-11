@@ -1335,7 +1335,7 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
     return scripts
 
 
-def sum_scripts(statement: LeanStatement) -> list[str]:
+def sum_scripts(statement: LeanStatement, until: float | None = None) -> list[str]:
     """Exchange finite sums: distribute, put the sums in one order, and compare the summands.
 
     Mathlib mode only, for a goal that is an equation, under any universals,
@@ -1353,6 +1353,10 @@ def sum_scripts(statement: LeanStatement) -> list[str]:
     an attempt and never a proof. Sum factorization, ``sum(H[c, r] * G[b, q]
     * F[a, p] * u[p, q, r] for p ... for q ... for r ...)`` against the three
     one-axis passes, is proved this way for every size.
+
+    ``until``, a time on :func:`time.monotonic`'s clock, ends the search for
+    the order, which is Python and counts against the claim's budget, as the
+    family induction's search does.
     """
     if not statement.mathlib:
         return []
@@ -1369,7 +1373,7 @@ def sum_scripts(statement: LeanStatement) -> list[str]:
     right = sums.spread(body.right, taken)
     if left is None or right is None or not left.binders:
         return []
-    found = sums.orders(left, right)
+    found = sums.orders(left, right, until)
     if not found:
         return []
     used = set(names) | {name for name, _ in statement.binders}
@@ -1999,8 +2003,9 @@ def tactic_ladder(
     order (:func:`_mathlib_tactics`).
 
     ``until``, a time on :func:`time.monotonic`'s clock, ends the search for
-    the family induction's certificates (:func:`family_induction_scripts`),
-    which is Python and runs here, before any attempt.
+    the family induction's certificates (:func:`family_induction_scripts`)
+    and for the order of the sums (:func:`sum_scripts`), which are Python and
+    run here, before any attempt.
     """
     with dialect(statement.mathlib):
         names, _, _, _, _ = _goal_intro(statement)
@@ -2009,7 +2014,7 @@ def tactic_ladder(
     if statement.mathlib:
         if not refuting:
             ladder += family_induction_scripts(statement, finder, until)
-            ladder += sum_scripts(statement)
+            ladder += sum_scripts(statement, until)
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
         ladder += _mathlib_tactics(lemmas, refuting)
         if statement.side_conditions and not refuting:

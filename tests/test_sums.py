@@ -129,3 +129,14 @@ def test_a_family_is_read_whichever_way_it_is_applied() -> None:
     taken: set[str] = set()
     assert sums.orders(sums.spread(left, taken), sums.spread(right, taken)) == [(0,)]
 
+
+
+def test_the_search_for_the_order_ends_at_the_claims_deadline() -> None:
+    """A deadline already past proposes nothing; the claim's budget holds the search too."""
+    import time
+
+    left, right = _sides()
+    taken: set[str] = set()
+    spread_left, spread_right = sums.spread(left, taken), sums.spread(right, taken)
+    assert sums.orders(spread_left, spread_right, until=time.monotonic() - 1) == []
+    assert sums.orders(spread_left, spread_right, until=time.monotonic() + 60) == [(2, 1, 0)]
