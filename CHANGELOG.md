@@ -87,7 +87,7 @@ worth the `tested` reading it rests on.
     operation Python stops at the operand that has no value, and so does the
     term, so what came after it was compared on neither side: `all(f(i) * 0 +
     1 // (i - i) == table(i) for i in Fin[n])`, misread at `table(0)`, read
-    `tested`, and Lean proved its term, where `1 / 0` is `0`. A draw at which
+    `tested`, and Lean proved its term, where `1 // 0` is `0`. A draw at which
     both readings of an annotation have no value is read again on both sides
     with what Python has no value for read as Lean has it
     (`lanky.terms.totalized`): `x / 0` and `x // 0` are `0`, `x % 0` is `x`,
@@ -199,12 +199,6 @@ worth the `tested` reading it rests on.
   does not copy. The
   quickstart has a Check the reading section, and every ledger in both is run
   again.
-- **A parameter named like a builtin the module binds is the parameter**
-  (#105). #100's refusal read every name the annotation reads, so after
-  `from numpy import abs`, `def identity(abs: Nat) -> abs == abs` was
-  refused, though in both readings `abs` is the parameter. A parameter's
-  name is exempt from it, and the rerun does not read a parameter named
-  `all`, `any` or `sum` as a quantifier or a sum.
 - The publish workflow builds in a job that can only read the repository, with
   a checkout that keeps no credentials, and uploads from a second job that
   alone may ask for the token PyPI trusts and runs no checkout or build. Before,
@@ -222,13 +216,21 @@ worth the `tested` reading it rests on.
   claim that reads a cached value from before it reads `tested`, where it
   was refuted and then declined. The entries are read off the cache as the
   garbage collector lists them, and a cache whose entries cannot be read so
-  is shared, and the reading declined, naming it.
+  is shared, and the reading declined, naming it. So is a reading whose
+  draw's copy cannot make again what the snapshot copied
+  (`Snapshot.fresh_copy`), which the draw read as it was, saying nothing.
 - **`:=` in a lambda of the annotation's binds in the lambda** (#105). The
   rerun bound every `:=` in the annotation's globals, where one in a
   generator binds, so with a module-level `x = 1`, `((lambda: (x := n))() ==
   n) & (x == 1)` read `x == 1` as `n == 1` and was refuted. A `:=` in a
   lambda now sets the lambda's own variable, from an operand of `&` or a
   quantifier inside it too.
+- **A parameter named like a builtin the module binds is the parameter**
+  (#105). #100's refusal read every name the annotation reads, so after
+  `from numpy import abs`, `def identity(abs: Nat) -> abs == abs` was
+  refused, though in both readings `abs` is the parameter. A parameter's
+  name is exempt from it, and the rerun does not read a parameter named
+  `all`, `any` or `sum` as a quantifier or a sum.
 
 ## [0.1.0] - 2026-10-08
 
