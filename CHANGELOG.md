@@ -139,7 +139,10 @@ worth the `tested` reading it rests on.
 - `lanky.deadline`: `deadline(seconds, owner)` and `Expired`, the interval
   timer the CAS oracle kept as its own, shared with the Lean oracle's
   search; an `Expired` names its deadline's owner, so a caller tells its
-  own from one set around it.
+  own from one set around it. A timer that goes off as the block ends no
+  longer leaves the deadline's handler installed: it raised in the
+  `finally` that stops the timer, before the handler there was was put
+  back, so the next `SIGALRM`, meant for someone else, raised `Expired`.
 - `lanky.cas.check_shape(term)`: everything `equations` refuses a statement
   for, checked without sympy and without building anything, but whether a
   real logarithm's or square root's argument may be negative, which only
@@ -211,6 +214,19 @@ worth the `tested` reading it rests on.
   else it is Python's value, as before: in the file run as a program, in the
   annotation run again by the faithfulness check, and in a function the
   annotation calls, whose code may compute with the number as Python does.
+  An annotation whose `log(0)` or `sqrt(-1)` raised while it was read is
+  read now, and meets the gap to Mathlib's total functions as `log(x)` under
+  `x == 0` does: in Mathlib mode Lean proves `log(0) == 0`, with the
+  semantics note.
+- **`all` and `any` over a concrete domain join the terms they are given.**
+  A body that is a term at each point, `all(exp(k) >= 1 + k for k in
+  range(4))` now that `exp(k)` is one (#81), is the conjunction, or the
+  disjunction, of its values, unless a concrete value settles it. The
+  builtin asked each value for a truth value: a proposition refused it, so
+  that annotation could not be read, and a term that is a number answered
+  from its structure, so `all(f(k) for k in range(3))` of a family was
+  `True`; such a number is now held in the conjunction, and has no truth
+  value there for any oracle.
 - **A negative number to a power that is not an integer is Python's complex
   value** (#89). The tester's exact reading left it undecided, so a claim
   false only at negative bases, `(x ** 3) ** Fraction(1, 3) == x`, read

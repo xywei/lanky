@@ -231,7 +231,9 @@ to match.
   written: a guard joined with Python's `or`, an `and` or `or` used as a value,
   a `not` in a guard, an `if` statement inside a function an annotation
   calls, and a symbolic guard over a concrete domain (`if n > 100` in a sum
-  over `Fin[3]`), which a walk of the domain would drop. The connectives are
+  over `Fin[3]`), which a walk of the domain would drop; a body that is a
+  term there is kept, `all` and `any` of it being the conjunction and the
+  disjunction of its values at the points. The connectives are
   `&`, `|` and `~`. Only a generator's `if` clause records a guard: a
   conditional expression (`a if i < 3 else b`), a `not` in a body and a
   comparison of two tuples or lists, which compares their items, are refused

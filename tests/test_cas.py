@@ -507,6 +507,37 @@ def test_a_deadline_the_timer_will_not_take_is_none(cas, seconds) -> None:
     assert signal.getsignal(signal.SIGALRM) is before
 
 
+def test_a_deadline_that_expires_as_its_block_ends_puts_the_handler_back(monkeypatch) -> None:
+    """A ``SIGALRM`` between the block's end and the timer's stop raises there.
+
+    The handler then ran in the ``finally`` that stops the timer, and the
+    line after it, which puts the handler there was back, never ran: the
+    deadline's own handler stayed installed, and the next ``SIGALRM``,
+    meant for someone else, raised its :class:`lanky.deadline.Expired`.
+    """
+    import signal
+
+    from lanky.deadline import Expired, deadline
+
+    real = signal.setitimer
+
+    def setitimer(which, seconds, *rest):
+        answer = real(which, seconds, *rest)
+        if seconds == 0:
+            # the timer went off as the block ended, and its handler runs now
+            signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
+        return answer
+
+    monkeypatch.setattr(signal, "setitimer", setitimer)
+    before = signal.getsignal(signal.SIGALRM)
+    owner = object()
+    with pytest.raises(Expired) as raised, deadline(60, owner):
+        pass
+    assert raised.value.owner is owner
+    assert signal.getsignal(signal.SIGALRM) is before
+    assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+
+
 def test_no_deadline_off_the_main_thread_or_over_another_timer(cas) -> None:
     """The interval timer is the process's: the oracle leaves it alone where it cannot own it."""
     import signal

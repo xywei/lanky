@@ -1525,8 +1525,9 @@ def _refuse_a_dropped_guard(driven: _Driven, word: str) -> None:
     to write the condition that do keep it: outside the quantifier, for a
     condition that does not mention the loop variable, or over a domain with a
     symbolic bound, where the quantifier is a term that carries its guard. The
-    body is no place for it: a symbolic body over a concrete domain is refused
-    already, when the builtin asks it for a truth value.
+    body can carry it too, as ``~(n > 100) | (i >= 0)``: a symbolic body over
+    a concrete domain is the conjunction of its values at the points
+    (:func:`_over_points`).
 
     Raises:
         SymbolicBoolError: If the trace bound no binder and recorded a guard.
@@ -1562,11 +1563,37 @@ def _refuse_a_dropped_guard(driven: _Driven, word: str) -> None:
     )
 
 
+def _over_points(values: Sequence[Any], word: str) -> Any:
+    """``all`` or ``any`` (``word``) of what a generator over a concrete domain yielded.
+
+    Concrete values are answered as the builtin answers them. A value that is a
+    term is no truth value until it is evaluated, so the answer is the
+    conjunction, or the disjunction, of the terms, unless a concrete value
+    settles it: ``all(exp(k) >= 1 + k for k in range(3))`` is ``exp(0) >= 1 &
+    exp(1) >= 2 & exp(2) >= 3``, since ``exp`` of a number in an annotation is
+    a term (#81), where the builtin asked each of them for a truth value and
+    the annotation could not be read; ``all(f(k) for k in range(3))``, of a
+    family ``f``, was ``True``, the builtin's answer from the terms'
+    structure. A term that is a number and no proposition is held as it is, as
+    the body of a :class:`Forall` is, and each oracle refuses it there.
+    """
+    terms = tuple(value for value in values if isinstance(value, prim.ExpressionNode))
+    concrete = [value for value in values if not isinstance(value, prim.ExpressionNode)]
+    if word == "all":
+        if not terms or not builtins.all(concrete):
+            return builtins.all(concrete)
+        return terms[0] if len(terms) == 1 else LogicalAnd(terms)
+    if not terms or builtins.any(concrete):
+        return builtins.any(concrete)
+    return terms[0] if len(terms) == 1 else LogicalOr(terms)
+
+
 def forall(gen: Iterable[Any]) -> Any:
     """Universal quantification; the replacement for the builtin ``all``.
 
     Symbolic domains give a :class:`Forall` term, concrete ones the plain
-    ``bool`` that ``all`` would have answered.
+    ``bool`` that ``all`` would have answered, or the conjunction of the
+    values that are terms (:func:`_over_points`).
 
     Raises:
         SymbolicBoolError: If the domain is concrete and the guard symbolic,
@@ -1575,12 +1602,15 @@ def forall(gen: Iterable[Any]) -> Any:
     driven = _drive(gen)
     if not driven.binders:
         _refuse_a_dropped_guard(driven, "all")
-        return builtins.all(driven.values)
+        return _over_points(driven.values, "all")
     return Forall(driven.binders, driven.body, driven.guard)
 
 
 def exists(gen: Iterable[Any]) -> Any:
     """Existential quantification; the replacement for the builtin ``any``.
+
+    Over a concrete domain, the disjunction of the values that are terms
+    unless a concrete one is true (:func:`_over_points`).
 
     Raises:
         SymbolicBoolError: If the domain is concrete and the guard symbolic,
@@ -1589,7 +1619,7 @@ def exists(gen: Iterable[Any]) -> Any:
     driven = _drive(gen)
     if not driven.binders:
         _refuse_a_dropped_guard(driven, "any")
-        return builtins.any(driven.values)
+        return _over_points(driven.values, "any")
     return Exists(driven.binders, driven.body, driven.guard)
 
 

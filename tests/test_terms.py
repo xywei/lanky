@@ -413,6 +413,41 @@ def test_the_ways_the_refusal_names_keep_the_condition() -> None:
     assert evaluate(kept, {"m": 3, "n": 101}) == 3
 
 
+def test_all_and_any_over_a_concrete_domain_join_the_terms_they_are_given() -> None:
+    """A body that is a term at each point is their conjunction, or their disjunction.
+
+    The builtin asked each value for a truth value: a proposition refused it,
+    so ``all(exp(k) >= 1 + k for k in range(3))`` could not be read once
+    ``exp`` of a number was a term in an annotation (#81), and a term that is
+    a number answered from its structure, so ``all(f(k) for k in range(3))``
+    was ``True``. A concrete value that settles the quantifier still does.
+    """
+    f, n, x = Var("f"), Var("n"), Var("x")
+    joined = forall(x > k for k in range(3))
+    assert structurally_equal(joined, prim.LogicalAnd((x > 0, x > 1, x > 2)))
+    assert evaluate(joined, {"x": 3}) is True
+    assert evaluate(joined, {"x": 2}) is False
+    some = exists(x > k for k in Fin[3])
+    assert structurally_equal(some, prim.LogicalOr((x > 0, x > 1, x > 2)))
+    assert evaluate(some, {"x": 1}) is True
+    assert evaluate(some, {"x": 0}) is False
+    # a single term is itself, and a concrete value settles what it can
+    assert structurally_equal(forall(x > k for k in range(1)), x > 0)
+    assert forall(x > k if k else k > 0 for k in range(2)) is False
+    assert exists(x > k if k else k == 0 for k in range(2)) is True
+    assert structurally_equal(forall(x > k if k else k == 0 for k in range(2)), x > 1)
+    assert forall(x > k for k in range(0)) is True
+    assert exists(x > k for k in range(0)) is False
+    # a term that is a number is held as it is, and has no truth value there
+    numbers = forall(f(k) for k in range(2))
+    assert structurally_equal(numbers, prim.LogicalAnd((f(0), f(1))))
+    with pytest.raises(TypeError, match="not a truth value"):
+        evaluate(numbers, {"f": Table([0, 1], name="f")})
+    # the body can carry a condition the guard could not
+    carried = forall(~(n > 100) | (i >= 0) for i in Fin[2])
+    assert evaluate(carried, {"n": 3}) is True
+
+
 # }}}
 
 

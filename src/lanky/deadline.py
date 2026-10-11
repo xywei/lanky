@@ -59,7 +59,8 @@ def deadline(seconds: float | None, owner: Any = None) -> Iterator[None]:
     What is raised carries ``owner`` (:attr:`Expired.owner`): a caller that
     catches its own deadline checks it, since an :class:`Expired` raised in
     the block can be a deadline's set around it, under which this one sets no
-    timer.
+    timer. A timer that goes off as the block ends raises as the timer is
+    stopped, and the handler there was is put back all the same.
     """
     if (
         not seconds
@@ -84,5 +85,8 @@ def deadline(seconds: float | None, owner: Any = None) -> Iterator[None]:
     try:
         yield
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        try:
+            # the handler runs here if the timer went off as the block ended
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        finally:
+            signal.signal(signal.SIGALRM, previous)

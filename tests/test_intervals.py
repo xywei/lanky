@@ -554,6 +554,37 @@ def test_an_elementary_function_of_a_number_in_an_annotation_stays_exact() -> No
     assert TestOracle().establish(root_two.fact()).status is Status.TESTED
 
 
+def test_an_elementary_function_of_a_number_over_a_concrete_domain() -> None:
+    """#81: ``exp(k)`` at each point of ``range(4)`` is a term, and ``all`` joins them.
+
+    The builtin ``all`` asked each comparison for a truth value, so the claim
+    could not be read once ``exp`` of a number was a term in an annotation;
+    it read the floats before that.
+    """
+    from lanky.ledger import Status
+    from lanky.oracles.test import TestOracle
+    from lanky.terms import render
+
+    @theorem
+    def above_the_line(n: Nat) -> all(exp(k) >= 1 + k for k in range(4)):
+        """True: e ** k is at least 1 + k."""
+
+    @theorem
+    def strictly(n: Nat) -> all(exp(k) > 1 + k for k in range(4)):
+        """False at k = 0, where both sides are 1."""
+
+    @theorem
+    def somewhere(n: Nat) -> any(sqrt(k) > k for k in range(1, 4)):
+        """False: the square root of a natural number is at most the number."""
+
+    assert render(above_the_line.goal).startswith("exp(0) >= 1 and exp(1) >= 2 and ")
+    assert TestOracle().establish(above_the_line.fact()).status is Status.TESTED
+    assert above_the_line.faithful_fact().status is Status.TESTED
+    for claim in (strictly, somewhere):
+        assert TestOracle().establish(claim.fact()).status is Status.REFUTED, claim
+        assert claim.faithful_fact().status is Status.TESTED
+
+
 def test_an_equality_of_enclosures_counts_only_where_it_is_asserted() -> None:
     """Agreement is evidence standing ``POSITIVE``, and undecided anywhere else.
 
