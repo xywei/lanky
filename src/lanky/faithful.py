@@ -3308,7 +3308,8 @@ def faithful_fact(theorem: Any) -> Fact:
         if not tally.agreed.get(annotation.name):
             return declined(
                 f"{annotation.what} had no answer on both sides at any of {tally.draws} "
-                f"draws, so its reading was not compared ({tally.unanswered[annotation.name]})"
+                f"draws, so its reading was not compared "
+                f"({tally.unanswered.get(annotation.name, 'no draw compared it')})"
             )
     if snapshot.shared or tally.shared:
         return declined(_not_copied((*snapshot.shared, *tally.shared)))
@@ -3337,9 +3338,12 @@ def _run(
     read again with what Python has no value for read as Lean has it
     (:func:`lanky.terms.totalized`), so that what follows where Python
     stopped is compared on both sides (#99): where both then have a value,
-    they have to agree. A draw that is given up is not counted, and past a
-    draw at a written value given up as too slow, the written values after
-    it, which are larger, are not drawn at (#101).
+    they have to agree. Until the second reading has run, such an
+    annotation's first comparison is not counted, so that a draw at which
+    the second reading is given up compares nothing past where Python
+    stopped, and counts for nothing. A draw that is given up is not counted,
+    and past a draw at a written value given up as too slow, the written
+    values after it, which are larger, are not drawn at (#101).
     """
     hypotheses = [prop for _, prop in theorem.hypotheses]
     slow = False
@@ -3353,6 +3357,9 @@ def _run(
             continue
         tally.draws += 1
         stopped: dict[str, tuple[_Outcome, _Outcome]] = {}
+        # the comparisons of the annotations that stopped, counted once the
+        # second reading has compared what follows
+        pending: list[tuple[_Annotation, str, _Outcome, _Outcome]] = []
         given_up = False
         namespace, shared = snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
@@ -3370,6 +3377,8 @@ def _run(
                 continue
             if python.error is not None and term.error is not None:
                 stopped[annotation.name] = (python, term)
+                pending.append((annotation, verdict, python, term))
+                continue
             tally.record(annotation, verdict, python, term)
         if given_up or not stopped:
             continue
@@ -3378,6 +3387,12 @@ def _run(
         for annotation, verdict, python, term in _compare(
             namespace, parameters, annotations, draw, total=True
         ):
+            if verdict in ("unwalked", "slow"):
+                # what follows where Python stopped was not compared
+                tally.draws -= 1
+                tally.give_up(verdict, f"{draw.label}, read as Lean reads it: {python.error}")
+                slow = slow or (verdict == "slow" and written)
+                break
             if (
                 annotation.name in stopped
                 and verdict == "differed"
@@ -3387,6 +3402,9 @@ def _run(
                 return _refuted(
                     fact, annotation, draw, python, term, stopped=stopped[annotation.name]
                 )
+        else:
+            for comparison in pending:
+                tally.record(*comparison)
     return None
 
 

@@ -1742,6 +1742,50 @@ def test_what_follows_where_both_readings_stop_is_compared(prover, tmp_path) -> 
     assert pairs["logarithm"][1].provenance["counterexample"] == {"x": 0}
 
 
+#: Claims whose second reading runs too long: both readings stop at ``1 //
+#: 0``, and read as Lean reads it, the helper after it loops (#99, #101).
+STOPPED_THEN_SLOW = """
+def spin(n, past):
+    while isinstance(n, int) and n >= past:
+        pass
+    return n * 0
+
+
+@theorem
+def always(n: Nat) -> 1 // (n - n) + spin(n, 0) == 0:
+    \"\"\"Python stops at 1 // 0 at every draw; past it, spin never returns.\"\"\"
+
+
+@theorem
+def from_three(n: Nat) -> 1 // (n - n) + spin(n, 3) == 0:
+    \"\"\"The same from 3 on; below it, what follows 1 // 0 is compared.\"\"\"
+"""
+
+
+def test_a_draw_whose_second_reading_is_given_up_counts_for_nothing(
+    monkeypatch, tmp_path
+) -> None:
+    """A draw at which the reading as Lean reads it is given up is given up (#99, #101).
+
+    Both readings stopped at ``1 // (n - n)`` at every draw and agreed that
+    there is no value, and read as Lean reads it, ``spin`` ran past the
+    draw's time. That was dropped and the first agreement kept, so
+    ``always`` read ``tested`` though what follows ``1 // 0`` was compared at
+    no draw. Such a draw is given up as ``slow`` now: ``always`` is declined,
+    and ``from_three`` is tested at the draws below 3.
+    """
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.2)
+    monkeypatch.setattr(faithful, "SAMPLES", 2)
+    pairs = _pairs(check_path(_write(tmp_path, STOPPED_THEN_SLOW)))
+    reading = pairs["always"][1]
+    assert reading.status is Status.ASSUMED, reading.provenance
+    assert "no draw could be made" in reading.provenance["declined"]
+    assert "read as Lean reads it" in reading.provenance["declined"]
+    reading = pairs["from_three"][1]
+    assert reading.status is Status.TESTED, reading.provenance
+    assert reading.provenance["slow"] >= 3, reading.provenance
+
+
 #: Claims whose readings would run too long at a value they write (#101).
 TOO_SLOW = """
 def spin(n):

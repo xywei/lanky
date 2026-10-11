@@ -97,7 +97,9 @@ worth the `tested` reading it rests on.
     `totalized` and what the first reading `stopped` at in its provenance.
     The rerun reads so the operators the annotation writes, and the term all
     of its own, so a helper's division, which the rerun leaves Python's, gives
-    the second reading no value and says nothing more.
+    the second reading no value and says nothing more. A draw whose second
+    reading is given up is given up, and the first reading's agreement there
+    is not counted.
   - A time budget per draw (#101). The readings of a claim's annotations at
     one draw may take `DRAW_SECONDS = 5` seconds, and a power or a left
     shift either asks for may have `POWER_BITS = 2 ** 20` bits; past either,
