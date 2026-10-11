@@ -510,6 +510,50 @@ def test_a_fallback_adds_to_the_hints_a_part_has(lean: LeanOracle) -> None:
     )
 
 
+def test_an_instance_that_cannot_be_written_leaves_the_others() -> None:
+    # Codex: one unwritable instance dropped every instance
+    off, cnt, q, b = Var("off"), Var("cnt"), Var("q"), Var("b")
+    recurrence = Forall(((q, FinType(n)),), off(q + 1) == off(q) + cnt(q))
+    monotone = Forall(
+        ((a, FinType(n + 1)), (b, FinType(n + 1))), off(a) <= off(b), a <= b
+    )
+    part = Part(
+        "flat",
+        "off[r] + j",
+        claim(
+            (n, (off, Fn[Int, Int]), (cnt, Fn[Int, Int]), r, j),
+            [recurrence, monotone, r >= 0, r < n, j >= 0, j < cnt(r)],
+            off(r) + j < off(n),
+        ),
+        # the hypothesis r >= 0 is no universal: that instance cannot be written
+        Hints(instances=(Instance(0, (r,)), Instance(2, (r,)), Instance(1, (r + 1, n)))),
+    )
+    [_, (how, script)] = attempts(part, part_statement(part, "kernel_flat"))
+    assert how == "omega, with the hypotheses taken at 2 points"
+    assert script.splitlines()[:2] == [
+        "have hi0 := h0 r",
+        "have hi1 := fun g1_0 g1_1 => h1 (r + 1) g1_0 g1_1 n",
+    ]
+
+
+def test_a_counterexample_lean_has_no_time_for_is_no_disagreement(
+    lean: LeanOracle,
+) -> None:
+    # Codex: a check that ran out of time read as a disagreement
+    part = Part("S0", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    refuted = Obligation(
+        parts=(part,), counterexample=Counterexample("S0", {"n": 2, "x": 1}, "x=1 at n=2")
+    )
+    hurried = LeanOracle(timeout=lean.timeout, session=lean.session, budget=1e-9)
+    hurried.proofs = ProofCache(None)
+    fact = hurried.establish(fact_of(refuted, Status.REFUTED))
+    assert fact.status is Status.REFUTED
+    assert "lean_disagrees" not in fact.provenance
+    assert fact.provenance["lean_counterexample"] == (
+        "Lean did not check the counterexample at x=1 at n=2: it ran out of time"
+    )
+
+
 def test_a_disjunction_is_proved_piece_by_piece(lean: LeanOracle) -> None:
     bare = Part("read", "off[r] has a writer", LAST_WRITER)
     assert lean.establish(fact_of(Obligation(parts=(bare,)))).status is Status.ASSUMED

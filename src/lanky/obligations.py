@@ -493,16 +493,18 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         return out
     lines: list[str] = []
     said: list[str] = []
-    try:
-        instances = [
-            _instance_line(statement, part, instance, index)
-            for index, instance in enumerate(hints.instances)
-        ]
-    except UnsupportedTerm:
-        instances = []
+    instances: list[str] = []
+    usable: list[Instance] = []
+    for instance in hints.instances:
+        # an instance that cannot be written is dropped, and the others kept
+        try:
+            instances.append(_instance_line(statement, part, instance, len(instances)))
+        except UnsupportedTerm:
+            continue
+        usable.append(instance)
     if instances:
         lines += instances
-        lines += _congruence_lines(statement, part, hints.instances, 0)
+        lines += _congruence_lines(statement, part, usable, 0)
         said.append(
             f"the hypotheses taken at {len(instances)} "
             f"point{'s' if len(instances) != 1 else ''}"

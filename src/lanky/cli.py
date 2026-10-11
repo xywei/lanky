@@ -1378,9 +1378,16 @@ def _lean_lines(fact: Fact) -> list[str]:
         return []
     from lanky.lean import statement_of
 
-    try:
-        statement = statement_of(term, fact.owner or fact.id)
-    except Exception:  # noqa: BLE001 - a statement the printer declines has no Lean form
+    statement = None
+    for mathlib in (False, True):
+        # core Lean first, and Mathlib's dialect for a claim only it can state,
+        # a real or complex one the Mathlib oracle tried (Codex)
+        try:
+            statement = statement_of(term, fact.owner or fact.id, mathlib=mathlib)
+        except Exception:  # noqa: BLE001 - a statement the printer declines has no Lean form
+            continue
+        break
+    if statement is None:
         return []
     why = provenance.get("lean_reason") or provenance.get("lean_declined")
     said = f": {why}" if _recorded(why) else ""

@@ -2622,8 +2622,10 @@ class LeanOracle:
             )
         session = self._part_sessions()[0]
         last = ""
+        heard = False
         for how, source in sources:
             closed, detail, _cached, answered = self._ask(session, source, until)
+            heard = heard or answered
             if closed:
                 return fact.with_status(
                     fact.status,
@@ -2635,6 +2637,16 @@ class LeanOracle:
                     lean_version=session.version,
                 )
             last = detail if answered else f"no answer in time ({detail})"
+        if not heard:
+            # Lean gave no verdict, which is no disagreement (Codex)
+            return fact.with_status(
+                fact.status,
+                lean_counterexample=(
+                    f"Lean did not check the counterexample at {where}: it ran out of time"
+                ),
+                lean_counterexample_detail=last,
+                lean_refutation=sources[-1][1],
+            )
         return fact.with_status(
             fact.status,
             lean_counterexample=(
