@@ -217,7 +217,10 @@ worth the `tested` reading it rests on.
   An annotation whose `log(0)` or `sqrt(-1)` raised while it was read is
   read now, and meets the gap to Mathlib's total functions as `log(x)` under
   `x == 0` does: in Mathlib mode Lean proves `log(0) == 0`, with the
-  semantics note.
+  semantics note. Python that asks for a number gets the one Python
+  computes, as in a helper: `math.floor(exp(2))` and `math.isclose(exp(1),
+  math.e)` ask the term for its float, which a term with no variable in it
+  now gives, as Python reads it, where pymbolic's float knew no lanky node.
 - **`all` and `any` over a concrete domain join the terms they are given.**
   A body that is a term at each point, `all(exp(k) >= 1 + k for k in
   range(4))` now that `exp(k)` is one (#81), is the conjunction, or the

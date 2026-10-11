@@ -57,6 +57,7 @@ from typing import Any, ClassVar
 
 import pymbolic.primitives as prim
 from pymbolic import expr_dataclass
+from pymbolic.mapper import UnsupportedExpressionError
 from pymbolic.mapper.evaluator import EvaluationMapper as _PymbolicEvaluationMapper
 
 __all__ = [
@@ -491,6 +492,26 @@ class SymbolicMixin:
             _refuse_truth(self, sys._getframe(1))
         answer = getattr(super(), "__bool__", None)
         return True if answer is None else answer()
+
+    def __float__(self) -> float:
+        """Python's float of a term with no variable in it, as ``math.floor(exp(2))`` asks for one.
+
+        pymbolic's float evaluates the term with an evaluator of its own,
+        which knows none of lanky's nodes. An annotation's ``exp(2)`` is a
+        term since #81, so ``math.floor`` and ``math.isclose`` of it, which
+        ask for its float, raised pymbolic's ``UnsupportedExpressionError``,
+        where they computed with Python's float before. A term with no
+        variable in it is read as Python reads it (:func:`evaluate`), which is
+        what the file run as a program computes, and the faithfulness check's
+        rerun; a term with a variable has no value until it is evaluated, and
+        raises as pymbolic does.
+        """
+        try:
+            return super().__float__()  # type: ignore[misc]
+        except UnsupportedExpressionError:
+            if free_variables(self):
+                raise
+            return float(evaluate(self, {}))
 
     # {{{ comparisons build propositions
 

@@ -553,6 +553,21 @@ def test_an_elementary_function_of_a_number_in_an_annotation_stays_exact() -> No
     assert 1.4142135623730951 * 1.4142135623730951 != 2
     assert TestOracle().establish(root_two.fact()).status is Status.TESTED
 
+    # Python that asks for a number gets the one Python computes, as a
+    # helper does: math.floor and math.isclose of a term raised pymbolic's
+    # error, which knows no lanky node, where they read the float before
+    @theorem
+    def floored(n: Nat) -> (math.floor(exp(2)) == 7) & math.isclose(exp(1), math.e):
+        """True as Python computes it, the only way ``math`` does."""
+
+    assert floored.goal is True
+    assert floored.faithful_fact().status is Status.TESTED
+    # and a term with a variable has no float until it is evaluated
+    from pymbolic.mapper import UnsupportedExpressionError
+
+    with pytest.raises(UnsupportedExpressionError):
+        math.floor(exp(Var("x")))
+
 
 def test_an_elementary_function_of_a_number_over_a_concrete_domain() -> None:
     """#81: ``exp(k)`` at each point of ``range(4)`` is a term, and ``all`` joins them.
