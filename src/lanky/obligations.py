@@ -514,8 +514,17 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         except UnsupportedTerm:
             continue
         pattern = " | ".join([f"hs{index}"] * _disjuncts(split))
-        split_lines.append(f"have hs{index} : {text} := by omega")
-        split_lines.append(f"rcases hs{index} with {pattern}")
+        lines_of_split = [
+            f"have hs{index} : {text} := by omega",
+            f"rcases hs{index} with {pattern}",
+        ]
+        if split_lines:
+            # every case the splits before made is split again, not only the
+            # first: the cases are their cross-product
+            split_lines.append("all_goals")
+            split_lines += ["  " + line for line in lines_of_split]
+        else:
+            split_lines += lines_of_split
     if split_lines:
         lines += split_lines
         said.append("a case split")

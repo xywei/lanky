@@ -1927,15 +1927,28 @@ class ProofCache:
 
 
 def _fallback_attempts(part: Any, statement: LeanStatement) -> list[tuple[str, str]]:
-    """The scripts a part's ``fallback`` hints make, ``omega`` alone left out."""
+    """The scripts a part's ``fallback`` hints make, with its own, ``omega`` alone left out.
+
+    The fallback's hints are added to the part's, not put in their place: a
+    part may need an instance of a hypothesis, which its hints give, and a
+    case split, which only its fallback does, in one script.
+    """
     from dataclasses import replace as replaced
 
+    from lanky.obligations import Hints
+
     try:
-        hints = part.fallback()
+        more = part.fallback()
     except Exception:  # noqa: BLE001 - a solver's failure is no hint
         return []
-    if not hints:
+    if not more:
         return []
+    own = part.hints
+    hints = Hints(
+        instances=(*own.instances, *more.instances),
+        witness=more.witness or own.witness,
+        splits=(*own.splits, *more.splits),
+    )
     return [
         (how, tactic)
         for how, tactic in attempts(replaced(part, hints=hints, fallback=None), statement)

@@ -454,6 +454,62 @@ def test_a_split_rescues_omega_where_its_shadows_are_missing(lean: LeanOracle) -
     assert lean.establish(fact_of(Obligation(parts=(split,)))).status is Status.PROVED
 
 
+def test_every_case_a_split_makes_is_split_again(lean: LeanOracle) -> None:
+    # Codex: a second split ran only in the first case the first one made. Here
+    # the first split is of no use, and every case needs the second (Pugh's).
+    hypotheses = [
+        11 * x + 13 * y >= 27,
+        11 * x + 13 * y <= 45,
+        7 * x - 9 * y >= -10,
+        7 * x - 9 * y <= 4,
+    ]
+    part = Part(
+        "pugh",
+        "Pugh's example",
+        claim((x, y), hypotheses, False),
+        Hints(splits=(LogicalOr(((y <= 0), (y > 0))), LogicalOr(((x == 1), (x == 2))))),
+    )
+    [_, (_how, script)] = attempts(part, part_statement(part, "pugh"))
+    assert script.splitlines() == [
+        "have hs0 : y ≤ 0 ∨ y > 0 := by omega",
+        "rcases hs0 with hs0 | hs0",
+        "all_goals",
+        "  have hs1 : x = 1 ∨ x = 2 := by omega",
+        "  rcases hs1 with hs1 | hs1",
+        "all_goals omega",
+    ]
+    assert lean.establish(fact_of(Obligation(parts=(part,)))).status is Status.PROVED
+
+
+def test_a_fallback_adds_to_the_hints_a_part_has(lean: LeanOracle) -> None:
+    # Codex: the fallback's split took the place of the part's instance. Where
+    # x <= 0 the claim needs f's hypothesis taken at x, and elsewhere (Pugh's
+    # example, which has no integer point) the split by x's rational bounds.
+    f, q = Var("f"), Var("q")
+    zero = Forall(((q, Int),), f(q) == 0, q <= 0)
+    pugh = LogicalAnd(
+        (
+            11 * x + 13 * y >= 27,
+            11 * x + 13 * y <= 45,
+            7 * x - 9 * y >= -10,
+            7 * x - 9 * y <= 4,
+        )
+    )
+    term = claim(((f, Fn[Int, Int]), x, y), [zero, LogicalOr(((x <= 0), pugh))], f(x) == 0)
+
+    def splits() -> Hints:
+        return Hints(splits=(LogicalOr(((x <= 0), (x == 1), (x == 2))),))
+
+    part = Part("both", "an instance and a split", term, Hints(instances=(Instance(0, (x,)),)))
+    assert lean.establish(fact_of(Obligation(parts=(part,)))).status is Status.ASSUMED
+    both = Part("both", "an instance and a split", term, part.hints, fallback=splits)
+    fact = lean.establish(fact_of(Obligation(parts=(both,))))
+    assert fact.status is Status.PROVED
+    assert fact.provenance["lean_parts"][0]["how"] == (
+        "omega, with the hypotheses taken at 1 point and a case split"
+    )
+
+
 def test_a_disjunction_is_proved_piece_by_piece(lean: LeanOracle) -> None:
     bare = Part("read", "off[r] has a writer", LAST_WRITER)
     assert lean.establish(fact_of(Obligation(parts=(bare,)))).status is Status.ASSUMED
