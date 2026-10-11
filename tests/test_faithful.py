@@ -1454,6 +1454,11 @@ def tables(k):
     return {"v": STATE[0]}
 
 
+@functools.lru_cache(maxsize=1)
+def single(k):
+    return k
+
+
 stale(0)
 bounded(0)
 bounded(1, extra=2)
@@ -1464,6 +1469,8 @@ by_function(helper)
 bounded_tables(0)
 bounded_tables(1)
 tables(0)
+single(0)
+single(1)
 STATE[0] = 0
 
 
@@ -1499,6 +1506,21 @@ def dict_results(n: Nat) -> (
 
 
 @theorem
+def misses(n: Nat) -> n * 0 + single.cache_info().misses == 2:
+    \"\"\"Two misses before the claim, though the cache holds one entry.\"\"\"
+
+
+@theorem
+def hits(n: Nat) -> n * 0 + single(1) * 0 + single.cache_info().hits == 1:
+    \"\"\"single(1) is the first hit the cache counts.\"\"\"
+
+
+@theorem
+def cleared(n: Nat) -> n * 0 + (single.cache_clear(), single.cache_info().misses)[1] == 0:
+    \"\"\"Clearing the cache clears its counts.\"\"\"
+
+
+@theorem
 def misread(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == typed_at_a_number(i) for i in Fin[n]
 ):
@@ -1512,9 +1534,10 @@ def test_a_cache_with_entries_is_made_again_with_them(prover, tmp_path, monkeypa
     Made again empty, a cache answered as its function answers now, and the
     true ``hit`` was refuted; shared instead, it was declined. Now the copy
     holds the same entries, their results copied, in the order the cache
-    evicts them, keyed as the original keys them, so every claim here reads
-    ``tested``, the misreading is still refuted, and a cache whose entries
-    cannot be read off it is shared, and declined, naming it.
+    evicts them, keyed as the original keys them, and counts its hits and
+    misses on from the original's, so every claim here reads ``tested``, the
+    misreading is still refuted, and a cache whose entries cannot be read off
+    it is shared, and declined, naming it.
     """
     path = _write(tmp_path, CACHES_WITH_ENTRIES)
     pairs = _pairs(check_path(path))
@@ -1525,6 +1548,9 @@ def test_a_cache_with_entries_is_made_again_with_them(prover, tmp_path, monkeypa
         "keyed": Status.TESTED,
         "through_a_function": Status.TESTED,
         "dict_results": Status.TESTED,
+        "misses": Status.TESTED,
+        "hits": Status.TESTED,
+        "cleared": Status.TESTED,
         "misread": Status.REFUTED,
     }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
     assert pairs["misread"][1].provenance["counterexample"] == {"n": 1, "f": [1]}
@@ -1681,6 +1707,13 @@ def outside(n: Nat, f: Fn[Fin[n], Nat]) -> all(
 
 
 @theorem
+def curried(n: Nat, f: Fn[Fin[n], Fn[Fin[1], Nat]]) -> all(
+    f(i - 1)(0) * 0 + table(i) == 0 for i in Fin[n]
+):
+    \"\"\"f(-1) has no value, and read as Lean reads it, is a family that is 0 everywhere.\"\"\"
+
+
+@theorem
 def logarithm(x: Real) -> log(x - x) * 0 + table(x) == 0:
     \"\"\"log(0) has no value in Python and is 0 in Mathlib, and table(0) is 1.\"\"\"
 
@@ -1722,12 +1755,13 @@ def test_what_follows_where_both_readings_stop_is_compared(prover, tmp_path) -> 
         "masked": Status.REFUTED,
         "remainder": Status.REFUTED,
         "outside": Status.REFUTED,
+        "curried": Status.REFUTED,
         "logarithm": Status.REFUTED,
         "divides": Status.TESTED,
         "where_defined": Status.TESTED,
         "in_a_helper": Status.TESTED,
     }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
-    for owner in ("masked", "remainder", "outside", "logarithm"):
+    for owner in ("masked", "remainder", "outside", "curried", "logarithm"):
         claim, reading = pairs[owner]
         assert claim.status is Status.ASSUMED
         assert reading.provenance["totalized"] is True, owner
@@ -1745,6 +1779,9 @@ def test_what_follows_where_both_readings_stop_is_compared(prover, tmp_path) -> 
 #: Claims whose second reading runs too long: both readings stop at ``1 //
 #: 0``, and read as Lean reads it, the helper after it loops (#99, #101).
 STOPPED_THEN_SLOW = """
+import time
+
+
 def spin(n, past):
     while isinstance(n, int) and n >= past:
         pass
@@ -1759,6 +1796,17 @@ def always(n: Nat) -> 1 // (n - n) + spin(n, 0) == 0:
 @theorem
 def from_three(n: Nat) -> 1 // (n - n) + spin(n, 3) == 0:
     \"\"\"The same from 3 on; below it, what follows 1 // 0 is compared.\"\"\"
+
+
+def nap(n):
+    if isinstance(n, int):
+        time.sleep(0.15)
+    return n * 0
+
+
+@theorem
+def napping(n: Nat) -> nap(n) + 1 // (n - n) == 0:
+    \"\"\"Each reading naps before it stops at 1 // 0, which the second passes.\"\"\"
 """
 
 
@@ -1772,7 +1820,9 @@ def test_a_draw_whose_second_reading_is_given_up_counts_for_nothing(
     draw's time. That was dropped and the first agreement kept, so
     ``always`` read ``tested`` though what follows ``1 // 0`` was compared at
     no draw. Such a draw is given up as ``slow`` now: ``always`` is declined,
-    and ``from_three`` is tested at the draws below 3.
+    and ``from_three`` is tested at the draws below 3. The second reading
+    shares its draw's time, where it had five seconds of its own: ``napping``
+    naps in both, past the draw's time at every draw.
     """
     monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.2)
     monkeypatch.setattr(faithful, "SAMPLES", 2)
@@ -1784,6 +1834,10 @@ def test_a_draw_whose_second_reading_is_given_up_counts_for_nothing(
     reading = pairs["from_three"][1]
     assert reading.status is Status.TESTED, reading.provenance
     assert reading.provenance["slow"] >= 3, reading.provenance
+    # the two readings of a draw share its time: each naps 0.15 seconds
+    reading = pairs["napping"][1]
+    assert reading.status is Status.ASSUMED, reading.provenance
+    assert "no draw could be made" in reading.provenance["declined"]
 
 
 #: Claims whose readings would run too long at a value they write (#101).

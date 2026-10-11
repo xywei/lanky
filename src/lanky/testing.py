@@ -177,6 +177,7 @@ __all__ = [
     "sampling_order",
     "statement_free_names",
     "thin_pass_reason",
+    "totalized_value",
     "truth_value",
 ]
 
@@ -263,6 +264,42 @@ class Unevaluable(SkipSample):
     """
 
 
+def totalized_value(codomain: Any) -> Any:
+    """What a family over ``codomain`` is outside its domain inside :func:`lanky.terms.totalized`.
+
+    Lean's statement never applies a family outside its domain (the printer
+    declines such a statement), so the value only has to be the same for
+    both readings of the faithfulness check, and usable as what the family
+    holds, so that what follows the application is compared (#99): a family
+    of families is the family that is this everywhere, a truth value is
+    ``False``, and anything else is ``0``.
+    """
+    while isinstance(codomain, Refined):
+        codomain = codomain.base
+    if isinstance(codomain, FnType):
+        return _TotalizedFamily(codomain.codomain)
+    if isinstance(codomain, Sort) and codomain.name in ("Bool", "Prop"):
+        return False
+    return 0
+
+
+class _TotalizedFamily:
+    """A family that is :func:`totalized_value` of its codomain at every point."""
+
+    def __init__(self, codomain: Any) -> None:
+        self.codomain = codomain
+
+    def __call__(self, index: Any) -> Any:
+        """:func:`totalized_value` of the codomain, wherever it is applied."""
+        return totalized_value(self.codomain)
+
+    __getitem__ = __call__
+
+    def __repr__(self) -> str:
+        """Print as what it is everywhere."""
+        return f"TotalizedFamily({totalized_value(self.codomain)!r})"
+
+
 class Table:
     """A finite family: what a property test supplies for an ``Fn[A, B]``.
 
@@ -277,9 +314,12 @@ class Table:
     a question the statement never asked.
     """
 
-    def __init__(self, values: Any, name: str = "a family") -> None:
+    def __init__(self, values: Any, name: str = "a family", codomain: Any = None) -> None:
         self.values = list(values)
         self.name = name
+        #: What the family's values are, if known: it says what the family is
+        #: outside its domain inside :func:`lanky.terms.totalized`.
+        self.codomain = codomain
 
     def _position(self, index: Any) -> int:
         """The index as a point of the domain, or decline to answer there."""
@@ -297,12 +337,16 @@ class Table:
         return self[index]
 
     def __getitem__(self, index: Any) -> Any:
-        """The value at ``index``; ``0`` outside the domain inside :func:`lanky.terms.totalized`."""
+        """The value at ``index``.
+
+        Outside the domain, inside :func:`lanky.terms.totalized`, it is
+        :func:`totalized_value` of the codomain.
+        """
         try:
             position = self._position(index)
         except Undecided:
             if is_totalized():
-                return 0
+                return totalized_value(self.codomain)
             raise
         return self.values[position]
 

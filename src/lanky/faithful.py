@@ -227,6 +227,7 @@ from lanky.testing import (
     sampling_order,
     satisfy_hypotheses,
     statement_free_names,
+    totalized_value,
 )
 
 __all__ = [
@@ -299,9 +300,10 @@ SIZE_POINTS = 1024
 WALK_POINTS = 1 << 15
 
 #: How many seconds the readings of a claim's annotations may take at one
-#: draw, both readings of every annotation together, before the draw is given
-#: up as too slow (#101): a helper that takes time exponential in its
-#: argument, at a value the claim writes.
+#: draw, both readings of every annotation together and the draw's second
+#: reading with them (#99), before the draw is given up as too slow (#101): a
+#: helper that takes time exponential in its argument, at a value the claim
+#: writes.
 DRAW_SECONDS = 5.0
 
 #: How many bits a power or a left shift may have that an annotation, or its
@@ -1276,6 +1278,33 @@ def _cache_entries(cache: Any) -> list[tuple[Any, Any]] | None:
 _CALLS = "_lanky_calls"
 
 
+def _counted(cache: Any, info: Any) -> Any:
+    """``cache``, made again by the check, counting its hits and misses on from ``info``'s.
+
+    The copy counts the calls that put its entries in, and none before, while
+    the original counts on from what it counted when the claim was read, which
+    an annotation may read (``cache_info().misses``). So the copy's
+    ``cache_info`` adds what the original had counted, and its
+    ``cache_clear`` clears that too, as it clears the original's counts.
+    """
+    kind = type(cache)
+    own = kind.cache_info(cache)
+    offset = [info.hits - own.hits, info.misses - own.misses]
+
+    def cache_info() -> Any:
+        now = kind.cache_info(cache)
+        return type(now)(now.hits + offset[0], now.misses + offset[1], now.maxsize, now.currsize)
+
+    def cache_clear() -> None:
+        kind.cache_clear(cache)
+        offset[0] = offset[1] = 0
+
+    # attributes of the object's own, which come before the methods of its type
+    cache.cache_info = cache_info
+    cache.cache_clear = cache_clear
+    return cache
+
+
 @functools.cache
 def _cache_mark() -> Any:
     """What ``functools.lru_cache`` puts in a key between the positional and keyword arguments."""
@@ -1716,13 +1745,14 @@ class _Copier:
         (:func:`_cache_call`), and the call answered with the copy of its
         result. Where the entries cannot be read off the cache
         (:func:`_cache_entries`), or a key cannot be read back into a call,
-        the cache is shared, and the reading declined, naming it. The copy's
-        hit and miss counts start from its entries, not from the original's.
+        the cache is shared, and the reading declined, naming it. The copy
+        counts its hits and misses on from the original's (:func:`_counted`).
         """
-        held = value.cache_info().currsize
+        info = value.cache_info()
+        held = info.currsize
         parameters = value.cache_parameters()
         if not held:
-            return self.remember(value, functools.lru_cache(**parameters)(wrapped))
+            return self.remember(value, _counted(functools.lru_cache(**parameters)(wrapped), info))
         entries = _cache_entries(value)
         calls = [] if entries is not None else None
         for key, result in entries or ():
@@ -1757,7 +1787,7 @@ class _Copier:
             out(*args, **kwargs)
         if answers or out.cache_info().currsize != held:
             raise RuntimeError("the entries of the cache did not go in as they were")
-        return out
+        return _counted(out, info)
 
     def array(self, value: numpy.ndarray, path: str) -> Any:
         """A numpy array as the copy has it: copied, a view made again over the copy it views.
@@ -2459,7 +2489,8 @@ class DrawnFamily:
         """The value at ``point``, drawn the first time it is asked for.
 
         Outside the domain it has none, and inside
-        :func:`lanky.terms.totalized` it is ``0`` there, as a table's is.
+        :func:`lanky.terms.totalized` it is what a table's is there
+        (:func:`lanky.testing.totalized_value`).
         """
         if (
             _is_truth(point)
@@ -2467,7 +2498,7 @@ class DrawnFamily:
             or not in_sort(point, self.domain, self.context)
         ):
             if is_totalized():
-                return 0
+                return totalized_value(self.codomain)
             raise Undecided(
                 f"{self.name} is applied at {point!r}, which is outside the domain "
                 f"{self.domain} it declares, so this draw decides nothing"
@@ -2536,6 +2567,7 @@ def _draw(
             return Table(
                 [_draw(codomain, source, context, size=size) for _ in range(bound)],
                 name=name or "a family",
+                codomain=codomain,
             )
         return DrawnFamily(domain, codomain, source, dict(context), name or "a family", size)
     if isinstance(source, _Pinned):
@@ -3041,6 +3073,7 @@ def _compare(
     annotations: Sequence[_Annotation],
     draw: _Draw,
     total: bool = False,
+    deadline: float | None = None,
 ) -> Iterator[tuple[_Annotation, str, _Outcome, _Outcome]]:
     """Each annotation, how its two readings compare at ``draw``, and the two outcomes.
 
@@ -3054,16 +3087,18 @@ def _compare(
     values at other points, and only where both have a value do they say
     the same if the term is faithful.
 
-    The readings of all the annotations at the draw may take
-    :data:`DRAW_SECONDS` together. Where they take longer, or walk more
-    than :data:`WALK_POINTS` points, the draw is given up: the annotation is
+    The readings of all the annotations at the draw may run until
+    ``deadline``, :data:`DRAW_SECONDS` from now unless the draw has one
+    already (:func:`_run`). Where they run longer, or walk more than
+    :data:`WALK_POINTS` points, the draw is given up: the annotation is
     yielded with the verdict ``slow`` or ``unwalked``, and none after it.
     """
     scope = _scope(namespace)
     for name in parameters:
         scope[name] = draw.context[name] if name in draw.context else Var(name)
     scope["__lanky_walrus__"] = functools.partial(_bind, scope)
-    deadline = time.monotonic() + DRAW_SECONDS
+    if deadline is None:
+        deadline = time.monotonic() + DRAW_SECONDS
     for annotation in annotations:
         unsummed: list[list[tuple[str, Any]]] = []
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)
@@ -3356,6 +3391,8 @@ def _run(
             tally.give_up("slow", f"{draw.label}: past a written value too slow to draw at")
             continue
         tally.draws += 1
+        # both readings of the draw, and its second reading, share its time
+        deadline = time.monotonic() + DRAW_SECONDS
         stopped: dict[str, tuple[_Outcome, _Outcome]] = {}
         # the comparisons of the annotations that stopped, counted once the
         # second reading has compared what follows
@@ -3364,7 +3401,7 @@ def _run(
         namespace, shared = snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
         for annotation, verdict, python, term in _compare(
-            namespace, parameters, annotations, draw
+            namespace, parameters, annotations, draw, deadline=deadline
         ):
             if verdict == "differed":
                 return _refuted(fact, annotation, draw, python, term)
@@ -3385,7 +3422,7 @@ def _run(
         namespace, shared = snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
         for annotation, verdict, python, term in _compare(
-            namespace, parameters, annotations, draw, total=True
+            namespace, parameters, annotations, draw, total=True, deadline=deadline
         ):
             if verdict in ("unwalked", "slow"):
                 # what follows where Python stopped was not compared

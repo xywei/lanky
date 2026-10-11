@@ -34,7 +34,8 @@ worth the `tested` reading it rests on.
     cell close over one copy of it, a view of an array is made again over
     the copy of the array it views, so that a write through one view is read
     through another, and a `functools.partial`, a function behind
-    `functools.lru_cache`, with the entries its cache holds (#105), and a
+    `functools.lru_cache`, with the entries its cache holds and its hit and
+    miss counts (#105), and a
     method bound to a copied table (`TABLE.get`) are made again around the
     copies. Every draw runs in a
     copy of that copy, so a helper reads what it read when the claim was
@@ -92,7 +93,8 @@ worth the `tested` reading it rests on.
     with what Python has no value for read as Lean has it
     (`lanky.terms.totalized`): `x / 0` and `x // 0` are `0`, `x % 0` is `x`,
     `0 ** -k` is `0`, a logarithm or a square root outside its Python domain
-    is Mathlib's, and a family outside its domain is `0`. Where both then have
+    is Mathlib's, and a family outside its domain is `0` (a family that is `0`
+    everywhere for a family of families, `False` for truth values). Where both then have
     a value they have to agree, and a disagreement refutes the reading, with
     `totalized` and what the first reading `stopped` at in its provenance.
     The rerun reads so the operators the annotation writes, and the term all
@@ -101,7 +103,8 @@ worth the `tested` reading it rests on.
     reading is given up is given up, and the first reading's agreement there
     is not counted.
   - A time budget per draw (#101). The readings of a claim's annotations at
-    one draw may take `DRAW_SECONDS = 5` seconds, and a power or a left
+    one draw, and the draw's second reading with them, may take
+    `DRAW_SECONDS = 5` seconds, and a power or a left
     shift either asks for may have `POWER_BITS = 2 ** 20` bits; past either,
     the draw is given up as `slow`, as a walk past `WALK_POINTS` is given up
     as `unwalked`, and the written values past it are not drawn at. The walks
@@ -150,7 +153,9 @@ worth the `tested` reading it rests on.
   iterates while an annotation is run again at concrete values.
 - `lanky.terms.totalized` and `is_totalized`: a block in which
   `elementary_value`, a `lanky.testing.Table` and the faithful fact's
-  operators read what Python has no value for as Lean has it (#99).
+  operators read what Python has no value for as Lean has it (#99), and
+  `lanky.testing.totalized_value`, what a family is there outside its domain,
+  with the `codomain` a `Table` now takes.
 - `lanky.faithful.DRAW_SECONDS` and `POWER_BITS` (#101).
 - **The pytest plugin fails a theorem whose reading is refuted**, with the
   annotation, the draw and the reason, before any draw of its term, which
@@ -217,9 +222,10 @@ worth the `tested` reading it rests on.
   a reading that reached one with entries: an entry answers where the
   function, run on the copy, may answer otherwise. The copy is now a cache
   of the same size around the copy of the function, holding the same
-  entries, their results copied, in the order the cache evicts them, so a
-  claim that reads a cached value from before it reads `tested`, where it
-  was refuted and then declined. The entries are read off the cache as the
+  entries, their results copied, in the order the cache evicts them, and
+  counting its hits and misses on from the original's, so a claim that reads
+  a cached value from before it, or the cache's counts, reads `tested`,
+  where it was refuted and then declined. The entries are read off the cache as the
   garbage collector lists them, and a cache whose entries cannot be read so
   is shared, and the reading declined, naming it. So is a reading whose
   draw's copy cannot make again what the snapshot copied
