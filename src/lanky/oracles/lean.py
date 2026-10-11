@@ -65,6 +65,7 @@ import sys
 import threading
 import time
 import weakref
+from dataclasses import replace
 from importlib.util import find_spec
 from typing import Any
 
@@ -95,6 +96,13 @@ from lanky.lean import (
     statement_of,
 )
 from lanky.ledger import Fact, Status
+from lanky.obligations import (
+    attempts,
+    negation_source,
+    obligation_of,
+    part_statement,
+    theorem_name,
+)
 from lanky.prelude import FinType, FnType, Nat, Refined
 from lanky.terms import (
     Add,
@@ -112,8 +120,10 @@ __all__ = [
     "COMBINATION_NORM",
     "LeanOracle",
     "LeanSession",
+    "ProofCache",
     "decline",
     "default_cache_dir",
+    "default_proof_cache_dir",
     "family_induction_scripts",
     "induction_scripts",
     "kill_servers",
@@ -457,6 +467,27 @@ class LeanSession:
         self.mathlib_revision: str | None = None
         #: The REPL's process group, while the reaper watches it (see :meth:`_watch`).
         self._group: int | None = None
+        #: The configuration of a running session this one is a twin of (see
+        #: :meth:`twin`), whose REPL it starts again rather than setting one up.
+        self._config: Any = None
+
+    def twin(self) -> LeanSession:
+        """Another core session that runs the REPL this one runs, once this one has started.
+
+        Parts of an obligation are checked at once, a session each (see
+        :meth:`LeanOracle.establish`). Setting a REPL up checks its build
+        directory with git, which two sessions doing at once in one cache
+        could trip over, so a twin is handed this session's configuration
+        and only starts a server of its own. ``None`` before this session
+        has started, and for a Mathlib session, whose import a twin would
+        repeat for every part.
+        """
+        if self.server is None or self.mathlib is not None:
+            raise ValueError("only a running core session has a twin")
+        other = LeanSession(self.timeout, self.cache_dir)
+        other._config = getattr(self.server, "config", None)
+        other.version = self.version
+        return other
 
     def start(self) -> bool:
         """Open the session, remembering the reason if it cannot be opened."""
@@ -470,6 +501,14 @@ class LeanSession:
             self.error = f"lean_interact does not import ({exc})"
             return False
         _quieten()
+        if self._config is not None:
+            try:
+                self.server = LeanServer(self._config)
+            except Exception as exc:  # noqa: BLE001 - a server that will not start is a reason
+                self.error = f"the Lean REPL did not start ({exc})"
+                return False
+            self._opened()
+            return True
         options: dict[str, Any] = {}
         if self.cache_dir:
             options["cache_dir"] = self.cache_dir
@@ -679,17 +718,30 @@ class LeanSession:
         when nothing is left. What is left is read after the REPL is started
         again, if a timeout killed it.
         """
+        closed, detail, _ = self.answer(source, until)
+        return closed, detail
+
+    def answer(self, source: str, until: float | None = None) -> tuple[bool, str, bool]:
+        """:meth:`run`, and whether the answer is Lean's own.
+
+        The third value is true when Lean elaborated the declaration and
+        accepted it or reported an error in it, which the same source will
+        get again from the same Lean, and false when the command was not
+        answered: it timed out, the budget was spent, or the REPL could not
+        be reached. Only an answer of Lean's own may be kept for next time
+        (see :class:`ProofCache`).
+        """
         from lean_interact import Command
 
         if not self.start():
-            return False, self.error or "no Lean session"
+            return False, self.error or "no Lean session", False
         if not self._revive():
-            return False, self.error or "no Lean session"
+            return False, self.error or "no Lean session", False
         timeout = self.timeout
         if until is not None:
             left = until - time.monotonic()
             if left <= 0:
-                return False, BUDGET_SPENT
+                return False, BUDGET_SPENT, False
             timeout = min(timeout, left)
         if self.mathlib is not None:
             command = Command(cmd=source, env=self.environment)
@@ -698,20 +750,20 @@ class LeanSession:
         try:
             response = self.server.run(command, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 - a timeout must not stop the ladder
-            return False, f"{type(exc).__name__}: {exc}"
+            return False, f"{type(exc).__name__}: {exc}", False
         except BaseException:
             self._interrupted()
             raise
         message = getattr(response, "message", None)
         if message is not None:
-            return False, str(message)
+            return False, str(message), False
         problems = _errors(response)
         if getattr(response, "sorries", ()):
             problems.append("the proof was accepted with a sorry in it")
         if problems:
             lines = problems[0].strip().splitlines()
-            return False, lines[0] if lines else "Lean reported an error with no message"
-        return True, ""
+            return False, lines[0] if lines else "Lean reported an error with no message", True
+        return True, "", True
 
 
 #: Every session that opened, for :func:`kill_servers`.
@@ -1787,6 +1839,115 @@ def _goal_is_false(statement: LeanStatement) -> bool:
 # }}}
 
 
+# {{{ obligations: a plugin's claim in parts, with its solver's hints
+
+
+def default_proof_cache_dir() -> str | None:
+    """Where Lean's answers about obligations are kept; ``None`` when nowhere.
+
+    ``$LANKY_LEAN_PROOF_CACHE`` when it is set, and not kept at all when it is
+    ``off``; else ``proofs`` beside the REPL's build, under
+    ``$XDG_CACHE_HOME/lanky`` or ``~/.cache/lanky``.
+    """
+    chosen = os.environ.get("LANKY_LEAN_PROOF_CACHE")
+    if chosen is not None:
+        return None if chosen.strip().lower() in ("", "off", "0", "no") else chosen
+    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(base, "lanky", "proofs")
+
+
+class ProofCache:
+    """Lean's answers to the declarations an obligation sends, kept by their source.
+
+    A file checked again sends Lean the same declarations, since a kernel's
+    statements change only when the kernel does, and an obligation of a few
+    dozen parts is seconds of Lean each time. So each answer that is Lean's
+    own (:meth:`LeanSession.answer`), a proof accepted or an error reported,
+    is kept under the hash of the Lean version and the declaration's source,
+    and read back instead of asked again. A timeout, a spent budget and a
+    REPL that could not be reached are not kept, since asked again they may
+    be answered. A part read back says so (``cached`` in its record), and its
+    source is the one ``--show-lean`` prints and ``lean`` replays.
+    """
+
+    def __init__(self, directory: str | None) -> None:
+        self.directory = directory
+
+    def _path(self, version: str | None, source: str) -> str | None:
+        if not self.directory:
+            return None
+        import hashlib
+
+        key = hashlib.sha256(f"{version}\n{source}".encode()).hexdigest()
+        return os.path.join(self.directory, key[:2], f"{key}.json")
+
+    def get(self, version: str | None, source: str) -> tuple[bool, str] | None:
+        """The answer kept for ``source`` under ``version``, or ``None``."""
+        path = self._path(version, source)
+        if path is None:
+            return None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                import json
+
+                record = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        if record.get("source") != source:
+            return None
+        return bool(record.get("closed")), str(record.get("detail", ""))
+
+    def put(self, version: str | None, source: str, closed: bool, detail: str) -> None:
+        """Keep Lean's answer; a cache that cannot be written is no cache."""
+        path = self._path(version, source)
+        if path is None:
+            return
+        import json
+        import tempfile
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            fd, scratch = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {"version": version, "source": source, "closed": closed, "detail": detail},
+                    handle,
+                )
+            os.replace(scratch, path)
+        except OSError:
+            return
+
+
+def _jobs() -> int:
+    """How many parts of an obligation Lean checks at once: ``LANKY_LEAN_JOBS``, or up to 4."""
+    text = os.environ.get("LANKY_LEAN_JOBS")
+    if text:
+        try:
+            return max(1, int(text))
+        except ValueError:
+            pass
+    return max(1, min(4, os.cpu_count() or 1))
+
+
+def _parts_text(records: list[dict], proved: bool) -> str:
+    """``dep3 (u[t, i + 1] read after ...)``: the parts that were or were not proved."""
+    named = [
+        f"{record['name']} ({record['label']})" if record.get("label") else record["name"]
+        for record in records
+        if bool(record.get("proved")) is proved
+    ]
+    return "; ".join(named)
+
+
+def _how_text(records: list[dict]) -> str:
+    """What proved the parts, in a few words: ``omega`` or ``omega, with the witness``."""
+    hows = list(dict.fromkeys(record.get("how", "") for record in records if record.get("how")))
+    return "; ".join(hows) if hows else "omega"
+
+
+# }}}
+
+
 # {{{ the oracle
 
 
@@ -1845,6 +2006,13 @@ class LeanOracle:
         #: ``fact id -> reason``, for the facts this oracle leaves to the
         #: oracles after it without trying them (see :func:`decline`).
         self.declines: dict[str, str] = {}
+        #: The core sessions an obligation's parts are checked in, at once
+        #: (see :meth:`_establish_obligation`); the first is set up, and the
+        #: others are its twins (:meth:`LeanSession.twin`).
+        self._pool: list[LeanSession] = []
+        #: Where Lean's answers about obligations are kept (:class:`ProofCache`);
+        #: read from the environment when the first obligation is checked.
+        self.proofs: ProofCache | None = None
 
     @property
     def session(self) -> LeanSession:
@@ -1923,6 +2091,9 @@ class LeanOracle:
         """
         if fact.term is None:
             return False
+        if callable(getattr(fact.term, "lean_obligation", None)):
+            # a plugin's claim, stated for Lean when Lean is asked (lanky.obligations)
+            return True
         try:
             statement_of(fact.term, fact.owner or fact.id, mathlib=self._mathlib())
         except (UnsupportedTerm, AttributeError, TypeError, ValueError):
@@ -1990,6 +2161,8 @@ class LeanOracle:
             return fact.with_status(
                 fact.status, lean_declined=declined, declined=f"{self.name}: {declined}"
             )
+        if callable(getattr(fact.term, "lean_obligation", None)):
+            return self._establish_obligation(fact)
         session = self.session
         mathlib = session.mathlib is not None
         try:
@@ -2122,6 +2295,273 @@ class LeanOracle:
                 )
             proved.append(closing)
         return proved, None
+
+    # {{{ obligations
+
+    def _establish_obligation(self, fact: Fact) -> Fact:
+        """Check the claim a plugin states for Lean (:mod:`lanky.obligations`).
+
+        Every part is proved on its own, ``omega`` first and then with the
+        part's hints, the parts at once in a pool of sessions
+        (``LANKY_LEAN_JOBS``, up to four), each attempt within the oracle's
+        timeout and all of them within the fact's budget, as the ladder's
+        are. When every part is proved the fact is ``proved`` by ``lean``,
+        resting besides on what the obligation names as its hypotheses, and
+        its provenance has the file that replays the proof (``lean_source``),
+        a record of each part (``lean_parts``: how it was proved, in how many
+        seconds, and whether the answer was read from the
+        :class:`ProofCache`), and the solver that decided it and found the
+        hints (``lean_decider``). When a part is not, the fact is returned as
+        it was handed, with ``lean_reason`` naming the parts and why, and the
+        oracles after Lean decide it as they would have: a fact the plugin's
+        solver decides is ``decided`` with the reason Lean did not prove it.
+
+        A claim the solver refuted comes with its counterexample, and is not
+        offered to Lean as a claim: Lean proves the part false at the point
+        instead, and the fact keeps its status with ``lean_counterexample``
+        saying whether Lean confirmed it (see :meth:`_check_counterexample`).
+        """
+        try:
+            obligation = obligation_of(fact.term)
+        except Exception as exc:  # noqa: BLE001 - a plugin's failure declines one fact
+            obligation = None
+            reason = f"the claim could not be stated for Lean ({type(exc).__name__}: {exc})"
+        else:
+            reason = "the claim is stated with nothing for Lean to check"
+        if obligation is not None and obligation.declined:
+            reason = obligation.declined
+        if obligation is None or obligation.declined or not obligation.parts:
+            return fact.with_status(
+                fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+            )
+        available, why = self.availability()
+        if not available:
+            return fact.with_status(fact.status, lean_declined=why, declined=f"{self.name}: {why}")
+        try:
+            budget = self._budget(fact)
+        except ValueError as exc:
+            return fact.with_status(
+                fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
+            )
+        sessions = self._part_sessions()
+        if not sessions:
+            return fact.with_status(
+                fact.status, lean_tried=0, lean_reason=self._pool_error()
+            )
+        if self.proofs is None:
+            self.proofs = ProofCache(default_proof_cache_dir())
+        until = None if budget is None else time.monotonic() + budget
+        owner = fact.owner or fact.id
+        if obligation.counterexample is not None:
+            return self._check_counterexample(fact, obligation, owner, until)
+        records = self._check_parts(obligation.parts, owner, until)
+        common: dict[str, Any] = {
+            "lean_parts": records,
+            "lean_version": sessions[0].version,
+        }
+        if obligation.decider:
+            common["lean_decider"] = obligation.decider
+        if all(record.get("proved") for record in records):
+            result = fact.with_status(
+                Status.PROVED,
+                self.name,
+                tactic=_how_text(records),
+                lean_source="\n".join(record["source"] for record in records),
+                **common,
+            )
+            if obligation.rests_on:
+                result = replace(
+                    result,
+                    rests_on=tuple(dict.fromkeys((*fact.rests_on, *obligation.rests_on))),
+                )
+            return result
+        missed = [record for record in records if not record.get("proved")]
+        first = missed[0].get("reason", "")
+        if len(records) == 1:
+            said = f"Lean did not prove it: {first}"
+        else:
+            said = (
+                f"Lean proved {len(records) - len(missed)} of its {len(records)} parts, "
+                f"and not {_parts_text(missed, False)}: {first}"
+            )
+        return fact.with_status(fact.status, lean_tried=len(records), lean_reason=said, **common)
+
+    def _pool_error(self) -> str:
+        """Why the first session of the pool did not start."""
+        if self._pool and self._pool[0].error:
+            return self._pool[0].error
+        return "no Lean session could be started"
+
+    def _part_sessions(self) -> list[LeanSession]:
+        """The pool's sessions, the first of them running; empty when it will not start.
+
+        The first is the oracle's own session when that is a core one, and a
+        core session of its own when the oracle runs Mathlib: a part is
+        integer arithmetic, and a twin of a Mathlib session would import
+        Mathlib again for every part.
+        """
+        if not self._pool:
+            session = self.session
+            if session.mathlib is not None:
+                session = LeanSession(self.timeout)
+            self._pool.append(session)
+        if not self._pool[0].ready():
+            return []
+        return self._pool
+
+    def _check_parts(self, parts: Any, owner: str, until: float | None) -> list[dict]:
+        """Check every part, in a pool of sessions; one record per part, in order."""
+        sessions = self._part_sessions()
+        jobs = min(len(parts), _jobs())
+        while len(sessions) < jobs:
+            try:
+                sessions.append(sessions[0].twin())
+            except ValueError:
+                break
+        jobs = min(jobs, len(sessions))
+        if jobs <= 1:
+            return [self._check_part(sessions[0], part, owner, until) for part in parts]
+        import queue
+        from concurrent.futures import ThreadPoolExecutor
+
+        free: queue.Queue[LeanSession] = queue.Queue()
+        for session in sessions[:jobs]:
+            free.put(session)
+
+        def check(part: Any) -> dict:
+            session = free.get()
+            try:
+                return self._check_part(session, part, owner, until)
+            finally:
+                free.put(session)
+
+        with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="lanky-lean") as pool:
+            return list(pool.map(check, parts))
+
+    def _ask(
+        self, session: LeanSession, source: str, until: float | None
+    ) -> tuple[bool, str, bool, bool]:
+        """``(closed, detail, cached, answered)`` for one declaration, the cache first."""
+        cache = self.proofs
+        if cache is not None:
+            kept = cache.get(session.version, source)
+            if kept is not None:
+                return kept[0], kept[1], True, True
+        closed, detail, answered = session.answer(source, until)
+        if answered and cache is not None:
+            cache.put(session.version, source, closed, detail)
+        return closed, detail, False, answered
+
+    def _check_part(
+        self, session: LeanSession, part: Any, owner: str, until: float | None
+    ) -> dict:
+        """Prove one part: its record, with how it was proved or why it was not.
+
+        The record holds the part's ``name`` and ``label``, ``proved``, the
+        ``source`` of the declaration that proved it (the last one tried when
+        none did), ``how``, ``seconds`` and ``cached``, and otherwise
+        ``reason`` and, when Lean ran out of time rather than answering,
+        ``timed_out``.
+        """
+        record: dict[str, Any] = {"name": part.name, "label": part.label, "proved": False}
+        try:
+            statement = part_statement(part, theorem_name(owner, part))
+        except (UnsupportedTerm, AttributeError, TypeError, ValueError) as exc:
+            record["reason"] = f"it has no Lean statement ({exc})"
+            return record
+        tried = attempts(part, statement)
+        if not tried:
+            record["reason"] = (
+                "its goal is an existential and no witness was given for it, which "
+                "omega does not look for"
+            )
+            record["source"] = statement.source("sorry")
+            return record
+        start = time.monotonic()
+        last = ""
+        for how, tactic in tried:
+            source = statement.source(tactic)
+            record["source"] = source
+            if _spent(until):
+                record["timed_out"] = True
+                record["reason"] = "the budget ran out before Lean was asked"
+                break
+            closed, detail, cached, answered = self._ask(session, source, until)
+            if closed:
+                record.update(proved=True, how=how, cached=cached)
+                record.pop("reason", None)
+                record.pop("timed_out", None)
+                break
+            if not answered:
+                record["timed_out"] = True
+                record["reason"] = (
+                    f"Lean did not answer within the time it was given ({detail})"
+                )
+                continue
+            last = detail
+            record.pop("timed_out", None)
+            record["reason"] = f"no script closed it; Lean said: {last}"
+        record["seconds"] = round(time.monotonic() - start, 3)
+        return record
+
+    def _check_counterexample(
+        self, fact: Fact, obligation: Any, owner: str, until: float | None
+    ) -> Fact:
+        """Prove the refuted part false at the solver's counterexample.
+
+        By ``decide``, which evaluates the instantiated statement in the
+        kernel, and then by ``omega``. The fact keeps its status: the plugin's
+        solver refutes it, and ``lean_counterexample`` says what Lean made of
+        the counterexample, ``lean_refutation`` holds the theorem. One Lean
+        cannot prove false there is no counterexample to the printed
+        statement, a disagreement between the solver and Lean that the
+        ledger names.
+        """
+        counter = obligation.counterexample
+        where = counter.text or ", ".join(f"{k}={v}" for k, v in counter.point.items())
+        part = next((p for p in obligation.parts if p.name == counter.part), None)
+        if part is None:
+            return fact.with_status(
+                fact.status,
+                lean_counterexample=(
+                    f"Lean did not check the counterexample: it is to the part "
+                    f"{counter.part}, which the claim does not have"
+                ),
+            )
+        try:
+            statement = part_statement(part, theorem_name(owner, part))
+            sources = [
+                ("decide", negation_source(part, statement, counter.point, decide=True)),
+                ("omega", negation_source(part, statement, counter.point, decide=False)),
+            ]
+        except (UnsupportedTerm, AttributeError, TypeError, ValueError) as exc:
+            return fact.with_status(
+                fact.status,
+                lean_counterexample=f"Lean did not check the counterexample: {exc}",
+            )
+        session = self._part_sessions()[0]
+        last = ""
+        for how, source in sources:
+            closed, detail, _cached, answered = self._ask(session, source, until)
+            if closed:
+                return fact.with_status(
+                    fact.status,
+                    lean_counterexample=f"Lean proved the claim false at {where}, by {how}",
+                    lean_refutation=source,
+                    lean_version=session.version,
+                )
+            last = detail if answered else f"no answer in time ({detail})"
+        return fact.with_status(
+            fact.status,
+            lean_counterexample=(
+                f"Lean could not prove the claim false at {where}: the counterexample "
+                f"and the statement Lean was given disagree ({last})"
+            ),
+            lean_refutation=sources[-1][1],
+            lean_disagrees=True,
+        )
+
+    # }}}
 
 
 # }}}
