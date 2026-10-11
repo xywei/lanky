@@ -177,7 +177,8 @@ def orders(left: Spread, right: Spread) -> list[tuple[int, ...]]:
     An order lists, for each sum of the right side from the outermost, which
     sum of the left side it is. The domains have to agree, and so do the
     summands once the left side's binders are renamed to the right side's:
-    up to ``ring``, as sympy expands their difference to zero. The first order
+    up to ``ring``, as sympy expands their difference to zero, or ``cancel``
+    takes it to zero where the summands have quotients. The first order
     sympy confirms is the one returned. Where sympy is not installed, or
     cannot read a summand, an order whose summands are the same product of
     the same factors is taken as confirmed, and otherwise the first
@@ -221,8 +222,10 @@ def _same(left: Any, right: Any) -> bool | None:
         return None
     if sympy.expand(difference) == 0:
         return True
+    # a normal form for rational functions, and cheap: simplify, tried for
+    # each of up to MAX_SUMS! orders of a claim that is false, was not
     try:
-        return bool(sympy.simplify(difference) == 0)
+        return bool(sympy.cancel(difference) == 0)
     except (TypeError, ValueError, NotImplementedError):  # pragma: no cover - sympy's own limits
         return None
 
