@@ -347,7 +347,8 @@ raises its floor to match.
   that is not proved keeps the status its solver gave it,
   with a `NOT PROVED` line naming the part and why. A refuted claim
   comes with its counterexample, and Lean proves it false there, which the
-  `REFUTED` block says. Lean's answers are kept by the hash of their source
+  `REFUTED` block says; a refuted fact is never turned into a proof. Lean's
+  answers are kept by the hash of their source
   (`LANKY_LEAN_PROOF_CACHE`), so a file checked again is quick. loopty
   states its isl facts this way, and they read `proved lean`.
 - `--show-lean` prints the Lean of every row that has some, or of the rows
