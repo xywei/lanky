@@ -198,7 +198,10 @@ def passes(F: np.ndarray, G: np.ndarray, H: np.ndarray, u: np.ndarray) -> np.nda
 def main() -> int:
     """Apply the weak derivative both ways at orders 1 to 7, then the claims at small sizes."""
     rng = np.random.default_rng(0)
-    print("The weak derivative along the first axis, S^T (x) M (x) M, on GLL hexahedra:")
+    print(
+        "The weak derivative along the first axis on GLL hexahedra: H (x) G (x) F with\n"
+        "F = S^T along the first axis and G = H = M, the mass matrix, along the others."
+    )
     print()
     print("order  n  dense - passes   multiplications (dense / passes)")
     worst = 0.0
