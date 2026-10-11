@@ -333,14 +333,59 @@ def test_a_theorem_a_hypothesis_is_is_applied_with_what_the_plugin_bound() -> No
             "all_goals first | assumption | omega | linarith") in tried
 
 
-def test_without_mathlib_a_claim_about_reals_is_declined_saying_why(no_session) -> None:
+def test_without_mathlib_a_claim_about_reals_is_declined_saying_why(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
     oracle, started = no_session
     fact = oracle.establish(fact_of(Obligation(parts=(REAL_PART,))))
     assert fact.status is Status.ASSUMED
     assert fact.provenance["lean_declined"].startswith(
         "the claim is about real numbers, which core Lean does not have"
     )
+    assert fact.provenance["lean_needs_mathlib"] is True
     assert started == []
+
+
+def _declined_for_reals(fact_id: str, decider: str) -> Fact:
+    reason = (
+        "the claim is about real numbers, which core Lean does not have; where "
+        "Mathlib is (LANKY_LEAN_MATHLIB), Lean checks it"
+    )
+    return Fact(
+        id=fact_id, kind="postcondition", statement="R[a] == c[a]", term=None
+    ).with_status(
+        Status.DECIDED, decider, lean_declined=reason, lean_needs_mathlib=True
+    )
+
+
+def test_the_lean_line_counts_the_claims_about_reals_apart(capsys) -> None:
+    """Core Lean has no reals: such a claim is not unstated, it waits for Mathlib.
+
+    The line says where Lean checks it, rather than that it is not stated.
+    """
+    from lanky.cli import report_proved
+
+    proved = fact_of(Obligation(parts=(IN_BOUNDS,), decider="isl")).with_status(
+        Status.PROVED,
+        "lean",
+        lean_parts=[{"name": "S0", "proved": True}],
+        lean_decider="isl",
+    )
+    post = _declined_for_reals("postcondition:kernel@1", "isl")
+    applied = _declined_for_reals("by-theorem:kernel@1:t", "theorem")
+    report_proved(Ledger([proved, post, applied]))
+    out = capsys.readouterr().out
+    assert (
+        "LEAN proved the one fact isl decided; 2 more are about real numbers, which "
+        "Lean checks where Mathlib is (LANKY_LEAN_MATHLIB). "
+    ) in out
+    assert "not stated for Lean yet" not in out
+    report_proved(Ledger([post]))
+    assert capsys.readouterr().out == (
+        "\nLEAN checks one claim about real numbers where Mathlib is "
+        "(LANKY_LEAN_MATHLIB); core Lean has no real numbers.\n"
+    )
 
 
 def test_the_negation_instantiates_every_binder_at_the_point() -> None:

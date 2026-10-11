@@ -2533,7 +2533,10 @@ class LeanOracle:
                 "where Mathlib is (LANKY_LEAN_MATHLIB), Lean checks it"
             )
             return fact.with_status(
-                fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+                fact.status,
+                lean_declined=reason,
+                lean_needs_mathlib=True,
+                declined=f"{self.name}: {reason}",
             )
         try:
             budget = self._budget(fact)

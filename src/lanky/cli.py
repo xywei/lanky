@@ -602,6 +602,11 @@ class CheckVerb:
             print(f"  {detail}")
 
 
+def _count(number: int, noun: str) -> str:
+    """``one claim``, ``2 claims``."""
+    return f"one {noun}" if number == 1 else f"{number} {noun}s"
+
+
 def report_proved(ledger: Ledger) -> None:
     """Say in a line what ``proved lean`` means for the facts a solver decided.
 
@@ -619,24 +624,43 @@ def report_proved(ledger: Ledger) -> None:
         (--verbose says why). Lean's statements are loopty's, from its own
         description, not isl's results, and isl's hints were checked, not
         trusted. --show-lean prints the Lean.
+
+    A claim about real numbers that Lean was not asked, core Lean having no
+    reals, is counted apart, with where Lean checks it::
+
+        LEAN proved all 11 facts isl decided; 2 more are about real numbers,
+        which Lean checks where Mathlib is (LANKY_LEAN_MATHLIB). ...
     """
+    settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
     by_decider: dict[str, list[Fact]] = {}
     for fact in ledger:
         if fact.provenance.get("lean_parts") and fact.provenance.get("lean_decider"):
             by_decider.setdefault(str(fact.provenance["lean_decider"]), []).append(fact)
+    reals = sum(
+        1
+        for fact in ledger
+        if fact.provenance.get("lean_needs_mathlib") and fact.status not in settled
+    )
     if not by_decider:
+        if reals:
+            print()
+            print(
+                f"LEAN checks {_count(reals, 'claim')} about real numbers where "
+                "Mathlib is (LANKY_LEAN_MATHLIB); core Lean has no real numbers."
+            )
         return
     unstated: dict[str, int] = {}
     for fact in ledger:
         if (
             fact.decided_by in by_decider
             and not fact.provenance.get("lean_parts")
-            and fact.status not in (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
+            and not fact.provenance.get("lean_needs_mathlib")
+            and fact.status not in settled
             and _recorded(fact.provenance.get("lean_declined"))
         ):
             unstated[fact.decided_by] = unstated.get(fact.decided_by, 0) + 1
     print()
-    for decider, facts in by_decider.items():
+    for position, (decider, facts) in enumerate(by_decider.items()):
         proved = sum(fact.status in (Status.PROVED, Status.CERTIFIED) for fact in facts)
         missed = len(facts) - proved
         more = unstated.get(decider, 0)
@@ -656,6 +680,11 @@ def report_proved(ledger: Ledger) -> None:
             clauses.append(
                 f"{more} {'is' if more == 1 else 'are'} not stated for Lean yet "
                 "(--verbose says why)"
+            )
+        if reals and position == 0:
+            clauses.append(
+                f"{reals} more {'is' if reals == 1 else 'are'} about real numbers, "
+                "which Lean checks where Mathlib is (LANKY_LEAN_MATHLIB)"
             )
         authors = sorted(
             {
