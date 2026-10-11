@@ -296,6 +296,29 @@ def test_asking_whether_lean_takes_a_claim_does_not_state_it() -> None:
     assert term.asked == 0
 
 
+def test_a_long_theorem_is_shown_one_parameter_to_a_line() -> None:
+    from lanky.cli import _wrapped
+
+    long = (
+        "theorem Lanky.jacobi_in_bounds (nt : Int) (nx : Int) (t : Int) (i : Int) "
+        "(h0 : nt ≥ 0) (h1 : nx ≥ 0) (h2 : t + 1 < nt) : 0 ≤ t ∧ (t < nt) := by"
+    )
+    assert _wrapped(long).splitlines() == [
+        "theorem Lanky.jacobi_in_bounds",
+        "    (nt : Int)",
+        "    (nx : Int)",
+        "    (t : Int)",
+        "    (i : Int)",
+        "    (h0 : nt ≥ 0)",
+        "    (h1 : nx ≥ 0)",
+        "    (h2 : t + 1 < nt)",
+        "    : 0 ≤ t ∧ (t < nt) := by",
+    ]
+    negation = "theorem Lanky.x_false : ¬(∀ n : Int, n + 1 > n) := by" + " " * 60
+    assert _wrapped(negation) == negation
+    assert _wrapped("  omega") == "  omega"
+
+
 # }}}
 
 
@@ -565,7 +588,7 @@ def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
     assert "  isl decided it; Lean did not prove it: no script closed it" in out
     assert "LEAN kernel at kernel.py:1: x[i] is in bounds for every instance of S0" in out
     assert "  proved by Lean (omega)" in out
-    assert "    theorem Lanky.kernel_S0 " in out
+    assert "    theorem Lanky.kernel_S0" in out
     assert "  part S1 (x + 1 < n): not proved: no script closed it" in out
     # the rows a text names, and only those
     CheckVerb._report(Ledger([proved, unproved]), show_lean="S1")

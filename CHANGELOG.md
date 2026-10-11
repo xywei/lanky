@@ -16,6 +16,41 @@ worth the `tested` reading it rests on.
 
 ### Added
 
+- **A plugin's claim checked by Lean, part by part, with its solver's hints**
+  (`lanky.obligations`). A fact's term may offer Lean an `Obligation` through
+  one method, `lean_obligation()`: parts, each a closed lanky term proved on
+  its own, and for each the hints a decision procedure found, which carry no
+  trust (`Hints`: `Instance`s of a universal hypothesis, a witness in
+  `Piece`s for an existential goal, which may pick the disjunct it proves,
+  and case splits for what `omega` lacks). The Lean oracle proves every part,
+  `omega` first and then with the hints, the parts at once in a pool of
+  sessions (`LANKY_LEAN_JOBS`, up to four) within the fact's budget; a fact
+  whose parts are all proved is `proved` by `lean`, resting besides on what
+  the obligation names, with the file that replays it and a record of each
+  part (`lean_parts`), and one that is not keeps its status, with the parts
+  and why (`lean_reason`), for the oracles after Lean. A claim the solver
+  refuted comes with its `Counterexample`, and Lean proves the part false
+  there by `decide` or `omega` (`lean_counterexample`), or says it cannot,
+  which is a disagreement (`lean_disagrees`). An instance's cells that are
+  the claim's written otherwise are equated for `omega`. loopty states its
+  isl facts this way.
+- **Lean's answers kept by their source** (`ProofCache`): every declaration
+  an obligation sends, accepted or refused by Lean, under the hash of the
+  Lean version and the source, in `LANKY_LEAN_PROOF_CACHE` (`off` for none;
+  by default `proofs` beside the REPL's build), and read back the next time;
+  a timeout is not kept. `LeanSession.answer` says whether an answer is
+  Lean's own, and `LeanSession.twin` starts another REPL from a running
+  one's setup.
+- **`lanky check --show-lean [TEXT]`** prints the Lean of every row that has
+  some, or of the rows whose owner, id or statement contains `TEXT`: the file
+  that replays a proof, each part of a plugin's claim as it was tried, the
+  theorem that a refuted claim is false at its counterexample, and the
+  statement of a claim Lean did not prove. A long theorem is shown one
+  parameter to a line. A `NOT PROVED` line names a fact a decision procedure
+  decided and Lean did not prove, with the parts and why, and with
+  `--verbose` one Lean was not asked about; a `REFUTED` block ends with what
+  Lean made of the counterexample. `lanky.cli.report_unproved` and
+  `report_lean` print them for a plugin's verb.
 - **The `faithful` fact (#91).** lanky reads an annotation by running its
   Python on symbolic terms, and every oracle is handed the term that run
   builds. `lanky.faithful.faithful_fact(theorem)` checks that reading by its

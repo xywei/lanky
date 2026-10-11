@@ -1210,8 +1210,62 @@ def refutation_lines(fact: Fact) -> list[str]:
 
 
 def _indented(text: str) -> list[str]:
-    """Lean source as lines indented under a header, blank lines kept blank."""
-    return [f"    {line}" if line.strip() else "" for line in str(text).rstrip().splitlines()]
+    """Lean source as lines indented under a header, blank lines kept blank.
+
+    A theorem whose parameters run past a line is shown one parameter to a
+    line (:func:`_wrapped`), which is the same declaration to Lean.
+    """
+    return [
+        f"    {line}" if line.strip() else ""
+        for line in _wrapped(str(text).rstrip()).splitlines()
+    ]
+
+
+def _wrapped(source: str, width: int = 100) -> str:
+    """``source`` with each long ``theorem`` line broken before each parameter.
+
+    A parameter is a bracketed group at the top level of the line, ``(h3 : i
+    > 0)``; the statement after the last one, from `` : ``, goes on a line of
+    its own. Only the display changes: the provenance keeps the source Lean
+    was given, and either replays.
+    """
+    out: list[str] = []
+    for line in source.splitlines():
+        name_end = line.find(" ", len("theorem "))
+        if (
+            not line.startswith("theorem ")
+            or len(line) <= width
+            or line.startswith(" : ", name_end)
+        ):
+            # short enough, or a statement with no parameter to break before
+            out.append(line)
+            continue
+        pieces: list[str] = []
+        depth = 0
+        start = 0
+        index = 0
+        while index < len(line):
+            character = line[index]
+            if depth == 0 and line.startswith(" : ", index) and pieces:
+                break
+            if character in "([{":
+                if depth == 0 and line[start:index].strip():
+                    pieces.append(line[start:index].rstrip())
+                    start = index
+                depth += 1
+            elif character in ")]}":
+                depth -= 1
+                if depth == 0:
+                    pieces.append(line[start : index + 1].strip())
+                    start = index + 1
+            index += 1
+        rest = line[start:].strip()
+        head, *params = pieces
+        out.append(head)
+        out.extend(f"    {param}" for param in params)
+        if rest:
+            out.append(f"    {rest}")
+    return "\n".join(out)
 
 
 def _lean_lines(fact: Fact) -> list[str]:
