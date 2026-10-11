@@ -229,6 +229,7 @@ from lanky.testing import (
     SkipSample,
     Table,
     Unsampleable,
+    apply_at,
     in_sort,
     sample_value,
     sampling_order,
@@ -2519,7 +2520,15 @@ class DrawnFamily:
         self.size = size
         self.values: dict[Any, Any] = {}
 
-    def __call__(self, point: Any) -> Any:
+    def __call__(self, *points: Any) -> Any:
+        """The value at ``points``: ``f(i)``, or ``f(i, j)`` for ``f(i)(j)``."""
+        return apply_at(self._at, points, self.name)
+
+    def __getitem__(self, point: Any) -> Any:
+        """The same as a call: ``f[i]``, or ``f[i, j]`` for ``f[i][j]``."""
+        return apply_at(self._at, point if isinstance(point, tuple) else (point,), self.name)
+
+    def _at(self, point: Any) -> Any:
         """The value at ``point``, drawn the first time it is asked for.
 
         Outside the domain it has none, and inside
@@ -2540,8 +2549,6 @@ class DrawnFamily:
         if point not in self.values:
             self.values[point] = _draw(self.codomain, self.source, self.context, size=self.size)
         return self.values[point]
-
-    __getitem__ = __call__
 
     def __repr__(self) -> str:
         """Print as the values drawn so far, by point."""

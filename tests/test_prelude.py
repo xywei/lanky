@@ -66,6 +66,36 @@ def test_fn_is_a_family_type() -> None:
         Fn[Nat]
 
 
+def test_a_family_with_several_indices_is_a_family_of_families() -> None:
+    """``Fn[A, B, C]`` is ``Fn[A, Fn[B, C]]``, a matrix, and prints as it is written."""
+    n, m = Var("n"), Var("m")
+    matrix = Fn[Fin[n], Fin[m], Real]
+    assert matrix == Fn[Fin[n], Fn[Fin[m], Real]]
+    assert matrix.domain == FinType(n)
+    assert matrix.codomain == Fn[Fin[m], Real]
+    assert matrix.indices == (FinType(n), FinType(m))
+    assert matrix.entries == Real
+    assert str(matrix) == "Fn[Fin(n), Fin(m), Real]"
+    assert str(Fn[Fin[n], Fn[Fin[m], Real]]) == "Fn[Fin(n), Fin(m), Real]"
+    assert Fn[Nat, Nat, Nat, Real] == Fn[Nat, Fn[Nat, Fn[Nat, Real]]]
+    assert exactness_of(matrix) == "approx"
+    # a family over families keeps its brackets: the domain is not curried
+    assert str(Fn[Fn[Fin[n], Nat], Nat]) == "Fn[Fn[Fin(n), Nat], Nat]"
+
+
+def test_a_refined_row_is_a_family_all_the_same() -> None:
+    """``Fn[A, Fn[B, C] & p]`` has two indices, and prints its refinement on the row it refines."""
+    n, x = Var("n"), Var("x")
+    refined = Fn[Fin[n], Fn[Fin[n], Real] & (x > 0)]
+    assert refined.indices == (FinType(n), FinType(n))
+    assert refined.entries == Real
+    assert str(refined) == "Fn[Fin(n), Fn[Fin(n), Real] & (x > 0)]"
+    # a refinement of the entries is what the family holds
+    entries = Fn[Fin[n], Fin[n], Nat & (x > 0)]
+    assert entries.indices == (FinType(n), FinType(n))
+    assert str(entries.entries) == "Nat & (x > 0)"
+
+
 def test_refinement_with_and() -> None:
     n = Var("n")
     refined = Nat & (n > 0)

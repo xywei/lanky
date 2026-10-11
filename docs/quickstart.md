@@ -1081,6 +1081,187 @@ also leave out the attempts that cannot show `False`, such as the
 inductions; the search for the induction's multipliers counts against the
 claim's.
 
+### Exchange finite sums
+
+A tensor-product operator on a hexahedral element is built from three
+one-dimensional ones, `F` along the first axis, `G` along the second and `H`
+along the third: its entry at the row `(a, b, c)` and the column `(p, q, r)` is
+`H[c, r] * G[b, q] * F[a, p]`, the Kronecker product `H (x) G (x) F`. Sum
+factorization applies it in three one-axis passes rather than as the dense
+`n**3 x n**3` matrix, which is what grudge does (inducer/grudge PR #418).
+`examples/sum_factorization.py` states why that is right, at every size `n`:
+
+```python
+@theorem
+def sum_factorization(
+    n: Nat,
+    F: Fn[Fin[n], Fin[n], Real],
+    G: Fn[Fin[n], Fin[n], Real],
+    H: Fn[Fin[n], Fin[n], Real],
+    u: Fn[Fin[n], Fin[n], Fin[n], Real],
+    a: Fin[n],
+    b: Fin[n],
+    c: Fin[n],
+) -> sum(
+    kron(H, G, F)(a, b, c, p, q, r) * u[p, q, r] for p in Fin[n] for q in Fin[n] for r in Fin[n]
+) == sum(
+    H[c, r] * sum(G[b, q] * sum(F[a, p] * u[p, q, r] for p in Fin[n]) for q in Fin[n])
+    for r in Fin[n]
+):
+```
+
+A matrix is a family with two indices, `Fn[Fin[n], Fin[n], Real]`, which is
+`Fn[Fin[n], Fn[Fin[n], Real]]`, and its entry is `F[a, p]`, as numpy writes
+it; `F(a, p)` and `F(a)(p)` are the same entry, to the tester, to the check of
+the reading and to Lean, which writes `F a p`. Called as a function, a theorem
+takes a nested list, a numpy array or a function for such a family
+(`F=lambda a, p: ...`), and a value of another shape is refused with the shape
+it takes. A hypothesis may define a matrix entry by entry, `all(F[i, j] == ...
+for i in Fin[n] for j in Fin[n])`, and the tester then fills in its entries
+rather than waiting for a random draw to meet it. `kron` is a helper in the
+file that returns the entry of `H (x) G (x) F`, and the reading of the
+annotation expands it. The row `(a, b, c)` is a parameter rather than a
+quantifier in the goal: the statement is the same, a theorem's parameters are
+universal, and the tester draws a row rather than walking all `n**3` of them,
+each a sum of `n**3` terms (#125). Run as a program, the file applies grudge's weak
+derivative both ways at orders 1 to 7 (`python examples/sum_factorization.py`);
+checked with Mathlib:
+
+```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sum_factorization.py
+STATUS  EFFECTIVE  BY             WHERE                     OWNER              STATEMENT
+------  ---------  -------------  ------------------------  -----------------  ------------------------------------------------------------------------
+proved  tested     lean           sum_factorization.py:68   exchange           n : Nat, m : Nat, f : Fn[Fin(n), Fin(m), Real] |- sum(sum(f[i, j] for...
+tested  tested     python         sum_factorization.py:68   exchange           the term computes what the annotations compute
+proved  tested     lean           sum_factorization.py:89   sum_factorization  n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], ...
+tested  tested     python         sum_factorization.py:89   sum_factorization  the term computes what the annotations compute
+proved  tested     lean           sum_factorization.py:113  mixed_product      n : Nat, A : Fn[Fin(n), Fin(n), Real], B : Fn[Fin(n), Fin(n), Real], ...
+tested  tested     python         sum_factorization.py:113  mixed_product      the term computes what the annotations compute
+tested  tested     property-test  sum_factorization.py:143  flattening         n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], ...
+tested  tested     python         sum_factorization.py:143  flattening         the term computes what the annotations compute
+
+8 facts: 3 proved, 5 tested
+```
+
+Lean proves the factorization in three steps, and lanky finds the one that
+is a search. Distribute each factor into the sums inside it
+(`Finset.mul_sum`, `Finset.sum_mul`, `Finset.sum_div`): the right side is
+then a sum over `r`, `q` and `p`, in that order, and the left side a sum over
+`p`, `q` and `r`. Exchange adjacent sums of the left side until the orders
+agree (`Finset.sum_comm`, one exchange at a time), and compare the summands
+under all three sums at once (`Finset.sum_congr`), which `ring` does. Which
+sums to exchange is what Python finds (`lanky.sums`): it reads both sides as
+`simp` leaves them and tries the orders of the left side's sums whose domains
+agree with the right side's, comparing the summands with sympy (the `cas`
+extra) where it is installed, and the script it writes exchanges them:
+
+```text
+  try simp only [Finset.mul_sum, Finset.sum_mul, Finset.sum_div]
+  all_goals (conv_lhs => enter [2, x]; rw [Finset.sum_comm])
+  all_goals (conv_lhs => rw [Finset.sum_comm])
+  all_goals (conv_lhs => enter [2, x]; rw [Finset.sum_comm])
+  all_goals refine Finset.sum_congr rfl fun x _ => Finset.sum_congr rfl fun x_1 _ =>
+    Finset.sum_congr rfl fun x_2 _ => ?_
+  all_goals first | ring1 | ...
+```
+
+Lean checks it: an order that is wrong is an attempt that fails, never a
+proof. `mixed_product` is the Kronecker product's mixed product property,
+`(A (x) B)(C (x) D) = AC (x) BD` entry by entry, which is the same two steps
+with a product of two sums on the right. A sum with an `if`, a sum whose
+bound is another sum's binder (a triangle) and a sum over a sort are not
+exchanged this way.
+
+`flattening` stays `tested`, and Lean is not asked: it says which factor of
+modepy's dense matrix comes last, `kron(H, kron(G, F))` with the first axis
+fastest, and that takes `i // n**2` and `i % n` of a size `n` that is a
+variable. lanky shows a family's argument is in its domain by linear
+arithmetic over the binders, and does not hand Lean a statement where it
+cannot (#126).
+
+### A claim from an order on
+
+`examples/line_taylor.py` checks the expansion pytential evaluates a layer
+potential on its own surface with: sumpy's line-Taylor expansion of the 2-D
+Laplace kernel, `log |alpha + tau * beta|` expanded in `tau` along the line
+from a center through a target. Read as complex numbers, its coefficients are
+the real parts of those of `log(alpha + tau * beta)`, and the claim for every
+order is
+
+```python
+@theorem(uses=[line_ode])
+def line_taylor(
+    alpha: Complex,
+    beta: Complex,
+    c: Fn[Nat, Complex],
+    away: alpha != 0,
+    first: alpha * c(1) == beta,
+    ode: all((n + 1) * alpha * c(n + 1) + n * beta * c(n) == 0 for n in Nat if n >= 1),
+) -> all(c(n) == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
+```
+
+`first` and `ode` are the differential equation the logarithm solves along
+the line, `(alpha + tau * beta) * f'(tau) == beta`, read on its coefficients
+at `tau ** 0` and at `tau ** n`. The equation is the axiom `line_ode`, taken
+on its citation, and comparing the coefficients is the step taken on it, as
+differentiating the PDE is in the sumpy demonstration above. The file prints
+sumpy's coefficients beside the closed form:
+
+```console
+$ uv run python examples/line_taylor.py
+k  closed form                sympy: sumpy's / k! - closed form  sumpy's / k! at a point
+-  -------------------------  ---------------------------------  -----------------------
+0  log|alpha|                 0                                  0.458145
+1  re(-(-beta/alpha)**1 / 1)  0                                  -0.05
+2  re(-(-beta/alpha)**2 / 2)  0                                  0.21
+3  re(-(-beta/alpha)**3 / 3)  0                                  0.0210833
+4  re(-(-beta/alpha)**4 / 4)  0                                  -0.0430437
+5  re(-(-beta/alpha)**5 / 5)  0                                  -0.00881975
+6  re(-(-beta/alpha)**6 / 6)  0                                  0.0114608
+
+With alpha = a0 + a1*1j the center less the source and beta = b0 + b1*1j the target
+less the center, sumpy's line-Taylor coefficients of log|x| are the real parts of
+the series of log(alpha + tau*beta) through order 6; the point is
+alpha = 3/2 - 1/2*1j, beta = 1/4 + 1j.
+
+`lanky check examples/line_taylor.py` puts it in the ledger: decided through the
+order by the CAS oracle, and the closed form proved for every order by Lean where
+Mathlib is installed, under the differential equation the kernel solves.
+```
+
+and with Mathlib:
+
+```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py
+STATUS                 EFFECTIVE            BY      WHERE               OWNER          STATEMENT
+---------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------
+assumed (axiom)        assumed              -       line_taylor.py:101  line_ode       alpha : Complex, beta : Complex, tau : Real | alpha + tau*beta != 0 |...
+tested                 tested               python  line_taylor.py:101  line_ode       the term computes what the annotations compute
+proved under line_ode  assumed              lean    line_taylor.py:115  line_taylor    alpha : Complex, beta : Complex, c : Fn[Nat, Complex] | alpha != 0, a...
+tested                 tested               python  line_taylor.py:115  line_taylor    the term computes what the annotations compute
+decided (heuristic)    decided (heuristic)  cas     line_taylor.py:277  qbx_expansion  a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j ...
+
+5 facts: 1 assumed, 1 decided, 1 proved, 2 tested
+
+CITED line_ode at line_taylor.py:101: L. V. Ahlfors, Complex Analysis, 3rd ed., McGraw-Hill, 1979, chs. 2 and 5
+```
+
+The claim starts at order 1, and the induction takes that into account. Its
+guard, `n >= 1`, leaves order 0 without an equation, and the induction
+hypothesis holds only from order 1, so the step is tried two orders at a time
+as well as one: order 0 is a base case the guard rules out, which `omega`
+closes from the guard, order 1 is `first` times `1 / alpha`, and the step at
+`k + 2` is the recurrence at `k + 1` and the induction hypothesis at `k + 1`,
+with multipliers that divide by `(k + 2) * alpha`. The step shows first that
+`k + 1` and `k + 2` are not zero in `ℂ`, which `field_simp` cannot see for
+itself, and the combination splits the power `(-beta / alpha) ** (k + 2)`
+before it clears the denominators. Python finds the multipliers, as it does
+for every order of the sumpy recurrence, and Lean checks them. The CAS row is
+sumpy's own expansion through order 6, compared with the closed form, which
+ties the theorem to the code pytential runs. Without Mathlib the claim for
+every order reads `assumed under line_ode`: the property tester draws no
+family over `Nat`.
+
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
@@ -1257,8 +1438,11 @@ claim's.
 | the Lean printer, core Lean's dialect and Mathlib's | `src/lanky/lean.py` |
 | Mathlib mode: the pinned project and its setup | `src/lanky/mathlib.py`, `src/lanky/mathlib-project/` |
 | induction over families: the search for a certificate, and the script Lean checks | `src/lanky/induction.py`, `src/lanky/oracles/lean.py` |
+| exchanging finite sums: the order Python finds, and the script Lean checks | `src/lanky/sums.py`, `src/lanky/oracles/lean.py` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |
 | the pytential demonstration, and its rule engine | `examples/pytential_skie.py`, `examples/layer_potentials.py` |
 | the bridge to sympy, and the CAS oracle | `src/lanky/cas.py`, `src/lanky/oracles/cas.py` |
 | the sumpy demonstration, and its `mpmath` oracle | `examples/sumpy_recurrence.py` |
+| sum factorization on hexahedra, grudge's tensor-product operators | `examples/sum_factorization.py` |
+| the line-Taylor expansion pytential's QBX evaluates with | `examples/line_taylor.py` |

@@ -2071,7 +2071,7 @@ def test_a_family_whose_values_cannot_be_drawn_is_not_tested_on_its_empty_draws(
     assert fact.provenance["unsampleable"] == fact.provenance["samples"]
     assert fact.provenance["untested"] == (
         "no draw could be completed: cannot draw the values of "
-        "Fn[Fin(n), Fn[Nat, Nat]]: cannot tabulate a family over Nat"
+        "Fn[Fin(n), Nat, Nat]: cannot tabulate a family over Nat"
     )
 
 
