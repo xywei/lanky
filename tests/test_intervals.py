@@ -386,8 +386,6 @@ def test_powers_in_the_exact_reading() -> None:
     assert compare("==", cube_root**3, 2) is None and agree(cube_root**3, 2)
     with pytest.raises(ZeroDivisionError):
         power(0, Fraction(-1, 2))
-    with pytest.raises(Undecided, match="negative number to a power"):
-        power(Fraction(-8), Fraction(1, 3))
     # an even power of an enclosure that straddles zero starts at zero
     root = sqrt_value(Fraction(2))
     square = (root * root - 2) ** 2
@@ -395,6 +393,68 @@ def test_powers_in_the_exact_reading() -> None:
     assert compare(">=", square, 0) is True
     assert compare("<", (root - 2) ** 3, 0) is True
     assert compare("==", root**-2, Fraction(1, 2)) is None and agree(root**-2, Fraction(1, 2))
+
+
+def test_a_negative_base_to_a_power_that_is_not_an_integer_is_pythons_complex_value() -> None:
+    """#89: ``(-8) ** Fraction(1, 3)`` is ``1 + √3 i``, the principal value Python computes.
+
+    It decided nothing, so a claim false only at negative bases passed on the
+    positive draws alone.
+    """
+    root = power(Fraction(-8), Fraction(1, 3))
+    assert isinstance(root, ComplexValue)
+    assert compare("==", root, ComplexValue(Fraction(1), sqrt_value(Fraction(3)))) is None
+    assert agree(root, ComplexValue(Fraction(1), sqrt_value(Fraction(3))))
+    # a right angle is exact: i, -i, and the modulus
+    assert compare("==", power(-4, Fraction(1, 2)), ComplexValue(Fraction(0), Fraction(2))) is True
+    assert compare("==", power(-4, Fraction(-1, 2)), ComplexValue(0, Fraction(-1, 2))) is True
+    cubed = ComplexValue(Fraction(0), Fraction(-27, 8))
+    assert compare("==", power(Fraction(-9, 4), Fraction(3, 2)), cubed) is True
+    # Python's own values, which the enclosures hold
+    for base, exponent in (
+        (-8, Fraction(1, 3)),
+        (Fraction(-1, 3), Fraction(2, 5)),
+        (-2, Fraction(-7, 3)),
+        (Fraction(-5, 2), Fraction(1, 2)),
+        (-1, Fraction(1, 6)),
+    ):
+        value = power(Fraction(base), exponent)
+        python = complex(Fraction(base) ** exponent)
+        assert isinstance(value, ComplexValue), (base, exponent)
+        for part, expected in ((value.real, python.real), (value.imag, python.imag)):
+            lo, hi = (part.lo, part.hi) if isinstance(part, Interval) else (part, part)
+            assert lo - Fraction(1, 10**12) <= Fraction(expected) <= hi + Fraction(1, 10**12)
+    # an enclosed base below zero is a negative number too
+    assert isinstance(power(-exp_value(Fraction(1)), Fraction(1, 3)), ComplexValue)
+    # not equal to any real number, and not ordered
+    assert compare("==", root, Fraction(2)) is False
+    assert compare("!=", root, -2) is True
+    with pytest.raises(TypeError, match="no order"):
+        compare("<", root, 3)
+
+
+def test_a_claim_false_only_at_negative_bases_is_refuted() -> None:
+    """#89's three claims: each was ``tested`` on the positive draws, and is refuted now."""
+    x, y = Var("x"), Var("y")
+    third, half = Fraction(1, 3), Fraction(1, 2)
+    for variables, goal in (
+        ([("x", Real)], (x**3) ** third == x),
+        ([("x", Real), ("y", Real)], (x * y) ** half == x**half * y**half),
+        ([("x", Real)], (x**half) ** 2 == abs(x)),
+    ):
+        report = check(variables, [], goal)
+        assert not report.ok, goal
+        assert any(report.counterexample[name] < 0 for name, _ in variables)
+    # and the cube of a cube root is the number, at every draw now
+    report = check([("x", Real)], [], (x**third) ** 3 == x)
+    assert report.ok and report.valid == 200 and report.undecided == 0, report
+    # an order with it is refused, as Python refuses one: the claim is not a
+    # proposition at a negative x, so it is not tested on the positive draws
+    with pytest.raises(TypeError, match="no order"):
+        check([("x", Real)], [], x**half >= 0)
+    with pytest.raises(TypeError, match="not supported"):
+        (-1) ** 0.5 >= 0  # noqa: B015 - Python's own refusal
+    assert check([("x", Real & (x >= 0))], [], x**half >= 0).ok
 
 
 def test_an_enclosure_is_no_truth_value_and_no_float() -> None:
@@ -435,6 +495,109 @@ def test_the_exact_reading_of_a_term() -> None:
     assert evaluate(x + 0.1, {"x": 0}) == 0.1
     assert evaluate(n / 2, {"n": 3}) == 1.5
     assert isinstance(evaluate(exp(x), {"x": Fraction(1, 2)}), float)
+
+
+def _e_above():
+    @theorem
+    def e_above(n: Nat) -> exp(1) > 2.718281828459045:
+        """True: e is 2.71828182845904523..., above the float nearest it."""
+
+    return e_above
+
+
+def _e_helper() -> float:
+    """``exp(1)`` in a function an annotation calls: Python's float, as any number it computes."""
+    return exp(1)
+
+
+def test_an_elementary_function_of_a_number_in_an_annotation_stays_exact() -> None:
+    """#81: ``exp(1)`` in an annotation is ``e`` to every oracle, not the float nearest it.
+
+    It was computed by ``math`` while the annotation was read, so the claim
+    below was the constant ``False``, and the tester refuted a claim that is
+    true of ``e``, which its exact reading encloses. It is a node now, which
+    the tester encloses, the Lean printer writes ``Real.exp 1``, and the CAS
+    bridge reads as sympy's ``E``; where Python runs the file, it is still
+    Python's float.
+    """
+    from lanky.lean import statement_of
+    from lanky.ledger import Status
+    from lanky.oracles.test import TestOracle
+    from lanky.terms import Elementary, render, structurally_equal
+
+    claim = _e_above()
+    assert structurally_equal(claim.goal.left, Elementary("exp", 1))
+    assert render(claim.goal) == "exp(1) > 2.718281828459045"
+    tested = TestOracle().establish(claim.fact())
+    assert tested.status is Status.TESTED, tested.provenance
+    # the file run as a program computes the float, and so does the theorem called
+    assert exp(1) == math.e and isinstance(exp(1), float)
+    assert claim(n=0).goal is False
+    assert "Real.exp 1 > " in statement_of(claim.term, mathlib=True).goal
+    # its reading is faithful: the rerun and the term agree in Python's reading
+    assert claim.faithful_fact().status is Status.TESTED
+
+    @theorem
+    def helpers(n: Nat) -> _e_helper() + log(4) - sqrt(4) == _e_helper() + log(4) - 2:
+        """True; the helper's ``exp(1)`` is its float, and ``log(4)`` and ``sqrt(4)`` are exact."""
+
+    shown = render(helpers.goal)
+    assert shown.startswith("2.718281828459045 + log(4) - sqrt(4) == "), shown
+    assert TestOracle().establish(helpers.fact()).status is Status.TESTED
+    assert helpers.faithful_fact().status is Status.TESTED
+
+    @theorem
+    def root_two(n: Nat) -> sqrt(2) * sqrt(2) == 2:
+        """True of the square root of two, and false of the float nearest it."""
+
+    assert 1.4142135623730951 * 1.4142135623730951 != 2
+    assert TestOracle().establish(root_two.fact()).status is Status.TESTED
+
+    # Python that asks for a number gets the one Python computes, as a
+    # helper does: math.floor and math.isclose of a term raised pymbolic's
+    # error, which knows no lanky node, where they read the float before
+    @theorem
+    def floored(n: Nat) -> (math.floor(exp(2)) == 7) & math.isclose(exp(1), math.e):
+        """True as Python computes it, the only way ``math`` does."""
+
+    assert floored.goal is True
+    assert floored.faithful_fact().status is Status.TESTED
+    # and a term with a variable has no float until it is evaluated
+    from pymbolic.mapper import UnsupportedExpressionError
+
+    with pytest.raises(UnsupportedExpressionError):
+        math.floor(exp(Var("x")))
+
+
+def test_an_elementary_function_of_a_number_over_a_concrete_domain() -> None:
+    """#81: ``exp(k)`` at each point of ``range(4)`` is a term, and ``all`` joins them.
+
+    The builtin ``all`` asked each comparison for a truth value, so the claim
+    could not be read once ``exp`` of a number was a term in an annotation;
+    it read the floats before that.
+    """
+    from lanky.ledger import Status
+    from lanky.oracles.test import TestOracle
+    from lanky.terms import render
+
+    @theorem
+    def above_the_line(n: Nat) -> all(exp(k) >= 1 + k for k in range(4)):
+        """True: e ** k is at least 1 + k."""
+
+    @theorem
+    def strictly(n: Nat) -> all(exp(k) > 1 + k for k in range(4)):
+        """False at k = 0, where both sides are 1."""
+
+    @theorem
+    def somewhere(n: Nat) -> any(sqrt(k) > k for k in range(1, 4)):
+        """False: the square root of a natural number is at most the number."""
+
+    assert render(above_the_line.goal).startswith("exp(0) >= 1 and exp(1) >= 2 and ")
+    assert TestOracle().establish(above_the_line.fact()).status is Status.TESTED
+    assert above_the_line.faithful_fact().status is Status.TESTED
+    for claim in (strictly, somewhere):
+        assert TestOracle().establish(claim.fact()).status is Status.REFUTED, claim
+        assert claim.faithful_fact().status is Status.TESTED
 
 
 def test_an_equality_of_enclosures_counts_only_where_it_is_asserted() -> None:

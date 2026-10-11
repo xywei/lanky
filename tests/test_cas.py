@@ -87,10 +87,12 @@ def test_a_statement_of_another_shape_is_refused_before_sympy_is_imported(cas) -
         "term = Forall(((x, Real),), x + x == 2 * x)\n"
         "fact = Fact(id='t', kind='theorem', statement='', term=term)\n"
         "print(CasOracle().can_establish(fact), 'sympy' in sys.modules)\n"
+        "print(CasOracle().establish(fact).status.value, 'sympy' in sys.modules)\n"
     )
     run = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stderr
-    assert run.stdout.split() == ["False", "False", "True", "True"]
+    # an equation is taken on its shape alone, and sympy is imported to decide it (#77)
+    assert run.stdout.split() == ["False", "False", "True", "False", "decided", "True"]
 
 
 def test_the_oracle_is_registered_as_a_heuristic() -> None:
@@ -358,7 +360,13 @@ def test_a_statement_with_no_value_in_python_is_not_decided(cas) -> None:
         Forall(((x, Real),), exp(log(x)) == x),
         Forall(((x, Real), (y, Real)), sqrt(x) * sqrt(y) == sqrt(x * y)),
     ):
-        assert not oracle.can_establish(fact_of(term))
+        # whether the argument may be negative is sympy's to say, so it is
+        # said in the translation, within the deadline (#77), and declined
+        fact = fact_of(term)
+        assert oracle.can_establish(fact)
+        result = oracle.establish(fact)
+        assert result.status is Status.ASSUMED
+        assert "sympy cannot show is not negative" in result.provenance["declined"]
     natural = oracle.establish(fact_of(Forall(((n, Nat),), sqrt(n) ** 2 == n)))
     assert (natural.status, natural.decided_by) == (Status.DECIDED, "cas")
 
@@ -396,6 +404,79 @@ def test_the_deadline_declines_a_simplification_that_runs_long(cas, monkeypatch)
     assert time.monotonic() - started < 10
     assert result.status is Status.ASSUMED
     assert result.provenance["declined"] == "cas: sympy did not finish within 0.2 s"
+
+
+def test_a_deadline_set_around_the_oracle_is_raised_again(cas, monkeypatch) -> None:
+    """The oracle's deadline is its own: an outer one's expiry is its caller's, and not a decline.
+
+    Under a deadline set around it, the oracle's own sets no timer, and the
+    outer one's ``Expired`` was taken for sympy running out of time, so the
+    caller's cancellation came back as a fact declined (Codex, #109).
+    """
+    from lanky.deadline import Expired, deadline
+
+    def slow(expression):
+        time.sleep(30)
+        return expression
+
+    monkeypatch.setattr(cas, "simplify", slow)
+    outer = object()
+    started = time.monotonic()
+    with pytest.raises(Expired) as raised, deadline(0.2, outer):
+        CasOracle(timeout=60).establish(fact_of(Forall(((x, Real),), x == x)))
+    assert raised.value.owner is outer
+    assert time.monotonic() - started < 10
+
+
+def test_the_deadline_covers_the_translation(cas, monkeypatch) -> None:
+    """#77: sympy's constructors evaluate as they build, and that is inside the deadline now.
+
+    The statement was translated twice before the timer was armed, once by
+    ``can_establish`` to see whether the oracle could take it, and once by
+    ``establish``, so a translation that ran long ran outside the per-fact
+    limit. ``can_establish`` reads the shape alone, and translates nothing.
+    """
+    import lanky.cas
+
+    def slow(expr, symbols):
+        time.sleep(5)
+        raise AssertionError("the translation was not cut short")
+
+    monkeypatch.setattr(lanky.cas, "to_sympy", slow)
+    fact = fact_of(Forall(((x, Real),), x + x == 2 * x))
+    started = time.monotonic()
+    assert CasOracle(timeout=0.2).can_establish(fact)
+    result = CasOracle(timeout=0.2).establish(fact)
+    assert time.monotonic() - started < 3
+    assert result.status is Status.ASSUMED
+    assert result.provenance["declined"] == (
+        "cas: sympy did not finish translating the statement within 0.2 s"
+    )
+
+
+def test_the_shape_is_checked_without_building_anything(cas, monkeypatch) -> None:
+    """What refuses a side is its nodes and its variables' sorts, read without sympy (#77)."""
+    import lanky.cas
+    from lanky.cas import check_shape
+
+    def refused(expr, symbols):
+        raise AssertionError("translated")
+
+    monkeypatch.setattr(lanky.cas, "to_sympy", refused)
+    (found,) = check_shape(Forall(((x, Real),), exp(x) * abs_(x) / 2 == x**Fraction(1, 2)))
+    ((bound, domain),) = found[1]
+    assert bound is x and domain is Real
+    for term, reason in (
+        (Forall(((x, Real),), x // 2 == x), "floor division"),
+        (Forall(((x, Real),), Var("f")(x) == x), "a family applied to an argument"),
+        (Forall(((x, Real),), y == x), "y is not bound by a quantifier"),
+        (Forall(((x, Bool),), x == x), "not a set of numbers"),
+        (Forall(((x, Real),), x == float("inf")), "not a finite number"),
+        (Forall(((x, Real),), x <= x), "not an equation"),
+    ):
+        with pytest.raises(Untranslatable, match=reason):
+            check_shape(term)
+        assert not CasOracle().can_establish(fact_of(term))
 
 
 def test_the_deadline_reads_the_variable(cas, monkeypatch) -> None:
@@ -446,6 +527,37 @@ def test_a_deadline_the_timer_will_not_take_is_none(cas, seconds) -> None:
     result = CasOracle(timeout=seconds).establish(fact_of(Forall(((x, Real),), x == x)))
     assert (result.status, result.decided_by) == (Status.DECIDED, "cas")
     assert signal.getsignal(signal.SIGALRM) is before
+
+
+def test_a_deadline_that_expires_as_its_block_ends_puts_the_handler_back(monkeypatch) -> None:
+    """A ``SIGALRM`` between the block's end and the timer's stop raises there.
+
+    The handler then ran in the ``finally`` that stops the timer, and the
+    line after it, which puts the handler there was back, never ran: the
+    deadline's own handler stayed installed, and the next ``SIGALRM``,
+    meant for someone else, raised its :class:`lanky.deadline.Expired`.
+    """
+    import signal
+
+    from lanky.deadline import Expired, deadline
+
+    real = signal.setitimer
+
+    def setitimer(which, seconds, *rest):
+        answer = real(which, seconds, *rest)
+        if seconds == 0:
+            # the timer went off as the block ended, and its handler runs now
+            signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
+        return answer
+
+    monkeypatch.setattr(signal, "setitimer", setitimer)
+    before = signal.getsignal(signal.SIGALRM)
+    owner = object()
+    with pytest.raises(Expired) as raised, deadline(60, owner):
+        pass
+    assert raised.value.owner is owner
+    assert signal.getsignal(signal.SIGALRM) is before
+    assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
 
 
 def test_no_deadline_off_the_main_thread_or_over_another_timer(cas) -> None:
@@ -535,8 +647,9 @@ def test_a_check_leaves_a_square_root_of_what_may_be_negative_to_the_tester(
     real, nowhere, natural = claims(check_path(path))
     assert (real.status, real.decided_by) == (Status.TESTED, "property-test")
     assert (nowhere.status, nowhere.decided_by) == (Status.ASSUMED, None)
+    # taken on its shape and declined in the translation (#77), with the reason
     for fact in (real, nowhere):
-        assert "declined" not in fact.provenance
+        assert "sympy cannot show is not negative" in fact.provenance["declined"]
     assert (natural.status, natural.decided_by) == (Status.DECIDED, "cas")
 
 

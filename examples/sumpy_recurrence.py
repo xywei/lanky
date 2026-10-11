@@ -413,15 +413,31 @@ class Reconstruction:
 
     @property
     def tolerance(self) -> Fraction:
-        """How far apart, relative to the derivative, mpmath may find the two sides."""
+        """How far apart mpmath may find the two sides, as :meth:`sampled` measures it.
+
+        ``10**-(digits - 10)``, of the derivative's size where that is at
+        least ``1``, and absolutely where it is smaller (#78).
+        """
         return Fraction(1, 10 ** (self.digits - 10))
 
     def sampled(self) -> tuple[list[Any], dict[str, Any] | None]:
-        """The largest relative difference mpmath finds for each coefficient, and a counterexample.
+        """The largest difference mpmath finds for each coefficient, and a counterexample.
 
-        The counterexample is the first point and coefficient at which the two
-        sides differ by more than ``10**-(digits - 10)`` relative to the
-        derivative, or ``None`` when there is none.
+        A difference is measured against the derivative's size or ``1``,
+        whichever is larger: ``|reconstructed - derivative| / max(1,
+        |derivative|)`` (:func:`difference`). That is relative to a
+        derivative of size ``1`` or more, and an absolute floor below it,
+        where mpmath's finite differences are accurate to their digits of the
+        kernel's scale and not of the derivative's: a derivative that is ``0``
+        at a point, as every derivative odd in ``y`` is on the ``x`` axis, is
+        computed as a few units in its last digits, and a comparison relative
+        to it would refute a right reconstruction there. So a derivative much
+        smaller than ``1`` is compared absolutely, to ``10**-(digits - 10)``:
+        a reconstruction of ``1e-21`` where the derivative is ``1e-30``
+        passes, though the two are far apart relative to each other.
+
+        The counterexample is the first point and coefficient at which the
+        difference is above :attr:`tolerance`, or ``None`` when there is none.
         """
         import mpmath
 
@@ -438,7 +454,7 @@ class Reconstruction:
                 stored = [values[self.identifiers.index(mi)] for mi in self.stored]
                 for index, mi in enumerate(self.identifiers):
                     reconstructed = self.combination(index, stored, _mpf)
-                    gap = abs(reconstructed - values[index]) / max(1, abs(values[index]))
+                    gap = difference(reconstructed, values[index])
                     largest[index] = max(largest[index], gap)
                     if found is None and gap > tolerance:
                         found = {
@@ -461,6 +477,23 @@ class Reconstruction:
     def __repr__(self) -> str:
         """Print the name and the statement."""
         return f"<{self.noun} {self.__name__}: {self.statement()}>"
+
+
+#: What the tolerance of the sampled claim is relative to (see
+#: :meth:`Reconstruction.sampled`): the derivative where it is ``1`` or more in
+#: size, and nothing below that, where it is an absolute floor (#78).
+TOLERANCE_POLICY = "relative to the derivative or to 1, whichever is larger"
+
+
+def difference(reconstructed: Any, derivative: Any) -> Any:
+    """How far a reconstructed coefficient is from the derivative, as the sampled claim measures it.
+
+    ``|reconstructed - derivative|`` over the derivative's size or ``1``,
+    whichever is larger (:data:`TOLERANCE_POLICY`): relative to a derivative
+    of size ``1`` or more, and absolute below that (see
+    :meth:`Reconstruction.sampled`).
+    """
+    return abs(reconstructed - derivative) / max(1, abs(derivative))
 
 
 def _mpf(value: int | Fraction) -> Any:
@@ -652,7 +685,7 @@ class Mpmath:
                 reason=(
                     f"the reconstructed coefficient ({found['a']}, {found['b']}) is "
                     f"{found['reconstructed']} and the derivative {found['derivative']}, "
-                    f"{found['difference']} apart relative to it"
+                    f"{found['difference']} apart, {TOLERANCE_POLICY}"
                 ),
                 **common,
             )
@@ -661,6 +694,7 @@ class Mpmath:
             self.name,
             valid=claim.points,
             largest_difference=float(max(largest)),
+            tolerance=f"{float(claim.tolerance):.0e}, {TOLERANCE_POLICY}",
             **common,
         )
 
@@ -789,9 +823,9 @@ def main() -> int:
     if agree:
         print(
             "Every reconstructed coefficient is the direct derivative. sympy simplifies each\n"
-            f"difference to 0, and mpmath's derivatives, at {claim.digits} digits, agree to "
-            f"within {float(claim.tolerance):.0e}\n"
-            f"of each other, relative, at {claim.points} points."
+            f"difference to 0, and mpmath's derivatives, at {claim.digits} digits, agree at "
+            f"{claim.points} points to\n"
+            f"within {float(claim.tolerance):.0e}, {TOLERANCE_POLICY}."
         )
     else:
         print("Some reconstructed coefficient is NOT the direct derivative: see the table.")

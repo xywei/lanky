@@ -31,12 +31,19 @@ a complex number Python never computes, and where a denominator or a
 logarithm's argument is zero Python raises and the readings are not compared
 (see :mod:`lanky.cas`).
 
-Simplification can take long on a large expression. Each fact gets
-``LANKY_CAS_TIMEOUT`` seconds (60 by default), after which it is declined, as a
-Lean attempt that runs out of time is. The deadline is an interval timer, so it
-holds where the check runs in the main thread of a POSIX process, which is
-where ``lanky check`` runs it, and it is not set elsewhere or when another
-timer is already running.
+Simplification can take long on a large expression, and so can building it:
+sympy's constructors evaluate as they build. Each fact gets
+``LANKY_CAS_TIMEOUT`` seconds (60 by default) for both, the translation of the
+statement into sympy and the simplification, after which it is declined, as a
+Lean attempt that runs out of time is; before the deadline only the
+statement's shape is read, which builds nothing (#77). The deadline is an
+interval timer, so it holds where the check runs in the main thread of a POSIX
+process, which is where ``lanky check`` runs it, and it is not set elsewhere or
+when another timer is already running. An evaluation that is one long
+operation in C, such as an integer power of a number sympy has just folded,
+``(x - x + 3) ** 10**10``, does not return to the interpreter while it runs,
+and the timer is heard only after it; the property tester would compute the
+same power.
 
 The oracle is available where sympy imports, the ``cas`` extra, and
 ``LANKY_CAS_DISABLE=1`` makes it a declared no-op, as ``LANKY_LEAN_DISABLE``
@@ -47,18 +54,14 @@ from __future__ import annotations
 
 import math
 import os
-import signal
-import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
-from typing import Any
 
 import pymbolic.primitives as prim
 
-from lanky.cas import Untranslatable, equations, sympy_module
+from lanky.cas import Untranslatable, check_shape, equations, sympy_module
+from lanky.deadline import Expired, deadline
 from lanky.ledger import Fact, Status
 from lanky.terms import render
 
@@ -72,50 +75,9 @@ DEFAULT_TIMEOUT = 60.0
 _QUOTED = 160
 
 
-class _Expired(BaseException):
-    """The simplifier ran past its deadline.
-
-    A ``BaseException``, as ``KeyboardInterrupt`` is, so that no ``except
-    Exception`` inside sympy takes it for a failure of its own and goes on.
-    """
-
-
-@contextmanager
-def _deadline(seconds: float | None) -> Iterator[None]:
-    """Raise :class:`_Expired` in the block once ``seconds`` have passed, where that can be done.
-
-    That is in the main thread of a process with ``signal.setitimer`` and no
-    interval timer of its own running, which would be clobbered. Elsewhere the
-    block runs without a deadline, and so it does when the timer will not
-    take ``seconds``: a deadline too long for it to hold, or one that is not a
-    number. Either way the ``SIGALRM`` handler is the one there was before,
-    once the block is over or the timer has refused.
-    """
-    if (
-        not seconds
-        or seconds <= 0
-        or not hasattr(signal, "setitimer")
-        or threading.current_thread() is not threading.main_thread()
-        or signal.getitimer(signal.ITIMER_REAL)[0] > 0
-    ):
-        yield
-        return
-
-    def expire(signum: int, frame: Any) -> None:
-        raise _Expired
-
-    previous = signal.signal(signal.SIGALRM, expire)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, seconds)
-    except (OverflowError, ValueError, OSError):
-        signal.signal(signal.SIGALRM, previous)
-        yield
-        return
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+#: The deadline each fact gets (see :mod:`lanky.deadline`), and what it raises.
+_deadline = deadline
+_Expired = Expired
 
 
 def _quoted(text: str) -> str:
@@ -159,12 +121,21 @@ class CasOracle:
         return True, f"sympy {installed}" if installed else ""
 
     def can_establish(self, fact: Fact, /) -> bool:
-        """Whether the fact asserts equations the bridge can translate (see :mod:`lanky.cas`)."""
+        """Whether the fact asserts equations of a shape the bridge takes (see :mod:`lanky.cas`).
+
+        Only the shape is read, the sorts and the nodes
+        (:func:`lanky.cas.check_shape`), and nothing is translated: sympy
+        evaluates as it builds, so a translation can take time, and that is
+        done in :meth:`establish`, within the deadline (#77). A real
+        logarithm or square root whose argument sympy cannot show is not
+        negative is refused by the translation, so such a statement is taken
+        here and declined there, with the reason.
+        """
         if not isinstance(fact.term, prim.ExpressionNode):
             return False
         try:
-            equations(fact.term)
-        except (Untranslatable, ImportError):
+            check_shape(fact.term)
+        except Untranslatable:
             return False
         return True
 
@@ -200,19 +171,35 @@ class CasOracle:
         equation whose difference sympy leaves at something other than ``0``,
         or of a fact the deadline cut short, carries the reason as
         ``declined`` (see :func:`lanky.cli.decline_lines`).
+
+        The deadline covers the translation of the statement into sympy as
+        well as the simplification (#77): sympy's constructors evaluate as
+        they build, and a large statement spent its time there before the
+        timer was armed. An evaluation that is one long operation in C, an
+        integer power of a number sympy has just folded, does not return to
+        the interpreter, and the timer is heard only after it.
+
+        The fact's deadline is its own (:attr:`lanky.deadline.Expired.owner`):
+        a deadline set around the oracle, under which this one sets no timer,
+        is its caller's, and what it raises is raised again, not taken for
+        sympy running out of time.
         """
         try:
-            found = equations(fact.term)
+            check_shape(fact.term)
+            sympy = sympy_module()
         except (Untranslatable, ImportError) as exc:
             return self._declined(fact, str(exc))
-        sympy = sympy_module()
         try:
             seconds = self._seconds()
         except ValueError as exc:
             return self._declined(fact, str(exc))
         started = time.monotonic()
+        translating = True
+        owner = object()
         try:
-            with _deadline(seconds):
+            with _deadline(seconds, owner):
+                found = equations(fact.term)
+                translating = False
                 for equation in found:
                     difference = sympy.simplify(equation.left - equation.right)
                     if difference != 0:
@@ -222,8 +209,16 @@ class CasOracle:
                             f"{_quoted(render(equation.term))} to {_quoted(difference)}, "
                             "not 0",
                         )
-        except _Expired:
+        except _Expired as exc:
+            if exc.owner is not owner:
+                raise
+            if translating:
+                return self._declined(
+                    fact, f"sympy did not finish translating the statement within {seconds:g} s"
+                )
             return self._declined(fact, f"sympy did not finish within {seconds:g} s")
+        except Untranslatable as exc:
+            return self._declined(fact, str(exc))
         except Exception as exc:  # noqa: BLE001 - a simplifier that fails declines
             return self._declined(fact, f"sympy raised {type(exc).__name__}: {_quoted(exc)}")
         return fact.with_status(

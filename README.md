@@ -203,13 +203,19 @@ to match.
   reduction, a floor division, a variable whose sort is not a set of
   numbers, a real `log` or `sqrt` of what sympy cannot show is not
   negative, where sympy's value is complex and Python's `math` raises.
-  sympy is imported on the first fact, never with lanky.
+  sympy is imported on the first fact, never with lanky; before its deadline
+  the oracle reads only a statement's shape, and it translates the statement
+  within it.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Complex`, `Bool`, `Prop`, `Fin[n]`,
   `Fn[A, B]`, refinement by `T & prop`, the sum `Fin[n] + Fin[m]` of index
   types (carried for plugins, not yet a binder domain), exactness classes;
   and `lanky.exp`, `lanky.log` and `lanky.sqrt`, which build a term from a
-  term and are `math`'s (or `cmath`'s) functions at a number.
+  term, and from a number in an annotation, so that `exp(1)` there is `e` to
+  every oracle and not the float nearest it, and are `math`'s (or `cmath`'s)
+  functions at a number anywhere else: in the file run as a program, and in
+  a function an annotation calls. Python's `abs` of a term is lanky's `Abs`,
+  so a comparison of it is a proposition.
 - Property testing, including satisfying a definitional hypothesis by
   construction rather than rejection sampling, so a theorem about a scan is
   genuinely tested and not vacuously passed. A synthesized value has to land
@@ -225,7 +231,9 @@ to match.
   written: a guard joined with Python's `or`, an `and` or `or` used as a value,
   a `not` in a guard, an `if` statement inside a function an annotation
   calls, and a symbolic guard over a concrete domain (`if n > 100` in a sum
-  over `Fin[3]`), which a walk of the domain would drop. The connectives are
+  over `Fin[3]`), which a walk of the domain would drop; a body that is a
+  term there is kept, `all` and `any` of it being the conjunction and the
+  disjunction of its values at the points. The connectives are
   `&`, `|` and `~`. Only a generator's `if` clause records a guard: a
   conditional expression (`a if i < 3 else b`), a `not` in a body and a
   comparison of two tuples or lists, which compares their items, are refused
@@ -284,7 +292,12 @@ to match.
   statement. An existential's conditions are conjuncts, so a disjunction
   among them is bracketed, as Python groups it. An attempt that runs
   past `LANKY_LEAN_TIMEOUT` costs that attempt alone: the REPL the driver
-  killed is started again for the next. And a REPL ends with the process
+  killed is started again for the next. The ladder as a whole has a budget
+  per fact, `LANKY_LEAN_BUDGET` (120 s), and a smaller one for the questions
+  whether a fact is vacuous, `LANKY_LEAN_VACUITY_BUDGET` (30 s), which also
+  leave out the attempts that cannot show `False`; the search for an
+  induction's certificates counts against it, and a fact whose budget runs
+  out says after how many attempts. And a REPL ends with the process
   that started it, however that process ends, a `SIGKILL` included: a small
   reaper process per lanky process kills it when the pipe from lanky
   closes, and Ctrl-C during an attempt stops it at once.
@@ -378,8 +391,10 @@ to match.
   thin evidence. A complex `log` and `sqrt` are Python's principal branches,
   enclosed off their branch cut, the non-positive real axis, where Python
   picks a side by the sign of a zero, which an exact number does not have
-  (#51). On the cut, an `exp` of an argument past `2**14`, and a negative
-  number to a power that is not an integer, the draw is left undecided.
+  (#51). On the cut, and at an `exp` of an argument past `2**14`, the draw
+  is left undecided. A negative number to a power that is not an integer is
+  Python's complex principal value, enclosed part by part, so
+  `(x ** 3) ** Fraction(1, 3) == x` is refuted at `x = -1`.
   Where Lean is total and Python raises (a division by zero, the logarithm of
   zero, the square root of a negative number), the fact carries a note in
   Mathlib mode, as an integer division by zero does in either mode.
@@ -522,7 +537,8 @@ pip install "lanky[cas]"
 Where sympy imports, the oracle is on: an identity sympy simplifies reads
 `decided (heuristic)  cas` rather than `tested  property-test`.
 `LANKY_CAS_DISABLE=1` turns it off, and `LANKY_CAS_TIMEOUT` caps the seconds
-sympy may take over one fact (60).
+sympy may take over one fact (60), translating the statement and simplifying
+it.
 
 The Lean oracle is an extra, because it pulls a sizable dependency tree and needs
 a Lean toolchain on `PATH`:
@@ -570,8 +586,11 @@ reinstall does not throw it away. Useful environment variables:
 `LANKY_LEAN_DISABLE=1` makes the oracle a declared no-op (the main CI job sets
 it), `LANKY_LEAN_VERSION` pins a toolchain and skips the probe,
 `LANKY_LEAN_CACHE_DIR` moves the cache, `LANKY_LEAN_TIMEOUT` caps each
-tactic attempt, `LANKY_LEAN_MATHLIB` turns Mathlib mode on, and
-`LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT` caps the Mathlib import (600 s).
+tactic attempt (60 s), `LANKY_LEAN_BUDGET` the whole ladder of one fact
+(120 s) and `LANKY_LEAN_VACUITY_BUDGET` that of a question whether a fact
+is vacuous (30 s), `0` for no budget, `LANKY_LEAN_MATHLIB` turns Mathlib
+mode on, and `LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT` caps the Mathlib import
+(600 s).
 
 For work on lanky itself:
 
