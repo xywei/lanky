@@ -2427,6 +2427,15 @@ class LeanOracle:
         available, why = self.availability()
         if not available:
             return fact.with_status(fact.status, lean_declined=why, declined=f"{self.name}: {why}")
+        reals = any(getattr(part, "mathlib", False) for part in obligation.parts)
+        if reals and not self._mathlib():
+            reason = (
+                "the claim is about real numbers, which core Lean does not have; "
+                "where Mathlib is (LANKY_LEAN_MATHLIB), Lean checks it"
+            )
+            return fact.with_status(
+                fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+            )
         try:
             budget = self._budget(fact)
         except ValueError as exc:
@@ -2436,7 +2445,8 @@ class LeanOracle:
         if self.proofs is None:
             self.proofs = ProofCache(default_proof_cache_dir())
         owner = fact.owner or fact.id
-        version = self._cache_version()
+        # a part about reals is Mathlib's session's, which is read as it is asked
+        version = None if reals else self._cache_version()
         records: list[dict] | None = None
         if version is not None:
             # every answer from the cache, or none: no session is started (#118)
@@ -2458,7 +2468,7 @@ class LeanOracle:
                 assert checked is not None  # a session answers or says why not
                 return checked
             records = self._check_parts(obligation.parts, owner, until)
-            version = sessions[0].version
+            version = self.session.version if reals else sessions[0].version
         common: dict[str, Any] = {
             "lean_parts": records,
             "lean_version": version,
@@ -2467,12 +2477,18 @@ class LeanOracle:
             common["lean_decider"] = obligation.decider
         if obligation.stated_by:
             common["lean_stated_by"] = obligation.stated_by
+        if reals:
+            common["lean_mathlib"] = self.session.mathlib_revision
         if all(record.get("proved") for record in records):
+            source = "\n".join(record["source"] for record in records)
+            if reals:
+                # the file that replays it imports Mathlib first
+                source = f"import Mathlib\n\n{source}"
             result = fact.with_status(
                 Status.PROVED,
                 self.name,
                 tactic=_how_text(records),
-                lean_source="\n".join(record["source"] for record in records),
+                lean_source=source,
                 **common,
             )
             if obligation.rests_on:
@@ -2549,7 +2565,22 @@ class LeanOracle:
         return records
 
     def _check_parts(self, parts: Any, owner: str, until: float | None) -> list[dict]:
-        """Check every part, in a pool of sessions; one record per part, in order."""
+        """Check every part, in a pool of sessions; one record per part, in order.
+
+        A part about reals (:attr:`lanky.obligations.Part.mathlib`) is
+        checked in the oracle's Mathlib session, one after another, and the
+        others in the pool of core sessions.
+        """
+        reals = [index for index, part in enumerate(parts) if getattr(part, "mathlib", False)]
+        if reals:
+            records: dict[int, dict] = {}
+            for index in reals:
+                records[index] = self._checked(self.session, parts[index], owner, until)
+            rest = [index for index in range(len(parts)) if index not in records]
+            if rest:
+                checked = self._check_parts([parts[index] for index in rest], owner, until)
+                records.update(zip(rest, checked, strict=True))
+            return [records[index] for index in range(len(parts))]
         sessions = self._part_sessions()
         jobs = min(len(parts), _jobs())
         while len(sessions) < jobs:
@@ -2590,15 +2621,22 @@ class LeanOracle:
     def _ask(
         self, session: LeanSession, source: str, until: float | None
     ) -> tuple[bool, str, bool, bool]:
-        """``(closed, detail, cached, answered)`` for one declaration, the cache first."""
+        """``(closed, detail, cached, answered)`` for one declaration, the cache first.
+
+        A Mathlib session's answers are kept under its Lean version and the
+        Mathlib revision it imported, apart from core Lean's.
+        """
         cache = self.proofs
+        version = session.version
+        if session.mathlib is not None:
+            version = f"{version}+mathlib@{session.mathlib_revision}"
         if cache is not None:
-            kept = cache.get(session.version, source)
+            kept = cache.get(version, source)
             if kept is not None:
                 return kept[0], kept[1], True, True
         closed, detail, answered = session.answer(source, until)
         if answered and cache is not None:
-            cache.put(session.version, source, closed, detail)
+            cache.put(version, source, closed, detail)
         return closed, detail, False, answered
 
     def _check_part(
