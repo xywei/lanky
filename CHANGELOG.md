@@ -6,13 +6,33 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
-Every claim's reading of its annotations is checked (#91), which closes the
-class the 0.1.0 Known limits named: an operation that answers from a term
-object rather than through its overloads, `is`, an attribute, a hash, a text
-or a truth value inside a helper or a library, a comparison of types (#79,
-#80, #88), is refuted at a point instead of proved. Every ledger changes
-shape: each theorem and axiom is followed by its reading, and a proof is
-worth the `tested` reading it rests on.
+## [0.2.0] - 2026-10-11
+
+The faithful fact (#91). lanky reads an annotation by running its Python on
+symbolic terms, and every oracle is handed the term that run builds. Each
+theorem and axiom now gets a second fact, its reading: the annotations are run
+again as plain Python at drawn points, in a copy of the module's state taken
+just before the claim was read, and the term has to compute the same at each.
+That closes the class the 0.1.0 Known limits named, an operation that answers
+from a term object rather than through its overloads (`is`, an attribute, a
+hash, a text or a truth value inside a helper or a library, a comparison of
+types; #79, #80, #88): such a reading is refuted at a point, and no oracle is
+asked about the claim. Every ledger changes shape. Each claim is followed by
+its reading, and every pass, decision and proof rests on it, so a proof is
+worth `tested` in the `EFFECTIVE` column. A theorem in a loopty file has its
+reading too, and loopty, whose documented ledgers show it, raises its floor to
+lanky 0.2.0.
+
+The check was hardened in the same waves: each draw has a time budget of its
+own (#101, #113, #114), what follows an operation with no value is compared
+(#99), and a cached helper, a `:=` in a lambda and a parameter named like a
+builtin read as written (#105). Outside it: Python's `abs` of a term is
+lanky's `Abs` (#94), `exp`, `log` and `sqrt` of a number stay exact (#81), a
+negative number to a power that is not an integer is Python's complex value
+(#89), the CAS oracle translates within its deadline (#77), the Lean ladder
+has a budget per fact (#83), and the cross-check hears every tester (#41).
+The README's Known limits section lists the open issues a user is most
+likely to meet, each with what to do about it.
 
 ### Added
 
@@ -277,13 +297,16 @@ worth the `tested` reading it rests on.
   `from lanky import sum` is lanky's own and still reads, and a name the
   annotation does not read, one a helper calls, is no matter: the helper
   calls the module's binding in both readings.
-- The README's Known limits section says what the check leaves: points no
-  draw reaches, claims whose annotations cannot be run at a point, a part of
-  an annotation after an overflow or a helper's operation with no value, a
-  step Python takes in C that no time budget stops, and what the snapshot
-  does not copy. The
-  quickstart has a Check the reading section, and every ledger in both is run
-  again.
+- The README's Known limits section says what the check is and what it
+  cannot see, points no draw reaches and claims whose annotations cannot be
+  run at a point, and then lists the open issues a user is most likely to
+  meet, each in plain words with its fix or workaround: a theorem called
+  directly (#96), `math.floor` of a variable (#112), `min` and `max` (#66),
+  a family over `Nat` (#98), a slow step in C (#108), an installed package's
+  state (#104), what follows a helper's operation with no value (#107), and
+  Windows (#47, #48). The issues it named that are fixed are gone from it.
+  Its status paragraph is 0.2.0's. The quickstart has a Check the reading
+  section, and every ledger in both is run again.
 - The publish workflow builds in a job that can only read the repository, with
   a checkout that keeps no credentials, and uploads from a second job that
   alone may ask for the token PyPI trusts and runs no checkout or build. Before,
