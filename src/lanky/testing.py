@@ -156,6 +156,7 @@ from lanky.terms import (
     exact_reading,
     free_names,
     free_variables,
+    is_totalized,
     render,
     sort_free_names,
     truth_value,
@@ -293,11 +294,17 @@ class Table:
 
     def __call__(self, index: Any) -> Any:
         """The value at ``index``, as a family application."""
-        return self.values[self._position(index)]
+        return self[index]
 
     def __getitem__(self, index: Any) -> Any:
-        """The value at ``index``."""
-        return self.values[self._position(index)]
+        """The value at ``index``; ``0`` outside the domain inside :func:`lanky.terms.totalized`."""
+        try:
+            position = self._position(index)
+        except Undecided:
+            if is_totalized():
+                return 0
+            raise
+        return self.values[position]
 
     def __setitem__(self, index: Any, value: Any) -> None:
         """Set the value at ``index``."""

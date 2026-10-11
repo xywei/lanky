@@ -101,6 +101,7 @@ __all__ = [
     "free_names",
     "free_variables",
     "init_args",
+    "is_totalized",
     "log",
     "render",
     "rerunning",
@@ -109,6 +110,7 @@ __all__ = [
     "sqrt",
     "structurally_equal",
     "sum_",
+    "totalized",
     "truth_value",
 ]
 
@@ -230,6 +232,42 @@ def exact_reading() -> Iterator[None]:
         yield
     finally:
         _EXACT.reset(token)
+
+
+#: Whether what Python has no value for is read as Lean has it (see :func:`totalized`).
+_TOTALIZED: ContextVar[bool] = ContextVar("lanky_totalized", default=False)
+
+
+@contextmanager
+def totalized() -> Iterator[None]:
+    """Read what Python has no value for as Lean has it, while the block runs (#99).
+
+    Lean's arithmetic is total where Python's raises: ``x / 0`` and ``x // 0``
+    are ``0``, ``x % 0`` is ``x``, ``0 ** -1`` is ``0``, ``Real.log 0`` is
+    ``0``, ``Real.log (-x)`` is ``Real.log x``, the square root of a negative
+    number is ``0`` and ``Complex.log 0`` is ``0`` (see :mod:`lanky.semantics`).
+    Inside this block :func:`elementary_value` answers so where Python
+    raises, and so do the operators of :mod:`lanky.faithful`'s second reading;
+    a family applied outside its domain, which Lean's statement never does
+    (:func:`lanky.lean.check_applications`), is ``0``
+    (:class:`lanky.testing.Table`). An exponential that overflows a float
+    still has no value.
+
+    Nothing reads a statement this way to decide it: the faithfulness check
+    reads both an annotation and its term so where both have no value, so
+    that what follows the operation that had none is compared on both sides
+    (:mod:`lanky.faithful`).
+    """
+    token = _TOTALIZED.set(True)
+    try:
+        yield
+    finally:
+        _TOTALIZED.reset(token)
+
+
+def is_totalized() -> bool:
+    """Whether the block of :func:`totalized` is running."""
+    return _TOTALIZED.get()
 
 
 @functools.cache
@@ -1617,7 +1655,8 @@ def elementary_value(function: str, value: Any) -> Any:
     Raises:
         UndefinedValue: If Python's function raises at ``value``: the logarithm
             of a number that is not positive, the square root of a negative
-            one, or an exponential that overflows a float.
+            one, or an exponential that overflows a float. Inside
+            :func:`totalized` the first two are Mathlib's values instead.
         TypeError: If ``value`` is not a number, a ``bool`` included.
     """
     if function not in ELEMENTARY_FUNCTIONS:
@@ -1627,7 +1666,19 @@ def elementary_value(function: str, value: Any) -> Any:
     module = math if isinstance(value, numbers.Real) else cmath
     try:
         return getattr(module, function)(value)
-    except (ValueError, OverflowError) as exc:
+    except ValueError as exc:
+        if _TOTALIZED.get():
+            # as Mathlib has it: Real.log 0 and Complex.log 0 are 0, Real.log
+            # (-x) is Real.log x, and the square root of a negative number is 0
+            if function == "log" and value != 0:
+                return math.log(abs(value))
+            if function in ("log", "sqrt"):
+                return 0.0 if module is math else 0j
+        raise UndefinedValue(
+            f"{function}({value!r}) has no value in Python ({exc}), while "
+            "Mathlib's function is total"
+        ) from exc
+    except OverflowError as exc:
         raise UndefinedValue(
             f"{function}({value!r}) has no value in Python ({exc}), while "
             "Mathlib's function is total"
@@ -1859,19 +1910,22 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
     the key were absent (see :func:`_refuse_hashing`).
 
     Raises:
-        TypeError: If an annotation reads ``all``, ``any``, ``sum`` or ``abs``
-            and the function's module binds that name to something other
-            than Python's builtin or lanky's own (see
-            :func:`_refuse_a_shadowed_override`).
+        TypeError: If an annotation reads ``all``, ``any``, ``sum`` or ``abs``,
+            which is not a parameter's name, and the function's module binds
+            that name to something other than Python's builtin or lanky's
+            own (see :func:`_refuse_a_shadowed_override`).
     """
     raw = inspect.get_annotations(fn, eval_str=False)
     namespace = getattr(fn, "__globals__", {})
     scope = Scope(namespace)
     scope.update(BUILTIN_OVERRIDES)
-    for name in inspect.signature(fn).parameters:
+    parameters = list(inspect.signature(fn).parameters)
+    for name in parameters:
         scope[name] = Var(name)
     if values:
         scope.update(values)
+    # the names the scope binds over lanky's own, which no module binding reaches
+    own = frozenset(parameters).union(values or ())
 
     out: dict[str, Any] = {}
     for name, annotation in raw.items():
@@ -1881,7 +1935,7 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
         # eval strips the spaces and tabs a string starts with, and compile
         # does not
         code = compile(annotation.lstrip(" \t"), "<string>", "eval")
-        _refuse_a_shadowed_override(fn, name, code, namespace)
+        _refuse_a_shadowed_override(fn, name, code, namespace, own)
         with _reading(code):
             out[name] = eval(code, scope, None)
     return out
@@ -1896,7 +1950,9 @@ _OVERRIDE_MEANING = {
 }
 
 
-def _refuse_a_shadowed_override(fn: Any, parameter: str, code: Any, namespace: Any) -> None:
+def _refuse_a_shadowed_override(
+    fn: Any, parameter: str, code: Any, namespace: Any, own: frozenset[str] = frozenset()
+) -> None:
     """Refuse an annotation that reads a name lanky overrides and its module binds otherwise (#100).
 
     In an annotation ``all``, ``any``, ``sum`` and ``abs`` are lanky's
@@ -1911,7 +1967,10 @@ def _refuse_a_shadowed_override(fn: Any, parameter: str, code: Any, namespace: A
     annotation does not read, ``sum`` of ``np.sum`` included, is no matter:
     a helper the annotation calls reads its module's binding in the reading
     as when it is run again, and the faithful fact compares the two
-    (:mod:`lanky.faithful`).
+    (:mod:`lanky.faithful`). Nor is a name in ``own``, the names the
+    annotation's scope binds over lanky's: a parameter of the function named
+    ``abs`` is the parameter in both readings, whatever the module binds
+    ``abs`` to (#105).
 
     Raises:
         TypeError: If ``code``, the annotation of ``parameter`` compiled,
@@ -1919,7 +1978,7 @@ def _refuse_a_shadowed_override(fn: Any, parameter: str, code: Any, namespace: A
     """
     reads = code_reads(code).names
     for name, ours in BUILTIN_OVERRIDES.items():
-        if name not in reads or name not in namespace:
+        if name not in reads or name not in namespace or name in own:
             continue
         bound = namespace[name]
         if bound is ours or bound is getattr(builtins, name):
