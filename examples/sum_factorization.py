@@ -15,8 +15,7 @@ Run it as ``gauss.py`` is run; numpy is all it needs.
     The ledger. With Mathlib (see :mod:`lanky.mathlib`), the exchange of two
     sums, the factorization and the mixed product are ``proved`` by Lean for
     every size ``n``; without it they are ``tested``. The flattening reads
-    ``tested`` either way, with a ``DECLINED`` line that says why Lean was not
-    asked.
+    ``tested`` either way: Lean is not asked about it (see below).
 
 The mathematics. A tensor-product element of order ``p`` has ``n = p + 1``
 nodes along each of its three axes, and an operator on it that is built from
@@ -45,10 +44,10 @@ which axis of the field is the fastest in its flattening, and so which factor
 comes last in numpy's ``kron``. modepy flattens with the first axis fastest,
 ``a + n*b + n**2*c``, and so the dense matrix is ``kron(H, kron(G, F))``, with
 ``F`` last. Stating that for every ``n`` takes ``i // n**2`` and ``i % n`` of
-a variable ``n``, which is not linear arithmetic: lanky does not hand Lean a
-family applied at an index it cannot show is in the family's domain by linear
-arithmetic, and the ledger says so. For a size written as a number, the
-flattening is a fact loopty's isl oracle decides, and Lean proves.
+a variable ``n``, which is not linear arithmetic, and lanky does not hand Lean
+a family applied at an index it cannot show is in the family's domain by
+linear arithmetic: the claim is left to the property tester, which checks it
+at drawn sizes and entries.
 """
 
 from __future__ import annotations
