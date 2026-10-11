@@ -47,7 +47,12 @@ comes last in numpy's ``kron``. modepy flattens with the first axis fastest,
 a variable ``n``, which is not linear arithmetic, and lanky does not hand Lean
 a family applied at an index it cannot show is in the family's domain by
 linear arithmetic: the claim is left to the property tester, which checks it
-at drawn sizes and entries.
+at drawn sizes and entries (#126).
+
+The rows and columns are parameters of the theorems rather than quantifiers
+in their goals. That is the same statement, since a theorem's parameters are
+universal, and the property tester then draws a row instead of walking all of
+them, each a sum over all the columns (#125).
 """
 
 from __future__ import annotations

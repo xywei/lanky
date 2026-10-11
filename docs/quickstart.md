@@ -1104,7 +1104,7 @@ the file that returns the entry of `H (x) G (x) F`, and the reading of the
 annotation expands it. The row `(a, b, c)` is a parameter rather than a
 quantifier in the goal: the statement is the same, a theorem's parameters are
 universal, and the tester draws a row rather than walking all `n**3` of them,
-each a sum of `n**3` terms. Run as a program, the file applies grudge's weak
+each a sum of `n**3` terms (#125). Run as a program, the file applies grudge's weak
 derivative both ways at orders 1 to 7 (`python examples/sum_factorization.py`);
 checked with Mathlib:
 
@@ -1112,14 +1112,14 @@ checked with Mathlib:
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sum_factorization.py
 STATUS  EFFECTIVE  BY             WHERE                     OWNER              STATEMENT
 ------  ---------  -------------  ------------------------  -----------------  ------------------------------------------------------------------------
-proved  tested     lean           sum_factorization.py:63   exchange           n : Nat, m : Nat, f : Fn[Fin(n), Fin(m), Real] |- sum(sum(f[i, j] for...
-tested  tested     python         sum_factorization.py:63   exchange           the term computes what the annotations compute
-proved  tested     lean           sum_factorization.py:84   sum_factorization  n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], ...
-tested  tested     python         sum_factorization.py:84   sum_factorization  the term computes what the annotations compute
-proved  tested     lean           sum_factorization.py:108  mixed_product      n : Nat, A : Fn[Fin(n), Fin(n), Real], B : Fn[Fin(n), Fin(n), Real], ...
-tested  tested     python         sum_factorization.py:108  mixed_product      the term computes what the annotations compute
-tested  tested     property-test  sum_factorization.py:138  flattening         n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], ...
-tested  tested     python         sum_factorization.py:138  flattening         the term computes what the annotations compute
+proved  tested     lean           sum_factorization.py:68   exchange           n : Nat, m : Nat, f : Fn[Fin(n), Fin(m), Real] |- sum(sum(f[i, j] for...
+tested  tested     python         sum_factorization.py:68   exchange           the term computes what the annotations compute
+proved  tested     lean           sum_factorization.py:89   sum_factorization  n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], ...
+tested  tested     python         sum_factorization.py:89   sum_factorization  the term computes what the annotations compute
+proved  tested     lean           sum_factorization.py:113  mixed_product      n : Nat, A : Fn[Fin(n), Fin(n), Real], B : Fn[Fin(n), Fin(n), Real], ...
+tested  tested     python         sum_factorization.py:113  mixed_product      the term computes what the annotations compute
+tested  tested     property-test  sum_factorization.py:143  flattening         n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], ...
+tested  tested     python         sum_factorization.py:143  flattening         the term computes what the annotations compute
 
 8 facts: 3 proved, 5 tested
 ```
@@ -1158,7 +1158,7 @@ modepy's dense matrix comes last, `kron(H, kron(G, F))` with the first axis
 fastest, and that takes `i // n**2` and `i % n` of a size `n` that is a
 variable. lanky shows a family's argument is in its domain by linear
 arithmetic over the binders, and does not hand Lean a statement where it
-cannot.
+cannot (#126).
 
 ### A claim from an order on
 

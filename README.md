@@ -425,7 +425,7 @@ raises its floor to match.
   another sum are left to the rest of the ladder, and so is a side with more
   than six sums. The order of the sums after distributing is the one Lean's
   `simp` was seen to leave, the right factor's sums outside the left's; a
-  `simp` that leaves another costs the attempt, not a wrong proof.
+  `simp` that leaves another costs the attempt, not a wrong proof (#128).
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real`, true division and
   an exponent that could be negative raise rather than emit source Lean would
   reject. In Mathlib mode all but the last are printed, and what is still
