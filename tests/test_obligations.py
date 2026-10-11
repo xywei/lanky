@@ -621,6 +621,85 @@ def test_a_part_about_reals_is_read_back_without_starting_mathlib(
     assert fact.provenance["lean_mathlib"] == "v0.0.0-test (abc)"
 
 
+def test_a_side_condition_every_attempt_of_which_failed_declines_from_the_cache(
+    no_session, fake_mathlib: str
+) -> None:
+    """Every attempt at a side condition kept as failed: the claim is declined, no Lean.
+
+    A complex square root that may reach its cut is declined, saying so, as
+    the session would decline it, without the session.
+    """
+    from lanky import sqrt
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import SIDE_CONDITION_TACTICS
+    from lanky.prelude import Complex
+
+    oracle, started = no_session
+    z = Var("z")
+    term = Forall(((z, Complex),), sqrt(z + 1j) == sqrt(z + 1j))
+    (condition,) = statement_of(term, "succ", mathlib=True).side_conditions
+    for tactic in SIDE_CONDITION_TACTICS:
+        oracle.proofs.put(fake_mathlib, condition.source(f"intros\n{tactic}"), False, "no")
+    fact = oracle.establish(_claim_fact(term))
+    assert started == []
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_declined"].startswith("Lean could not prove ")
+    assert "branch cut" in fact.provenance["lean_declined"]
+
+
+def _slow_start(monkeypatch: pytest.MonkeyPatch, seconds: float = 0.5) -> None:
+    """Sessions that take ``seconds`` to start, as importing Mathlib does, then close every part.
+
+    An answer starts the session first, as :meth:`LeanSession.answer` does,
+    and is the budget's to refuse once the budget is spent.
+    """
+    import time
+
+    from lanky.oracles.lean import BUDGET_SPENT, LeanSession
+
+    state = {"started": False}
+
+    def ready(session: LeanSession) -> bool:
+        if not state["started"]:
+            time.sleep(seconds)
+            state["started"] = True
+        return True
+
+    def answer(session: LeanSession, source: str, until: float | None = None) -> tuple:
+        ready(session)
+        if until is not None and until <= time.monotonic():
+            return False, BUDGET_SPENT, False
+        return True, "", True
+
+    monkeypatch.setattr(LeanSession, "ready", ready)
+    monkeypatch.setattr(LeanSession, "answer", answer)
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", str(seconds * 0.6))
+
+
+def test_starting_lean_does_not_count_against_a_claims_budget(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The budget is Lean's: it starts once the session is ready, as before the cache."""
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, _started = no_session
+    _slow_start(monkeypatch)
+    fact = oracle.establish(_claim_fact(claim((n,), [n >= 0], n + 1 > n)))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+
+
+def test_importing_mathlib_does_not_count_against_a_parts_budget(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A part about reals is checked in the Mathlib session, made ready before the budget."""
+    oracle, _started = no_session
+    _slow_start(monkeypatch)
+    monkeypatch.setattr(oracle, "_part_sessions", lambda: [oracle.session])
+    u, v = Var("u"), Var("v")
+    part = Part("S0", "u == v", claim(((u, Real), (v, Real)), [u == v], v == u), mathlib=True)
+    fact = oracle.establish(fact_of(Obligation(parts=(part,), decider="isl")))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+
+
 def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
     no_session, fake_mathlib: str
 ) -> None:

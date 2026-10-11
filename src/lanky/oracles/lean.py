@@ -1869,6 +1869,17 @@ def default_proof_cache_dir() -> str | None:
     return os.path.join(base, "lanky", "proofs")
 
 
+def _side_condition_reason(condition: Any) -> str:
+    """Why a statement is declined whose side condition Lean could not prove."""
+    return (
+        f"Lean could not prove {condition.proposition}, so the statement "
+        "may take a complex logarithm or square root on its branch cut, "
+        "where cmath picks a side by the sign of a zero imaginary part "
+        "and Lean's complex numbers have no signed zero, or the "
+        "logarithm of zero, which has no value in Python"
+    )
+
+
 def _mathlib_key(directory: str | None) -> str | None:
     """The key a Mathlib project's answers are kept under, read from its files.
 
@@ -2295,6 +2306,9 @@ class LeanOracle:
                 return kept
         if not session.ready():
             return fact.with_status(fact.status, lean_tried=0, lean_reason=session.error)
+        # the budget is Lean's, from now: starting the REPL, or importing
+        # Mathlib, does not count against it (LeanSession.ready)
+        until = None if budget is None else time.monotonic() + budget
         conditions, declined = self._side_conditions(statement, until)
         if declined is not None:
             if session.error is not None:
@@ -2406,7 +2420,11 @@ class LeanOracle:
                     closing = source
                     break
             if closing is None:
-                return None
+                # every attempt kept as failed: the decline Lean gave
+                reason = _side_condition_reason(condition)
+                return fact.with_status(
+                    fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+                )
             conditions.append(closing)
         last = ""
         for tactic in ladder:
@@ -2455,13 +2473,7 @@ class LeanOracle:
                 if _spent(until):
                     return proved, BUDGET_SPENT
             if closing is None:
-                return proved, (
-                    f"Lean could not prove {condition.proposition}, so the statement "
-                    "may take a complex logarithm or square root on its branch cut, "
-                    "where cmath picks a side by the sign of a zero imaginary part "
-                    "and Lean's complex numbers have no signed zero, or the "
-                    "logarithm of zero, which has no value in Python"
-                )
+                return proved, _side_condition_reason(condition)
             proved.append(closing)
         return proved, None
 
@@ -2574,6 +2586,11 @@ class LeanOracle:
             if not sessions:
                 return fact.with_status(
                     fact.status, lean_tried=0, lean_reason=self._pool_error()
+                )
+            if reals and not self.session.ready():
+                # Mathlib is imported before the budget starts, not inside it
+                return fact.with_status(
+                    fact.status, lean_tried=0, lean_reason=self.session.error
                 )
             until = None if budget is None else time.monotonic() + budget
             if obligation.counterexample is not None:
