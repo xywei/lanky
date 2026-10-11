@@ -1417,7 +1417,7 @@ COMBINATION_NORM = (
     "| ((try push_cast) <;> field_simp <;> ring1) "
     "| ((try push_cast) <;> ring_nf <;> field_simp <;> ring1) "
     "| ((try simp only [Int.toNat_natCast, div_pow, mul_pow]) <;> (try push_cast) "
-    "<;> field_simp <;> ring_nf <;> done))"
+    "<;> field_simp <;> ring_nf <;> ring1))"
 )
 
 
@@ -1430,9 +1430,11 @@ def combination_norm(statement: LeanStatement) -> str:
     the natural it is, ``div_pow`` and ``mul_pow`` split the power so that
     ``field_simp`` clears ``α ^ (k + 2)`` (it takes a power with a variable
     exponent whole otherwise, and ``ring_nf`` then leaves ``α⁻¹ ^ k`` it
-    cannot cancel), and ``ring_nf`` comes last, so that it normalizes the
+    cannot cancel), and ``ring_nf`` comes after it, so that it normalizes the
     arguments of the families after the denominators are gone and not the
-    denominators ``field_simp`` has to see as products.
+    denominators ``field_simp`` has to see as products. ``ring1`` ends it, on
+    whatever ``ring_nf`` leaves, so that a combination that is wrong fails
+    with ``ring``'s message, as it does in the arms before.
     """
     return COMBINATION_NORM.replace(
         "Int.toNat_natCast", statement.qualified("Int.toNat_natCast")
@@ -1590,6 +1592,17 @@ def _guard_excludes(guard: Any, target: Var, value: int) -> bool:
                 return True
         except Exception:  # noqa: BLE001 - a guard that cannot be evaluated excludes nothing
             continue
+    return False
+
+
+def _divides(term: Any, names: set[str]) -> bool:
+    """Whether ``term`` divides by something that mentions one of ``names``."""
+    if isinstance(term, prim.Quotient) and free_variables(term.denominator) & names:
+        return True
+    if isinstance(term, tuple):
+        return any(_divides(item, names) for item in term)
+    if isinstance(term, prim.ExpressionNode):
+        return any(_divides(child, names) for child in init_args(term))
     return False
 
 
@@ -1830,6 +1843,9 @@ def _family_induction(
     # the ring the equation is in, which a multiplier is ascribed: the wider side's
     ring = number_type(Add((body.left, body.right)), printing, mathlib=True)
 
+    # the uses of the last certificate a case was closed with
+    certificate: list[Use] = []
+
     def closing(this: Case | None) -> str | None:
         """The ``linear_combination`` that checks the certificate the finder gives for a case."""
         if this is None:
@@ -1840,6 +1856,7 @@ def _family_induction(
             return None
         if not uses:
             return None
+        certificate[:] = uses
         try:
             return _combination(statement, tuple(uses), this.lemmas, printing, ring)
         except UnsupportedTerm:
@@ -1866,10 +1883,13 @@ def _family_induction(
     if successive is None:
         return None
     # The orders the step reaches are naturals cast into the ring, k + 1 to k +
-    # step, which a certificate may divide by; field_simp's own discharger
-    # shows only ↑k + 1 is not zero, so the step says so of each.
+    # step, which the goal or the certificate may divide by; field_simp's own
+    # discharger shows only ↑k + 1 is not zero, so the step says so of each.
     nonzero = []
-    if ring in ("ℝ", "ℂ"):
+    divides = _divides(body, {name}) or any(
+        _divides(use.multiplier, {successor}) for use in certificate
+    )
+    if ring in ("ℝ", "ℂ") and divides:
         for offset in range(1, step + 1):
             fact = _fresh("hnz", used)
             nonzero.append(
