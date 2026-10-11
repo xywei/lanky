@@ -100,6 +100,20 @@ def problem(directory: str | os.PathLike[str]) -> str | None:
     return None
 
 
+def toolchain(directory: str | os.PathLike[str]) -> str | None:
+    """The Lean version a project's ``lean-toolchain`` names, as a tag such as ``v4.29.1``.
+
+    The REPL of a Mathlib session runs that Lean, so the version is known
+    without starting one. ``None`` when the file cannot be read.
+    """
+    path = Path(directory).expanduser() / "lean-toolchain"
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text.rsplit(":", 1)[-1] or None
+
+
 def revision(directory: str | os.PathLike[str]) -> str | None:
     """The Mathlib revision a project's manifest pins, as ``tag (commit)``.
 

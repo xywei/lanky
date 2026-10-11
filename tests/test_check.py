@@ -400,6 +400,85 @@ def test_an_oracle_whose_availability_probe_raises_does_not_stop_the_check(
     assert "REFUTED false_claim" in printed
 
 
+class _Notes:
+    """A prover that hands back what it was handed, with why it did not prove it."""
+
+    name = "prover"
+
+    def trust_class(self) -> str:
+        return "kernel"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "cast"
+
+    def establish(self, fact, /):
+        return fact.with_status(fact.status, prover_reason="found no proof")
+
+
+class _Checker:
+    """The plugin's own checker, which decides its casts again."""
+
+    name = "checker"
+
+    def __init__(self) -> None:
+        self.asked = 0
+
+    def trust_class(self) -> str:
+        return "decision-procedure"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "cast"
+
+    def establish(self, fact, /):
+        self.asked += 1
+        return fact.with_status(Status.DECIDED, self.name)
+
+
+def test_a_fact_handed_over_settled_is_not_settled_by_an_oracle_that_leaves_it(
+    monkeypatch,
+) -> None:
+    """loopty hands over casts isl decided as each step was taken (loopty #191).
+
+    A prover that gives one back as it came, with a note on why it did not
+    prove it, used to count as having settled it: the row's trust class was
+    the prover's, and the plugin's own checker was never asked again. Now the
+    walk goes on, and the fact keeps its checker's status with the note.
+    """
+    from lanky.check import establish
+    from lanky.plugins import registry
+
+    checker = _Checker()
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [_Notes(), checker])
+    handed = Fact(
+        id="cast:kernel@1:[c].tile",
+        kind="cast",
+        statement="the order after tile(t,i,8,8) runs every dependence forward",
+        term=Var("cast"),
+        status=Status.DECIDED,
+        decided_by="checker",
+        where="kernel.py:1",
+        owner="kernel",
+    )
+    fact = establish(handed)
+    assert fact.status is Status.DECIDED
+    assert fact.decided_by == "checker"
+    assert fact.provenance["trust_class"] == "decision-procedure"
+    assert fact.provenance["prover_reason"] == "found no proof"
+    assert checker.asked == 1
+
+    # an oracle that proves it settles it, as before
+    class _Proves(_Notes):
+        def establish(self, fact, /):
+            return fact.with_status(Status.PROVED, self.name)
+
+    monkeypatch.setattr(registry, "oracles", [_Proves(), checker])
+    fact = establish(handed)
+    assert fact.status is Status.PROVED and fact.decided_by == "prover"
+    assert fact.provenance["trust_class"] == "kernel"
+    assert checker.asked == 1
+
+
 HELPER = '''
 """A claim that lives in a module the checked file imports."""
 

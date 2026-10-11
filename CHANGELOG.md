@@ -110,6 +110,66 @@ All notable changes to lanky are recorded here. The format follows
   whether Lean confirmed the counterexample. Lean's own words (`omega`,
   `decide`, its error messages) appear only under `--show-lean`. `lanky.cli.report_proved`,
   `report_unproved` and `report_lean` print them for a plugin's verb.
+- **A plugin's parts about real numbers** (`Part(..., mathlib=True)`),
+  printed with `ℝ` and checked in the Mathlib session, their cases closed by
+  `linarith`; a hypothesis's instance whose cells the claim writes
+  otherwise is equated cell by cell (`congrArg` through every argument of a
+  curried family). Without Mathlib the claim is left to the oracles after
+  Lean, with the reason: core Lean has no real numbers.
+- **A hypothesis that is a theorem, applied** (`Hints.applications`,
+  `Application`). A plugin that cites a theorem for a claim states the
+  theorem as a hypothesis of the part and names the values it matched; Lean
+  is asked for `intros; apply h0 (p := p) (c := c)` and closes what is left
+  from the part's other hypotheses, by `omega`, or `linarith` where Mathlib
+  is. loopty states a kernel's `uses=` this way:
+
+  ```python
+  hints = Hints(applications=(Application(0, (("p", p), ("c", c))),))
+  Part("applied", "on_the_triangle gives R == D", claim, hints, mathlib=True)
+  ```
+- **The sumpy demonstration's corollary on the triangle** (#86):
+  `examples/sumpy_recurrence.py` has a fourth fact, the reconstruction over
+  `a + b <= p` for every order `p`, by the recurrence inside it, proved by
+  Lean with Mathlib under `harmonic`. The induction over families uses a
+  hypothesis where its guards follow from the goal's own guards, not only
+  from the variables' bounds (`Case.facts`): `k + b + 2 <= p` from the
+  goal's `a + b <= p` at `a = k + 2`.
+
+### Changed
+
+- **A warm check starts no Lean REPL** (#118). The Lean oracle reads every
+  attempt of every part from the proof cache first, under the version of the
+  Lean it would run (the pool's, else `LANKY_LEAN_VERSION`, else the
+  toolchain found), and starts a session only for a part with an attempt
+  that is not kept; a counterexample is checked from the cache the same
+  way. A theorem of lanky's own is kept and read back the same way, every
+  attempt of its ladder and its side conditions, where before it was asked
+  of Lean on every check: a Mathlib theorem whose ladder tried a few dozen
+  attempts was most of a warm check's time. Mathlib's answers are kept
+  under the project's toolchain and Mathlib revision together, read from its
+  files, so a part about reals and a Mathlib theorem are read back without
+  importing Mathlib, and a Mathlib upgrade reads no stale answer. `lanky
+  check` on a file checked before, with nothing changed, prints the same
+  ledger without starting Lean:
+
+  ```console
+  $ lanky check examples/gauss.py   # the second time: no REPL, same rows
+  ```
+
+- The `LEAN` line under the ledger counts the claims about reals core Lean
+  was not asked apart, and says where Lean checks them: `LEAN proved all 11
+  facts isl decided; 2 more are about real numbers, which Lean checks where
+  Mathlib is (LANKY_LEAN_MATHLIB)`. It said they were not stated for Lean
+  yet, and left out one a cited theorem decided.
+
+### Fixed
+
+- **A fact a plugin hands over already settled** (loopty's casts, decided
+  by isl as each schedule step is taken) is no longer counted as settled by
+  an oracle that hands it back as it came, with only its notes on why it did
+  not prove it: the walk goes on to the next oracle, and the fact keeps the
+  trust class its checker gave it. An oracle settles such a fact when it
+  changes its status or says it decided it (`decided_by`).
 
 ### Changed
 

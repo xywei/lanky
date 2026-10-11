@@ -22,6 +22,7 @@ from lanky.check import establish
 from lanky.cli import CheckVerb, refutation_lines
 from lanky.ledger import Fact, Ledger, Status
 from lanky.obligations import (
+    Application,
     Counterexample,
     Hints,
     Instance,
@@ -32,10 +33,11 @@ from lanky.obligations import (
     negation_source,
     obligation_of,
     part_statement,
+    theorem_name,
 )
 from lanky.oracles.lean import LeanOracle, ProofCache
 from lanky.plugins import registry
-from lanky.prelude import FinType, Fn, Int
+from lanky.prelude import FinType, Fn, Int, Real
 from lanky.terms import Exists, Forall, LogicalAnd, LogicalOr, Var
 
 n, x, y, i, a, r, j = (Var(name) for name in ("n", "x", "y", "i", "a", "r", "j"))
@@ -260,6 +262,132 @@ def test_an_instance_reading_a_cell_the_claim_reads_otherwise_is_equated() -> No
     ]
 
 
+#: A table of reals over two indices, and a second one.
+R2, c2, b = Var("R"), Var("c"), Var("b")
+TABLE = Fn[Int, Fn[Int, Real]]
+
+#: ``R`` follows the recurrence; the claim is that it does at ``(a + 2, b)``.
+RECURRENCE = Forall(
+    ((a, Int), (b, Int)), R2(a)(b) == -R2(a - 2)(b + 2), (a >= 2) & (b >= 0)
+)
+REAL_PART = Part(
+    "post",
+    "R[a + 2, b] == -R[a, b + 2]",
+    claim(
+        ((R2, TABLE), a, b),
+        [RECURRENCE, a >= 0, b >= 0],
+        R2(a + 2)(b) == -R2(a)(b + 2),
+    ),
+    Hints(instances=(Instance(0, (a + 2, b)),)),
+    mathlib=True,
+)
+
+
+def test_a_part_about_reals_is_printed_in_mathlibs_dialect() -> None:
+    statement = part_statement(REAL_PART, "post")
+    assert statement.mathlib
+    assert "(R : Int → Int → ℝ)" in statement.parameters
+
+
+def test_a_part_about_reals_takes_instances_with_their_premises_shown() -> None:
+    """``linarith`` reads equations, not the implications an instance of ``omega``'s keeps.
+
+    Each premise is shown by ``omega`` at the point, the instance left out
+    where one is not; an application of two arguments is equated with the
+    claim's one argument at a time, where ``congr`` takes ``b + 2`` apart.
+    """
+    [_, (how, script)] = attempts(REAL_PART, part_statement(REAL_PART, "post"))
+    assert how == "linarith, with the hypotheses taken at 1 point"
+    lines = script.splitlines()
+    assert lines[0] == "try have hi0 := h0 (a + 2) b (by omega) (by omega)"
+    assert lines[1] == (
+        "try have hc0 : R (a + 2 - 2) (b + 2) = R a (b + 2) := "
+        "((congrArg (fun x_cong => R x_cong (b + 2)) (by omega : (a + 2 - 2) = a))"
+        ".trans (congrArg (fun x_cong => R a x_cong) (by omega : (b + 2) = (b + 2))))"
+    )
+    assert lines[-1] == "linarith"
+
+
+def test_a_theorem_a_hypothesis_is_is_applied_with_what_the_plugin_bound() -> None:
+    """``apply h0 (p := p) (c := c)``: Lean finds the rest, and each premise is a hypothesis."""
+    p, D = Var("p"), Var("D")
+    theorem = Forall(
+        ((p, Int), (c2, TABLE), (D, TABLE)),
+        Forall(((a, Int),), c2(a)(0) == D(a)(0)),
+        Forall(((a, Int),), D(a)(0) == c2(a)(0)),
+    )
+    copies = Forall(((a, Int),), D(a)(0) == c2(a)(0))
+    part = Part(
+        "applied",
+        "the theorem applied",
+        claim(
+            ((c2, TABLE), (D, TABLE), p),
+            [theorem, copies],
+            Forall(((a, Int),), c2(a)(0) == D(a)(0)),
+        ),
+        Hints(applications=(Application(0, (("p", p), ("c", c2))),)),
+        mathlib=True,
+    )
+    tried = attempts(part, part_statement(part, "applied"))
+    assert ("the theorem applied", "intros\napply h0 (p := p) (c := c)\n"
+            "all_goals first | assumption | omega | linarith") in tried
+
+
+def test_without_mathlib_a_claim_about_reals_is_declined_saying_why(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    fact = oracle.establish(fact_of(Obligation(parts=(REAL_PART,))))
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_declined"].startswith(
+        "the claim is about real numbers, which core Lean does not have"
+    )
+    assert fact.provenance["lean_needs_mathlib"] is True
+    assert started == []
+
+
+def _declined_for_reals(fact_id: str, decider: str) -> Fact:
+    reason = (
+        "the claim is about real numbers, which core Lean does not have; where "
+        "Mathlib is (LANKY_LEAN_MATHLIB), Lean checks it"
+    )
+    return Fact(
+        id=fact_id, kind="postcondition", statement="R[a] == c[a]", term=None
+    ).with_status(
+        Status.DECIDED, decider, lean_declined=reason, lean_needs_mathlib=True
+    )
+
+
+def test_the_lean_line_counts_the_claims_about_reals_apart(capsys) -> None:
+    """Core Lean has no reals: such a claim is not unstated, it waits for Mathlib.
+
+    The line says where Lean checks it, rather than that it is not stated.
+    """
+    from lanky.cli import report_proved
+
+    proved = fact_of(Obligation(parts=(IN_BOUNDS,), decider="isl")).with_status(
+        Status.PROVED,
+        "lean",
+        lean_parts=[{"name": "S0", "proved": True}],
+        lean_decider="isl",
+    )
+    post = _declined_for_reals("postcondition:kernel@1", "isl")
+    applied = _declined_for_reals("by-theorem:kernel@1:t", "theorem")
+    report_proved(Ledger([proved, post, applied]))
+    out = capsys.readouterr().out
+    assert (
+        "LEAN proved the one fact isl decided; 2 more are about real numbers, which "
+        "Lean checks where Mathlib is (LANKY_LEAN_MATHLIB). "
+    ) in out
+    assert "not stated for Lean yet" not in out
+    report_proved(Ledger([post]))
+    assert capsys.readouterr().out == (
+        "\nLEAN checks one claim about real numbers where Mathlib is "
+        "(LANKY_LEAN_MATHLIB); core Lean has no real numbers.\n"
+    )
+
+
 def test_the_negation_instantiates_every_binder_at_the_point() -> None:
     part = Part("S0", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
     statement = part_statement(part, "kernel_S0")
@@ -317,6 +445,338 @@ def test_a_long_theorem_is_shown_one_parameter_to_a_line() -> None:
     negation = "theorem Lanky.x_false : ¬(∀ n : Int, n + 1 > n) := by" + " " * 60
     assert _wrapped(negation) == negation
     assert _wrapped("  omega") == "  omega"
+
+
+@pytest.fixture
+def no_session(monkeypatch: pytest.MonkeyPatch, tmp_path) -> tuple[LeanOracle, list]:
+    """An oracle with a proof cache of its own, whose sessions record that they were started.
+
+    Lean is pinned to a version no toolchain has, and a session that is
+    asked to start says it cannot, so nothing here needs Lean: what is
+    tested is whether a check asks for one.
+    """
+    from lanky.oracles.lean import LeanSession
+
+    monkeypatch.setenv("LANKY_LEAN_VERSION", "v0.0.0-test")
+    monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
+    started: list = []
+
+    def start(session: LeanSession) -> bool:
+        started.append(session)
+        session.error = "no Lean in this test"
+        return False
+
+    monkeypatch.setattr(LeanSession, "start", start)
+    oracle = LeanOracle()
+    monkeypatch.setattr(oracle, "availability", lambda: (True, ""))
+    oracle.proofs = ProofCache(str(tmp_path / "proofs"))
+    return oracle, started
+
+
+def _keep(oracle: LeanOracle, part: Part, closed: bool, which: int = 0) -> None:
+    """Keep Lean's answer to the ``which``-th attempt at ``part`` in the oracle's cache."""
+    statement = part_statement(part, theorem_name("kernel", part))
+    _how, tactic = attempts(part, statement)[which]
+    oracle.proofs.put("v0.0.0-test", statement.source(tactic), closed, "" if closed else "no")
+
+
+def test_a_warm_check_reads_every_part_without_starting_lean(no_session) -> None:
+    """#118: every part's answer is in the cache, so no REPL is started.
+
+    The cache is keyed by the version a session would run, which the pin
+    gives without one; the check used to start the REPL first to learn it.
+    """
+    oracle, started = no_session
+    _keep(oracle, IN_BOUNDS, True)
+    _keep(oracle, DISJOINT, True)
+    fact = oracle.establish(fact_of(Obligation(parts=(IN_BOUNDS, DISJOINT), decider="isl")))
+    assert fact.status is Status.PROVED
+    assert [record["cached"] for record in fact.provenance["lean_parts"]] == [True, True]
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+    assert started == []
+
+
+def test_an_attempt_the_cache_does_not_hold_starts_lean(no_session) -> None:
+    """A part whose first attempt failed, and whose next one was never asked, needs Lean."""
+    oracle, started = no_session
+    _keep(oracle, IN_BOUNDS, True)
+    split = Hints(splits=(LogicalOr(((x == 1), (x == 2))),))
+    wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n), split)
+    _keep(oracle, wrong, False)
+    fact = oracle.establish(fact_of(Obligation(parts=(IN_BOUNDS, wrong))))
+    assert started
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_reason"] == "no Lean in this test"
+
+
+def test_a_part_every_attempt_of_which_failed_is_read_back_too(no_session) -> None:
+    """A part Lean found no proof of, every attempt kept, is a warm answer as well."""
+    oracle, started = no_session
+    wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    statement = part_statement(wrong, theorem_name("kernel", wrong))
+    for which in range(len(attempts(wrong, statement))):
+        _keep(oracle, wrong, False, which)
+    fact = oracle.establish(fact_of(Obligation(parts=(wrong,))))
+    assert started == []
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_reason"] == "Lean found no proof"
+
+
+def test_a_counterexample_is_read_back_without_starting_lean(no_session) -> None:
+    oracle, started = no_session
+    part = Part("S0", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    statement = part_statement(part, theorem_name("kernel", part))
+    source = negation_source(part, statement, {"n": 2, "x": 1})
+    oracle.proofs.put("v0.0.0-test", source, True, "")
+    obligation = Obligation(
+        parts=(part,), counterexample=Counterexample("S0", {"n": 2, "x": 1}, "x=1 at n=2")
+    )
+    fact = oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert started == []
+    assert fact.provenance["lean_refuted_by"] == "decide"
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+
+
+def _claim_fact(term: Any) -> Fact:
+    """A claim of lanky's own, not a plugin's: Lean is asked its ladder."""
+    return Fact(id="succ", kind="theorem", statement="n + 1 > n", term=term, owner="succ")
+
+
+def test_a_claim_of_lankys_own_is_read_back_without_starting_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#118 for a theorem: its ladder's answers are kept as a part's are.
+
+    The ladder is Python's, the same for the same statement, so the attempts
+    a check made are read back in their order, and the first that closed
+    proves the claim. A Mathlib theorem was the most of a warm check's time:
+    every attempt before the one that closed was asked again.
+    """
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import tactic_ladder
+
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    term = claim((n,), [n >= 0], n + 1 > n)
+    statement = statement_of(term, "succ", mathlib=False)
+    ladder = tactic_ladder(statement)
+    oracle.proofs.put("v0.0.0-test", statement.source(ladder[0]), False, "no")
+    oracle.proofs.put("v0.0.0-test", statement.source(ladder[1]), True, "")
+    fact = oracle.establish(_claim_fact(term))
+    assert started == []
+    assert fact.status is Status.PROVED
+    assert fact.provenance["tactic"] == ladder[1]
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+
+
+def test_a_claim_with_an_attempt_the_cache_does_not_hold_starts_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import tactic_ladder
+
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    term = claim((n,), [n >= 0], n + 1 > n)
+    statement = statement_of(term, "succ", mathlib=False)
+    oracle.proofs.put("v0.0.0-test", statement.source(tactic_ladder(statement)[0]), False, "")
+    fact = oracle.establish(_claim_fact(term))
+    assert started
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_reason"] == "no Lean in this test"
+
+
+@pytest.fixture
+def fake_mathlib(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
+    """A Mathlib project's files, which the cache's key is read from, and no Mathlib."""
+    import json
+
+    project = tmp_path / "mathlib"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v0.0.0-test\n")
+    manifest = {"packages": [{"name": "mathlib", "inputRev": "v0.0.0-test", "rev": "abc"}]}
+    (project / "lake-manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setenv("LANKY_LEAN_MATHLIB", str(project))
+    return "v0.0.0-test+mathlib@v0.0.0-test (abc)"
+
+
+def test_a_part_about_reals_is_read_back_without_starting_mathlib(
+    no_session, fake_mathlib: str
+) -> None:
+    """The key of a Mathlib answer is the project's toolchain and Mathlib revision.
+
+    Both are in its files, so a part about reals is read back as an integer
+    part is, without the session that would import Mathlib (#118).
+    """
+    oracle, started = no_session
+    u, v = Var("u"), Var("v")
+    part = Part("S0", "u == v", claim(((u, Real), (v, Real)), [u == v], v == u), mathlib=True)
+    statement = part_statement(part, theorem_name("kernel", part))
+    _how, tactic = attempts(part, statement)[0]
+    oracle.proofs.put(fake_mathlib, statement.source(tactic), True, "")
+    fact = oracle.establish(fact_of(Obligation(parts=(part,), decider="isl")))
+    assert started == []
+    assert fact.status is Status.PROVED
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+    assert fact.provenance["lean_mathlib"] == "v0.0.0-test (abc)"
+
+
+def test_a_side_condition_every_attempt_of_which_failed_declines_from_the_cache(
+    no_session, fake_mathlib: str
+) -> None:
+    """Every attempt at a side condition kept as failed: the claim is declined, no Lean.
+
+    A complex square root that may reach its cut is declined, saying so, as
+    the session would decline it, without the session.
+    """
+    from lanky import sqrt
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import SIDE_CONDITION_TACTICS
+    from lanky.prelude import Complex
+
+    oracle, started = no_session
+    z = Var("z")
+    term = Forall(((z, Complex),), sqrt(z + 1j) == sqrt(z + 1j))
+    (condition,) = statement_of(term, "succ", mathlib=True).side_conditions
+    for tactic in SIDE_CONDITION_TACTICS:
+        oracle.proofs.put(fake_mathlib, condition.source(f"intros\n{tactic}"), False, "no")
+    fact = oracle.establish(_claim_fact(term))
+    assert started == []
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_declined"].startswith("Lean could not prove ")
+    assert "branch cut" in fact.provenance["lean_declined"]
+
+
+def _slow_start(monkeypatch: pytest.MonkeyPatch, seconds: float = 0.5) -> None:
+    """Sessions that take ``seconds`` to start, as importing Mathlib does, then close every part.
+
+    An answer starts the session first, as :meth:`LeanSession.answer` does,
+    and is the budget's to refuse once the budget is spent.
+    """
+    import time
+
+    from lanky.oracles.lean import BUDGET_SPENT, LeanSession
+
+    state = {"started": False}
+
+    def ready(session: LeanSession) -> bool:
+        if not state["started"]:
+            time.sleep(seconds)
+            state["started"] = True
+        return True
+
+    def answer(session: LeanSession, source: str, until: float | None = None) -> tuple:
+        ready(session)
+        if until is not None and until <= time.monotonic():
+            return False, BUDGET_SPENT, False
+        return True, "", True
+
+    monkeypatch.setattr(LeanSession, "ready", ready)
+    monkeypatch.setattr(LeanSession, "answer", answer)
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", str(seconds * 0.6))
+
+
+def test_starting_lean_does_not_count_against_a_claims_budget(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The budget is Lean's: it starts once the session is ready, as before the cache."""
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, _started = no_session
+    _slow_start(monkeypatch)
+    fact = oracle.establish(_claim_fact(claim((n,), [n >= 0], n + 1 > n)))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+
+
+def test_importing_mathlib_does_not_count_against_a_parts_budget(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A part about reals is checked in the Mathlib session, made ready before the budget."""
+    oracle, _started = no_session
+    _slow_start(monkeypatch)
+    monkeypatch.setattr(oracle, "_part_sessions", lambda: [oracle.session])
+    u, v = Var("u"), Var("v")
+    part = Part("S0", "u == v", claim(((u, Real), (v, Real)), [u == v], v == u), mathlib=True)
+    fact = oracle.establish(fact_of(Obligation(parts=(part,), decider="isl")))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+
+
+def test_a_mathlib_without_a_revision_keeps_no_answer(
+    no_session, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A key that does not name the Mathlib would let another one's answers be read (Codex)."""
+    from lanky.oracles.lean import LeanSession
+
+    project = tmp_path / "unpinned"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v0.0.0-test\n")
+    (project / "lake-manifest.json").write_text('{"packages": []}')
+    oracle, _started = no_session
+    session = LeanSession(mathlib=str(project))
+    session.version = "v0.0.0-test"
+    monkeypatch.setattr(
+        LeanSession, "answer", lambda self, source, until=None: (True, "", True)
+    )
+    assert oracle._ask(session, "theorem t : True := trivial\n", None)[2] is False
+    assert not any((tmp_path / "proofs").rglob("*.json"))
+
+
+def test_a_claim_all_about_reals_starts_no_core_lean(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its parts are the Mathlib session's: the core pool is not built for it (Codex)."""
+    oracle, _started = no_session
+    _slow_start(monkeypatch, 0.01)
+    pooled: list = []
+    monkeypatch.setattr(oracle, "_part_sessions", lambda: pooled.append(1) or [])
+    u, v = Var("u"), Var("v")
+    part = Part("S0", "u == v", claim(((u, Real), (v, Real)), [u == v], v == u), mathlib=True)
+    fact = oracle.establish(fact_of(Obligation(parts=(part,), decider="isl")))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+    assert pooled == []
+
+
+def test_a_counterexample_to_a_part_about_reals_goes_to_the_mathlib_session(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Printed with ``ℝ``, it elaborates only where Mathlib is imported (Codex)."""
+    from lanky.oracles.lean import LeanSession
+
+    oracle, _started = no_session
+    asked: list[bool] = []
+
+    def answer(session: LeanSession, source: str, until: float | None = None) -> tuple:
+        asked.append(session.mathlib is not None)
+        return True, "", True
+
+    monkeypatch.setattr(LeanSession, "ready", lambda self: True)
+    monkeypatch.setattr(LeanSession, "answer", answer)
+    monkeypatch.setattr(oracle, "_part_sessions", lambda: [LeanSession()])
+    u = Var("u")
+    part = Part("S0", "u < 1", claim(((u, Real),), [u > 0], u < 1), mathlib=True)
+    obligation = Obligation(
+        parts=(part,), counterexample=Counterexample("S0", {"u": 2}, "u=2")
+    )
+    oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert asked and all(asked)
+
+
+def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
+    no_session, fake_mathlib: str
+) -> None:
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import tactic_ladder
+
+    oracle, started = no_session
+    u = Var("u")
+    term = claim(((u, Real),), [u > 0], u + 1 > u)
+    statement = statement_of(term, "succ", mathlib=True)
+    ladder = tactic_ladder(statement)
+    oracle.proofs.put(fake_mathlib, statement.source(ladder[0]), True, "")
+    fact = oracle.establish(_claim_fact(term))
+    assert started == []
+    assert fact.status is Status.PROVED
+    assert fact.provenance["lean_source"].startswith("import Mathlib\n")
+    assert fact.provenance["lean_mathlib"] == "v0.0.0-test (abc)"
 
 
 # }}}

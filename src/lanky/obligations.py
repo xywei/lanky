@@ -33,7 +33,17 @@ that fails is named. A part's :class:`Hints` are what ``omega`` cannot find:
   split on the regions;
 - *splits*, disjunctions ``omega`` proves and then cases on, for the places
   its elimination is incomplete (it has no dark or grey shadows) and a split
-  by the rational bounds rescues it, and to keep the work per case small.
+  by the rational bounds rescues it, and to keep the work per case small;
+- *applications* of a hypothesis that is a theorem, cited by the plugin's
+  object and stated in the part as it was proved: ``apply`` with the
+  variables the plugin matched given by name, the others found by Lean where
+  the theorem's conclusion is the goal, and each premise left a hypothesis
+  of the part or arithmetic. Lean checks that the theorem applies, and so
+  that the claim follows from it.
+
+A part about real numbers is printed in the Mathlib dialect and checked where
+Mathlib is (:attr:`Part.mathlib`), its cases closed by ``linarith`` where an
+integer part's are by ``omega``.
 
 A claim the solver refuted comes with a :class:`Counterexample`: the part it
 breaks and a value for every variable of that part. Lean proves the negation
@@ -60,6 +70,7 @@ from lanky.lean import (
     UnsupportedTerm,
     _affine,
     domain_guards,
+    lean_identifier,
     render_term,
     statement_of,
 )
@@ -67,6 +78,7 @@ from lanky.prelude import FnType, Refined
 from lanky.terms import Exists, Forall, conjuncts, init_args
 
 __all__ = [
+    "Application",
     "Counterexample",
     "Hints",
     "Instance",
@@ -120,16 +132,37 @@ class Piece:
 
 
 @dataclass(frozen=True)
+class Application:
+    """A hypothesis that is a theorem, applied to the goal: ``apply h3 (p := p) (c := c)``.
+
+    ``hypothesis`` is its position among the conjuncts of the part's guard,
+    as an :class:`Instance`'s is, and it has to be a universal; ``values``
+    give some of its binders, by name, as lanky terms over the part's own
+    variables: the families and the scalars a plugin matched to its arrays
+    and sizes. Lean finds the others where the theorem's conclusion is the
+    goal, and each premise left is a hypothesis of the part, or arithmetic
+    ``omega`` proves, or, where Mathlib is, ``linarith``. A plugin that
+    applies a cited theorem to what it decided (loopty applies one to a
+    kernel's postcondition) states the theorem as a hypothesis of the part
+    and says where it applies; Lean checks that it does.
+    """
+
+    hypothesis: int
+    values: tuple[tuple[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
 class Hints:
     """What a solver found that ``omega`` does not look for (see the module docstring)."""
 
     instances: tuple[Instance, ...] = ()
     witness: tuple[Piece, ...] = ()
     splits: tuple[Any, ...] = ()
+    applications: tuple[Application, ...] = ()
 
     def __bool__(self) -> bool:
         """Whether there is any hint at all."""
-        return bool(self.instances or self.witness or self.splits)
+        return bool(self.instances or self.witness or self.splits or self.applications)
 
 
 @dataclass(frozen=True)
@@ -147,6 +180,12 @@ class Part:
     ``hints`` have not closed the part: what costs the solver more to find
     and is seldom needed, the case split ``omega``'s missing dark and grey
     shadows want. It takes nothing and returns :class:`Hints`.
+
+    ``mathlib`` marks a part about real numbers, which core Lean does not
+    have: it is printed in the Mathlib dialect (``ℝ``) and checked only where
+    Mathlib is imported, its cases closed by ``linarith`` where an integer
+    part's are by ``omega``. Without Mathlib the claim is left to the oracles
+    after Lean, which says why.
     """
 
     name: str
@@ -154,6 +193,7 @@ class Part:
     term: Any
     hints: Hints = field(default_factory=Hints)
     fallback: Any = field(default=None, compare=False, repr=False)
+    mathlib: bool = False
 
 
 @dataclass(frozen=True)
@@ -212,15 +252,16 @@ def obligation_of(term: Any) -> Obligation | None:
 
 
 def part_statement(part: Part, name: str) -> LeanStatement:
-    """The part's term as a core-Lean theorem named ``name``.
+    """The part's term as a Lean theorem named ``name``: core Lean, or Mathlib's for reals.
 
-    Core Lean whatever the session: a part is integer arithmetic, and the
-    printed source is the one that replays with ``lean`` alone.
+    Core Lean whatever the session for a part of integer arithmetic, so that
+    the printed source is the one that replays with ``lean`` alone; the
+    Mathlib dialect for a part about real numbers (:attr:`Part.mathlib`).
 
     Raises:
         UnsupportedTerm: If the part's term leaves the printer's fragment.
     """
-    return statement_of(part.term, name, mathlib=False)
+    return statement_of(part.term, name, mathlib=bool(getattr(part, "mathlib", False)))
 
 
 def _hypothesis_names(statement: LeanStatement) -> list[str]:
@@ -298,10 +339,18 @@ def _applications(expr: Any, out: list[tuple[str, tuple[Any, ...], Any]]) -> Non
         if expr.guard is not None:
             _applications(expr.guard, out)
         return
-    if isinstance(expr, prim.Call) and isinstance(expr.function, prim.Variable):
-        out.append((expr.function.name, tuple(expr.parameters), expr))
-        _applications(tuple(expr.parameters), out)
-        return
+    if isinstance(expr, prim.Call):
+        # a family of families applied one argument at a time, R(a)(b), is
+        # one application, as an array indexed R[a, b] is
+        arguments: tuple[Any, ...] = ()
+        head: Any = expr
+        while isinstance(head, prim.Call):
+            arguments = (*head.parameters, *arguments)
+            head = head.function
+        if isinstance(head, prim.Variable):
+            out.append((head.name, arguments, expr))
+            _applications(arguments, out)
+            return
     if isinstance(expr, prim.Subscript) and isinstance(expr.aggregate, prim.Variable):
         index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
         out.append((expr.aggregate.name, index, expr))
@@ -363,11 +412,118 @@ def _congruence_lines(
                 if left == right or (left, right) in said:
                     continue
                 said.add((left, right))
-                lines.append(
-                    f"have hc{start + len(lines)} : {left} = {right} := "
-                    "by congr 1 <;> omega"
-                )
+                index = start + len(lines)
+                if len(arguments) == 1:
+                    lines.append(f"have hc{index} : {left} = {right} := by congr 1 <;> omega")
+                    continue
+                lines.append(_congruence_chain(statement, name, arguments, theirs, index))
+    if getattr(part, "mathlib", False):
+        # a premise of one omega cannot show leaves it out, and the rest stand
+        lines = [f"try {line}" for line in lines]
     return lines
+
+
+def _congruence_chain(
+    statement: LeanStatement,
+    name: str,
+    mine: Sequence[Any],
+    theirs: Sequence[Any],
+    index: int,
+) -> str:
+    """``have hc : R x y = R x' y' := ...``: one argument at a time, by ``congrArg``.
+
+    ``congr`` takes ``R (b + 2)`` apart into ``b + 2`` and further, to ``b``
+    and ``2``, where ``2 + b`` on the other side has no such parts, so the
+    equation is built argument by argument instead: each argument's
+    equation by ``omega``, carried through the application by ``congrArg``
+    of the application with that argument left out, and the steps chained
+    by ``Eq.trans``. The application is written without the cast a natural
+    value takes, as an equation of its values, which ``omega`` reads.
+    """
+    used = set(statement.variables) | {binder for binder, _ in statement.binders}
+    hole = "x_cong"
+    while hole in used:
+        hole += "_"
+    head = lean_identifier(name)
+    first = [render_term(argument, statement.types, atomic=True) for argument in mine]
+    second = [render_term(argument, statement.types, atomic=True) for argument in theirs]
+    steps = []
+    for position in range(len(first)):
+        around = [*second[:position], hole, *first[position + 1 :]]
+        equation = f"{first[position]} = {second[position]}"
+        steps.append(
+            f"(congrArg (fun {hole} => {head} {' '.join(around)}) (by omega : {equation}))"
+        )
+    proof = steps[0]
+    for step in steps[1:]:
+        proof = f"({proof}.trans {step})"
+    return (
+        f"have hc{index} : {head} {' '.join(first)} = {head} {' '.join(second)} := {proof}"
+    )
+
+
+def _discharged_instance_line(
+    statement: LeanStatement, part: Part, instance: Instance, index: int
+) -> str:
+    """``try have hi0 := h3 a (by omega) b (by omega)``: an instance with its premises shown.
+
+    For a part about reals, closed by ``linarith``, which reads equations and
+    not the implications an instance of :func:`_instance_line` keeps: every
+    premise, a binder's guard or a conjunct of the hypothesis's own guard, is
+    shown by ``omega`` at the point. An instance whose premises do not hold
+    there says nothing, and ``try`` leaves it out.
+
+    Raises:
+        UnsupportedTerm: As :func:`_instance_line` does.
+    """
+    guards = list(conjuncts(part.term.guard)) if isinstance(part.term, Forall) else []
+    if not 0 <= instance.hypothesis < len(guards):
+        raise UnsupportedTerm(
+            f"the instance names hypothesis {instance.hypothesis}, and the part has "
+            f"{len(guards)}"
+        )
+    hypothesis = guards[instance.hypothesis]
+    if not isinstance(hypothesis, Forall) or len(hypothesis.binders) != len(
+        instance.arguments
+    ):
+        raise UnsupportedTerm(
+            f"hypothesis {instance.hypothesis} is not a universal over "
+            f"{len(instance.arguments)} variables"
+        )
+    name = _hypothesis_names(statement)[instance.hypothesis]
+    scope = dict(statement.types)
+    pieces: list[str] = []
+    for (var, domain), value in zip(hypothesis.binders, instance.arguments, strict=True):
+        pieces.append(render_term(value, statement.types, atomic=True))
+        pieces += ["(by omega)"] * len(domain_guards(var, domain, scope))
+        scope = {**scope, var.name: domain}
+    pieces += ["(by omega)"] * len(conjuncts(hypothesis.guard))
+    return f"try have hi{index} := {name} {' '.join(pieces)}"
+
+
+def _application_line(statement: LeanStatement, part: Part, application: Application) -> str:
+    """``apply h3 (p := p) (c := c)``: a hypothesis that is a theorem, applied to the goal.
+
+    Raises:
+        UnsupportedTerm: If it names no universal hypothesis.
+    """
+    guards = list(conjuncts(part.term.guard)) if isinstance(part.term, Forall) else []
+    if not 0 <= application.hypothesis < len(guards):
+        raise UnsupportedTerm(
+            f"the application names hypothesis {application.hypothesis}, and the part "
+            f"has {len(guards)}"
+        )
+    hypothesis = guards[application.hypothesis]
+    if not isinstance(hypothesis, Forall):
+        raise UnsupportedTerm(f"hypothesis {application.hypothesis} is not a universal")
+    binders = {var.name for var, _ in hypothesis.binders}
+    name = _hypothesis_names(statement)[application.hypothesis]
+    values = [
+        f"({lean_identifier(binder)} := {render_term(value, statement.types)})"
+        for binder, value in application.values
+        if binder in binders
+    ]
+    return " ".join(["apply", name, *values])
 
 
 def _disjuncts(prop: Any) -> int:
@@ -484,6 +640,9 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         # never runs in that order: omega reads arithmetic, not False
         return [("a hypothesis is False", "contradiction")]
     intro = "intros\n" if isinstance(goal, Forall) else ""
+    mathlib = bool(getattr(part, "mathlib", False))
+    # a part about reals is closed by linarith, an integer one by omega
+    closer = "linarith" if mathlib else "omega"
     if not isinstance(goal, Exists) and not (
         hints_witness_only(part) and isinstance(goal, prim.LogicalOr)
     ):
@@ -491,6 +650,13 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
     hints = part.hints
     if not hints:
         return out
+    for application in getattr(hints, "applications", ()):
+        try:
+            line = _application_line(statement, part, application)
+        except UnsupportedTerm:
+            continue
+        rest = "first | assumption | omega" + (" | linarith" if mathlib else "")
+        out.append(("the theorem applied", f"intros\n{line}\nall_goals {rest}"))
     lines: list[str] = []
     said: list[str] = []
     instances: list[str] = []
@@ -498,9 +664,13 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
     for instance in hints.instances:
         # an instance that cannot be written is dropped, and the others kept
         try:
-            instances.append(_instance_line(statement, part, instance, len(instances)))
+            if mathlib:
+                line = _discharged_instance_line(statement, part, instance, len(instances))
+            else:
+                line = _instance_line(statement, part, instance, len(instances))
         except UnsupportedTerm:
             continue
+        instances.append(line)
         usable.append(instance)
     if instances:
         lines += instances
@@ -549,9 +719,9 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
                 "the witness" if pieces == 1 else f"a witness in {pieces} pieces"
             )
     elif lines:
-        lines.append("all_goals omega" if split_lines else "omega")
+        lines.append(f"all_goals {closer}" if split_lines else closer)
     if said and lines:
-        out.append((f"omega, with {' and '.join(said)}", intro + "\n".join(lines)))
+        out.append((f"{closer}, with {' and '.join(said)}", intro + "\n".join(lines)))
     return out
 
 

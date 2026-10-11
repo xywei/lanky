@@ -50,7 +50,7 @@ from lanky.oracles.lean import (
     sum_scripts,
     tactic_ladder,
 )
-from lanky.prelude import Complex, Fin, FinType, Fn, Nat, Real, Refined
+from lanky.prelude import Complex, Fin, FinType, Fn, Int, Nat, Real, Refined
 from lanky.semantics import (
     DIVISION_BY_ZERO,
     OUTSIDE_THE_DOMAIN,
@@ -247,6 +247,18 @@ def every_order_along_b(
 
 
 @theorem
+def on_the_triangle(
+    p: Nat,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2 if a + b <= p),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat if a + b + 2 <= p),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a + b <= p):
+    """The reconstruction of order ``p``: the recurrence inside the triangle alone (#86)."""
+
+
+@theorem
 def counting(
     n: Nat,
     f: Fn[Nat, Fn[Nat, Real]],
@@ -287,6 +299,18 @@ def _doubled(
     recurrence: all(R(a + 2)(b) == -2 * R(a)(b + 2) for a in Nat for b in Nat),
 ) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
     """False: the recurrence's coefficient is twice the PDE's."""
+
+
+@theorem
+def _short_of_the_triangle(
+    p: Nat,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2 if a + b <= p),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat if a + b + 3 <= p),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a + b <= p):
+    """False: the recurrence stops one order short of the triangle's edge."""
 
 
 @theorem
@@ -1865,6 +1889,7 @@ def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOr
         telescoping,
         every_order_along_b,
         counting,
+        on_the_triangle,
     ],
     ids=lambda claim: claim.__name__,
 )
@@ -1877,7 +1902,8 @@ def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, clai
     on its second variable, and its step takes the hypothesis at ``a + 2``,
     which holds there because the first is generalized too; ``counting``'s
     order is a point of ``Fin[n]``, whose bound comes before the later
-    variable.
+    variable. ``on_the_triangle`` asks the recurrence only inside ``a + b <=
+    p``, and its step takes it where the goal's own guard says so.
     """
     pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
     proved = mathlib_oracle.establish(claim.fact())
@@ -1920,7 +1946,7 @@ def test_lean_checks_a_certificate_and_refuses_a_wrong_one(mathlib_oracle: LeanO
 
 @pytest.mark.parametrize(
     "claim",
-    [_lost_sign, _shifted_index, _doubled, _short_base],
+    [_lost_sign, _shifted_index, _doubled, _short_base, _short_of_the_triangle],
     ids=lambda claim: claim.__name__,
 )
 def test_a_claim_for_every_order_from_a_wrong_recurrence_is_not_proved(
@@ -1929,7 +1955,8 @@ def test_a_claim_for_every_order_from_a_wrong_recurrence_is_not_proved(
     """No certificate is found for it, and nothing else in the ladder proves it.
 
     The recurrence with its sign lost, an index off by one, a coefficient
-    doubled, and a base that leaves ``R(1)(b)`` unsaid.
+    doubled, a base that leaves ``R(1)(b)`` unsaid, and a recurrence that
+    stops one order short of the triangle's edge.
     """
     from lanky.oracles.lean import family_induction_scripts
 
@@ -2002,6 +2029,104 @@ def test_a_factorization_with_its_factors_swapped_is_not_proved(mathlib_oracle: 
     """No order makes the summands one, and nothing else in the ladder proves it."""
     result = mathlib_oracle.establish(_swapped_factors.fact())
     assert result.status is Status.ASSUMED
+
+
+# }}}
+
+
+# {{{ a plugin's parts about reals
+
+
+def _real_fact(part, status: Status = Status.DECIDED) -> Fact:
+    """A plugin's fact whose claim is ``part``, decided by its solver."""
+    from lanky.obligations import Obligation
+
+    class Stated:
+        def lean_obligation(self):
+            return Obligation(parts=(part,), decider="solver")
+
+    return Fact(
+        id="postcondition:kernel@1",
+        kind="postcondition",
+        statement=part.label,
+        term=Stated(),
+        status=status,
+        decided_by="solver",
+        where="kernel.py:1",
+        owner="kernel",
+    )
+
+
+def _recurrence_part(sign: int = -1):
+    """``R[a + 2, b] == sign * R[a, b + 2]``, from what ``R`` stores: ``-R[a - 2, b + 2]``."""
+    from lanky.obligations import Hints, Instance, Part
+
+    a, b, R = Var("a"), Var("b"), Var("R")
+    table = Fn[Int, Fn[Int, Real]]
+    stores = Forall(((a, Int), (b, Int)), R(a)(b) == -R(a - 2)(b + 2), (a >= 2) & (b >= 0))
+    return Part(
+        "post",
+        "R[a + 2, b] == -R[a, b + 2]",
+        Forall(
+            ((R, table), (a, Int), (b, Int)),
+            R(a + 2)(b) == sign * R(a)(b + 2),
+            prim.LogicalAnd((stores, a >= 0, b >= 0)),
+        ),
+        Hints(instances=(Instance(0, (a + 2, b)),)),
+        mathlib=True,
+    )
+
+
+def test_mathlib_proves_a_plugins_part_about_reals(mathlib_oracle: LeanOracle) -> None:
+    """The equation an array of reals stores, taken at the point, by ``linarith``.
+
+    And the claim with its sign lost is not proved: the instance gives
+    ``R (a + 2) b = -R a (b + 2)``, which says nothing of ``R a (b + 2)``.
+    """
+    proved = mathlib_oracle.establish(_real_fact(_recurrence_part()))
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    assert proved.provenance["tactic"] == "linarith, with the hypotheses taken at 1 point"
+    assert proved.provenance["lean_source"].startswith("import Mathlib\n\n")
+    assert proved.provenance["lean_mathlib"]
+    wrong = mathlib_oracle.establish(_real_fact(_recurrence_part(sign=1)))
+    assert wrong.status is Status.DECIDED
+
+
+def test_mathlib_applies_a_theorem_a_hypothesis_is(mathlib_oracle: LeanOracle) -> None:
+    """The theorem as it was proved, applied with what the plugin bound; the rest is assumption.
+
+    And the theorem applied to a claim it does not give is no proof.
+    """
+    from lanky.obligations import Application, Hints, Part
+
+    a, b, p, c, D, R = (Var(name) for name in ("a", "b", "p", "c", "D", "R"))
+    table = Fn[Nat, Fn[Nat, Real]]
+    stored = Forall(((a, Nat), (b, Nat)), c(a)(b) == D(a)(b), (a < 2) & (a + b <= p))
+    copies = Forall(((a, Nat), (b, Nat)), R(a)(b) == c(a)(b), (a < 2) & (a + b <= p))
+    goal = Forall(((a, Nat), (b, Nat)), R(a)(b) == D(a)(b), (a < 2) & (a + b <= p))
+    theorem_term = Forall(
+        ((p, Nat), (c, table), (D, table), (R, table)), goal, prim.LogicalAnd((stored, copies))
+    )
+
+    def applied(claim):
+        return Part(
+            "applied",
+            "the theorem applied",
+            Forall(
+                ((p, Nat), (c, table), (R, table)),
+                Forall(((D, table),), claim, stored),
+                prim.LogicalAnd((theorem_term, copies)),
+            ),
+            Hints(applications=(Application(0, (("p", p), ("c", c), ("R", R))),)),
+            mathlib=True,
+        )
+
+    proved = mathlib_oracle.establish(_real_fact(applied(goal)))
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    assert proved.provenance["tactic"] == "the theorem applied"
+    backwards = Forall(((a, Nat), (b, Nat)), D(a)(b) == R(a)(b) + 1, (a < 2) & (a + b <= p))
+    wrong = mathlib_oracle.establish(_real_fact(applied(backwards)))
+    assert wrong.status is Status.DECIDED
 
 
 # }}}

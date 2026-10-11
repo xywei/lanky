@@ -97,9 +97,9 @@ is worth less than its status, what it is worth.
   wrangler for the 2-D Laplace kernel claims that its recurrence reconstructs
   every derivative, and the ledger has the claim `tested` by mpmath and
   `decided (heuristic)` by sympy through order 6, and, with Mathlib, `proved
-  under harmonic` by Lean for every order, the kernel's harmonicity
-  `assumed` on its citation. `examples/sum_factorization.py` proves, for
-  every size, that a tensor-product operator on a hexahedron is three
+  under harmonic` by Lean for every order and on the triangle `a + b <= p`
+  of every order `p`, the kernel's harmonicity `assumed` on its citation.
+  `examples/sum_factorization.py` proves, for every size, that a tensor-product operator on a hexahedron is three
   one-axis passes, as grudge applies it, and `examples/line_taylor.py` that
   the line-Taylor coefficients pytential's QBX evaluates are the series of a
   logarithm, at every order, with sumpy's own through order 6 decided beside
@@ -342,7 +342,11 @@ raises its floor to match.
   `lanky.oracles.lean.use_certificate` is the hook through which a plugin
   hands over multipliers of its own, and `lanky.oracles.lean.decline` leaves
   a claim to the oracles after Lean, saying why. The sumpy demonstration's
-  claim for every order is proved this way. So is a claim from an order on,
+  claim for every order is proved this way, and so is its corollary on the
+  triangle `a + b <= p` of every order `p`, whose recurrence holds only
+  inside the order: a hypothesis is used where its guards follow from the
+  bounds of the variables and from the goal's own guards, `k + b + 2 <= p`
+  from the goal's `a + b <= p` at `a = k + 2`. So is a claim from an order on,
   `all(c(n) == -(-beta / alpha) ** n / n for n in Nat if n >= 1)`: the
   guard's lower bound raises the step, the orders it rules out are base
   cases `omega` closes from the guard, and a step that divides by the
@@ -375,8 +379,22 @@ raises its floor to match.
   comes with its counterexample, and Lean proves it false there, which the
   `REFUTED` block says; a refuted fact is never turned into a proof. Lean's
   answers are kept by the hash of their source
-  (`LANKY_LEAN_PROOF_CACHE`), so a file checked again is quick. loopty
-  states its isl facts this way, and they read `proved lean`.
+  (`LANKY_LEAN_PROOF_CACHE`), so a file checked again is quick, and when
+  every part's answer is kept, no REPL is started at all. A part about real
+  numbers (`Part(..., mathlib=True)`) is stated with `ℝ` and checked where
+  Mathlib is, closed by `linarith`; without Mathlib the claim is left to
+  the oracles after Lean with that reason. A hypothesis that is itself a
+  theorem is applied as one (`Hints.applications`): Lean is asked for
+  `apply h (p := ...) (c := ...)` with the values the plugin matched, and
+  checks that the theorem's conclusion is the claim. loopty states its isl
+  facts this way, and they read `proved lean`; it states a kernel that
+  cites a theorem the same way:
+
+  ```python
+  # claim: Forall(..., conclusion, guard=theorem & postcondition)
+  hints = Hints(applications=(Application(0, (("p", p), ("c", c))),))
+  Part("applied", "on_the_triangle gives R == D", claim, hints, mathlib=True)
+  ```
 - `--show-lean` prints the Lean of every row that has some, or of the rows
   whose owner, id or statement contains the text it is given: the file that
   replays a proof, a plugin's parts as they were tried, a refutation's

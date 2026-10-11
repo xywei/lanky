@@ -88,7 +88,7 @@ def test_the_claim_is_one_statement_with_an_equation_per_coefficient(demo) -> No
     from lanky.prelude import Real
     from lanky.terms import Forall, render
 
-    sampled, symbolic, _every_order = demo.compressed_taylor.facts()
+    sampled, symbolic, _every_order, _triangle = demo.compressed_taylor.facts()
     term = symbolic.term
     assert isinstance(term, Forall)
     assert [(var.name, domain) for var, domain in term.binders] == [("x", Real), ("y", Real)]
@@ -119,7 +119,7 @@ def test_the_formulas_are_sympys_derivatives_as_the_bridge_reads_them(cas, demo)
 
     sympy = cas
     claim = demo.compressed_taylor
-    _, symbolic, _ = claim.facts()
+    _, symbolic, *_ = claim.facts()
     stored = [claim.derivatives[claim.identifiers.index(mi)] for mi in claim.stored]
     found = equations(symbolic.term)
     assert len(found) == len(claim.identifiers) == 28
@@ -143,7 +143,7 @@ def test_the_claim_for_every_order_is_the_recurrence_sumpys_pde_gives(demo) -> N
     assert claim.leading == (2, 0)
     assert claim.recurrence_text() == "reconstructed(a + 2, b) == -reconstructed(a, b + 2)"
     assert claim.pde_text() == "G_xx + G_yy == 0"
-    *_, every_order = claim.facts()
+    *_, every_order, _triangle = claim.facts()
     assert every_order.id.endswith(":every-order")
     assert every_order.statement.startswith("every order: reconstructed(a, b) == diff(")
     assert every_order.rests_on == (demo.harmonic.fact_id,)
@@ -161,6 +161,40 @@ def test_the_claim_for_every_order_is_the_recurrence_sumpys_pde_gives(demo) -> N
     )
     assert structurally_equal(recurrence, expected)
     assert render(term.body) == "forall a in Nat, b in Nat. R(a)(b) == D(a)(b)"
+
+
+def test_the_claim_on_the_triangle_is_the_one_a_wrangler_of_order_p_makes(demo) -> None:
+    """The corollary of #86 a kernel of order ``p`` cites: the recurrence inside the order alone.
+
+    Over the order ``p`` too, with the stored derivatives and the recurrence
+    asked of ``R`` only where the order reaches, and ``R`` is ``D`` on the
+    triangle ``a + b <= p``.
+    """
+    from lanky.prelude import Fn, Nat, Real
+    from lanky.terms import render
+
+    claim = demo.compressed_taylor
+    *_, triangle = claim.facts()
+    assert triangle.id.endswith(":on-the-triangle")
+    assert triangle.statement.startswith("every order p: reconstructed(a, b) == diff(")
+    assert triangle.statement.endswith(
+        "for a + b <= p, by reconstructed(a + 2, b) == -reconstructed(a, b + 2) inside it"
+    )
+    assert triangle.rests_on == (demo.harmonic.fact_id,)
+    term = triangle.term
+    table = Fn[Nat, Fn[Nat, Real]]
+    assert [(var.name, sort) for var, sort in term.binders] == [
+        ("p", Nat),
+        ("D", table),
+        ("R", table),
+    ]
+    pde, stored, recurrence = term.guard.children
+    assert render(pde) == "forall a in Nat, b in Nat. D(a + 2)(b) + D(a)(b + 2) == 0"
+    assert render(stored) == (
+        "forall a in Nat, b in Nat where a < 2 and a + b <= p. R(a)(b) == D(a)(b)"
+    )
+    assert render(recurrence.guard) == "a + b + 2 <= p"
+    assert render(term.body) == "forall a in Nat, b in Nat where a + b <= p. R(a)(b) == D(a)(b)"
 
 
 def test_lean_is_left_the_claim_for_every_order_and_not_the_one_through_the_order(demo) -> None:
@@ -204,11 +238,11 @@ def test_python_runs_the_demo_and_every_coefficient_agrees() -> None:
 def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order(
     cas, capsys
 ) -> None:
-    """One owner, three rows: ``tested`` by mpmath, ``decided (heuristic)`` by the CAS oracle.
+    """One owner, four rows: ``tested`` by mpmath, ``decided (heuristic)`` by the CAS oracle.
 
-    And the claim for every order, ``assumed under harmonic`` where Lean has
-    no Mathlib to state it in. Above them the kernel's harmonicity, ``assumed``
-    on its citation.
+    And the claim for every order and its corollary on the triangle of every
+    order, each ``assumed under harmonic`` where Lean has no Mathlib to state
+    it in. Above them the kernel's harmonicity, ``assumed`` on its citation.
     """
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
@@ -217,26 +251,32 @@ def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order
     assert rows[1].startswith("decided (heuristic)     cas     sumpy_recurrence.py:")
     assert rows[2].startswith("assumed under harmonic  -       sumpy_recurrence.py:")
     assert "every order: reconstructed(a, b) == diff(" in rows[2]
+    assert rows[3].startswith("assumed under harmonic  -       sumpy_recurrence.py:")
+    assert "every order p: reconstructed(a, b) == diff(" in rows[3]
     axiom_row, reading_row = [line for line in printed.splitlines() if "  harmonic  " in line]
     assert axiom_row.startswith("assumed (axiom)         -       sumpy_recurrence.py:")
     # the axiom's annotations, sympy's Laplacian included, run again at drawn
     # points, compute what its term does (#91)
     assert reading_row.startswith("tested                  python  sumpy_recurrence.py:")
-    assert "5 facts: 2 assumed, 1 decided, 2 tested" in printed
+    assert "6 facts: 3 assumed, 1 decided, 2 tested" in printed
     assert re.search(r"^CITED harmonic at sumpy_recurrence\.py:\d+: R\. Kress, ", printed, re.M)
 
 
 def _by_owner() -> tuple:
-    """The demonstration's ledger: the axiom, then the claim at points, as formulas, every order."""
-    harmonic, sampled, symbolic, every_order = claims(check_path(DEMO))
+    """The demonstration's ledger: the axiom, then the claim at points, as formulas, every order.
+
+    And last the claim on the triangle of every order ``p``.
+    """
+    harmonic, sampled, symbolic, every_order, triangle = claims(check_path(DEMO))
     assert harmonic.owner == "harmonic"
     assert sampled.owner == symbolic.owner == every_order.owner == "compressed_taylor"
-    return harmonic, sampled, symbolic, every_order
+    assert triangle.owner == "compressed_taylor"
+    return harmonic, sampled, symbolic, every_order, triangle
 
 
 def test_without_the_cas_oracle_the_formulas_are_tested_exactly(capsys) -> None:
     """The property tester evaluates the same 28 equations in rational arithmetic."""
-    _, sampled, symbolic, _ = _by_owner()
+    _, sampled, symbolic, *_ = _by_owner()
     assert (sampled.status, sampled.decided_by) == (Status.TESTED, "mpmath")
     assert (symbolic.status, symbolic.decided_by) == (Status.TESTED, "property-test")
     assert symbolic.provenance["valid"] > 0
@@ -253,21 +293,22 @@ def test_the_harmonicity_is_assumed_and_the_claim_for_every_order_rests_on_it(ca
     """
     from lanky.ledger import Ledger
 
-    harmonic, sampled, symbolic, every_order = _by_owner()
+    harmonic, sampled, symbolic, every_order, triangle = _by_owner()
     assert harmonic.is_axiom
     assert (harmonic.status, harmonic.decided_by) == (Status.ASSUMED, None)
     assert harmonic.provenance["cite"].startswith("R. Kress, Linear Integral Equations")
     assert harmonic.statement.startswith("x : Real, y : Real | x**2 + y**2 > 0 |- ")
     assert harmonic.statement.endswith(" == 0")
     assert sampled.rests_on == symbolic.rests_on == ()
-    assert every_order.rests_on == (harmonic.id,)
-    assert every_order.status is Status.ASSUMED
-    ledger = Ledger([harmonic, sampled, symbolic, every_order])
+    assert every_order.rests_on == triangle.rests_on == (harmonic.id,)
+    assert every_order.status is triangle.status is Status.ASSUMED
+    ledger = Ledger([harmonic, sampled, symbolic, every_order, triangle])
     assert ledger.support(every_order).under == (harmonic.id,)
+    assert ledger.support(triangle).under == (harmonic.id,)
 
 
 def test_the_ledger_records_what_each_oracle_did(cas) -> None:
-    _, sampled, symbolic, _ = _by_owner()
+    _, sampled, symbolic, *_ = _by_owner()
     assert sampled.provenance["samples"] == 20
     assert sampled.provenance["digits"] == 30
     assert sampled.provenance["largest_difference"] <= 1e-20
@@ -508,7 +549,7 @@ def test_with_mathlib_the_claim_for_every_order_is_proved_under_harmonic(
     if os.environ.get("LANKY_LEAN_DISABLE"):
         pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
     monkeypatch.setenv("LANKY_LEAN_MATHLIB", mathlib_project)
-    harmonic, sampled, symbolic, every_order = _by_owner()
+    harmonic, sampled, symbolic, every_order, triangle = _by_owner()
     assert (sampled.status, sampled.decided_by) == (Status.TESTED, "mpmath")
     assert (symbolic.status, symbolic.decided_by) == (Status.DECIDED, "cas")
     declined = symbolic.provenance["declined"]
@@ -519,6 +560,10 @@ def test_with_mathlib_the_claim_for_every_order_is_proved_under_harmonic(
     assert "induction a using Nat.strong_induction_on with" in tactic
     assert "linear_combination" in tactic
     assert every_order.provenance["lean_mathlib"]
+    # the corollary on the triangle, by the same induction, the order's guard
+    # read off the claim's own (#86)
+    assert (triangle.status, triangle.decided_by) == (Status.PROVED, "lean")
+    assert "induction a using Nat.strong_induction_on with" in triangle.provenance["tactic"]
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
     rows = [line for line in printed.splitlines() if "compressed_taylor" in line]
@@ -526,9 +571,10 @@ def test_with_mathlib_the_claim_for_every_order_is_proved_under_harmonic(
         ["tested", "tested", "mpmath"],
         ["decided (heuristic)", "decided (heuristic)", "cas"],
         ["proved under harmonic", "assumed", "lean"],
+        ["proved under harmonic", "assumed", "lean"],
     ]
     # and harmonic's reading of its annotations, tested (#91)
-    assert "5 facts: 1 assumed, 1 decided, 1 proved, 2 tested" in printed
+    assert "6 facts: 1 assumed, 1 decided, 2 proved, 2 tested" in printed
     # and that is the table the quickstart shows
     shown = _shown("LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py")
     printed_lines = [line.rstrip() for line in printed.splitlines()]

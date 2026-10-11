@@ -789,32 +789,33 @@ mpmath, decided by the CAS oracle where sympy is installed, and proved for every
 order by Lean where Mathlib is, under the kernel's harmonicity.
 ```
 
-The ledger has the one claim three times, with the evidence for each, under the
+The ledger has the one claim four times, with the evidence for each, under the
 kernel's harmonicity:
 
 ```console
 $ uv run lanky check examples/sumpy_recurrence.py
 STATUS                  BY      WHERE                    OWNER              STATEMENT
 ----------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
-assumed (axiom)         -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
-tested                  python  sumpy_recurrence.py:128  harmonic           the term computes what the annotations compute
-tested                  mpmath  sumpy_recurrence.py:746  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
-decided (heuristic)     cas     sumpy_recurrence.py:746  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
-assumed under harmonic  -       sumpy_recurrence.py:746  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
+assumed (axiom)         -       sumpy_recurrence.py:139  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested                  python  sumpy_recurrence.py:139  harmonic           the term computes what the annotations compute
+tested                  mpmath  sumpy_recurrence.py:801  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)     cas     sumpy_recurrence.py:801  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+assumed under harmonic  -       sumpy_recurrence.py:801  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
+assumed under harmonic  -       sumpy_recurrence.py:801  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x,...
 
-5 facts: 2 assumed, 1 decided, 2 tested
+6 facts: 3 assumed, 1 decided, 2 tested
 
-CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+CITED harmonic at sumpy_recurrence.py:139: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
 
 - **The harmonicity.** `harmonic` is an axiom: `G_xx + G_yy == 0` away from
   the origin, with the second derivatives sympy's, taken on its citation and
   sampled for a counterexample. It is the PDE the wrangler's recurrence comes
   from. The claim's first two rows do not rest on it, since each checks the
-  reconstruction against the derivatives themselves, one order at a time; the
-  third, the claim for every order, does. Its reading is `tested`: the
-  annotation, sympy's Laplacian included, run again as Python at drawn
-  points, computes what its term does.
+  reconstruction against the derivatives themselves, one order at a time;
+  the last two, the claim for every order and on the triangle, do. Its
+  reading is `tested`: the annotation, sympy's Laplacian included, run again
+  as Python at drawn points, computes what its term does.
 - **The claim at points.** mpmath takes every derivative numerically, by
   finite differences at 30 digits, at 20 points away from the origin, and
   finds each reconstructed one within `1e-20` of the derivative it stands
@@ -847,13 +848,21 @@ CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 
   since it is over the reals, and the tester cannot draw a table over `Nat`,
   so it is `assumed` here; Lean proves it with Mathlib (see
   [Prove it with Mathlib](#prove-it-with-mathlib)).
+- **The claim on the triangle of every order.** What a wrangler of order `p`
+  does: it has the coefficients up to that order, and follows the
+  recurrence only where the derivative it gives is inside it. Over the order
+  `p` as well as the two tables: `R` is `D` where the wrangler stores and
+  the order reaches (`a < 2` and `a + b <= p`), and follows the recurrence
+  where `a + b + 2 <= p`; then `R` is `D` on the triangle `a + b <= p`. It is
+  the corollary a kernel of order `p` cites, since its arrays end at the
+  order, and it rests on `harmonic` as the claim for every order does.
 - **A wrong recurrence fails the check.** Flip the sign of one reconstructed
   coefficient in the wrangler and the first two rows are refuted: mpmath
   names the coefficient and the point, sympy declines with the difference it
   is left with, twice a stored derivative, and the tester finds a point of
-  its own. `lanky check` exits 1. The third row is not there: the wrangler's
-  weights no longer follow its PDE's recurrence, so it makes no claim for
-  every order.
+  its own. `lanky check` exits 1. The last two rows are not there: the
+  wrangler's weights no longer follow its PDE's recurrence, so it makes no
+  claim for every order.
 
 ## Prove it with Mathlib
 
@@ -981,21 +990,22 @@ square root of a negative number is `0`, and no draw can evaluate it in Python.
 
 ### A claim for every order
 
-With the same variable, the sumpy demonstration's third row is proved:
+With the same variable, the sumpy demonstration's last two rows are proved:
 
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py
 STATUS                 EFFECTIVE            BY      WHERE                    OWNER              STATEMENT
 ---------------------  -------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
-assumed (axiom)        assumed              -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
-tested                 tested               python  sumpy_recurrence.py:128  harmonic           the term computes what the annotations compute
-tested                 tested               mpmath  sumpy_recurrence.py:746  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
-decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:746  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
-proved under harmonic  assumed              lean    sumpy_recurrence.py:746  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
+assumed (axiom)        assumed              -       sumpy_recurrence.py:139  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
+tested                 tested               python  sumpy_recurrence.py:139  harmonic           the term computes what the annotations compute
+tested                 tested               mpmath  sumpy_recurrence.py:801  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:801  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+proved under harmonic  assumed              lean    sumpy_recurrence.py:801  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
+proved under harmonic  assumed              lean    sumpy_recurrence.py:801  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x,...
 
-5 facts: 1 assumed, 1 decided, 1 proved, 2 tested
+6 facts: 1 assumed, 1 decided, 2 proved, 2 tested
 
-CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+CITED harmonic at sumpy_recurrence.py:139: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
 
 The claim is over two tables, `D` and `R` (see the
@@ -1037,8 +1047,12 @@ the instances the multipliers solve a linear system over the rational
 functions of the statement's other variables, with sympy (the `cas` extra).
 Each use has to satisfy its hypothesis's guards, which the search reads as
 affine inequalities, so the induction hypothesis is only ever used below the
-order it is proving. Python searches, Lean checks: a wrong certificate is one
-failed attempt, never a wrong proof.
+order it is proving. The goal's own guards count too: the claim on the
+triangle asks the recurrence only where `a + b + 2 <= p`, and its step at
+`a = k + 2` takes it at `(k, b)` because the goal's guard there is `k + 2 + b
+<= p`, which `omega` reads off the hypotheses the case introduced. Python
+searches, Lean checks: a wrong certificate is one failed attempt, never a
+wrong proof.
 
 The search is lanky's default certificate hook. A plugin that knows its
 multipliers, from the coefficients of a PDE say, can hand them over with
@@ -1058,8 +1072,9 @@ the demonstration declines it for Lean
 (`lanky.oracles.lean.decline(claim, reason)`), since Lean's row is the one
 for every order, and the ladder spent minutes on 28 equations at once before
 the CAS oracle decided them in a second. The check takes about a minute, most
-of it importing Mathlib and asking Lean whether the third row's hypotheses
-are inconsistent and its goal's domain empty, which they are not. Each
+of it importing Mathlib and asking Lean whether the last two rows'
+hypotheses are inconsistent and their goals' domains empty, which they are
+not. Each
 ladder has a budget, `LANKY_LEAN_BUDGET` (120 s) for a claim and
 `LANKY_LEAN_VACUITY_BUDGET` (30 s) for each of those two questions, which
 also leave out the attempts that cannot show `False`, such as the

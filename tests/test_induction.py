@@ -129,6 +129,30 @@ def counting(
     """Induced on a point of ``Fin[n]``, whose bound comes before the later ``b``."""
 
 
+@theorem
+def triangle(
+    p: Nat,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2 if a + b <= p),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat if a + b + 2 <= p),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a + b <= p):
+    """The reconstruction of order ``p``: the recurrence followed inside the triangle alone."""
+
+
+@theorem
+def short_of_the_triangle(
+    p: Nat,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2 if a + b <= p),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat if a + b + 3 <= p),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a + b <= p):
+    """False: the recurrence stops one order short, so ``R(2)(p - 2)`` is nobody's."""
+
+
 @pytest.fixture
 def searching():
     """sympy, which the search needs; skipped without it."""
@@ -172,6 +196,27 @@ def test_the_search_finds_the_step_of_the_compressed_taylor_reconstruction(searc
     assert "- h0 k (by omega) b (by omega)" in step
     assert "- ih k (by omega) (b + 2) (by omega)" in step
     assert len(lines) == 10
+
+
+def test_the_goals_guard_shows_a_lemmas_guard_on_the_triangle(searching) -> None:
+    """The step at ``k + 2`` takes the recurrence at ``(k, b)``, whose guard is the goal's own.
+
+    ``k + b + 2 <= p`` follows from no bound of ``k``, ``b`` or ``p`` alone,
+    and is the goal's guard at ``k + 2``, which Lean has as a hypothesis in
+    the case: the search reads it there (``Case.facts``), and before it did,
+    found no step for a claim over the triangle ``a + b <= p``.
+    """
+    (script,) = family_induction_scripts(_statement(triangle))
+    step = script.splitlines()[-1]
+    # h0 is p's 0 <= p, and h1 to h3 the PDE, the stored and the recurrence
+    assert "h3 k (by omega) b (by omega) (by omega)" in step
+    assert "- ih k (by omega) (b + 2) (by omega) (by omega)" in step
+    assert "- h1 k (by omega) b (by omega)" in step
+
+
+def test_a_recurrence_short_of_the_triangle_has_no_step(searching) -> None:
+    """At ``a + b == p`` the recurrence is not asked, and no combination is the goal there."""
+    assert family_induction_scripts(_statement(short_of_the_triangle)) == []
 
 
 def test_a_multiplier_can_be_an_expression_in_the_statements_variables(searching) -> None:
