@@ -15,11 +15,18 @@ All notable changes to lanky are recorded here. The format follows
   well as one at a time, `F(i)(j)`, and the three are one entry to every
   reading: the property tester's tables, the families the check of a
   reading draws as they are applied, a theorem called as a function, which
-  takes nested lists or an array for such a family, and Lean, which writes
-  `F i j`. `FnType.indices` and `FnType.entries` read a family's index types
-  and what it holds, and `lanky.testing.apply_at` applies a family at
-  several indices in turn. A claim that wrote `F[i, j]` used to be
-  untestable ("could not run").
+  takes nested lists, an array or a function for such a family (a function
+  taking the indices at once, `lambda i, j: ...`, or one at a time), and
+  Lean, which writes `F i j`. A value of another shape (a flat list for a
+  matrix, an array with an axis too many, a dict) is refused with the
+  parameter's name, its type and the shape it takes, and a family applied
+  at more indices than it has says how many it has. A hypothesis that
+  defines a family entry by entry, `all(F[i, j] == ... for i in Fin[n] for
+  j in Fin[n])`, fills the tester's table, as `f(i) == ...` always did, and
+  a counterexample shows a matrix as nested lists. `FnType.indices` and
+  `FnType.entries` read a family's index types and what it holds, and
+  `lanky.testing.apply_at` applies a family at several indices in turn. A
+  claim that wrote `F[i, j]` used to be untestable ("could not run").
 - **Exchanging finite sums, in Mathlib mode** (`lanky.sums`,
   `lanky.oracles.lean.sum_scripts`). An equation between sums, products of
   sums and quotients of a sum, under any universals, is proved by
@@ -30,10 +37,11 @@ All notable changes to lanky are recorded here. The format follows
   under all of them (`Finset.sum_congr`, then `ring`). Python finds the
   order: `lanky.sums.spread` reads a side as `simp` leaves it, and
   `lanky.sums.orders` the orders of the sums whose domains agree and under
-  which the summands are equal, by sympy where it is installed. Lean checks
-  the script; an order that is wrong costs an attempt. Sum factorization, a
-  tensor-product operator applied as three one-axis passes, and the
-  Kronecker product's mixed product are proved this way for every size.
+  which the summands are equal, by sympy where it is installed, within the
+  claim's Lean budget. Lean checks the script; an order that is wrong costs
+  an attempt. Sum factorization, a tensor-product operator applied as three
+  one-axis passes, and the Kronecker product's mixed product are proved
+  this way for every size.
 - **A claim for every order from an order on.** The induction over families
   proves `all(c(n) == ... for n in Nat if n >= 1)`: a lower bound on the
   order in the goal's guard raises the steps tried, the orders below it are
@@ -108,6 +116,16 @@ All notable changes to lanky are recorded here. The format follows
 - A family of families prints as the family with several indices it is:
   `Fn[Fin(n), Nat, Nat]` where it was `Fn[Fin(n), Fn[Nat, Nat]]`, in a
   statement and in a reason that names the sort.
+
+### Fixed
+
+- A hypothesis that defines a family written with brackets,
+  `all(f[i] == 2 * i for i in Fin[n])`, was read only as a filter on random
+  draws, which met it at the smallest sizes alone, so that a false claim
+  about such a family could read `tested` on them. It fills the tester's
+  table now, as `f(i) == 2 * i` did.
+- A dict given for a family to a theorem called as a function was read as
+  the list of its keys. It is refused, with the shapes a family takes.
 
 ## [0.2.0] - 2026-10-11
 

@@ -2522,11 +2522,11 @@ class DrawnFamily:
 
     def __call__(self, *points: Any) -> Any:
         """The value at ``points``: ``f(i)``, or ``f(i, j)`` for ``f(i)(j)``."""
-        return apply_at(self._at, points)
+        return apply_at(self._at, points, self.name)
 
     def __getitem__(self, point: Any) -> Any:
         """The same as a call: ``f[i]``, or ``f[i, j]`` for ``f[i][j]``."""
-        return apply_at(self._at, point if isinstance(point, tuple) else (point,))
+        return apply_at(self._at, point if isinstance(point, tuple) else (point,), self.name)
 
     def _at(self, point: Any) -> Any:
         """The value at ``point``, drawn the first time it is asked for.

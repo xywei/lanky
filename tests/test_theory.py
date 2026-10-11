@@ -6,6 +6,7 @@ import functools
 import re
 import threading
 
+import numpy as np
 import pytest
 
 from lanky import axiom, theorem
@@ -13,7 +14,7 @@ from lanky.ledger import Fact, Status
 from lanky.oracles.test import TestOracle
 from lanky.plugins import registry
 from lanky.prelude import Fin, Fn, Int, Nat
-from lanky.terms import Var, evaluate_annotations
+from lanky.terms import Undecided, Var, evaluate_annotations
 from lanky.theory import Axiom, Theorem
 
 
@@ -176,12 +177,140 @@ def test_a_family_over_a_sort_is_applied_at_several_indices_in_its_reading() -> 
 def test_a_table_is_applied_at_as_many_indices_as_it_has() -> None:
     from lanky.testing import Table
 
-    matrix = Table([Table([1, 2]), Table([3, 4])])
+    matrix = Table([Table([1, 2]), Table([3, 4])], name="F")
     assert matrix[1, 0] == matrix(1, 0) == matrix(1)(0) == matrix[1][0] == 3
-    with pytest.raises(TypeError, match="fewer indices"):
+    with pytest.raises(TypeError, match=r"^F is applied at 3 indices and has 2: at 2 indices it "):
         matrix[1, 0, 0]
-    with pytest.raises(TypeError, match="one index at least"):
+    with pytest.raises(TypeError, match=r"^F is applied at no index: write F\[i\]"):
         matrix()
+
+
+def test_a_claim_that_gives_a_matrix_three_indices_says_so_in_its_reason() -> None:
+    """``F[i, i, i]`` of a matrix: the tester could not run it, and says how many ``F`` has."""
+
+    @theorem
+    def over(n: Nat, F: Fn[Fin[n], Fin[n], Int], i: Fin[n]) -> F[i, i, i] == F[i, i, i]:
+        """A matrix applied at three indices."""
+
+    fact = TestOracle().establish(over.fact())
+    assert fact.status is Status.ASSUMED
+    assert re.search(
+        r"F is applied at 3 indices and has 2: at 2 indices it holds -?\d+, which is not a "
+        r"family$",
+        fact.provenance["reason"],
+    ), fact.provenance["reason"]
+
+
+def test_a_matrix_given_to_a_theorem_in_the_wrong_shape_is_refused_by_name() -> None:
+    """A flat list, a dict, a scalar or an array with an axis too many: the message says why."""
+
+    @theorem
+    def trace(n: Nat, F: Fn[Fin[n], Fin[n], Int]) -> sum(F[i, i] for i in Fin[n]) == sum(
+        F(i)(i) for i in Fin[n]
+    ):
+        """True."""
+
+    wanted = (
+        r"give F as nested lists, one level per index, F=\[\[\.\.\.\], \[\.\.\.\]\], an "
+        r"array with 2 axes, or a function$"
+    )
+    shown = r"F, a family with 2 indices \(Fn\[Fin\(n\), Fin\(n\), Int\]\)"
+    with pytest.raises(TypeError, match=rf"^F\[0\] is 1, where {shown}, needs a row: {wanted}"):
+        trace(n=2, F=[1, 2, 3, 4])
+    with pytest.raises(TypeError, match=rf"^F is a dict, where {shown}, needs a family: {wanted}"):
+        trace(n=2, F={(0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4})
+    with pytest.raises(TypeError, match=rf"^F is 3, where {shown}, needs a family: {wanted}"):
+        trace(n=2, F=3)
+    with pytest.raises(
+        TypeError, match=rf"^F\[0\]\[0\] is array\(\[1, 1\]\), where {shown}, has an entry: "
+    ):
+        trace(n=2, F=np.ones((2, 2, 2), dtype=int))
+    # a row too short is a point outside the domain, named by its row
+    with pytest.raises(Undecided, match=r"^F\[1\] is applied at 1, which is outside"):
+        trace(n=2, F=[[1, 2], [3]])
+
+
+def test_a_function_given_for_a_matrix_is_applied_as_the_claim_writes_the_entry() -> None:
+    """``lambda i, j: ...``, ``lambda i: lambda j: ...`` or a list of rows that are functions."""
+
+    @theorem
+    def spellings(n: Nat, F: Fn[Fin[n], Fin[n], Int], i: Fin[n], j: Fin[n]) -> (
+        F[i, j] == F(i)(j)
+    ) & (F(i, j) == F[i][j]):
+        """Three spellings of one entry."""
+
+    @theorem
+    def symmetric(n: Nat, F: Fn[Fin[n], Fin[n], Int], i: Fin[n], j: Fin[n]) -> F[i, j] == F(j)(i):
+        """Holds for a symmetric matrix only."""
+
+    at_once, one_at_a_time = (lambda i, j: 10 * i + j), (lambda i: lambda j: 10 * i + j)
+    for F in (at_once, one_at_a_time, [lambda j: j, lambda j: 10 + j]):
+        assert spellings(n=2, F=F, i=1, j=0).holds
+        assert not symmetric(n=2, F=F, i=1, j=0).holds
+    assert symmetric(n=3, F=lambda i, j: i + j, i=2, j=1).holds
+
+
+def test_a_counterexample_shows_a_matrix_as_nested_lists() -> None:
+    """As a theorem called as a function takes it, and as the JSON ledger can hold it."""
+
+    @theorem
+    def symmetric(n: Nat, F: Fn[Fin[n], Fin[n], Int]) -> all(
+        F[i, j] == F[j, i] for i in Fin[n] for j in Fin[n]
+    ):
+        """False."""
+
+    report = symmetric.report(n=60)
+    assert not report.ok
+    matrix = report.counterexample["F"]
+    assert isinstance(matrix, list) and all(isinstance(row, list) for row in matrix)
+    assert all(isinstance(entry, int) for row in matrix for entry in row)
+    assert not symmetric(n=report.counterexample["n"], F=matrix).holds
+
+
+def test_a_hypothesis_defines_a_matrix_entry_by_entry() -> None:
+    """``all(F[i, j] == ... )`` fills the tester's table, as ``f(i) == ...`` always did.
+
+    Read only as a filter, a random matrix met the definition only at the
+    smallest sizes, and a false claim about a matrix so defined read
+    ``tested`` on them. ``f[i] == ...``, ``F(i, j) == ...`` and ``F(i)(j) ==
+    ...`` define an entry too.
+    """
+
+    @theorem
+    def antisymmetric(
+        n: Nat,
+        F: Fn[Fin[n], Fin[n], Int],
+        defined: all(F[i, j] == i - j for i in Fin[n] for j in Fin[n]),
+    ) -> all(F[i, j] == F[j, i] for i in Fin[n] for j in Fin[n]):
+        """False: ``i - j`` is antisymmetric."""
+
+    report = antisymmetric.report(n=60)
+    assert not report.ok
+    assert report.counterexample["n"] >= 2
+    assert report.counterexample["F"][0][1] == -1
+
+    @theorem
+    def symmetric(
+        n: Nat,
+        F: Fn[Fin[n], Fin[n], Int],
+        G: Fn[Fin[n], Fin[n], Int],
+        defined: all(F(i, j) == i + j for i in Fin[n] for j in Fin[n]),
+        copied: all(G(i)(j) == F[j, i] for i in Fin[n] for j in Fin[n]),
+    ) -> all(G[i, j] == F[i, j] for i in Fin[n] for j in Fin[n]):
+        """True: ``i + j`` is symmetric, and ``G`` is its transpose."""
+
+    report = symmetric.report(n=60)
+    assert report.ok, report.counterexample
+    assert report.valid == report.samples == 60
+
+    @theorem
+    def even(n: Nat, f: Fn[Fin[n], Int], defined: all(f[i] == 2 * i for i in Fin[n])) -> all(
+        f[i] % 2 == 1 for i in Fin[n] if i > 0
+    ):
+        """False: every entry is even."""
+
+    report = even.report(n=60)
+    assert not report.ok
 
 
 def test_the_lean_printer_is_not_here_yet() -> None:

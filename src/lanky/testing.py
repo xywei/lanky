@@ -268,31 +268,41 @@ class Unevaluable(SkipSample):
     """
 
 
-def apply_at(first: Any, indices: tuple[Any, ...]) -> Any:
+def apply_at(first: Any, indices: tuple[Any, ...], name: str = "a family") -> Any:
     """A family applied at ``indices`` in turn, ``first`` being its application at one index.
 
     A family with several indices is a family of families (``Fn[A, B, C]`` is
     ``Fn[A, Fn[B, C]]``), so ``F[i, j]`` and ``F(i, j)`` are ``F(i)(j)``: the
-    family at the first index, and what that holds at the rest. What it holds
-    is indexed as it indexes itself, whether it is a :class:`Table`, a drawn
-    family or a family that is one value everywhere.
+    family at the first index, and what that holds at the next, one index at
+    a time. What it holds is indexed as it indexes itself, whether it is a
+    :class:`Table`, a drawn family or a family that is one value everywhere.
+    ``name`` is the family's, for the message.
 
     Raises:
         TypeError: If no index is given, or if the family is applied at more
-            indices than its type has, where what it holds is not a family.
+            indices than it has, ``F[i, j, k]`` for a matrix: the message
+            says how many it has and what it holds there.
     """
     if not indices:
-        raise TypeError("a family is applied at one index at least")
+        raise TypeError(f"{name} is applied at no index: write {name}[i], or {name}[i, j]")
     value = first(indices[0])
-    rest = indices[1:]
-    if not rest:
-        return value
-    if not callable(getattr(value, "__getitem__", None)) or isinstance(value, str):
-        raise TypeError(
-            f"a family applied at {len(indices)} indices holds {value!r} after the first, "
-            "which is not a family: it has fewer indices than that"
-        )
-    return value[rest if len(rest) > 1 else rest[0]]
+    for given, index in enumerate(indices[1:], start=1):
+        if isinstance(value, str) or not callable(getattr(value, "__getitem__", None)):
+            raise TypeError(
+                f"{name} is applied at {len(indices)} indices and has {given}: "
+                f"at {given} {'index' if given == 1 else 'indices'} it holds "
+                f"{_shown(value)}, which is not a family"
+            )
+        value = value[index]
+    return value
+
+
+def _shown(value: Any) -> str:
+    """A value as a message shows it: ``4/3`` for ``Fraction(4, 3)``, a table as its values."""
+    described = _describe(value)
+    if isinstance(described, Fraction):
+        return str(described)
+    return repr(described)
 
 
 def totalized_value(codomain: Any) -> Any:
@@ -371,12 +381,12 @@ class Table:
 
     def __call__(self, *indices: Any) -> Any:
         """The value at ``indices``: ``f(i)``, or ``f(i, j)`` for ``f(i)(j)``."""
-        return apply_at(self._at, indices)
+        return apply_at(self._at, indices, self.name)
 
     def __getitem__(self, index: Any) -> Any:
         """The value at ``index``: ``f[i]``, or ``f[i, j]`` for ``f[i][j]`` (:func:`apply_at`)."""
         if isinstance(index, tuple):
-            return apply_at(self._at, index)
+            return apply_at(self._at, index, self.name)
         return self._at(index)
 
     def _at(self, index: Any) -> Any:
@@ -714,14 +724,36 @@ def sort_sampler(rng: random.Random, context: dict[str, Any]) -> Any:
 
 
 def _definition(prop: Any) -> tuple[Any, Any] | None:
-    """Read ``f(i) == e`` as the pair ``(f(i), e)``, or answer ``None``."""
+    """Read ``f(i) == e`` as the pair ``(f(i), e)``, or answer ``None``.
+
+    The family may be applied in any of the ways it can be: ``f(i)`` or
+    ``f[i]``, and, with several indices, ``F[i, j]``, ``F(i, j)`` or
+    ``F(i)(j)``. A side that applies a family at no index, or something that
+    is not a variable, is no definition.
+    """
     if not isinstance(prop, prim.Comparison) or prop.operator != "==":
         return None
     for left, right in ((prop.left, prop.right), (prop.right, prop.left)):
-        if isinstance(left, prim.Call) and isinstance(left.function, prim.Variable):
-            if len(left.parameters) == 1:
-                return left, right
+        if _applied(left) is not None:
+            return left, right
     return None
+
+
+def _applied(expr: Any) -> tuple[str, tuple[Any, ...]] | None:
+    """``(family, indices)`` of an application, ``F(i)(j)`` and ``F[i, j]`` alike; else ``None``."""
+    indices: tuple[Any, ...] = ()
+    while True:
+        if isinstance(expr, prim.Call):
+            indices = (*expr.parameters, *indices)
+            expr = expr.function
+        elif isinstance(expr, prim.Subscript):
+            index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
+            indices = (*index, *indices)
+            expr = expr.aggregate
+        elif isinstance(expr, prim.Variable) and indices:
+            return expr.name, indices
+        else:
+            return None
 
 
 def _assign_definition(
@@ -732,6 +764,10 @@ def _assign_definition(
 ) -> None:
     """Perform one assignment ``f(i) = e`` into a sampled table.
 
+    A family with several indices is a table of tables, and ``F[i, j] = e``
+    is assigned into the row ``F[i]`` at ``j``. One applied at fewer indices
+    than it has, a row defined whole, is left to the filter.
+
     Raises:
         SkipSample: If the value the hypothesis defines is outside the family's
             codomain. The hypothesis and the declared sort cannot both hold, so
@@ -739,22 +775,38 @@ def _assign_definition(
             point outside its sort into the context and let the goal be
             "refuted" by a counterexample the statement excludes.
     """
-    name = call.function.name
-    table = context.get(name)
-    if not isinstance(table, Table):
+    applied = _applied(call)
+    if applied is None:
         return
-    index = int(evaluate(call.parameters[0], context))
-    if not 0 <= index < len(table):
+    name, index_exprs = applied
+    table = context.get(name)
+    sort = sorts.get(name)
+    while isinstance(sort, Refined):
+        sort = sort.base
+    codomain = sort if isinstance(sort, FnType) else None
+    indices = []
+    for index_expr in index_exprs:
+        if not isinstance(table, Table):
+            return
+        index = int(evaluate(index_expr, context))
+        if not 0 <= index < len(table):
+            return
+        indices.append(index)
+        if len(indices) < len(index_exprs):
+            table = table.values[index]
+        codomain = codomain.codomain if isinstance(codomain, FnType) else None
+    while isinstance(codomain, Refined) and isinstance(codomain.base, FnType):
+        codomain = codomain.base
+    if isinstance(codomain, FnType):
         return
     value = evaluate(value_expr, context)
-    sort = sorts.get(name)
-    codomain = sort.codomain if isinstance(sort, FnType) else None
     if codomain is not None and not in_sort(value, codomain, context):
+        at = ", ".join(map(str, indices))
         raise SkipSample(
-            f"{name}({index}) = {value!r} is outside {codomain}, so no draw "
+            f"{name}({at}) = {value!r} is outside {codomain}, so no draw "
             f"satisfies {render(call)} == {render(value_expr)} at this sort"
         )
-    table[index] = value
+    table[indices[-1]] = value
 
 
 def satisfy_hypotheses(
@@ -1359,7 +1411,12 @@ def _undecided_reason(exc: Exception) -> str:
 
 
 def _describe(value: Any) -> Any:
-    """Render a sampled value for a counterexample report."""
+    """Render a sampled value for a counterexample report: a table as the list of its values.
+
+    A family of families as nested lists, ``[[1, 2], [3, 4]]`` for a matrix,
+    so that the report and the JSON ledger read as the values a theorem
+    called as a function takes.
+    """
     if isinstance(value, Table):
-        return list(value.values)
+        return [_describe(item) for item in value.values]
     return value

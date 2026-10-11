@@ -219,9 +219,10 @@ raises its floor to match.
   `Fn[A, B]` and `Fn[A, B, C]`, a family with two indices (a matrix,
   `Fn[Fin[n], Fin[m], Real]`, which is `Fn[Fin[n], Fn[Fin[m], Real]]`),
   applied as `F[i, j]`, `F(i, j)` or `F(i)(j)`, one entry to every reading
-  and to Lean, and given to a theorem called as a function as nested lists
-  or an array, refinement by `T & prop`, the sum `Fin[n] + Fin[m]` of index
-  types (carried for plugins, not yet a binder domain), exactness classes;
+  and to Lean, and given to a theorem called as a function as nested lists,
+  an array or a function, refinement by `T & prop`, the sum
+  `Fin[n] + Fin[m]` of index types (carried for plugins, not yet a binder
+  domain), exactness classes;
   and `lanky.exp`, `lanky.log` and `lanky.sqrt`, which build a term from a
   term, and from a number in an annotation, so that `exp(1)` there is `e` to
   every oracle and not the float nearest it, and are `math`'s (or `cmath`'s)
