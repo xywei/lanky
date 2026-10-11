@@ -205,6 +205,61 @@ def test_a_split_is_proved_and_then_cased_on() -> None:
     ]
 
 
+#: Every read of ``off[r]`` sees a write: ``off[0]`` by the first statement, or
+#: ``off[w + 1]`` by the second at ``w = r - 1``, the scan's last writer.
+w = Var("w")
+LAST_WRITER = claim(
+    (n, r),
+    [r >= 0, r < n],
+    LogicalOr(
+        (
+            (r == 0),
+            Exists(((w, Int),), (w >= 0) & (w < n) & (w + 1 == r) & (w < r)),
+        )
+    ),
+)
+
+
+def test_a_piece_can_pick_the_disjunct_it_proves() -> None:
+    part = Part(
+        "read",
+        "off[r] has a writer",
+        LAST_WRITER,
+        Hints(witness=(Piece((), r == 0, 0), Piece((r - 1,), None, 1))),
+    )
+    [(how, script)] = attempts(part, part_statement(part, "scan_read"))
+    assert how == "omega, with a witness in 2 pieces"
+    assert script.splitlines() == [
+        "by_cases hp0 : r = 0",
+        "· refine Or.inl ?_",
+        "  omega",
+        "· refine Or.inr ?_",
+        "  refine ⟨r - 1, ?_⟩",
+        "  omega",
+    ]
+
+
+def test_an_instance_reading_a_cell_the_claim_reads_otherwise_is_equated() -> None:
+    off, cnt, q = Var("off"), Var("cnt"), Var("q")
+    recurrence = Forall(((r, FinType(n)),), off(r + 1) == off(r) + cnt(r))
+    part = Part(
+        "offsets",
+        "off[q] is the offset of row q",
+        claim(
+            (n, (off, Fn[Int, Int]), (cnt, Fn[Int, Int]), q),
+            [recurrence, q >= 1, q <= n],
+            off(q) == off(q - 1) + cnt(q - 1),
+        ),
+        Hints(instances=(Instance(0, (q - 1,)),)),
+    )
+    [_, (_how, script)] = attempts(part, part_statement(part, "offsets"))
+    assert script.splitlines() == [
+        "have hi0 := h0 (q - 1)",
+        "have hc0 : off (q - 1 + 1) = off q := by congr 1 <;> omega",
+        "omega",
+    ]
+
+
 def test_the_negation_instantiates_every_binder_at_the_point() -> None:
     part = Part("S0", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
     statement = part_statement(part, "kernel_S0")
@@ -368,6 +423,41 @@ def test_a_split_rescues_omega_where_its_shadows_are_missing(lean: LeanOracle) -
         Hints(splits=(LogicalOr(((x == 1), (x == 2))),)),
     )
     assert lean.establish(fact_of(Obligation(parts=(split,)))).status is Status.PROVED
+
+
+def test_a_disjunction_is_proved_piece_by_piece(lean: LeanOracle) -> None:
+    bare = Part("read", "off[r] has a writer", LAST_WRITER)
+    assert lean.establish(fact_of(Obligation(parts=(bare,)))).status is Status.ASSUMED
+    hinted = Part(
+        "read",
+        "off[r] has a writer",
+        LAST_WRITER,
+        Hints(witness=(Piece((), r == 0, 0), Piece((r - 1,), None, 1))),
+    )
+    assert lean.establish(fact_of(Obligation(parts=(hinted,)))).status is Status.PROVED
+    swapped = Part(
+        "read",
+        "off[r] has a writer",
+        LAST_WRITER,
+        Hints(witness=(Piece((), r == 0, 1), Piece((r - 1,), None, 0))),
+    )
+    assert lean.establish(fact_of(Obligation(parts=(swapped,)))).status is Status.ASSUMED
+
+
+def test_an_equated_cell_lets_omega_use_an_instance(lean: LeanOracle) -> None:
+    off, cnt, q = Var("off"), Var("cnt"), Var("q")
+    recurrence = Forall(((r, FinType(n)),), off(r + 1) == off(r) + cnt(r))
+    part = Part(
+        "offsets",
+        "off[q] is the offset of row q",
+        claim(
+            (n, (off, Fn[Int, Int]), (cnt, Fn[Int, Int]), q),
+            [recurrence, q >= 1, q <= n],
+            off(q) == off(q - 1) + cnt(q - 1),
+        ),
+        Hints(instances=(Instance(0, (q - 1,)),)),
+    )
+    assert lean.establish(fact_of(Obligation(parts=(part,)))).status is Status.PROVED
 
 
 def test_a_counterexample_is_proved_false_there(lean: LeanOracle) -> None:
