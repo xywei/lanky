@@ -107,10 +107,16 @@ class Piece:
     ``None`` for the last piece, which applies wherever the ones before it do
     not. The pieces of isl's ``lexmax`` are disjoint and cover the points
     where a witness exists, and a piece Lean cannot check fails the part.
+
+    A goal that is a disjunction, of existentials or of propositions with no
+    variable, has each piece name the disjunct it proves, ``disjunct``,
+    counted from ``0``: a read is defined by whichever statement wrote its
+    cell last, and isl says which where.
     """
 
     values: tuple[Any, ...]
     condition: Any = None
+    disjunct: int | None = None
 
 
 @dataclass(frozen=True)
@@ -363,21 +369,57 @@ def _disjuncts(prop: Any) -> int:
     return 1
 
 
-def _witness_lines(statement: LeanStatement, values: Sequence[Any]) -> list[str]:
+def _disjunct_list(prop: Any) -> list[Any]:
+    """The disjuncts of a proposition, as the printer nests them: ``a ∨ (b ∨ c)``."""
+    if isinstance(prop, prim.LogicalOr):
+        out: list[Any] = []
+        for child in prop.children:
+            out.extend(_disjunct_list(child))
+        return out
+    return [prop]
+
+
+def _navigation(index: int, count: int) -> list[str]:
+    """``refine Or.inr ?_`` and ``refine Or.inl ?_`` down to the disjunct ``index``.
+
+    ``∨`` is right associative, so ``a ∨ b ∨ c`` is ``a ∨ (b ∨ c)``: the
+    last disjunct is reached by ``Or.inr`` alone.
+    """
+    lines = ["refine Or.inr ?_"] * index
+    if index < count - 1:
+        lines.append("refine Or.inl ?_")
+    return lines
+
+
+def _witness_lines(
+    statement: LeanStatement, values: Sequence[Any], disjunct: int | None = None
+) -> list[str]:
     """The script that proves the goal's existential at ``values``.
 
     The existential is printed one binder at a time, each followed by its
     conditions as conjuncts (``∃ y : Int, 0 ≤ y ∧ y < n ∧ ...``), so each
     binder gets its value, each condition ``omega``, and the body ``omega``
-    last.
+    last. ``disjunct`` picks one disjunct of a goal that is a disjunction,
+    which is an existential, or a proposition with no variable that
+    ``omega`` proves.
     """
     goal = statement.goal_term
+    lines: list[str] = []
+    if disjunct is not None:
+        options = _disjunct_list(goal)
+        if not 0 <= disjunct < len(options):
+            raise UnsupportedTerm(f"the goal has no disjunct {disjunct}")
+        lines += _navigation(disjunct, len(options))
+        goal = options[disjunct]
+        if not isinstance(goal, Exists):
+            if values:
+                raise UnsupportedTerm("a disjunct with no variable takes no values")
+            return [*lines, "omega"]
     if not isinstance(goal, Exists) or len(goal.binders) != len(values):
         raise UnsupportedTerm(
             "a witness is for a goal that is an existential over as many variables "
             "as the witness has values"
         )
-    lines: list[str] = []
     scope = dict(statement.types)
     guards = list(conjuncts(goal.guard))
     last = len(goal.binders) - 1
@@ -398,14 +440,19 @@ def _pieces_lines(statement: LeanStatement, pieces: Sequence[Piece], depth: int 
     """A case split on the pieces' conditions, each piece's witness in its case."""
     first, *rest = pieces
     if not rest or first.condition is None:
-        return _witness_lines(statement, first.values)
+        return _witness_lines(statement, first.values, first.disjunct)
     condition = render_term(first.condition, statement.types)
     inner = _pieces_lines(statement, rest, depth + 1)
     lines = [f"by_cases hp{depth} : {condition}"]
     lines += [("· " if index == 0 else "  ") + line for index, line in
-              enumerate(_witness_lines(statement, first.values))]
+              enumerate(_witness_lines(statement, first.values, first.disjunct))]
     lines += [("· " if index == 0 else "  ") + line for index, line in enumerate(inner)]
     return lines
+
+
+def hints_witness_only(part: Part) -> bool:
+    """Whether the part's goal is a disjunction its witness pieces pick from."""
+    return bool(part.hints.witness) and part.hints.witness[0].disjunct is not None
 
 
 def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
@@ -429,7 +476,9 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         # never runs in that order: omega reads arithmetic, not False
         return [("a hypothesis is False", "contradiction")]
     intro = "intros\n" if isinstance(goal, Forall) else ""
-    if not isinstance(goal, Exists):
+    if not isinstance(goal, Exists) and not (
+        hints_witness_only(part) and isinstance(goal, prim.LogicalOr)
+    ):
         out.append(("omega", f"{intro}omega"))
     hints = part.hints
     if not hints:
@@ -462,7 +511,10 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
     if split_lines:
         lines += split_lines
         said.append("a case split")
-    if hints.witness and isinstance(goal, Exists):
+    if hints.witness and (
+        isinstance(goal, Exists)
+        or (isinstance(goal, prim.LogicalOr) and hints.witness[0].disjunct is not None)
+    ):
         try:
             witness = _pieces_lines(statement, hints.witness)
         except UnsupportedTerm:
