@@ -87,7 +87,15 @@ from lanky.check import check_path, oracle_lines, source_roots
 from lanky.ledger import Fact, Ledger, Status
 from lanky.plugins import registry
 
-__all__ = ["CheckVerb", "build_parser", "decline_lines", "main", "refutation_lines"]
+__all__ = [
+    "CheckVerb",
+    "build_parser",
+    "decline_lines",
+    "main",
+    "refutation_lines",
+    "report_lean",
+    "report_unproved",
+]
 
 
 class CheckVerb:
@@ -389,70 +397,13 @@ class CheckVerb:
 
     @staticmethod
     def _report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
-        """Name each fact Lean was asked to prove from a plugin's statement and did not.
-
-        A plugin with a decision procedure states its claims for Lean too
-        (:mod:`lanky.obligations`), and Lean proves them part by part: a
-        fact Lean proved reads ``proved lean``, and one it did not keeps the
-        decision procedure's ``decided``. That is either a part ``omega``
-        could not close, which is a disagreement between the two worth a
-        look, or one Lean did not finish in its time; a ``NOT PROVED`` line
-        names the fact, the parts and why, and says who decided it. A claim
-        the plugin could not state for Lean, a kind of fact it has no
-        statement for, is named too under ``--verbose``.
-        """
-        lines: list[tuple[Fact, str]] = []
-        for fact in ledger:
-            if fact.status in (Status.PROVED, Status.CERTIFIED, Status.REFUTED):
-                continue
-            reason = fact.provenance.get("lean_reason")
-            if fact.provenance.get("lean_parts") and _recorded(reason):
-                who = f"{fact.decided_by} decided it; " if fact.decided_by else ""
-                lines.append((fact, f"{who}{reason}"))
-                continue
-            declined = fact.provenance.get("lean_declined")
-            if verbose and fact.decided_by and _recorded(declined):
-                said = f"{fact.decided_by} decided it; Lean was not asked: {declined}"
-                lines.append((fact, said))
-        if not lines:
-            return
-        print()
-        for fact, reason in lines:
-            print(f"NOT PROVED {fact.owner} at {fact.where}: {fact.statement}")
-            for line in str(reason).splitlines():
-                print(f"  {line}")
+        """Name what Lean was asked to prove and did not (see :func:`report_unproved`)."""
+        report_unproved(ledger, verbose=verbose)
 
     @staticmethod
     def _report_lean(ledger: Ledger, text: str = "") -> None:
-        """``--show-lean``: the Lean of every row that has some, last.
-
-        For a row Lean proved, the file that replays the proof
-        (``lean_source``); for a claim a plugin stated in parts and Lean did
-        not prove, each part as it was last tried, with whether it was
-        proved; for a refutation whose counterexample Lean checked, the
-        theorem that the claim is false there; and for a claim of lanky's
-        own Lean did not prove, its statement, without a proof. A row with
-        no Lean form is left out. ``text`` keeps the rows whose owner, id or
-        statement contains it. The status words of Lean appear here and
-        nowhere else, which is where a reader who wants them looks.
-        """
-        blocks: list[list[str]] = []
-        for fact in ledger:
-            fields = (fact.owner, fact.id, fact.statement)
-            if text and not any(text in str(field) for field in fields):
-                continue
-            body = _lean_lines(fact)
-            if not body:
-                continue
-            blocks.append([f"LEAN {fact.owner} at {fact.where}: {fact.statement}", *body])
-        if not blocks:
-            print()
-            among = f" among those matching {text!r}" if text else ""
-            print(f"LEAN no row has a Lean form{among}")
-            return
-        for block in blocks:
-            print()
-            print("\n".join(block))
+        """``--show-lean`` (see :func:`report_lean`)."""
+        report_lean(ledger, text)
 
     @staticmethod
     def _report_duplicates(ledger: Ledger) -> bool:
@@ -647,6 +598,79 @@ class CheckVerb:
         detail = fact.provenance.get("unsatisfied_detail")
         if detail:
             print(f"  {detail}")
+
+
+def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
+    """Name each fact Lean was asked to prove from a plugin's statement and did not.
+
+    ``lanky check`` prints it under the table, and so can a plugin's verb that
+    prints a ledger (``loopty run`` does).
+
+    A plugin with a decision procedure states its claims for Lean too
+    (:mod:`lanky.obligations`), and Lean proves them part by part: a
+    fact Lean proved reads ``proved lean``, and one it did not keeps the
+    decision procedure's ``decided``. That is either a part ``omega``
+    could not close, which is a disagreement between the two worth a
+    look, or one Lean did not finish in its time; a ``NOT PROVED`` line
+    names the fact, the parts and why, and says who decided it. A claim
+    the plugin could not state for Lean, a kind of fact it has no
+    statement for, is named too under ``--verbose``.
+    """
+    lines: list[tuple[Fact, str]] = []
+    for fact in ledger:
+        if fact.status in (Status.PROVED, Status.CERTIFIED, Status.REFUTED):
+            continue
+        reason = fact.provenance.get("lean_reason")
+        if fact.provenance.get("lean_parts") and _recorded(reason):
+            who = f"{fact.decided_by} decided it; " if fact.decided_by else ""
+            lines.append((fact, f"{who}{reason}"))
+            continue
+        declined = fact.provenance.get("lean_declined")
+        if verbose and fact.decided_by and _recorded(declined):
+            said = f"{fact.decided_by} decided it; Lean was not asked: {declined}"
+            lines.append((fact, said))
+    if not lines:
+        return
+    print()
+    for fact, reason in lines:
+        print(f"NOT PROVED {fact.owner} at {fact.where}: {fact.statement}")
+        for line in str(reason).splitlines():
+            print(f"  {line}")
+
+def report_lean(ledger: Ledger, text: str = "") -> None:
+    """``--show-lean``: the Lean of every row that has some, last.
+
+    ``lanky check`` prints it, and so can a plugin's verb that prints a
+    ledger (``loopty run --show-lean`` does).
+
+    For a row Lean proved, the file that replays the proof
+    (``lean_source``); for a claim a plugin stated in parts and Lean did
+    not prove, each part as it was last tried, with whether it was
+    proved; for a refutation whose counterexample Lean checked, the
+    theorem that the claim is false there; and for a claim of lanky's
+    own Lean did not prove, its statement, without a proof. A row with
+    no Lean form is left out. ``text`` keeps the rows whose owner, id or
+    statement contains it. The status words of Lean appear here and
+    nowhere else, which is where a reader who wants them looks.
+    """
+    blocks: list[list[str]] = []
+    for fact in ledger:
+        fields = (fact.owner, fact.id, fact.statement)
+        if text and not any(text in str(field) for field in fields):
+            continue
+        body = _lean_lines(fact)
+        if not body:
+            continue
+        blocks.append([f"LEAN {fact.owner} at {fact.where}: {fact.statement}", *body])
+    if not blocks:
+        print()
+        among = f" among those matching {text!r}" if text else ""
+        print(f"LEAN no row has a Lean form{among}")
+        return
+    for block in blocks:
+        print()
+        print("\n".join(block))
+
 
 
 def _by_source_roots(files: list[str]) -> list[list[str]]:

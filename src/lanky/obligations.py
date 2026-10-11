@@ -335,6 +335,14 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
     """
     out: list[tuple[str, str]] = []
     goal = statement.goal_term
+    if goal is True:
+        # a claim with nothing at stake, the writes of a statement with one
+        # instance: omega has no arithmetic to work on
+        return [("trivial", "trivial")]
+    if any(term is False for term in statement.hypothesis_terms):
+        # a hypothesis that is false as written, a class of pairs the source
+        # never runs in that order: omega reads arithmetic, not False
+        return [("a hypothesis is False", "contradiction")]
     intro = "intros\n" if isinstance(goal, Forall) else ""
     if not isinstance(goal, Exists):
         out.append(("omega", f"{intro}omega"))
