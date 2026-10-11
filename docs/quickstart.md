@@ -384,10 +384,12 @@ theorem with the same draw.
   only, whatever it is: `i.name` raising at a number where its term has a
   value, or `1 // i` leaving Python with no answer at `i = 0` where the term
   has one. Where both have no answer for one reason, a family applied outside
-  its domain or a division by zero, they agree. `~`, `&` and `|` of truth
-  values are lanky's `not`, `and` and `or` there too, and not Python's
-  `~True`, which is `-2`, and they and the quantifiers are read three-valued
-  on both sides, as lanky reads them: an operand or a point with no answer,
+  its domain or a division by zero, they agree, and the draw is read again
+  with what Python has no value for read as Lean has it, `x // 0` as `0` say,
+  so that what Python would have evaluated after it is compared too. `~`,
+  `&` and `|` of truth values are lanky's `not`, `and` and `or` there too, and
+  not Python's `~True`, which is `-2`, and they and the quantifiers are read
+  three-valued on both sides, as lanky reads them: an operand or a point with no answer,
   whatever was raised, is passed over, and one after it that settles the
   whole settles it. So `(i == 0) | (f(i - 1) <= f(i))` is true at `i = 0`,
   and a misreading at `i = 1` is compared even where both readings have no
@@ -404,7 +406,9 @@ theorem with the same draw.
   of such a claim reads `proved under faithful:name`, worth `assumed`, and a
   `DECLINED` line under the table gives the reason.
 - **It is sampled.** A disagreement only at a point no draw reaches escapes
-  it, as a counterexample no draw reaches escapes the tester.
+  it, as a counterexample no draw reaches escapes the tester. A draw whose
+  readings take more than five seconds is given up, and a helper is stopped
+  there.
 
 ## Take a result on a citation
 

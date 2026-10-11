@@ -1444,6 +1444,16 @@ def by_function(fn):
     return STATE[0]
 
 
+@functools.lru_cache(maxsize=4)
+def bounded_tables(k):
+    return {k: STATE[0]}
+
+
+@functools.cache
+def tables(k):
+    return {"v": STATE[0]}
+
+
 stale(0)
 bounded(0)
 bounded(1, extra=2)
@@ -1451,6 +1461,9 @@ bounded(2)
 typed(0)
 typed(0, extra=5)
 by_function(helper)
+bounded_tables(0)
+bounded_tables(1)
+tables(0)
 STATE[0] = 0
 
 
@@ -1479,6 +1492,13 @@ def through_a_function(n: Nat) -> n * 0 + by_function(helper) == 1:
 
 
 @theorem
+def dict_results(n: Nat) -> (
+    n * 0 + bounded_tables(0)[0] + bounded_tables(1)[1] + tables(0)["v"] == 3
+):
+    \"\"\"Cached results that are dicts, which the cache is listed beside.\"\"\"
+
+
+@theorem
 def misread(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == typed_at_a_number(i) for i in Fin[n]
 ):
@@ -1504,20 +1524,33 @@ def test_a_cache_with_entries_is_made_again_with_them(prover, tmp_path, monkeypa
         "evicted": Status.TESTED,
         "keyed": Status.TESTED,
         "through_a_function": Status.TESTED,
+        "dict_results": Status.TESTED,
         "misread": Status.REFUTED,
     }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
     assert pairs["misread"][1].provenance["counterexample"] == {"n": 1, "f": [1]}
     assert "misread" not in prover.shown
 
+    read = faithful._cache_entries
+    unreadable = "stale, a function behind functools.lru_cache whose cache holds 1 entries, which "
     monkeypatch.setattr(faithful, "_cache_entries", lambda cache: None)
     unread = _pairs(check_path(_write(tmp_path, CACHES_WITH_ENTRIES, name="unread.py")))
     reading = unread["hit"][1]
     assert reading.status is Status.ASSUMED
-    assert (
-        "stale, a function behind functools.lru_cache whose cache holds 1 entries, which "
-        "the check could not read" in reading.provenance["declined"]
-    )
+    assert unreadable + "the check could not read" in reading.provenance["declined"]
     assert unread["misread"][1].status is Status.REFUTED
+
+    # a copy the snapshot made that a draw's copy cannot make again is named too
+    monkeypatch.setattr(
+        faithful,
+        "_cache_entries",
+        lambda cache: None if hasattr(cache, faithful._CALLS) else read(cache),
+    )
+    again = _pairs(check_path(_write(tmp_path, CACHES_WITH_ENTRIES, name="again.py")))
+    reading = again["hit"][1]
+    assert reading.status is Status.ASSUMED
+    assert "stale, a function behind functools.lru_cache whose cache holds 1 entries" in (
+        reading.provenance["declined"]
+    )
 
 
 #: ``:=`` in a lambda the annotation writes, which binds the lambda's own

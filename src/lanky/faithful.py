@@ -92,7 +92,13 @@ values join the samples of the sorts; a draw of such a claim at which a
 reading walks more than :data:`WALK_POINTS` points all the same, over
 ``Fin[2 ** n]`` say, is given up as too large to walk (``unwalked``). Then
 come :data:`SAMPLES` of the property tester's draws
-(:func:`lanky.testing.sample_value`, from its seed).
+(:func:`lanky.testing.sample_value`, from its seed). A draw whose readings
+take more than :data:`DRAW_SECONDS`, a helper that takes time exponential in
+its argument at a value the claim writes, or ask for a power of more than
+:data:`POWER_BITS` bits, ``2 ** 2 ** n`` there, is given up as too slow
+(``slow``), and the written values past it are not drawn at (#101): the
+walks and the term's reading ask for the time as they go, and the user's
+code is stopped at a call or a turn of a loop (:func:`_watching`).
 The definitional hypotheses are satisfied by construction
 (:func:`lanky.testing.satisfy_hypotheses`) so that a scan is one. A bounded
 quantifier enumerates every point of its domain anyway. A family over a sort
@@ -113,9 +119,21 @@ outside its domain, a division by zero, an elementary function outside its
 domain or an overflow, neither has a value, and they agree: ``n // 0 == 0`` is
 read faithfully, and what Lean's total division makes of it is the semantics
 gap :mod:`lanky.semantics` notes. Two other exceptions are no comparison
-(``silent``). Nothing is put down to rounding: the two readings make the same
-operations in the same order, a sum included, and round alike, so a truth
-value that differs is a disagreement.
+(``silent``). Where both have no value, whatever the reason, what Python would
+have evaluated after the operation that had none is compared on neither side,
+so the draw is read again on both with what Python has no value for read as
+Lean has it (:func:`lanky.terms.totalized`): ``x // 0`` and ``x / 0`` are
+``0``, ``x % 0`` is ``x``, a logarithm or a square root outside its Python
+domain is Mathlib's, and a family outside its domain is ``0``. Where both
+then have a value they have to agree (#99): ``f(i) * 0 + 1 // (i - i) ==
+table(i)`` is ``0 == 1`` at ``i = 0`` read so, and its misread term ``0 ==
+0``. The rerun reads the operators the annotation writes so, and a helper's
+are Python's, so a helper's division leaves the rerun without a value there,
+and says nothing more; the term reads all of its own so, and has a value
+wherever the rerun has one, the same one if it is faithful. Nothing is put
+down to rounding: the two readings make the same operations in the same
+order, a sum included, and round alike, so a truth value that differs is a
+disagreement.
 
 *The fact.* Its kind is ``faithful`` (:data:`lanky.ledger.FAITHFUL`), its id
 is the claim's with that kind (``faithful:gauss.gauss@31``), and it has the
@@ -134,9 +152,10 @@ claim's owner and location. It is
   reach what the snapshot could not copy (:attr:`Snapshot.shared`).
 
 The check is sampled: a disagreement only at a point no draw reaches escapes
-it, and so does one in a part of an annotation that comes after a point where
-both readings stop with no answer, in a sum or in an operation that is not a
-connective or a quantifier. :meth:`lanky.theory.Theorem.faithful_fact` makes
+it, and so does one in a part of an annotation that comes after an operation
+with no value in Python that Lean's reading leaves without one too, an
+overflow, or that a helper makes, whose operations the rerun leaves Python's.
+:meth:`lanky.theory.Theorem.faithful_fact` makes
 the fact once per claim, and :func:`lanky.check.establish` rests every pass,
 decision and proof of the claim on it, and offers a claim whose reading is
 refuted to no oracle.
@@ -1177,36 +1196,41 @@ def _cache_entries(cache: Any) -> list[tuple[Any, Any]] | None:
     """The entries of a function behind ``functools.lru_cache``, as ``(key, result)``; or ``None``.
 
     The cache offers no way to read its entries, so they are read off what
-    it holds, as the garbage collector sees it (:func:`gc.get_referents`):
-    one dict, besides the function's attributes, which is the cache. One of
-    unbounded size maps each key to its result, in the order they went in.
-    One of bounded size maps each key to a link of its own, and the links
-    are listed before the cache, oldest first, each as its key and its
-    result, followed by the link's type where the version lists it. ``None``
-    where what is listed is not laid out so, which leaves the cache
-    shared (:meth:`_Copier.cache`).
+    it holds, as the garbage collector lists it (:func:`gc.get_referents`):
+    the dict that is the cache comes just before the function it wraps. One
+    of unbounded size maps each key to its result, in the order they went
+    in. One of bounded size maps each key to a link of its own, and the
+    links are listed before the cache, oldest first, each as its key and its
+    result, and the link's type where the version lists it. ``None`` where
+    what is listed is not laid out so, which leaves the cache shared
+    (:meth:`_Copier.cache`).
     """
     held = cache.cache_info().currsize
     listed = gc.get_referents(cache)
-    own = getattr(cache, "__dict__", None)
-    found = [
-        (at, item) for at, item in enumerate(listed) if type(item) is dict and item is not own
-    ]
-    if len(found) != 1 or len(found[0][1]) != held:
+    # the function the cache calls: the one it wraps, or for a copy the check
+    # made (:meth:`_Copier.cache`), the one that put its entries in
+    function = getattr(cache, _CALLS, None) or getattr(cache, "__wrapped__", None)
+    # the cache's own reference to its function is listed after any result
+    at = max((k for k, item in enumerate(listed) if item is function), default=0)
+    table = listed[at - 1] if at else None
+    if type(table) is not dict or len(table) != held:
         return None
-    at, table = found[0]
     if cache.cache_parameters()["maxsize"] is None:
         return list(table.items())
     start = 1 if listed and listed[0] is type(cache) else 0
-    if not held or (at - start) % held:
+    span = at - 1 - start
+    if not held or span % held or span // held not in (2, 3):
         return None
-    stride = (at - start) // held
-    if stride not in (2, 3):
-        return None
+    stride = span // held
     entries = [(listed[start + k * stride], listed[start + k * stride + 1]) for k in range(held)]
     if sorted(id(key) for key, _ in entries) != sorted(id(key) for key in table):
         return None
     return entries
+
+
+#: The attribute of a cache the check made again that holds the function it
+#: calls, which is not the one it wraps (see :meth:`_Copier.cache`).
+_CALLS = "_lanky_calls"
 
 
 @functools.cache
@@ -1297,10 +1321,10 @@ class _Copier:
       twice is copied once, and a view of an array is made again over the
       copy of the array it views (:meth:`array`);
     * a ``functools.partial``, a function behind ``functools.lru_cache``
-      whose cache is empty, a method bound to a copied object
-      (``TABLE.get``), and a library's function that closes over a function
-      of the user's (a decorator's wrapper) are made again around the
-      copies.
+      with the entries its cache holds (:meth:`cache`), a method bound to a
+      copied object (``TABLE.get``), and a library's function that closes
+      over a function of the user's (a decorator's wrapper) are made again
+      around the copies.
 
     Numbers, texts, terms, lanky's types, the modules, the classes and the
     functions of libraries need no copy (:func:`_unchanging`). A module of
@@ -1319,9 +1343,9 @@ class _Copier:
       instances and methods read it, and their module, as they are;
     * a value read off a class or a library's module by name that would
       need a copy, ``Rules.table``, since the check copies neither;
-    * a function behind ``functools.lru_cache`` whose cache holds entries,
-      which answer as the function might no longer, and a view the copy
-      cannot make again;
+    * a function behind ``functools.lru_cache`` whose entries cannot be
+      read off its cache, which answer as the function might no longer, and
+      a view the copy cannot make again;
     * a module of the user's that a function imports as it runs
       (:meth:`imported`), which binds the module and not its copy.
     """
@@ -1678,6 +1702,7 @@ class _Copier:
 
         out = self.remember(value, functools.lru_cache(**parameters)(answer))
         functools.update_wrapper(out, wrapped)
+        setattr(out, _CALLS, answer)
         for (args, kwargs), result in calls:
             # the rerun calls the copy with copies of what the original was
             # called with, a function of the user's say, so its keys are made
@@ -1846,13 +1871,23 @@ class Snapshot:
 
     def fresh(self) -> dict[str, Any]:
         """A copy for one draw: the module's globals, with what is reached copied again."""
+        return self.fresh_copy()[0]
+
+    def fresh_copy(self) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """A copy for one draw, as :meth:`fresh` makes it, and what it could not copy again.
+
+        What the snapshot shared is shared again, and is not listed: it is in
+        :attr:`shared`. Anything else the copy for the draw has to share is
+        something the snapshot holds as it was and the copy cannot make
+        again, and the draw would read it as it is, so it is listed.
+        """
         copier = _Copier(lambda globals_: id(globals_) in self.worlds, self.kept)
         world = copier.world(self.namespace, "")
         if world is None:
-            return dict(self.namespace)
+            return dict(self.namespace), ()
         for code in self.codes:
             copier.reach(code, world, self.skip)
-        return world.target
+        return world.target, tuple(dict.fromkeys(copier.shared))
 
 
 def _annotation_codes(fn: Any) -> tuple[Any, ...]:
@@ -2947,11 +2982,14 @@ def _both_readings(
             python = _Outcome(_value_at(value, built))
         except Exception as exc:  # noqa: BLE001 - what the annotation raises is its answer
             python = _Outcome(error=exc)
+        # a helper may have caught the draw's giving up and answered all the same
+        _on_time()
     with _reading(draw, deadline, total):
         try:
             term = _Outcome(_value_at(annotation.term, reading))
         except Exception as exc:  # noqa: BLE001 - what the term raises is its answer
             term = _Outcome(error=exc)
+        _on_time()
     return python, term
 
 
@@ -2993,6 +3031,8 @@ class _Tally:
 
     draws: int = 0
     agreed: dict[str, int] = field(default_factory=dict)
+    #: What a draw's copy of the snapshot could not make again (:meth:`Snapshot.fresh_copy`).
+    shared: dict[str, None] = field(default_factory=dict)
     unanswered: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     skipped: list[str] = field(default_factory=list)
@@ -3114,8 +3154,8 @@ def faithful_fact(theorem: Any) -> Fact:
                 f"{annotation.what} had no answer on both sides at any of {tally.draws} "
                 f"draws, so its reading was not compared ({tally.unanswered[annotation.name]})"
             )
-    if snapshot.shared:
-        return declined(_not_copied(snapshot.shared))
+    if snapshot.shared or tally.shared:
+        return declined(_not_copied((*snapshot.shared, *tally.shared)))
     return fact(
         Status.TESTED,
         draws=tally.draws,
@@ -3158,8 +3198,10 @@ def _run(
         tally.draws += 1
         stopped: dict[str, tuple[_Outcome, _Outcome]] = {}
         given_up = False
+        namespace, shared = snapshot.fresh_copy()
+        tally.shared.update(dict.fromkeys(shared))
         for annotation, verdict, python, term in _compare(
-            snapshot.fresh(), parameters, annotations, draw
+            namespace, parameters, annotations, draw
         ):
             if verdict == "differed":
                 return _refuted(fact, annotation, draw, python, term)
@@ -3175,8 +3217,10 @@ def _run(
             tally.record(annotation, verdict, python, term)
         if given_up or not stopped:
             continue
+        namespace, shared = snapshot.fresh_copy()
+        tally.shared.update(dict.fromkeys(shared))
         for annotation, verdict, python, term in _compare(
-            snapshot.fresh(), parameters, annotations, draw, total=True
+            namespace, parameters, annotations, draw, total=True
         ):
             if (
                 annotation.name in stopped
