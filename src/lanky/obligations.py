@@ -54,15 +54,17 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.induction import substitute
 from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
+    _affine,
     domain_guards,
     render_term,
     statement_of,
 )
 from lanky.prelude import FnType, Refined
-from lanky.terms import Exists, Forall, conjuncts
+from lanky.terms import Exists, Forall, conjuncts, init_args
 
 __all__ = [
     "Counterexample",
@@ -271,6 +273,89 @@ def _instance_line(
     return f"have hi{index} := {applied}"
 
 
+def _applications(expr: Any, out: list[tuple[str, tuple[Any, ...], Any]]) -> None:
+    """Every application of a family below ``expr``: ``(name, arguments, node)``."""
+    if isinstance(expr, tuple | list):
+        for item in expr:
+            _applications(item, out)
+        return
+    if isinstance(expr, Forall | Exists):
+        _applications(expr.body, out)
+        if expr.guard is not None:
+            _applications(expr.guard, out)
+        return
+    if isinstance(expr, prim.Call) and isinstance(expr.function, prim.Variable):
+        out.append((expr.function.name, tuple(expr.parameters), expr))
+        _applications(tuple(expr.parameters), out)
+        return
+    if isinstance(expr, prim.Subscript) and isinstance(expr.aggregate, prim.Variable):
+        index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
+        out.append((expr.aggregate.name, index, expr))
+        _applications(index, out)
+        return
+    if isinstance(expr, prim.ExpressionNode):
+        _applications(init_args(expr), out)
+
+
+def _form(expr: Any) -> dict[str, int] | None:
+    """An argument as an affine form with no zero coefficient, or ``None``."""
+    found = _affine(expr)
+    if found is None:
+        return None
+    return {name: value for name, value in found.items() if value}
+
+
+def _congruence_lines(
+    statement: LeanStatement, part: Part, instances: Sequence[Instance], start: int
+) -> list[str]:
+    """Equations between an instance's cells and the claim's that are one cell.
+
+    An instance of ``∀ r, off (r + 1) = off r + cnt r`` at ``q - 1`` reads
+    ``off (q - 1 + 1)``, and ``omega`` takes it for an atom other than the
+    claim's ``off q``: it reads arithmetic, not the arguments of a function.
+    So each application of a family in an instance whose arguments are those
+    of an application in the claim as affine forms, and not as text, gets
+    ``have : off (q - 1 + 1) = off q``, which ``congr`` and ``omega`` prove.
+    """
+    if not isinstance(part.term, Forall):
+        return []
+    guards = list(conjuncts(part.term.guard))
+    context: list[tuple[str, tuple[Any, ...], Any]] = []
+    _applications(statement.goal_term, context)
+    _applications([term for term in statement.hypothesis_terms if term is not None], context)
+    lines: list[str] = []
+    said: set[tuple[str, str]] = set()
+    for instance in instances:
+        hypothesis = guards[instance.hypothesis]
+        values = {
+            var.name: value
+            for (var, _), value in zip(hypothesis.binders, instance.arguments, strict=True)
+        }
+        found: list[tuple[str, tuple[Any, ...], Any]] = []
+        _applications(substitute(hypothesis.body, values), found)
+        if hypothesis.guard is not None:
+            _applications(substitute(hypothesis.guard, values), found)
+        for name, arguments, node in found:
+            forms = [_form(argument) for argument in arguments]
+            if any(form is None for form in forms):
+                continue
+            for other, theirs, there in context:
+                if other != name or len(theirs) != len(arguments):
+                    continue
+                if [_form(argument) for argument in theirs] != forms:
+                    continue
+                left = render_term(node, statement.types)
+                right = render_term(there, statement.types)
+                if left == right or (left, right) in said:
+                    continue
+                said.add((left, right))
+                lines.append(
+                    f"have hc{start + len(lines)} : {left} = {right} := "
+                    "by congr 1 <;> omega"
+                )
+    return lines
+
+
 def _disjuncts(prop: Any) -> int:
     """How many disjuncts a proposition has at its top level."""
     if isinstance(prop, prim.LogicalOr):
@@ -360,6 +445,7 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         instances = []
     if instances:
         lines += instances
+        lines += _congruence_lines(statement, part, hints.instances, 0)
         said.append(
             f"the hypotheses taken at {len(instances)} "
             f"point{'s' if len(instances) != 1 else ''}"
