@@ -251,6 +251,20 @@ that. When the ladder runs out, the fact comes back unchanged with
 the ladder cannot find one, and the ledger records a pinned script exactly the
 way it records a found one.
 
+The same source is one flag away without the JSON: `lanky check
+examples/gauss.py --show-lean` prints, after everything else, the Lean of every
+row that has some, the file that replays a proof and the statement of a claim
+Lean did not prove, and `--show-lean scan_monotone` only the rows whose owner,
+id or statement contains `scan_monotone`. The table itself never shows Lean.
+
+A plugin's claims go through the same oracle. loopty states each fact isl
+decides about a kernel as lanky terms, in parts (one per dependence class of a
+loop transformation, say), with what isl found as hints, which Lean checks and
+does not trust; a fact whose parts Lean proves reads `proved lean`, a line
+under the table says how many of isl's facts Lean proved and how, and one Lean
+did not prove keeps `decided`, with a `NOT PROVED` line naming the part and
+why. `lanky.obligations` has the details.
+
 ## One reading of arithmetic
 
 A lanky statement is read by more than one oracle: the property tester

@@ -117,7 +117,7 @@ raises its floor to match.
 
 **Works.**
 
-- `lanky check FILE... [--json OUT] [--verbose]`, exit code 1 on any
+- `lanky check FILE... [--json OUT] [--verbose] [--show-lean [TEXT]]`, exit code 1 on any
   refutation or vacuous claim. Each refuted fact is repeated under the table
   with its counterexample, its witness and its reason, the three standard
   provenance keys, read the same way whichever oracle or plugin refuted it; or
@@ -333,6 +333,28 @@ raises its floor to match.
   hands over multipliers of its own, and `lanky.oracles.lean.decline` leaves
   a claim to the oracles after Lean, saying why. The sumpy demonstration's
   claim for every order is proved this way.
+- A plugin's claims checked by Lean (`lanky.obligations`). A plugin with a
+  decision procedure of its own states each claim it decides for Lean too,
+  as parts, each a closed lanky term, through one method of the fact's term,
+  `lean_obligation()`, with the hints its solver found: the points to take a
+  universal hypothesis at, a piecewise witness for an existential goal, case
+  splits. The hints carry no trust: Lean proves each part, `omega` first and
+  then with the hints, and a wrong hint leaves a goal it cannot close. The
+  parts are checked at once (`LANKY_LEAN_JOBS`, up to four sessions) within
+  the fact's budget; a fact whose parts are all proved reads `proved lean`,
+  a `LEAN` line under the table says how many of the solver's facts Lean
+  proved, and how, and how many the plugin did not state for Lean, and one
+  that is not proved keeps the status its solver gave it,
+  with a `NOT PROVED` line naming the part and why. A refuted claim
+  comes with its counterexample, and Lean proves it false there, which the
+  `REFUTED` block says; a refuted fact is never turned into a proof. Lean's
+  answers are kept by the hash of their source
+  (`LANKY_LEAN_PROOF_CACHE`), so a file checked again is quick. loopty
+  states its isl facts this way, and they read `proved lean`.
+- `--show-lean` prints the Lean of every row that has some, or of the rows
+  whose owner, id or statement contains the text it is given: the file that
+  replays a proof, a plugin's parts as they were tried, a refutation's
+  theorem. It is the one place Lean's words appear.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
 
