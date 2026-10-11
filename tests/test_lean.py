@@ -1499,6 +1499,165 @@ def test_a_core_session_starts_a_killed_server_again(monkeypatch) -> None:
     assert "could not be restarted" in detail
 
 
+class _Slow:
+    """A stand-in server whose every attempt fails after ``seconds``, unless its timeout is shorter.
+
+    It records the timeout each command was given, and is killed by a timeout
+    as lean-interact's server is.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.alive = True
+        self.timeouts: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def start(self) -> None:
+        self.alive = True
+
+    def kill(self) -> None:
+        self.alive = False
+
+    def run(self, command, timeout=None):
+        import time
+        from types import SimpleNamespace
+
+        self.timeouts.append(timeout)
+        if timeout is not None and timeout < self.seconds:
+            time.sleep(timeout)
+            self.kill()
+            raise TimeoutError("The Lean server did not respond in time and is now killed.")
+        time.sleep(self.seconds)
+        error = SimpleNamespace(severity="error", data="unsolved goals")
+        return SimpleNamespace(messages=(error,), sorries=())
+
+
+def _slow_oracle(monkeypatch, seconds: float, **budgets) -> tuple[LeanOracle, _Slow]:
+    """An oracle over a session whose attempts each take ``seconds``, and that says it is there."""
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "lean_interact", SimpleNamespace(Command=lambda **fields: fields)
+    )
+    session = LeanSession(timeout=60)
+    session.server = server = _Slow(seconds)
+    oracle = LeanOracle(session=session, **budgets)
+    monkeypatch.setattr(LeanOracle, "availability", lambda self: (True, ""))
+    return oracle, server
+
+
+def test_the_ladder_stops_when_its_budget_is_spent(monkeypatch) -> None:
+    """#83: a statement no attempt fits paid for every attempt, each up to its timeout.
+
+    In Mathlib mode that was minutes. The ladder has a budget now, and an
+    attempt is given what is left of it when that is less than its timeout,
+    so the attempts that fit are made and the rest are not; the fact says
+    after how many, and keeps its status.
+    """
+    import time
+
+    @theorem
+    def plainly_false(x: Nat, y: Nat) -> x <= y:
+        """False, and every attempt fails slowly."""
+
+    fact = plainly_false.fact()
+    ladder = tactic_ladder(statement_of(fact.term, fact.owner))
+    assert len(ladder) > 4
+    oracle, server = _slow_oracle(monkeypatch, 0.4, budget=1.0)
+    started = time.monotonic()
+    result = oracle.establish(fact)
+    assert time.monotonic() - started < 2
+    assert result.status is Status.ASSUMED
+    tried = result.provenance["lean_tried"]
+    assert 2 <= tried < len(ladder)
+    assert result.provenance["lean_budget"] == 1.0
+    assert result.provenance["lean_reason"].startswith(
+        f"the ladder's budget of 1 s ran out after {tried} of its {len(ladder)} attempts; "
+        "the last: "
+    )
+    # each attempt was given what was left, the one the budget cut short too
+    assert all(timeout <= 1.0 for timeout in server.timeouts)
+    assert server.timeouts[-1] < 0.4
+
+    # with no budget, every attempt is made
+    oracle, server = _slow_oracle(monkeypatch, 0.01, budget=0)
+    result = oracle.establish(fact)
+    assert result.provenance["lean_tried"] == len(ladder)
+    assert "lean_budget" not in result.provenance
+
+
+def test_the_budget_is_read_when_a_fact_is_offered(monkeypatch) -> None:
+    """``LANKY_LEAN_BUDGET`` for a claim, ``LANKY_LEAN_VACUITY_BUDGET`` for a vacuity question."""
+    from lanky.check import hypotheses_fact
+    from lanky.oracles.lean import DEFAULT_BUDGET, DEFAULT_VACUITY_BUDGET
+
+    @theorem
+    def guarded(x: Nat, h: x > 3) -> x > 2:
+        """A claim with a hypothesis, so that it has a vacuity question."""
+
+    claim = guarded.fact()
+    question = hypotheses_fact(claim)
+    oracle = LeanOracle()
+    monkeypatch.delenv("LANKY_LEAN_BUDGET", raising=False)
+    monkeypatch.delenv("LANKY_LEAN_VACUITY_BUDGET", raising=False)
+    assert (DEFAULT_BUDGET, DEFAULT_VACUITY_BUDGET) == (120, 30)
+    assert oracle._budget(claim) == DEFAULT_BUDGET
+    assert oracle._budget(question) == DEFAULT_VACUITY_BUDGET
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "45")
+    monkeypatch.setenv("LANKY_LEAN_VACUITY_BUDGET", "7.5")
+    assert (oracle._budget(claim), oracle._budget(question)) == (45, 7.5)
+    assert LeanOracle(budget=3, vacuity_budget=2)._budget(question) == 2
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "0")
+    assert oracle._budget(claim) is None
+    for given in ("a minute", "nan", "inf"):
+        monkeypatch.setenv("LANKY_LEAN_BUDGET", given)
+        with pytest.raises(ValueError, match="not a finite number of seconds"):
+            oracle._budget(claim)
+    oracle, _server = _slow_oracle(monkeypatch, 0.01)
+    result = oracle.establish(claim)
+    assert result.provenance["declined"] == (
+        "lean: LANKY_LEAN_BUDGET is 'inf', which is not a finite number of seconds"
+    )
+
+
+def test_a_question_whether_a_fact_is_vacuous_gets_the_attempts_that_can_answer_it() -> None:
+    """#83: a goal that is ``False`` under binders gets no induction and no ring or positivity.
+
+    The questions a check asks after a proof, whether the hypotheses are
+    inconsistent and whether the goal's guard is empty, are each a full
+    ladder, and their answer is almost always no. What cannot show ``False``
+    from the hypotheses is left out: the inductions, which need an equation
+    or a recurrence to work on, and the whole-goal tactics that close only an
+    equation or an order.
+    """
+    from lanky.check import goal_guard_fact, hypotheses_fact
+
+    @theorem
+    def scan(
+        n: Nat,
+        cnt: Fn[Fin[n], Nat],
+        off: Fn[Fin[n + 1], Nat],
+        h: (off(0) == 0) & all(off(r + 1) == off(r) + cnt(r) for r in Fin[n]),
+    ) -> all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if p <= q):
+        """The scan's postcondition, whose ladder ends with an induction."""
+
+    claim = scan.fact()
+    full = tactic_ladder(statement_of(claim.term, claim.owner))
+    assert induction_scripts(statement_of(claim.term, claim.owner))
+    for question in (hypotheses_fact(claim), goal_guard_fact(claim)):
+        for mathlib in (False, True):
+            ladder = tactic_ladder(statement_of(question.term, question.owner, mathlib=mathlib))
+            assert ladder[: len(lean_module.BASE_TACTICS)] == list(lean_module.BASE_TACTICS)
+            assert not any("induction" in script for script in ladder), ladder
+            assert not {"positivity", "ring", "field_simp", "(push_cast; ring)"} & set(ladder)
+            if mathlib:
+                assert {"norm_num", "linarith", "nlinarith"} <= set(ladder)
+    assert any("induction" in script for script in full)
+
+
 class _Interrupted:
     """A stand-in server whose command is interrupted, as Ctrl-C interrupts one."""
 

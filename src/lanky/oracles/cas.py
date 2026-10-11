@@ -54,18 +54,14 @@ from __future__ import annotations
 
 import math
 import os
-import signal
-import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version
 from importlib.util import find_spec
-from typing import Any
 
 import pymbolic.primitives as prim
 
 from lanky.cas import Untranslatable, check_shape, equations, sympy_module
+from lanky.deadline import Expired, deadline
 from lanky.ledger import Fact, Status
 from lanky.terms import render
 
@@ -79,50 +75,9 @@ DEFAULT_TIMEOUT = 60.0
 _QUOTED = 160
 
 
-class _Expired(BaseException):
-    """The simplifier ran past its deadline.
-
-    A ``BaseException``, as ``KeyboardInterrupt`` is, so that no ``except
-    Exception`` inside sympy takes it for a failure of its own and goes on.
-    """
-
-
-@contextmanager
-def _deadline(seconds: float | None) -> Iterator[None]:
-    """Raise :class:`_Expired` in the block once ``seconds`` have passed, where that can be done.
-
-    That is in the main thread of a process with ``signal.setitimer`` and no
-    interval timer of its own running, which would be clobbered. Elsewhere the
-    block runs without a deadline, and so it does when the timer will not
-    take ``seconds``: a deadline too long for it to hold, or one that is not a
-    number. Either way the ``SIGALRM`` handler is the one there was before,
-    once the block is over or the timer has refused.
-    """
-    if (
-        not seconds
-        or seconds <= 0
-        or not hasattr(signal, "setitimer")
-        or threading.current_thread() is not threading.main_thread()
-        or signal.getitimer(signal.ITIMER_REAL)[0] > 0
-    ):
-        yield
-        return
-
-    def expire(signum: int, frame: Any) -> None:
-        raise _Expired
-
-    previous = signal.signal(signal.SIGALRM, expire)
-    try:
-        signal.setitimer(signal.ITIMER_REAL, seconds)
-    except (OverflowError, ValueError, OSError):
-        signal.signal(signal.SIGALRM, previous)
-        yield
-        return
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+#: The deadline each fact gets (see :mod:`lanky.deadline`), and what it raises.
+_deadline = deadline
+_Expired = Expired
 
 
 def _quoted(text: str) -> str:

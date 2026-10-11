@@ -699,7 +699,8 @@ The hypotheses are not read, since an identity that holds everywhere holds
 wherever they do. And a fact sympy decided is sampled all the
 same: a counterexample overrules it, as it overrules any heuristic.
 `LANKY_CAS_DISABLE=1` turns the oracle off, and `LANKY_CAS_TIMEOUT` caps the
-seconds sympy may take over one fact (60).
+seconds sympy may take over one fact (60), translating the statement into
+sympy and simplifying it.
 
 `examples/sumpy_recurrence.py` is the worked case, and a consumer of the kind
 the pytential demonstration is. sumpy's `LinearPDEBasedExpansionTermsWrangler`
@@ -772,9 +773,9 @@ STATUS                  BY      WHERE                    OWNER              STAT
 ----------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
 assumed (axiom)         -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
 tested                  python  sumpy_recurrence.py:128  harmonic           the term computes what the annotations compute
-tested                  mpmath  sumpy_recurrence.py:712  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
-decided (heuristic)     cas     sumpy_recurrence.py:712  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
-assumed under harmonic  -       sumpy_recurrence.py:712  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
+tested                  mpmath  sumpy_recurrence.py:746  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)     cas     sumpy_recurrence.py:746  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+assumed under harmonic  -       sumpy_recurrence.py:746  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
 
 5 facts: 2 assumed, 1 decided, 2 tested
 
@@ -963,9 +964,9 @@ STATUS                 EFFECTIVE            BY      WHERE                    OWN
 ---------------------  -------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------------
 assumed (axiom)        assumed              -       sumpy_recurrence.py:128  harmonic           x : Real, y : Real | x**2 + y**2 > 0 |- (1 - 2*x**2 / (x**2 + y**2)) ...
 tested                 tested               python  sumpy_recurrence.py:128  harmonic           the term computes what the annotations compute
-tested                 tested               mpmath  sumpy_recurrence.py:712  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
-decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:712  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
-proved under harmonic  assumed              lean    sumpy_recurrence.py:712  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
+tested                 tested               mpmath  sumpy_recurrence.py:746  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, ...
+decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:746  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b) == diff(l...
+proved under harmonic  assumed              lean    sumpy_recurrence.py:746  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a...
 
 5 facts: 1 assumed, 1 decided, 1 proved, 2 tested
 
@@ -1033,7 +1034,12 @@ the demonstration declines it for Lean
 for every order, and the ladder spent minutes on 28 equations at once before
 the CAS oracle decided them in a second. The check takes about a minute, most
 of it importing Mathlib and asking Lean whether the third row's hypotheses
-are inconsistent and its goal's domain empty, which they are not.
+are inconsistent and its goal's domain empty, which they are not. Each
+ladder has a budget, `LANKY_LEAN_BUDGET` (120 s) for a claim and
+`LANKY_LEAN_VACUITY_BUDGET` (30 s) for each of those two questions, which
+also leave out the attempts that cannot show `False`, such as the
+inductions; the search for the induction's multipliers counts against the
+claim's.
 
 ## What to try next
 

@@ -118,6 +118,32 @@ worth the `tested` reading it rests on.
 - **The pytest plugin fails a theorem whose reading is refuted**, with the
   annotation, the draw and the reason, before any draw of its term, which
   would test another statement.
+- **A budget for the Lean ladder** (#83). `LANKY_LEAN_BUDGET` (120 s by
+  default) caps the whole ladder of one fact, and `LANKY_LEAN_VACUITY_BUDGET`
+  (30 s) that of a question whether a fact is vacuous, whose answer is
+  almost always no; `0` is no budget, and `LeanOracle(budget=...,
+  vacuity_budget=...)` sets them for one oracle. A statement no attempt fits
+  paid for every attempt, each up to `LANKY_LEAN_TIMEOUT`, and nothing
+  bounded the ladder: `lanky check examples/sumpy_recurrence.py` took 491 s
+  in Mathlib mode before its large row was declined for Lean. The budget
+  counts the search for the family induction's certificates, which is
+  Python and ran with no budget at all (about 10 s per Helmholtz claim on
+  an older machine), the side conditions and every attempt; it starts once
+  the REPL is running, so starting it, which imports Mathlib, counts against
+  no fact. An attempt is given what is left when that is less than its
+  timeout, and a fact whose budget runs out keeps its status and says after
+  how many attempts (`lean_reason`, `lean_budget`). `lean_tried` counts the
+  attempts made. `LeanSession.ready()` starts the REPL, or starts again one
+  a timeout killed, and `LeanSession.run(source, until)` takes the end of a
+  budget.
+- `lanky.deadline`: `deadline(seconds, owner)` and `Expired`, the interval
+  timer the CAS oracle kept as its own, shared with the Lean oracle's
+  search; an `Expired` names its deadline's owner, so a caller tells its
+  own from one set around it.
+- `lanky.cas.check_shape(term)`: everything `equations` refuses a statement
+  for, checked without sympy and without building anything, but whether a
+  real logarithm's or square root's argument may be negative, which only
+  sympy can say (#77).
 
 ### Changed
 
@@ -171,6 +197,63 @@ worth the `tested` reading it rests on.
   alone may ask for the token PyPI trusts and runs no checkout or build. Before,
   one job held `id-token: write` while it ran the build, so the build backend
   or anything it pulled in could have asked for that token.
+- **Python's `abs` of a term is lanky's `Abs`** (#94), as an annotation's
+  `abs` is. It was pymbolic's `Call` of a variable named `abs`: an order of
+  it raised `expressions don't have an order`, and `==` and `!=` of it were
+  pymbolic's structural equality, a `bool` while the term was built, so
+  `(127 == abs(c[i])) * 1` held `0` in a loopty kernel whose body compares.
+- **`exp`, `log` and `sqrt` of a number in an annotation stay exact** (#81).
+  They were computed by `math` while the annotation was read, so `exp(1) >
+  2.718281828459045` was the constant `False`, and the tester refuted a
+  claim true of `e`. Called by the annotation's own code, `lanky.exp(1)` is
+  an `Elementary` node now, which the tester encloses, the Lean printer
+  writes `Real.exp 1` and the CAS bridge reads as sympy's `E`. Anywhere
+  else it is Python's value, as before: in the file run as a program, in the
+  annotation run again by the faithfulness check, and in a function the
+  annotation calls, whose code may compute with the number as Python does.
+- **A negative number to a power that is not an integer is Python's complex
+  value** (#89). The tester's exact reading left it undecided, so a claim
+  false only at negative bases, `(x ** 3) ** Fraction(1, 3) == x`, read
+  `tested` on the positive draws. It is the principal value now, as
+  `cmath` computes it, `|x| ** p * (cos(πp) + i sin(πp))`, exact for an
+  exponent with denominator two and enclosed part by part otherwise, so
+  that claim is refuted at `x = -1`; an order with it is refused, as Python
+  refuses one.
+- **The cross-check hears every tester** (#41). It stopped at the first
+  tester of the `test` class with anything to say about the hypotheses, so
+  a plugin's sampler ahead of the property tester that drew nothing valid
+  kept the property tester's `goal_reached: 0` from being heard, and a proof
+  of a goal whose guard is empty read `proved` with a warning about the
+  hypotheses. What is said about the hypotheses comes from the first tester
+  that says anything, and the goal's count from the first that has one, as
+  for an axiom; a counterexample still ends the walk, and is recorded alone.
+- **The CAS oracle translates a statement within its deadline** (#77).
+  `can_establish` read the whole statement into sympy, and `establish` read
+  it again before it armed the timer, and sympy's constructors evaluate as
+  they build. `can_establish` reads the shape now (`check_shape`), and the
+  translation is inside `LANKY_CAS_TIMEOUT`, declined as `sympy did not
+  finish translating the statement within ... s` when it runs out there. A
+  real `log` or `sqrt` of what sympy cannot show is not negative is found
+  out in the translation, so such a statement is taken and declined, with
+  the reason, where it was not taken at all.
+- **A question whether a fact is vacuous gets the attempts that can answer
+  it** (#83). Its goal is `False` under binders, so the ladder leaves out the
+  inductions, over a family, on a recurrence and on a reduction's bound, and
+  the whole-goal tactics that close only an equation or an order:
+  `positivity`, `ring`, `field_simp` and `ring` after `push_cast`.
+- The sumpy demonstration says what its tolerance is relative to (#78): the
+  difference of a reconstructed coefficient and mpmath's derivative is
+  measured against the derivative or `1`, whichever is larger, relative
+  above `1` and absolute below, where the finite differences are accurate
+  to the kernel's scale and a derivative that is `0` at a point comes out as
+  a few units in its last digits. The docstrings, the reason of a
+  refutation, the run's last lines and the quickstart called it relative;
+  the `mpmath` oracle records it as `tolerance`, and `difference` and
+  `TOLERANCE_POLICY` name it.
+- The tests that time an attempt out give one that sleeps in Lean for five
+  seconds a tenth of one (#85), where a quick `omega` given a microsecond
+  could be answered before lean-interact's timeout was kept, on a busy
+  machine, and read as closed.
 
 ## [0.1.0] - 2026-10-08
 
