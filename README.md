@@ -102,15 +102,18 @@ is worth less than its status, what it is worth.
 
 ## Status
 
-This is 0.1.0, the first release. The core works; the edges are sharp. Below
-is what works, what works in part and what does not work yet, and after it,
-under Known limits, how far lanky checks that the claim Lean proves is the one
-the annotation makes: read that before you rely on a proof. CI runs the
-suite on every change, without Lean on Python 3.12 and 3.13 and with Lean
-v4.29.1, and holds the tables on this page and in the quickstart to what
-`lanky check` prints. Until 1.0 an interface a plugin uses can change in a
-minor release; the CHANGELOG says when one does, and loopty raises its floor
-to match.
+This is 0.2.0. The core works; the edges are sharp. New in 0.2.0, each claim's
+reading is checked: the annotations are run again as Python at drawn points and
+the term the oracles prove has to agree there, so a misreading is refuted
+rather than proved, and a proof is worth `tested`, the strength of that check.
+Below is what works, what works in part and what does not work yet, and after
+it, under Known limits, what the check cannot see and the open issues you are
+most likely to meet, each with what to do about it: read that before you rely
+on a proof. CI runs the suite on every change, without Lean on Python 3.12 and
+3.13 and with Lean v4.29.1, and holds the tables on this page and in the
+quickstart to what `lanky check` prints. Until 1.0 an interface a plugin uses
+can change in a minor release; the CHANGELOG says when one does, and loopty
+raises its floor to match.
 
 **Works.**
 
@@ -338,8 +341,6 @@ to match.
 - The property tester satisfies hypotheses of the shape `f(i) == e` by
   assignment and rejection-samples everything else, so an awkward hypothesis can
   end with no valid draws. The fact is then `ASSUMED`, never falsely `TESTED`.
-- `min` and `max` of a variable have no term yet (#66), so an annotation that
-  applies one to a variable is refused.
 - Division by zero is the one place the readings part. Lean's division is
   total, so `n // 0 == 0` is a theorem there and a `ZeroDivisionError` in
   Python; the fact carries a note, the ledger says what the sampled reading
@@ -385,13 +386,13 @@ to match.
   agree to 64 bits: `exp(x + y) == exp(x) * exp(y)` is `tested`, as a
   sampled universal is, on evidence. Under a negation, in a hypothesis, or as
   a value, the same agreement decides nothing, and neither does an order whose
-  enclosures overlap, such as `exp(x) * exp(-x) <= 1` at any `x` but `0`
-  (#33). Its pass rests on the draws at `x = 0` alone, and says so: the row
+  enclosures overlap, such as `exp(x) * exp(-x) <= 1` at any `x` but `0`.
+  Its pass rests on the draws at `x = 0` alone, and says so: the row
   reads `tested`, and a `WARNING` under the table says that the pass rests on
   thin evidence. A complex `log` and `sqrt` are Python's principal branches,
   enclosed off their branch cut, the non-positive real axis, where Python
-  picks a side by the sign of a zero, which an exact number does not have
-  (#51). On the cut, and at an `exp` of an argument past `2**14`, the draw
+  picks a side by the sign of a zero, which an exact number does not have.
+  On the cut, and at an `exp` of an argument past `2**14`, the draw
   is left undecided. A negative number to a power that is not an integer is
   Python's complex principal value, enclosed part by part, so
   `(x ** 3) ** Fraction(1, 3) == x` is refuted at `x = -1`.
@@ -443,100 +444,83 @@ to match.
 ## Known limits
 
 An annotation is traced Python: lanky runs it on symbolic terms, and the claim
-the oracles are handed is the term the run builds. An operation that goes
-through a term's overloads, an operator, a comparison, a quantifier, a family
-applied to an index, builds more of the term. One that answers from the term
-object instead gives a concrete answer while the annotation is read, the same
-at every value, and the term then says something other than what was written:
-`is` and a term's attributes
-([#88](https://github.com/xywei/lanky/issues/88)), a hash, a text or a truth
-value asked for inside a helper function or a library
-([#80](https://github.com/xywei/lanky/issues/80)), comparing or hashing the
-types ([#79](https://github.com/xywei/lanky/issues/79)). lanky refuses the
-cases it can see while it reads, a term's hash, text or truth value asked for
-in the annotation's own code, an `if` statement in a function the annotation
-calls, a builtin of Python's at a variable, an `all`, `any`, `sum` or `abs`
-that the module binds to a function of its own and that is no parameter of
-the claim
-([#100](https://github.com/xywei/lanky/issues/100)), since in an annotation
-lanky reads these four as its own, and checks the rest by their
-results ([#91](https://github.com/xywei/lanky/issues/91)): each claim's
-`faithful` fact runs the annotations again as Python at drawn values and
-compares the term there, so `all((f(i) * 0 == 1) | (i is not 0) for i in
-Fin[n])`, whose term is `f(i)*0 == 1 or True`, is refuted at `n = 1` instead of
-proved. The check is sampled, and that leaves these limits:
+the oracles are handed is the term that run builds. Python that answers from
+the term object instead of through its overloads, `is`, an attribute, or a
+hash or a truth value asked for inside a helper, gives the same answer at every
+value, and the term then says something other than what was written. lanky
+refuses the cases it can see while it reads, and checks the rest by their
+results: each claim's `faithful` fact runs the annotations again as plain
+Python at about forty drawn points, in a copy of the module taken just before
+the claim was read, and the term has to compute the same at each. A
+disagreement refutes the reading, and no oracle is asked about the claim.
 
-- A disagreement only at points no draw reaches is not seen. A bounded
-  quantifier is enumerated, and a quantifier over a sort runs over a sample of
-  about five of its values and the integers the claim writes, the same on both
-  sides. The variables take six draws of small values and domain ends, one at
-  each integer written in the claim or in a helper it calls and next to it, up
-  to 4096 and, for a variable that sizes a domain, only up to a size at which
-  the claim's nested domains hold about 1024 points, and 32 of the property
-  tester's. A draw at which a reading would walk more than 32768 points,
-  `Fin[2 ** n]` at a written `63`, is given up, and so is one whose readings
-  take more than five seconds, or ask for a power of more than 2 ** 20 bits,
-  `2 ** 2 ** n` at a written `99`
-  ([#101](https://github.com/xywei/lanky/issues/101)), so that a misreading
-  at one of those is not reached. Each draw has its five seconds, so a
-  written value past one too slow is drawn at too
-  ([#114](https://github.com/xywei/lanky/issues/114)), and past four draws
-  of a claim given up as too slow, the check makes no more and the reading
-  is `assumed`, naming them
-  ([#113](https://github.com/xywei/lanky/issues/113)).
-- A claim whose annotations cannot be run at a point keeps an `assumed`
-  reading, and a proof of it reads `proved under faithful:name`, with the
-  reason in a `DECLINED` line: a variable of a sort no value can be drawn of
-  (the pytential demonstration's boundaries), an annotation Python evaluated
-  when the function was defined, without `from __future__ import annotations`,
-  and one with no answer on both sides at any draw.
-- Where both readings have no answer at a point, they agree there. A
-  quantifier, `&` and `|` pass over such a point or operand on both sides, and
-  a sum with no value is compared point by point. Inside any other operation
-  Python stops at the operand with no answer, so the draw is read again on
-  both sides with what Python has no value for read as Lean has it, `x // 0`
-  and `x / 0` as `0`, `x % 0` as `x`, a logarithm or a square root outside
-  its Python domain as Mathlib's, and a family outside its domain as `0`, and
-  where both then have a value they have to agree: in `1 // (i - i) ==
-  table(i)` at `i = 0`, `table(0)` is compared
-  ([#99](https://github.com/xywei/lanky/issues/99)). What follows an overflow,
-  which has no value either way, or an operation inside a helper, which the
-  rerun leaves Python's, is still not compared there
-  ([#107](https://github.com/xywei/lanky/issues/107)).
-- The rerun runs inside lanky, as the reading does, so a helper that answers
-  otherwise when it finds lanky on its caller's stack answers alike in both.
-  The check is against misreadings, not against code written to evade it.
-- The annotations run again in a copy of the module taken just before the
-  claim was read ([#102](https://github.com/xywei/lanky/issues/102)): the
-  names they read, the functions of the claim's module and of the modules
-  beside it under its source root that they call, and what those read and
-  close over, tables, lists and numpy arrays copied up to 65536 items and
-  1048576 array elements. Each draw runs in a copy of that copy
-  ([#103](https://github.com/xywei/lanky/issues/103)). What the copy cannot
-  hold as it was leaves the reading `assumed` where it would be `tested`,
-  naming it: an object of a type it does not know, such as an instance of a
-  class of the user's or a random generator, a class of the user's that
-  holds methods or data, a structure past the budget, a table read off a
-  class or an installed module by name, and a module of the user's that a
-  helper imports as it runs. A function behind `functools.lru_cache` is
-  copied with the entries its cache holds
-  ([#105](https://github.com/xywei/lanky/issues/105)). An installed library,
-  lanky included, is read as it is when the check runs, and so is what code
-  reaches through `sys.modules` or `importlib`
-  ([#104](https://github.com/xywei/lanky/issues/104)).
-- The check runs the annotations' Python, helpers included, at every draw,
-  about forty times a claim. A helper's changes to the module's data are made
-  to the copy and are gone at the next draw, but a side effect outside the
-  module, a file written or a line printed, happens that often. A function
-  of the user's modules, a helper or a method of a class of theirs, is
-  stopped at a call or a turn of a loop once its draw has run five seconds;
-  a library's code is not, nor is one step Python takes in C, a builtin's
-  loop or `2 ** 2 ** n` inside a helper, and it runs as long as it takes
-  ([#108](https://github.com/xywei/lanky/issues/108)).
-- `lanky check` and the pytest plugin make the check. A theorem called or
-  sampled directly, `gauss(n=4)` or `gauss.report()`, as `python
-  examples/gauss.py` does, evaluates its term as before;
-  `gauss.faithful_fact()` is the check.
+The check is sampled, as the property tester is: small values and a domain's
+ends, each integer the claim or a helper it calls writes and its neighbours,
+and 32 of the tester's draws. A misreading only at a point none of them
+reaches is not seen, which is why a proof is worth `tested` in the `EFFECTIVE`
+column. It runs your helpers at every draw: a change they make to the
+module's data is made to the copy, but a side effect outside the module, a
+file written or a line printed, happens at every draw. And a claim it cannot
+run at a point keeps an `assumed` reading, so a proof of it reads `proved
+under faithful:name`, with the reason in a `DECLINED` line: a variable of a
+sort no value can be drawn of, an annotation Python evaluated when the
+function was defined (add `from __future__ import annotations`), or what the
+copy cannot hold as it was, such as an instance of a class of yours.
+
+The open issues you are most likely to meet:
+
+- **Calling a theorem does not check its reading**
+  ([#96](https://github.com/xywei/lanky/issues/96)). `gauss(n=4)`,
+  `gauss.report()` and `gauss.test()`, and so `python examples/gauss.py`,
+  evaluate the term, even where the reading is refuted. Use `lanky check` or
+  `pytest`, which make the check, or call `gauss.faithful_fact()`.
+- **`math.floor` of a variable fails while the file is read**
+  ([#112](https://github.com/xywei/lanky/issues/112)).
+  `math.floor(x) >= x - 1` raises pymbolic's `UnknownVariableError: x`, and
+  `lanky check` reports a file that does not import; so does any `math`
+  function of a variable, since it asks the term for a float. Write the floor
+  as a term, `x // 1`, and use `lanky.exp`, `lanky.log` and `lanky.sqrt` for
+  those three.
+- **`min` and `max` of a variable are refused**
+  ([#66](https://github.com/xywei/lanky/issues/66)), with a `TypeError` that
+  names the call. State the claim once per case: under a hypothesis `x <= y`,
+  with `x` written for `min(x, y)`, and under `y < x`, with `y`.
+- **A claim about a family over `Nat` is not tested**
+  ([#98](https://github.com/xywei/lanky/issues/98)). The property tester
+  cannot tabulate `Fn[Nat, Nat]`, so without Lean such a claim reads
+  `assumed`, and `pytest` skips it. Give the family a bounded domain with a
+  size parameter, `n: Nat, a: Fn[Fin[n + 1], Nat]`, and it is drawn.
+- **A long step in C, or in a library, holds the check up**
+  ([#108](https://github.com/xywei/lanky/issues/108)). Each draw has five
+  seconds, and a function of yours is stopped at its next call or turn of a
+  loop once they are spent. One step Python takes in C, `sum(range(10 ** n))`
+  or `2 ** 2 ** n` inside a helper, and a library's own code are not: they run
+  to their end. Keep such work out of the helpers a claim calls, or cheap at
+  the values drawn, which include each integer the claim writes.
+- **An installed package's state is read as it is at the check**
+  ([#104](https://github.com/xywei/lanky/issues/104)). The copy holds your
+  modules, the claim's and those under its source root. A helper from an
+  installed package, one installed editable from elsewhere included, reads
+  its package's tables as they are when the check runs, and so does code that
+  reaches a module through `sys.modules` or `importlib`, so a table changed
+  after the claim can hide a misreading. Keep the data a claim's helpers read
+  in a module beside the claim.
+- **After a helper's operation with no value, the rest of that annotation is
+  not compared at that draw**
+  ([#107](https://github.com/xywei/lanky/issues/107)). Where both readings
+  have no value, the draw is read again with Lean's values for Python's
+  errors, `x // 0` as `0` and so on, but only for the operators the annotation
+  itself writes: a helper's own `1 // 0`, or an overflow anywhere, still ends
+  the comparison there. Write such an operation in the annotation rather than
+  in a helper.
+- **On Windows, which CI does not run, a check of several source roots can
+  leave processes behind.** `lanky check` runs one child process per source
+  root. On Windows a child is not stopped when the command is killed, an
+  interrupted child leaves its Lean REPL running
+  ([#48](https://github.com/xywei/lanky/issues/48)), and a background process
+  a checked file starts holds the command up until it ends
+  ([#47](https://github.com/xywei/lanky/issues/47)). Check the files of one
+  source root per command, which runs no child process.
 
 ## Install
 

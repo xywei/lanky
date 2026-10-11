@@ -3,7 +3,7 @@
 One file, four commands, and the output each one prints, then a second file
 with an axiom in it, and a third in which a rule engine checks a derivation.
 Everything below was run in this repository with `uv run`, the `lanky check`
-tables last on 2026-10-08; the numbers and the Lean source are copied from the
+tables last on 2026-10-11; the numbers and the Lean source are copied from the
 terminal, not written from memory. The one thing that drifts
 is a timing, which is a property of the machine and not of the claim. The
 `lanky check` tables are held to more than that: the test suite compares them
@@ -82,7 +82,11 @@ scan_monotone: n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0
 ```
 
 A theorem is callable: `gauss(n=4)` evaluates the hypotheses and the goal on
-concrete values and reports what it found. `.report(n=50)` samples.
+concrete values and reports what it found. `.report(n=50)` samples. Both
+evaluate the term lanky built from the annotations, and neither checks that
+the term is what the annotations say; `lanky check` and `pytest` do, as
+[Check the reading](#check-the-reading) shows
+([#96](https://github.com/xywei/lanky/issues/96)).
 
 `50 valid draws of 50` is worth a second look. `scan_monotone` has a recurrence
 as a hypothesis, and a random `off` satisfies it essentially never, so rejection
@@ -409,7 +413,9 @@ theorem with the same draw.
   it, as a counterexample no draw reaches escapes the tester. A draw whose
   readings take more than five seconds is given up, and a helper is stopped
   there; past four such draws of a claim, the check makes no more, and the
-  reading is `assumed`.
+  reading is `assumed`. One step Python takes in C, `sum(range(10 ** n))`
+  inside a helper, and a library's own code are not stopped, and run to
+  their end ([#108](https://github.com/xywei/lanky/issues/108)).
 
 ## Take a result on a citation
 
