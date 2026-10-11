@@ -7,11 +7,9 @@ it. The interval timer does that: ``SIGALRM`` arrives, and its handler raises
 :class:`Expired` in whatever Python code is running. The CAS oracle gives each
 fact a deadline (:mod:`lanky.oracles.cas`), and the Lean oracle gives the
 search it runs before its attempts what is left of the fact's budget
-(:mod:`lanky.oracles.lean`). The faithfulness check, which runs a claim's
-annotations again at drawn values before any oracle is asked, gives the
-readings at each draw what is left of the draw's time, so that the Python of
-a library a helper calls, which the check's own watch over the user's code
-does not reach, is stopped too (:mod:`lanky.faithful`).
+(:mod:`lanky.oracles.lean`). The faithfulness check keeps the time of its
+draws without a timer (:mod:`lanky.faithful`), so it neither clobbers one
+nor catches what one raises.
 
 The timer is the process's, so the deadline holds only where it can be owned:
 in the main thread of a POSIX process, which is where ``lanky check`` and

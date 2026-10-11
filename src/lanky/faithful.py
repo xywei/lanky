@@ -97,13 +97,15 @@ take more than :data:`DRAW_SECONDS`, a helper that takes time exponential in
 its argument at a value the claim writes, or ask for a power of more than
 :data:`POWER_BITS` bits, ``2 ** 2 ** n`` there, is given up as too slow
 (``slow``) (#101): the walks and the term's reading ask for the time as they
-go, the user's code is stopped at a call or a turn of a loop
-(:func:`_watching`), and where an interval timer can be set, the Python of a
-library is stopped by one (:func:`_timed`, :mod:`lanky.deadline`). Each
-draw has that time of its own, a written value past one too slow to draw at
-too, since a helper slow at ``999`` can answer otherwise at ``1000``
-(#114); once more than :data:`SLOW_DRAWS` draws of a claim have been given
-up so, the check makes no more, and the reading is declined (#113).
+go, and the user's code is stopped at a call or a turn of a loop
+(:func:`_watching`). No interval timer keeps that time, so the check sets
+none that would clobber one set around it (:mod:`lanky.deadline`'s, which
+the oracles keep their deadlines with), and what such a deadline raises is
+no ``Exception`` and passes through the check to its owner. Each draw has
+that time of its own, a written value past one too slow to draw at too,
+since a helper slow at ``999`` can answer otherwise at ``1000`` (#114);
+once more than :data:`SLOW_DRAWS` draws of a claim have been given up so,
+the check makes no more, and the reading is declined (#113).
 The definitional hypotheses are satisfied by construction
 (:func:`lanky.testing.satisfy_hypotheses`) so that a scan is one. A bounded
 quantifier enumerates every point of its domain anyway. A family over a sort
@@ -190,7 +192,7 @@ import types
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
-from contextvars import ContextVar, copy_context
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
@@ -199,8 +201,6 @@ from typing import Any
 import numpy
 import pymbolic.primitives as prim
 
-from lanky.deadline import Expired
-from lanky.deadline import deadline as interval_timer
 from lanky.intervals import ComplexValue
 from lanky.ledger import FAITHFUL, Fact, Status, fact_id
 from lanky.prelude import FinType, FnType, LankyType, Refined, Sort, SumType
@@ -530,8 +530,7 @@ def _on_time() -> None:
     The walks of both readings ask at every point (:func:`_step`), the
     term's reading at every node it evaluates (:meth:`_Reading.rec`), and
     the user's code at every call and every turn of a loop
-    (:func:`_watching`); a library's Python code is stopped by an interval
-    timer instead, where one can be set (:func:`_timed`).
+    (:func:`_watching`).
 
     Raises:
         _TooSlow: If the readings at this draw have taken more than
@@ -3034,11 +3033,10 @@ def _watching(
     block ends. Where every such id is taken, nothing is watched, and a
     helper that loops forever at a draw stops the check there.
 
-    A library's code, and a function no module of the user's holds when the
-    draws start, are not watched; where an interval timer can be set, it
-    stops them (:func:`_timed`). What Python runs in one step, a builtin's or
-    a library's loop in C, or ``2 ** 2 ** n`` in a helper, is stopped by
-    neither; the annotation's own powers and its term's are kept small
+    What Python runs in one step, a builtin's or a library's loop in C, or
+    ``2 ** 2 ** n`` in a helper, is not stopped, nor is a library's code, nor
+    a function no module of the user's holds when the draws start; the
+    annotation's own powers and its term's are kept small
     (:func:`_computable`).
     """
     monitoring = sys.monitoring
@@ -3120,16 +3118,8 @@ def _compare(
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)
         reading = _Reading(dict(draw.context), draw.samples)
         try:
-            python, term = _timed(
-                deadline,
-                _both_readings,
-                annotation,
-                scope,
-                reading,
-                draw,
-                unsummed,
-                deadline,
-                total,
+            python, term = _both_readings(
+                annotation, scope, reading, draw, unsummed, deadline, total
             )
         except _GivenUp as exc:
             yield annotation, exc.verdict, _Outcome(error=exc), _Outcome(error=exc)
@@ -3141,45 +3131,6 @@ def _compare(
             yield annotation, "differed", python, term
             continue
         yield annotation, _judge(python, term), python, term
-
-
-#: How far past a draw's deadline the interval timer that keeps it goes off
-#: (:func:`_timed`): by then the readings' own checks find the draw past its
-#: time too, where a helper caught what the timer raised and answered.
-_TIMER_GRACE = 0.05
-
-
-def _timed(deadline: float, call: Callable[..., Any], *args: Any) -> Any:
-    """``call(*args)``, stopped by an interval timer a little past ``deadline``, where one can be.
-
-    The walks, the term's reading and the user's code ask for the time as
-    they go (:func:`_on_time`, :func:`_watching`); a library's Python code
-    does not. So the readings run under :func:`lanky.deadline.deadline` too,
-    which this call owns, and which in the main thread of a POSIX process
-    with no other interval timer running raises in whatever Python code runs
-    :data:`_TIMER_GRACE` past ``deadline``: the draw is given up as too
-    slow, as at any of the checks. An :class:`~lanky.deadline.Expired` this
-    call does not own is from a deadline its caller set around the check,
-    since the check runs before any oracle and inside none of their
-    deadlines, and is raised again; under such a deadline this one sets no
-    timer, and the checks keep the draw's time alone. The timer can go off
-    in lanky's code too, so ``call`` runs in a copy of the current context,
-    and what that code set there and had no time to reset is gone with the
-    copy.
-
-    Raises:
-        _TooSlow: If the timer went off.
-    """
-    owner = object()
-    try:
-        with interval_timer(deadline - time.monotonic() + _TIMER_GRACE, owner):
-            return copy_context().run(call, *args)
-    except Expired as exc:
-        if exc.owner is not owner:
-            raise
-        raise _TooSlow(
-            f"the readings at this draw took more than {DRAW_SECONDS:g} seconds"
-        ) from None
 
 
 @contextmanager

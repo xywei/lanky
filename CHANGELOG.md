@@ -104,22 +104,20 @@ worth the `tested` reading it rests on.
     is not counted.
   - A time budget per draw (#101). The readings of a claim's annotations at
     one draw, and the draw's second reading with them, may take
-    `DRAW_SECONDS = 5` seconds, and a power or a left
-    shift either asks for may have `POWER_BITS = 2 ** 20` bits; past either,
-    the draw is given up as `slow`, as a walk past `WALK_POINTS` is given up
-    as `unwalked`. The walks
-    and the term's reading ask for the time as they go, and the user's code,
-    the annotations and the functions of the claim's module and of the
+    `DRAW_SECONDS = 5` seconds, and a power or a left shift either asks for
+    may have `POWER_BITS = 2 ** 20` bits; past either, the draw is given up
+    as `slow`, as a walk past `WALK_POINTS` is given up as `unwalked`. The
+    walks and the term's reading ask for the time as they go, and the user's
+    code, the annotations and the functions of the claim's module and of the
     modules under its source roots, the methods of their classes included,
     is watched with `sys.monitoring` while the draws run, so that a helper's
     own loop, or a helper that calls itself, is stopped at its next call or
-    turn of a loop. A library's Python code, which is not watched, is
-    stopped by an interval timer (`lanky.deadline`, below) where one can be
-    set, owned by the draw, so that a deadline set around the check is
-    raised again to its owner. A draw given up stays given up where a helper
-    catches everything, the giving up included, and answers.
-    A helper that took time exponential in its argument, at a value the
-    claim writes, ran as long as Python took.
+    turn of a loop. No interval timer keeps that time, so a `lanky.deadline`
+    set around the check keeps its own, and what it raises passes through
+    the check to its owner. A draw given up stays given up where a helper
+    catches everything, the giving up included, and answers. A helper that
+    took time exponential in its argument, at a value the claim writes, ran
+    as long as Python took.
   - Each draw has that time of its own, a written value past one too slow
     to draw at too (#114): a helper too slow at `999` that answers
     otherwise at `1000` is refuted there. Past `SLOW_DRAWS = 4` draws of a
@@ -193,8 +191,8 @@ worth the `tested` reading it rests on.
   budget.
 - `lanky.deadline`: `deadline(seconds, owner)` and `Expired`, the interval
   timer the CAS oracle kept as its own, shared with the Lean oracle's
-  search and the faithful fact's draws; an `Expired` names its deadline's
-  owner, so a caller tells its own from one set around it. A timer that goes off as the block ends no
+  search; an `Expired` names its deadline's owner, so a caller tells its
+  own from one set around it. A timer that goes off as the block ends no
   longer leaves the deadline's handler installed: it raised in the
   `finally` that stops the timer, before the handler there was was put
   back, so the next `SIGALRM`, meant for someone else, raised `Expired`.

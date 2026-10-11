@@ -2084,70 +2084,6 @@ def test_a_claim_with_too_many_draws_too_slow_is_declined(monkeypatch, tmp_path)
     assert given_up.count("slow") == faithful.SLOW_DRAWS + 1 + reading.provenance["slow"]
 
 
-#: A library outside the claims' source roots, whose loop the check does not watch.
-CRAWLING = """
-import time
-
-
-def crawl(n):
-    started = time.monotonic()
-    while n == 51 and time.monotonic() - started < 30:
-        pass
-    return 0
-"""
-
-#: A claim whose helper calls into :data:`CRAWLING` (#101, #108).
-SLOW_LIBRARY = """
-import faithful_crawling_101
-
-
-def through_a_library(n):
-    if not isinstance(n, int):
-        return n * 0
-    return faithful_crawling_101.crawl(n)
-
-
-@theorem
-def in_a_library(n: Nat, h: n < 52) -> through_a_library(n) == 0:
-    \"\"\"The library's loop runs thirty seconds at the written 51.\"\"\"
-"""
-
-
-def test_a_draw_is_given_up_in_a_librarys_code_by_an_interval_timer(
-    monkeypatch, tmp_path, tmp_path_factory
-) -> None:
-    """A library's Python code is stopped past ``DRAW_SECONDS`` too, by ``lanky.deadline`` (#101).
-
-    The user's code is watched with ``sys.monitoring``, and a library's,
-    which is no one's to watch, ran as long as it took: thirty seconds here
-    at the written 51, where the draw has half a second. The readings run
-    under an interval timer of ``lanky.deadline`` now, owned by the draw,
-    so the library's loop is stopped a little past the draw's time, and the
-    draw is given up as too slow. The handler of ``SIGALRM`` is the one
-    there was afterwards.
-    """
-    import signal
-    import sys
-    import time
-
-    library = tmp_path_factory.mktemp("library")
-    (library / "faithful_crawling_101.py").write_text(CRAWLING, encoding="utf-8")
-    monkeypatch.syspath_prepend(str(library))
-    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.5)
-    handler = signal.getsignal(signal.SIGALRM)
-    started = time.monotonic()
-    try:
-        pairs = _pairs(check_path(_write(tmp_path, SLOW_LIBRARY)))
-    finally:
-        sys.modules.pop("faithful_crawling_101", None)
-    assert time.monotonic() - started < 20
-    reading = pairs["in_a_library"][1]
-    assert reading.status is Status.TESTED, reading.provenance
-    assert reading.provenance["slow"] == 1, reading.provenance
-    assert signal.getsignal(signal.SIGALRM) is handler
-    assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
-
-
 #: A claim whose helper loops forever at a value it writes (#101).
 LOOPS = """
 def spin(n):
@@ -2162,23 +2098,26 @@ def loops(n: Nat, h: n < 60) -> spin(n) == 0:
 """
 
 
-def test_a_deadline_set_around_the_check_is_raised_again(tmp_path) -> None:
-    """An ``Expired`` that is not a draw's is its owner's, and passes through the check (#101).
+def test_a_deadline_set_around_the_check_is_its_owners(tmp_path) -> None:
+    """A ``lanky.deadline`` set around the check goes off, and passes through it (#101, #109).
 
-    The draws' interval timer is ``lanky.deadline``'s, which the CAS oracle
-    and the Lean oracle's search keep their deadlines with, and what it
-    raises names its owner. A deadline set around the check, here around
-    ``check_path``, goes off in a helper's loop at the written 51, with the
-    draw's five seconds far from spent: under it the draw sets no timer of
-    its own, and the ``Expired`` is raised again to its owner rather than
-    taken for the draw's. The monitoring the check stops a helper with is
-    released on the way out.
+    The CAS oracle and the Lean oracle's search keep their deadlines with
+    ``lanky.deadline``'s interval timer, and what it raises names its owner.
+    The draws keep their time with no timer, by asking for it as they go,
+    so they neither clobber one set around them nor take what it raises for
+    a draw too slow: a deadline of one second around ``check_path`` goes
+    off in a helper's loop at the written 51, with the draw's five seconds
+    far from spent, and its ``Expired`` reaches its owner. The monitoring
+    the check stops a helper with is released on the way out, and the
+    handler of ``SIGALRM`` is the one there was.
     """
+    import signal
     import sys
     import time
 
     from lanky.deadline import Expired, deadline
 
+    handler = signal.getsignal(signal.SIGALRM)
     owner = object()
     started = time.monotonic()
     with pytest.raises(Expired) as raised, deadline(1.0, owner):
@@ -2186,6 +2125,7 @@ def test_a_deadline_set_around_the_check_is_raised_again(tmp_path) -> None:
     assert raised.value.owner is owner
     assert time.monotonic() - started < faithful.DRAW_SECONDS
     assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
+    assert signal.getsignal(signal.SIGALRM) is handler
 
 
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
