@@ -182,7 +182,8 @@ class Obligation:
     (a callee's postcondition, a cited theorem): a proof of the parts is a
     proof of the claim given those, and the fact rests on them.
     ``decider`` names the solver that decided the claim and found the hints,
-    ``isl``, for the ledger to say so.
+    ``isl``, and ``stated_by`` the plugin that stated the parts from its own
+    description, ``loopty``, for the ledger to say so.
     """
 
     parts: tuple[Part, ...] = ()
@@ -190,6 +191,7 @@ class Obligation:
     declined: str = ""
     rests_on: tuple[str, ...] = ()
     decider: str = ""
+    stated_by: str = ""
 
 
 def obligation_of(term: Any) -> Obligation | None:

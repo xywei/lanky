@@ -1954,14 +1954,34 @@ def _jobs() -> int:
     return max(1, min(4, os.cpu_count() or 1))
 
 
-def _parts_text(records: list[dict], proved: bool) -> str:
-    """``dep3 (u[t, i + 1] read after ...)``: the parts that were or were not proved."""
-    named = [
-        f"{record['name']} ({record['label']})" if record.get("label") else record["name"]
-        for record in records
-        if bool(record.get("proved")) is proved
-    ]
-    return "; ".join(named)
+#: How many parts a reason names before it counts the rest.
+_PARTS_SHOWN = 3
+
+
+def _missed_text(records: list[dict]) -> str:
+    """Why a claim was not proved, in plain words: which parts, and what Lean did.
+
+    ``Lean ran out of time``, or ``Lean proved 3 of its 5 parts, and found no
+    proof for u[t, i + 1] read by S0 after u[t + 1, i] is written by S0``. A
+    part is named by its label, the plugin's words for it, and at most
+    :data:`_PARTS_SHOWN` of them are named. What Lean said stays in each
+    part's record, which ``--show-lean`` prints.
+    """
+    missed = [record for record in records if not record.get("proved")]
+    if len(records) == 1:
+        return f"Lean {missed[0].get('short') or missed[0].get('reason', '')}"
+    by_reason: dict[str, list[str]] = {}
+    for record in missed:
+        short = record.get("short") or record.get("reason", "")
+        by_reason.setdefault(short, []).append(record.get("label") or record["name"])
+    said = []
+    for short, labels in by_reason.items():
+        shown = "; ".join(labels[:_PARTS_SHOWN])
+        if len(labels) > _PARTS_SHOWN:
+            shown += f"; and {len(labels) - _PARTS_SHOWN} more"
+        said.append(f"{short} for {shown}")
+    proved = len(records) - len(missed)
+    return f"Lean proved {proved} of its {len(records)} parts, and {', and '.join(said)}"
 
 
 def _how_text(records: list[dict]) -> str:
@@ -2344,7 +2364,11 @@ class LeanOracle:
         A claim the solver refuted comes with its counterexample, and is not
         offered to Lean as a claim: Lean proves the part false at the point
         instead, and the fact keeps its status with ``lean_counterexample``
-        saying whether Lean confirmed it (see :meth:`_check_counterexample`).
+        saying whether Lean confirmed it, and ``lean_refuted_by`` how, when it
+        did (see :meth:`_check_counterexample`).
+        A fact already ``refuted`` whose obligation has no counterexample is
+        not offered either, and keeps its status: Lean only ever checks a
+        refutation, and never turns one into a proof.
         """
         try:
             obligation = obligation_of(fact.term)
@@ -2358,6 +2382,16 @@ class LeanOracle:
         if obligation is None or obligation.declined or not obligation.parts:
             return fact.with_status(
                 fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+            )
+        if fact.status is Status.REFUTED and obligation.counterexample is None:
+            # a refuted claim is checked at its counterexample, never proved: a
+            # proof of its parts would read proved where the solver refuted it
+            return fact.with_status(
+                fact.status,
+                lean_counterexample=(
+                    "Lean did not check the refutation: no counterexample to it "
+                    "was stated for Lean"
+                ),
             )
         available, why = self.availability()
         if not available:
@@ -2386,6 +2420,8 @@ class LeanOracle:
         }
         if obligation.decider:
             common["lean_decider"] = obligation.decider
+        if obligation.stated_by:
+            common["lean_stated_by"] = obligation.stated_by
         if all(record.get("proved") for record in records):
             result = fact.with_status(
                 Status.PROVED,
@@ -2400,15 +2436,7 @@ class LeanOracle:
                     rests_on=tuple(dict.fromkeys((*fact.rests_on, *obligation.rests_on))),
                 )
             return result
-        missed = [record for record in records if not record.get("proved")]
-        first = missed[0].get("reason", "")
-        if len(records) == 1:
-            said = f"Lean did not prove it: {first}"
-        else:
-            said = (
-                f"Lean proved {len(records) - len(missed)} of its {len(records)} parts, "
-                f"and not {_parts_text(missed, False)}: {first}"
-            )
+        said = _missed_text(records)
         return fact.with_status(fact.status, lean_tried=len(records), lean_reason=said, **common)
 
     def _pool_error(self) -> str:
@@ -2493,6 +2521,7 @@ class LeanOracle:
             statement = part_statement(part, theorem_name(owner, part))
         except (UnsupportedTerm, AttributeError, TypeError, ValueError) as exc:
             record["reason"] = f"it has no Lean statement ({exc})"
+            record["short"] = f"had no statement of it ({exc})"
             return record
         tried = attempts(part, statement)
         if not tried:
@@ -2500,6 +2529,7 @@ class LeanOracle:
                 "its goal is an existential and no witness was given for it, which "
                 "omega does not look for"
             )
+            record["short"] = "was given no witness for what it claims exists"
             record["source"] = statement.source("sorry")
             return record
         start = time.monotonic()
@@ -2513,11 +2543,13 @@ class LeanOracle:
             if _spent(until):
                 record["timed_out"] = True
                 record["reason"] = "the budget ran out before Lean was asked"
+                record["short"] = "ran out of time"
                 break
             closed, detail, cached, answered = self._ask(session, source, until)
             if closed:
                 record.update(proved=True, how=how, cached=cached)
                 record.pop("reason", None)
+                record.pop("short", None)
                 record.pop("timed_out", None)
                 break
             if not answered:
@@ -2525,10 +2557,12 @@ class LeanOracle:
                 record["reason"] = (
                     f"Lean did not answer within the time it was given ({detail})"
                 )
+                record["short"] = "ran out of time"
                 continue
             last = detail
             record.pop("timed_out", None)
             record["reason"] = f"no script closed it; Lean said: {last}"
+            record["short"] = "found no proof"
             if not tried and not asked and callable(getattr(part, "fallback", None)):
                 # what the solver finds only when asked: a case split, say
                 asked = True
@@ -2543,11 +2577,13 @@ class LeanOracle:
 
         By ``decide``, which evaluates the instantiated statement in the
         kernel, and then by ``omega``. The fact keeps its status: the plugin's
-        solver refutes it, and ``lean_counterexample`` says what Lean made of
-        the counterexample, ``lean_refutation`` holds the theorem. One Lean
+        solver refutes it, and ``lean_counterexample`` says in plain words what
+        Lean made of the counterexample, ``lean_refuted_by`` by what it proved
+        the claim false, and ``lean_refutation`` holds the theorem. One Lean
         cannot prove false there is no counterexample to the printed
         statement, a disagreement between the solver and Lean that the
-        ledger names.
+        ledger names (``lean_disagrees``, with what Lean said in
+        ``lean_counterexample_detail``).
         """
         counter = obligation.counterexample
         where = counter.text or ", ".join(f"{k}={v}" for k, v in counter.point.items())
@@ -2578,7 +2614,10 @@ class LeanOracle:
             if closed:
                 return fact.with_status(
                     fact.status,
-                    lean_counterexample=f"Lean proved the claim false at {where}, by {how}",
+                    lean_counterexample=(
+                        f"Lean confirmed the counterexample: the claim is false at {where}"
+                    ),
+                    lean_refuted_by=how,
                     lean_refutation=source,
                     lean_version=session.version,
                 )
@@ -2586,9 +2625,10 @@ class LeanOracle:
         return fact.with_status(
             fact.status,
             lean_counterexample=(
-                f"Lean could not prove the claim false at {where}: the counterexample "
-                f"and the statement Lean was given disagree ({last})"
+                f"the counterexample and Lean disagree: Lean could not prove the claim "
+                f"false at {where} (--show-lean shows what Lean said)"
             ),
+            lean_counterexample_detail=last,
             lean_refutation=sources[-1][1],
             lean_disagrees=True,
         )

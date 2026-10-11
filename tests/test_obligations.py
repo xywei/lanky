@@ -369,16 +369,22 @@ def test_a_part_lean_cannot_prove_leaves_the_fact_and_is_named(lean: LeanOracle)
     fact = lean.establish(handed)
     assert fact.status is Status.ASSUMED
     reason = fact.provenance["lean_reason"]
-    assert reason.startswith("Lean proved 1 of its 2 parts, and not S1 (x[x + 1] over 0 <= x < n)")
-    assert "Lean said" in reason
+    # in plain words, the part by its label; what Lean said is in its record
+    assert reason == (
+        "Lean proved 1 of its 2 parts, and found no proof for x[x + 1] over 0 <= x < n"
+    )
     assert [record["proved"] for record in fact.provenance["lean_parts"]] == [True, False]
+    assert "Lean said" in fact.provenance["lean_parts"][1]["reason"]
 
 
 def test_an_existential_goal_is_proved_with_its_witness(lean: LeanOracle) -> None:
     bare = Part("total", "the split is total", SPLIT_TOTAL)
     fact = lean.establish(fact_of(Obligation(parts=(bare,))))
     assert fact.status is Status.ASSUMED
-    assert "no witness was given" in fact.provenance["lean_reason"]
+    assert fact.provenance["lean_reason"] == (
+        "Lean was given no witness for what it claims exists"
+    )
+    assert "no witness was given" in fact.provenance["lean_parts"][0]["reason"]
     hinted = Part(
         "total", "the split is total", SPLIT_TOTAL, Hints(witness=(Piece((i // 4, i % 4)),))
     )
@@ -490,11 +496,26 @@ def test_a_counterexample_is_proved_false_there(lean: LeanOracle) -> None:
     )
     fact = lean.establish(fact_of(refuted, Status.REFUTED))
     assert fact.status is Status.REFUTED
+    # the row says it in plain words; how, in the detail view
     assert fact.provenance["lean_counterexample"] == (
-        "Lean proved the claim false at x=1 at n=2, by decide"
+        "Lean confirmed the counterexample: the claim is false at x=1 at n=2"
     )
+    assert fact.provenance["lean_refuted_by"] == "decide"
     assert "theorem Lanky.kernel_S0_false" in fact.provenance["lean_refutation"]
     assert refutation_lines(fact)[-1] == fact.provenance["lean_counterexample"]
+    assert "decide" not in "\n".join(refutation_lines(fact))
+
+
+def test_a_refuted_fact_with_no_counterexample_is_never_proved(lean: LeanOracle) -> None:
+    # The parts hold, and the solver refuted the claim all the same, with no
+    # counterexample to check: Lean only ever checks a refutation, and never
+    # turns one into a proof, which would hide the solver's verdict.
+    fact = lean.establish(fact_of(Obligation(parts=(IN_BOUNDS,)), Status.REFUTED))
+    assert fact.status is Status.REFUTED
+    assert "lean_parts" not in fact.provenance
+    assert fact.provenance["lean_counterexample"].startswith(
+        "Lean did not check the refutation"
+    )
 
 
 def test_a_counterexample_that_is_none_is_caught(lean: LeanOracle) -> None:
@@ -505,8 +526,10 @@ def test_a_counterexample_that_is_none_is_caught(lean: LeanOracle) -> None:
     fact = lean.establish(fact_of(bogus, Status.REFUTED))
     assert fact.provenance["lean_disagrees"] is True
     assert fact.provenance["lean_counterexample"].startswith(
-        "Lean could not prove the claim false at x=0 at n=3"
+        "the counterexample and Lean disagree: Lean could not prove the claim false "
+        "at x=0 at n=3"
     )
+    assert fact.provenance["lean_counterexample_detail"]
 
 
 def test_lean_answers_are_kept_and_read_back(lean: LeanOracle, tmp_path) -> None:
@@ -538,7 +561,8 @@ def test_a_spent_budget_leaves_the_fact_with_the_reason(lean: LeanOracle) -> Non
     fact = hurried.establish(fact_of(Obligation(parts=(IN_BOUNDS,))))
     assert fact.status is Status.ASSUMED
     assert fact.provenance["lean_parts"][0]["timed_out"] is True
-    assert "budget ran out" in fact.provenance["lean_reason"]
+    assert fact.provenance["lean_reason"] == "Lean ran out of time"
+    assert "budget ran out" in fact.provenance["lean_parts"][0]["reason"]
 
 
 class _Decider:
@@ -592,19 +616,22 @@ def test_lean_goes_first_and_the_solver_decides_what_it_does_not_prove(
     wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
     decided = establish(fact_of(Obligation(parts=(wrong,), decider="solver")))
     assert decided.status is Status.DECIDED and decided.decided_by == "solver"
-    assert decided.provenance["lean_reason"].startswith("Lean did not prove it")
+    assert decided.provenance["lean_reason"] == "Lean found no proof"
 
 
 def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
     lean: LeanOracle, capsys
 ) -> None:
-    proved = lean.establish(fact_of(Obligation(parts=(IN_BOUNDS,), decider="isl")))
+    proved = lean.establish(
+        fact_of(Obligation(parts=(IN_BOUNDS,), decider="isl", stated_by="kit"))
+    )
+    assert proved.provenance["lean_stated_by"] == "kit"
     wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
     handed = Fact(
         id="in-bounds:kernel@1:S1",
         kind="in-bounds",
         statement="x[x + 1] is in bounds for every instance of S1",
-        term=Stated(Obligation(parts=(wrong,), decider="isl")),
+        term=Stated(Obligation(parts=(wrong,), decider="isl", stated_by="kit")),
         where="kernel.py:2",
         owner="kernel",
     )
@@ -621,13 +648,15 @@ def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
     CheckVerb._report(Ledger([proved, unproved, alone]), show_lean="")
     out = capsys.readouterr().out
     assert (
-        "LEAN proved 1 of the 2 facts isl decided that were stated for it, each "
-        "from the plugin's own statement of it, isl's hints checked and not "
-        "trusted; 1 more isl decided was not stated for Lean (--verbose says "
-        "why); --show-lean prints the Lean"
+        "LEAN proved 1 of the 3 facts isl decided; 1 is NOT PROVED below; 1 is not "
+        "stated for Lean yet (--verbose says why). Lean's statements are kit's, "
+        "from its own description, not isl's results, and isl's hints were "
+        "checked, not trusted. --show-lean prints the Lean."
     ) in out
     assert "NOT PROVED kernel at kernel.py:2: x[x + 1] is in bounds for every instance of S1" in out
-    assert "  isl decided it; Lean did not prove it: no script closed it" in out
+    assert (
+        "  isl decided it; Lean found no proof (--show-lean shows what Lean said)" in out
+    )
     assert "LEAN kernel at kernel.py:1: x[i] is in bounds for every instance of S0" in out
     assert "  proved by Lean (omega)" in out
     assert "    theorem Lanky.kernel_S0" in out

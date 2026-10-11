@@ -607,11 +607,18 @@ def report_proved(ledger: Ledger) -> None:
 
     A plugin's fact Lean proved part by part (:mod:`lanky.obligations`) was
     decided by the plugin's solver too, and the row says only ``lean``. The
-    line says, per solver, how many of the facts it decided and the plugin
-    stated for Lean Lean proved, and how: from the plugin's own statement of
-    each claim, with the solver's hints checked and not trusted; and how many
-    more it decided the plugin did not state, which ``--verbose`` names.
-    Nothing is printed for a ledger with no such fact.
+    line says, per solver, how many of the facts it decided Lean proved;
+    how many it did not prove, which the ``NOT PROVED`` lines name; how
+    many the plugin has no statement of for Lean yet, which ``--verbose``
+    names; and what a proof means here: Lean proved the plugin's own
+    statement of the claim, not the solver's result, and the solver's hints
+    were checked and not trusted. Nothing is printed for a ledger with no
+    such fact::
+
+        LEAN proved 2 of the 5 facts isl decided; 3 are not stated for Lean yet
+        (--verbose says why). Lean's statements are loopty's, from its own
+        description, not isl's results, and isl's hints were checked, not
+        trusted. --show-lean prints the Lean.
     """
     by_decider: dict[str, list[Fact]] = {}
     for fact in ledger:
@@ -631,23 +638,39 @@ def report_proved(ledger: Ledger) -> None:
     print()
     for decider, facts in by_decider.items():
         proved = sum(fact.status in (Status.PROVED, Status.CERTIFIED) for fact in facts)
+        missed = len(facts) - proved
         more = unstated.get(decider, 0)
-        stated = (
-            f"the {len(facts)} facts {decider} decided that were"
-            if len(facts) > 1
-            else f"the one fact {decider} decided that was"
-        )
-        print(
-            f"LEAN proved {proved} of {stated} stated for it, each from the "
-            f"plugin's own statement of it, {decider}'s hints checked and not "
-            "trusted"
-            + (
-                f"; {more} more {decider} decided {'were' if more > 1 else 'was'} "
-                "not stated for Lean (--verbose says why)"
-                if more
-                else ""
+        total = len(facts) + more
+        if proved == total:
+            head = (
+                f"LEAN proved all {total} facts {decider} decided"
+                if total > 1
+                else f"LEAN proved the one fact {decider} decided"
             )
-            + "; --show-lean prints the Lean"
+        else:
+            head = f"LEAN proved {proved} of the {total} facts {decider} decided"
+        clauses = []
+        if missed:
+            clauses.append(f"{missed} {'is' if missed == 1 else 'are'} NOT PROVED below")
+        if more:
+            clauses.append(
+                f"{more} {'is' if more == 1 else 'are'} not stated for Lean yet "
+                "(--verbose says why)"
+            )
+        authors = sorted(
+            {
+                str(fact.provenance["lean_stated_by"])
+                for fact in facts
+                if fact.provenance.get("lean_stated_by")
+            }
+        )
+        named = " and ".join(authors) or "the plugin"
+        whose = f"{named}'" if named.endswith("s") else f"{named}'s"
+        print(
+            "; ".join([head, *clauses])
+            + f". Lean's statements are {whose}, from its own description, not "
+            f"{decider}'s results, and {decider}'s hints were checked, not trusted. "
+            "--show-lean prints the Lean."
         )
 
 
@@ -674,7 +697,7 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
         reason = fact.provenance.get("lean_reason")
         if fact.provenance.get("lean_parts") and _recorded(reason):
             who = f"{fact.decided_by} decided it; " if fact.decided_by else ""
-            lines.append((fact, f"{who}{reason}"))
+            lines.append((fact, f"{who}{reason} (--show-lean shows what Lean said)"))
             continue
         declined = fact.provenance.get("lean_declined")
         if verbose and fact.decided_by and _recorded(declined):
@@ -1343,7 +1366,13 @@ def _lean_lines(fact: Fact) -> list[str]:
         return lines
     refutation = provenance.get("lean_refutation")
     if _recorded(refutation):
-        return [f"  {provenance.get('lean_counterexample', '')}", *_indented(refutation)]
+        how = provenance.get("lean_refuted_by")
+        head = str(provenance.get("lean_counterexample", ""))
+        lines = [f"  {head} (by {how})" if _recorded(how) else f"  {head}"]
+        said = provenance.get("lean_counterexample_detail")
+        if _recorded(said):
+            lines.append(f"  Lean said: {said}")
+        return [*lines, *_indented(refutation)]
     term = fact.term
     if term is None or callable(getattr(term, "lean_obligation", None)):
         return []
