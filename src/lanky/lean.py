@@ -2101,6 +2101,9 @@ class LeanStatement:
             cut (see the module docstring), one statement per argument. Empty
             for a statement with none, and in the core dialect, which prints
             neither function.
+        codomain_bounds: For each family whose values are a ``Fin``, the
+            hypothesis that bounds them (see :func:`codomain_bound`), as
+            ``(lanky name, hypothesis name)`` pairs.
     """
 
     name: str
@@ -2115,6 +2118,7 @@ class LeanStatement:
     variables: tuple[str, ...] = field(default_factory=tuple)
     shadowed: frozenset[str] = frozenset()
     side_conditions: tuple[LeanStatement, ...] = field(default_factory=tuple)
+    codomain_bounds: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
     def qualified(self, name: str) -> str:
         """A root declaration as this statement's source names it (see :func:`global_name`).
@@ -2293,6 +2297,22 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
     anchors: list[int] = []
     types: dict[str, Any] = _free_scope(term)
     taken = _mentioned(term)
+    bounds: list[tuple[str, Any]] = []
+    bounded: list[tuple[str, str]] = []
+
+    def bound_families(last: bool) -> None:
+        # a family's bound follows it as soon as every name it mentions is a
+        # parameter, which for nc and nv declared first is right after it
+        for name, bound in list(bounds):
+            if last or _names_of(bound) <= set(types):
+                text = _render_prop(bound, _QUANT, types)
+                hypothesis = _hypothesis_name(len(hypotheses), taken)
+                hypotheses.append((hypothesis, text))
+                hypothesis_terms.append(None)
+                anchors.append(len(binders))
+                bounded.append((name, hypothesis))
+                bounds.remove((name, bound))
+
     for var, domain in term.binders:
         guards = _domain_guards(var, domain, types)
         types = {**types, var.name: domain}
@@ -2301,6 +2321,11 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
             hypotheses.append((_hypothesis_name(len(hypotheses), taken), guard))
             hypothesis_terms.append(None)
             anchors.append(len(binders))
+        bound = codomain_bound(var, domain, taken)
+        if bound is not None:
+            bounds.append((var.name, bound))
+        bound_families(last=False)
+    bound_families(last=True)
     for guard in conjuncts(term.guard):
         text = _render_prop(guard, _QUANT, types)
         hypotheses.append((_hypothesis_name(len(hypotheses), taken), text))
@@ -2318,7 +2343,63 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
         mathlib=mathlib,
         variables=tuple(var.name for var, _ in term.binders),
         shadowed=shadowed,
+        codomain_bounds=tuple(bounded),
     )
+
+
+def codomain_bound(var: Var, domain: Any, taken: set[str] | None = None) -> Any:
+    """What a family's ``Fin`` values are below, as a lanky proposition; or ``None``.
+
+    A family whose values are points of a ``Fin``, ``cell: Fn[Fin[nc],
+    Fin[d], Fin[nv]]``, prints as ``Int → Int → Nat``, which says the values
+    are not negative and not that they are below ``nv``. Without the bound a
+    claim that rests on it, that the cells a map picks are cells of ``y``,
+    is a stronger claim in Lean than in Python, and one Lean cannot prove. So
+    the statement takes it as a hypothesis after the family: ``∀ c, 0 ≤ c →
+    c < nc → ∀ j, 0 ≤ j → j < d → (cell c j : Int) < nv``.
+
+    Only for arguments over a ``Fin``, a ``Nat`` or an ``Int`` whose bound
+    mentions none of the arguments before it, and a ``Fin`` of the values
+    that mentions none of them either: ``None`` otherwise, and the statement
+    is as it was. The binders are named afresh from ``taken``, which gets
+    them.
+    """
+    if not isinstance(domain, FnType):
+        return None
+    arguments: list[Any] = []
+    current: Any = domain
+    while isinstance(current, FnType):
+        arguments.append(current.domain)
+        current = current.codomain
+    if not isinstance(current, FinType):
+        return None
+    taken = set() if taken is None else taken
+    binders: list[tuple[Var, Any]] = []
+    for argument in arguments:
+        base = argument
+        if isinstance(base, FinType):
+            if _names_of(base.bound) & {v.name for v, _ in binders}:
+                return None
+        elif not (isinstance(base, Sort) and base.name in ("Nat", "Int")):
+            return None
+        stem = name = f"{var.name}_arg"
+        suffix = 1
+        while name in taken:
+            name = f"{stem}{suffix}"
+            suffix += 1
+        taken.add(name)
+        binders.append((Var(name), argument))
+    if _names_of(current.bound) & {v.name for v, _ in binders}:
+        return None
+    applied = Var(var.name)[tuple(v for v, _ in binders) if len(binders) > 1 else binders[0][0]]
+    return Forall(tuple(binders), applied < current.bound)
+
+
+def _names_of(expr: Any) -> set[str]:
+    """The names a bound mentions; none for a number."""
+    if isinstance(expr, prim.ExpressionNode):
+        return free_names(expr)
+    return set()
 
 
 # }}}

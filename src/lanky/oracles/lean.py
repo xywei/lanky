@@ -1407,6 +1407,178 @@ def sum_scripts(statement: LeanStatement, until: float | None = None) -> list[st
     return scripts
 
 
+def _application(term: Any) -> tuple[str, tuple[Any, ...]] | None:
+    """``term`` as one application of a variable, ``(name, arguments)``; or ``None``."""
+    if not isinstance(term, prim.Call | prim.Subscript):
+        return None
+    found = _applications(term)
+    return found[0] if found else None
+
+
+def _fiber(sum_term: Any, outer: Var) -> tuple[Any, tuple[Var, ...]] | None:
+    """A sum over the cells a map sends to ``outer``: its map and its binders.
+
+    ``sum(g for c in Fin[nc] for k in Fin[d] if cell[c, k] == i)`` with
+    ``outer`` the ``i``: the map is ``cell[c, k]``, an application whose
+    arguments are the sum's binders, each once, and neither it nor the
+    summand mentions ``i``. ``None`` for any other sum.
+    """
+    if not isinstance(sum_term, Sum) or sum_term.guard is None:
+        return None
+    if not isinstance(sum_term.guard, Comparison) or sum_term.guard.operator != "==":
+        return None
+    left, right = sum_term.guard.left, sum_term.guard.right
+    if isinstance(right, prim.Variable) and right.name == outer.name:
+        mapped = left
+    elif isinstance(left, prim.Variable) and left.name == outer.name:
+        mapped = right
+    else:
+        return None
+    binders = tuple(var for var, _ in sum_term.binders)
+    if not all(isinstance(domain, FinType) for _, domain in sum_term.binders):
+        return None
+    found = _application(mapped)
+    if found is None:
+        return None
+    _name, arguments = found
+    names = [argument.name for argument in arguments if isinstance(argument, prim.Variable)]
+    if len(names) != len(arguments) or sorted(names) != sorted(v.name for v in binders):
+        return None
+    mentioned = set(free_variables(sum_term.body)) | set(free_variables(mapped))
+    if outer.name in mentioned:
+        return None
+    return mapped, binders
+
+
+def fiber_scripts(statement: LeanStatement) -> list[str]:
+    """Add up the sums over the fibers of a map: the total of what a scatter adds.
+
+    Mathlib mode only, for a goal ``sum(y[i] for i in Fin[nv]) == sum(g for c
+    in Fin[nc] for k in Fin[d])``, either way round, where ``y[i]`` is what
+    the cells ``cell`` sends to ``i`` add, ``sum(g for c ... for k ... if
+    cell[c, k] == i)``, written out or given by a hypothesis ``all(y[i] ==
+    ... for i in Fin[nv])``, and ``cell`` is a family whose values are a
+    ``Fin[nv]``. That is a scatter-add keeping the total: every cell's value
+    lands in exactly one ``y[i]``.
+
+    The script is the proof by hand, with the order of the sums read off the
+    statement: rewrite ``y[i]`` with its hypothesis under the sum
+    (``Finset.sum_congr``), turn the filter into an ``if``
+    (``Finset.sum_filter``), move the sum over ``i`` inside the map's
+    arguments one exchange at a time (``Finset.sum_comm``), each time
+    stepping under the outer sum on both sides, add up the ``if`` over ``i``
+    (``Finset.sum_ite_eq``), which leaves whether ``cell[c, k]`` is a point
+    of ``Fin[nv]``, and show it is from the bound the family's type gives
+    (:func:`lanky.lean.codomain_bound`). Lean checks every step, so a shape
+    read wrongly costs an attempt and never a proof.
+    """
+    if not statement.mathlib or isinstance(statement.goal_term, Forall):
+        return []
+    body = statement.goal_term
+    if not (isinstance(body, Comparison) and body.operator == "=="):
+        return []
+    bounds = dict(statement.codomain_bounds)
+    used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
+    used |= set(statement.types)
+    congruence = statement.qualified("Finset.sum_congr")
+    member = statement.qualified("Finset.mem_Ico")
+    scripts = []
+    sides = ((False, (body.left, body.right)), (True, (body.right, body.left)))
+    for flip, (outer_side, total) in sides:
+        if not isinstance(outer_side, Sum) or outer_side.guard is not None:
+            continue
+        if len(outer_side.binders) != 1 or not isinstance(outer_side.binders[0][1], FinType):
+            continue
+        outer = outer_side.binders[0][0]
+        head = ["symm"] if flip else []
+        fiber = _fiber(outer_side.body, outer)
+        if fiber is None:
+            # y[i], with a hypothesis that says what it is
+            applied = _application(outer_side.body)
+            if applied is None or len(applied[1]) != 1:
+                continue
+            family, (argument,) = applied
+            if not (isinstance(argument, prim.Variable) and argument.name == outer.name):
+                continue
+            hypotheses = zip(statement.hypotheses, statement.hypothesis_terms, strict=False)
+            for (name, _), term in hypotheses:
+                if not (isinstance(term, Forall) and len(term.binders) == 1):
+                    continue
+                var, domain = term.binders[0]
+                eq = term.body
+                if term.guard is not None or not isinstance(domain, FinType):
+                    continue
+                if not (isinstance(eq, Comparison) and eq.operator == "=="):
+                    continue
+                defined = _application(eq.left)
+                if defined is None or defined[0] != family or len(defined[1]) != 1:
+                    continue
+                (index,) = defined[1]
+                if not (isinstance(index, prim.Variable) and index.name == var.name):
+                    continue
+                fiber = _fiber(eq.right, var)
+                if fiber is None:
+                    continue
+                x, hx = _fresh("x", used), _fresh("hx", used)
+                head.append(
+                    f"rw [{congruence} rfl fun {x} {hx} => {name} {x} "
+                    f"({member}.mp {hx}).1 ({member}.mp {hx}).2]"
+                )
+                break
+            else:
+                continue
+        mapped, binders = fiber
+        family = _application(mapped)[0]
+        if family not in bounds or not isinstance(total, Sum):
+            continue
+        if len(total.binders) != len(binders):
+            continue
+        names = {
+            var.name: (_fresh(f"{var.name}_", used), _fresh(f"h{var.name}_", used))
+            for var in binders
+        }
+        steps = [*head, f"simp only [{statement.qualified('Finset.sum_filter')}]"]
+        for var in binders:
+            point, held = names[var.name]
+            steps.append(f"rw [{statement.qualified('Finset.sum_comm')}]")
+            steps.append(f"refine {congruence} rfl fun {point} {held} => ?_")
+        steps.append(
+            f"first | rw [{statement.qualified('Finset.sum_ite_eq')}] "
+            f"| rw [{statement.qualified('Finset.sum_ite_eq')}']"
+        )
+        arguments = " ".join(
+            f"{names[argument.name][0]} ({member}.mp {names[argument.name][1]}).1 "
+            f"({member}.mp {names[argument.name][1]}).2"
+            for argument in _application(mapped)[1]
+        )
+        steps.append(
+            f"rw [if_pos ({member}.mpr ⟨by omega, {bounds[family]} {arguments}⟩)]"
+        )
+        scripts.append("\n".join(steps))
+    return scripts
+
+
+#: Each conjunct of a conjunction, once ``And.intro`` has split it: the
+#: closers of Mathlib mode, each one closing its goal or failing.
+_CONJUNCT_CLOSERS = (
+    "first | ring1 | (norm_num; done) | linarith | nlinarith | positivity "
+    "| ((push_cast; ring1)) | (simp_all; done)"
+)
+
+
+def conjunction_scripts(statement: LeanStatement) -> list[str]:
+    """Prove a conjunction a conjunct at a time.
+
+    Mathlib mode only, for a goal that is a conjunction at the top: a claim
+    over a concrete ``Fin[3]``, ``all(... for j in Fin[3])``, is one, the
+    claim at ``j = 0``, ``1`` and ``2``, and ``ring`` proves each equation of
+    reals but not the three at once.
+    """
+    if not statement.mathlib or not isinstance(statement.goal_term, prim.LogicalAnd):
+        return []
+    return [f"(repeat' apply And.intro) <;> ({_CONJUNCT_CLOSERS})"]
+
+
 #: How a linear combination is checked once it is moved to one side. The casts
 #: are pushed down to the variables first, since the order a step is at is a
 #: ``Nat`` inside an ``Int`` inside a ``ℝ``. Then ``ring``; ``ring_nf``, which
@@ -2018,8 +2190,10 @@ def tactic_ladder(
     ladder = list(BASE_TACTICS)
     if statement.mathlib:
         if not refuting:
+            ladder += conjunction_scripts(statement)
             ladder += family_induction_scripts(statement, finder, until)
             ladder += sum_scripts(statement, until)
+            ladder += fiber_scripts(statement)
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
         ladder += _mathlib_tactics(lemmas, refuting)
         if statement.side_conditions and not refuting:

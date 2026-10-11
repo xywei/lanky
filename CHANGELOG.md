@@ -8,6 +8,36 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Added
 
+- **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
+  A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
+  Fin[d])`, either way round, where `y[i]` is the sum over the cells a map
+  sends to `i`, `sum(g for c ... for k ... if cell[c, k] == i)`, written out
+  or given by a hypothesis `all(y[i] == ... for i in Fin[nv])`, is proved by
+  a script Python writes from the statement: rewrite `y` under the sum,
+  turn the filter into an `if` (`Finset.sum_filter`), move the sum over `i`
+  inside the map's arguments one exchange at a time (`Finset.sum_comm`,
+  stepping under the outer sum on both sides with `Finset.sum_congr`), add
+  up the `if` (`Finset.sum_ite_eq`), and show the cell is a node from the
+  bound the map's type gives (below). That is a scatter-add keeping the
+  total on every mesh, which the S3 demonstration of loopty states for
+  PyOP2's assembly loop.
+- **A conjunction, a conjunct at a time, in Mathlib mode**
+  (`lanky.oracles.lean.conjunction_scripts`). A claim over a concrete
+  `Fin[3]`, `all(... for j in Fin[3])`, is the conjunction of its three
+  instances, which `ring` proves one at a time and not at once; the ladder
+  now splits it with `And.intro` and closes each conjunct.
+
+### Fixed
+
+- **A family whose values are a `Fin` keeps their bound in Lean.**
+  `cell: Fn[Fin[nc], Fin[d], Fin[nv]]` prints as `Int → Int → Nat`, which
+  says the values are not negative and not that they are below `nv`, so a
+  claim resting on that bound was a stronger claim in Lean than in Python,
+  and one Lean could not prove. The statement now takes the bound as a
+  hypothesis after the family, `∀ c, 0 ≤ c → c < nc → ∀ j, 0 ≤ j → j < d →
+  (cell c j : Int) < nv` (`lanky.lean.codomain_bound`), and
+  `LeanStatement.codomain_bounds` names it for a strategy.
+
 - **Families with several indices.** `Fn[A, B, C]` is a family with two
   indices, the family of families `Fn[A, Fn[B, C]]`, and any number of
   indices is curried the same way; a matrix is `Fn[Fin[n], Fin[m], Real]`.
