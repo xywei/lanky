@@ -1940,12 +1940,19 @@ class LeanOracle:
         imported counts.
 
         Raises:
-            ValueError: If the variable is not a finite number, ``nan`` and
-                ``inf`` included, which :meth:`establish` declines the fact
-                for, saying so.
+            ValueError: If the variable, or the budget the oracle was made
+                with, is not a finite number, ``nan`` and ``inf`` included,
+                which :meth:`establish` declines the fact for, saying so: a
+                budget that is no number would be no budget, and the ladder
+                would run unbounded where a bound was asked for.
         """
         vacuity = fact.kind in VACUITY_KINDS
         given = self.vacuity_budget if vacuity else self.budget
+        if given is not None and not math.isfinite(given):
+            keyword = "vacuity_budget" if vacuity else "budget"
+            raise ValueError(
+                f"the oracle's {keyword} is {given!r}, which is not a finite number of seconds"
+            )
         if given is None:
             variable = "LANKY_LEAN_VACUITY_BUDGET" if vacuity else "LANKY_LEAN_BUDGET"
             text = os.environ.get(variable)

@@ -122,7 +122,9 @@ worth the `tested` reading it rests on.
   default) caps the whole ladder of one fact, and `LANKY_LEAN_VACUITY_BUDGET`
   (30 s) that of a question whether a fact is vacuous, whose answer is
   almost always no; `0` is no budget, and `LeanOracle(budget=...,
-  vacuity_budget=...)` sets them for one oracle. A statement no attempt fits
+  vacuity_budget=...)` sets them for one oracle. A budget that is not a
+  finite number, from the variable or the constructor, declines the fact,
+  saying so, rather than leaving the ladder unbounded. A statement no attempt fits
   paid for every attempt, each up to `LANKY_LEAN_TIMEOUT`, and nothing
   bounded the ladder: `lanky check examples/sumpy_recurrence.py` took 491 s
   in Mathlib mode before its large row was declined for Lean. The budget

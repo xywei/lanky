@@ -9,6 +9,7 @@ green suite.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Iterator
@@ -1620,6 +1621,19 @@ def test_the_budget_is_read_when_a_fact_is_offered(monkeypatch) -> None:
     result = oracle.establish(claim)
     assert result.provenance["declined"] == (
         "lean: LANKY_LEAN_BUDGET is 'inf', which is not a finite number of seconds"
+    )
+    # a budget the oracle is made with is held to the same, where nan and inf
+    # were no budget at all (Codex, #109)
+    monkeypatch.delenv("LANKY_LEAN_BUDGET")
+    for given in (math.nan, math.inf):
+        with pytest.raises(ValueError, match="oracle's budget is .*not a finite number"):
+            LeanOracle(budget=given)._budget(claim)
+        with pytest.raises(ValueError, match="oracle's vacuity_budget is"):
+            LeanOracle(vacuity_budget=given)._budget(question)
+        assert LeanOracle(vacuity_budget=given)._budget(claim) == DEFAULT_BUDGET
+    oracle, _server = _slow_oracle(monkeypatch, 0.01, budget=math.inf)
+    assert oracle.establish(claim).provenance["declined"] == (
+        "lean: the oracle's budget is inf, which is not a finite number of seconds"
     )
 
 
