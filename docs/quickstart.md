@@ -1099,8 +1099,12 @@ A matrix is a family with two indices, `Fn[Fin[n], Fin[n], Real]`, which is
 `Fn[Fin[n], Fn[Fin[n], Real]]`, and its entry is `F[a, p]`, as numpy writes
 it; `F(a, p)` and `F(a)(p)` are the same entry, to the tester, to the check of
 the reading and to Lean, which writes `F a p`. Called as a function, a theorem
-takes a nested list or a numpy array for such a family. `kron` is a helper in
-the file that returns the entry of `H (x) G (x) F`, and the reading of the
+takes a nested list, a numpy array or a function for such a family
+(`F=lambda a, p: ...`), and a value of another shape is refused with the shape
+it takes. A hypothesis may define a matrix entry by entry, `all(F[i, j] == ...
+for i in Fin[n] for j in Fin[n])`, and the tester then fills in its entries
+rather than waiting for a random draw to meet it. `kron` is a helper in the
+file that returns the entry of `H (x) G (x) F`, and the reading of the
 annotation expands it. The row `(a, b, c)` is a parameter rather than a
 quantifier in the goal: the statement is the same, a theorem's parameters are
 universal, and the tester draws a row rather than walking all `n**3` of them,
