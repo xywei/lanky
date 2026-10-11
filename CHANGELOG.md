@@ -107,16 +107,26 @@ worth the `tested` reading it rests on.
     `DRAW_SECONDS = 5` seconds, and a power or a left
     shift either asks for may have `POWER_BITS = 2 ** 20` bits; past either,
     the draw is given up as `slow`, as a walk past `WALK_POINTS` is given up
-    as `unwalked`, and the written values past it are not drawn at. The walks
+    as `unwalked`. The walks
     and the term's reading ask for the time as they go, and the user's code,
     the annotations and the functions of the claim's module and of the
     modules under its source roots, the methods of their classes included,
     is watched with `sys.monitoring` while the draws run, so that a helper's
     own loop, or a helper that calls itself, is stopped at its next call or
-    turn of a loop. A draw given up stays given up where a helper catches
-    everything, the giving up included, and answers.
+    turn of a loop. A library's Python code, which is not watched, is
+    stopped by an interval timer (`lanky.deadline`, below) where one can be
+    set, owned by the draw, so that a deadline set around the check is
+    raised again to its owner. A draw given up stays given up where a helper
+    catches everything, the giving up included, and answers.
     A helper that took time exponential in its argument, at a value the
     claim writes, ran as long as Python took.
+  - Each draw has that time of its own, a written value past one too slow
+    to draw at too (#114): a helper too slow at `999` that answers
+    otherwise at `1000` is refuted there. Past `SLOW_DRAWS = 4` draws of a
+    claim given up as `slow`, the check makes no more, and the reading is
+    declined, naming them (#113), so a helper slow at the small values the
+    corners and the tester draw costs a claim five draws' time, 25 seconds,
+    where one cost 95.
   - The term is evaluated at the same values in Python's arithmetic, its
     sums added with Python's `sum` over the same values, which compensates as
     it adds since 3.12, so that both readings round alike.
@@ -156,7 +166,8 @@ worth the `tested` reading it rests on.
   operators read what Python has no value for as Lean has it (#99), and
   `lanky.testing.totalized_value`, what a family is there outside its domain,
   with the `codomain` a `Table` now takes.
-- `lanky.faithful.DRAW_SECONDS` and `POWER_BITS` (#101).
+- `lanky.faithful.DRAW_SECONDS`, `POWER_BITS` (#101) and `SLOW_DRAWS`
+  (#113).
 - **The pytest plugin fails a theorem whose reading is refuted**, with the
   annotation, the draw and the reason, before any draw of its term, which
   would test another statement.
@@ -182,8 +193,8 @@ worth the `tested` reading it rests on.
   budget.
 - `lanky.deadline`: `deadline(seconds, owner)` and `Expired`, the interval
   timer the CAS oracle kept as its own, shared with the Lean oracle's
-  search; an `Expired` names its deadline's owner, so a caller tells its
-  own from one set around it. A timer that goes off as the block ends no
+  search and the faithful fact's draws; an `Expired` names its deadline's
+  owner, so a caller tells its own from one set around it. A timer that goes off as the block ends no
   longer leaves the deadline's handler installed: it raised in the
   `finally` that stops the timer, before the handler there was was put
   back, so the next `SIGALRM`, meant for someone else, raised `Expired`.

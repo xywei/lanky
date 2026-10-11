@@ -96,9 +96,14 @@ come :data:`SAMPLES` of the property tester's draws
 take more than :data:`DRAW_SECONDS`, a helper that takes time exponential in
 its argument at a value the claim writes, or ask for a power of more than
 :data:`POWER_BITS` bits, ``2 ** 2 ** n`` there, is given up as too slow
-(``slow``), and the written values past it are not drawn at (#101): the
-walks and the term's reading ask for the time as they go, and the user's
-code is stopped at a call or a turn of a loop (:func:`_watching`).
+(``slow``) (#101): the walks and the term's reading ask for the time as they
+go, the user's code is stopped at a call or a turn of a loop
+(:func:`_watching`), and where an interval timer can be set, the Python of a
+library is stopped by one (:func:`_timed`, :mod:`lanky.deadline`). Each
+draw has that time of its own, a written value past one too slow to draw at
+too, since a helper slow at ``999`` can answer otherwise at ``1000``
+(#114); once more than :data:`SLOW_DRAWS` draws of a claim have been given
+up so, the check makes no more, and the reading is declined (#113).
 The definitional hypotheses are satisfied by construction
 (:func:`lanky.testing.satisfy_hypotheses`) so that a scan is one. A bounded
 quantifier enumerates every point of its domain anyway. A family over a sort
@@ -185,7 +190,7 @@ import types
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
@@ -194,6 +199,8 @@ from typing import Any
 import numpy
 import pymbolic.primitives as prim
 
+from lanky.deadline import Expired
+from lanky.deadline import deadline as interval_timer
 from lanky.intervals import ComplexValue
 from lanky.ledger import FAITHFUL, Fact, Status, fact_id
 from lanky.prelude import FinType, FnType, LankyType, Refined, Sort, SumType
@@ -241,6 +248,7 @@ __all__ = [
     "SAMPLES",
     "SEED",
     "SIZE_POINTS",
+    "SLOW_DRAWS",
     "SORT_POINTS",
     "STATEMENT",
     "WALK_POINTS",
@@ -305,6 +313,12 @@ WALK_POINTS = 1 << 15
 #: helper that takes time exponential in its argument, at a value the claim
 #: writes.
 DRAW_SECONDS = 5.0
+
+#: How many draws of one claim may be given up as too slow: at one more the
+#: check draws no more, and the reading is declined (#113). Each such draw
+#: costs :data:`DRAW_SECONDS`, and a helper slow at the small values the
+#: corners and the tester draw made one claim cost a minute and more.
+SLOW_DRAWS = 4
 
 #: How many bits a power or a left shift may have that an annotation, or its
 #: term, computes at a draw, an integer's or a fraction's: one past it, ``2 **
@@ -516,7 +530,8 @@ def _on_time() -> None:
     The walks of both readings ask at every point (:func:`_step`), the
     term's reading at every node it evaluates (:meth:`_Reading.rec`), and
     the user's code at every call and every turn of a loop
-    (:func:`_watching`).
+    (:func:`_watching`); a library's Python code is stopped by an interval
+    timer instead, where one can be set (:func:`_timed`).
 
     Raises:
         _TooSlow: If the readings at this draw have taken more than
@@ -3019,10 +3034,11 @@ def _watching(
     block ends. Where every such id is taken, nothing is watched, and a
     helper that loops forever at a draw stops the check there.
 
-    What Python runs in one step, a builtin's or a library's loop in C, or
-    ``2 ** 2 ** n`` in a helper, is not stopped, nor is a library's code, nor
-    a function no module of the user's holds when the draws start; the
-    annotation's own powers and its term's are kept small
+    A library's code, and a function no module of the user's holds when the
+    draws start, are not watched; where an interval timer can be set, it
+    stops them (:func:`_timed`). What Python runs in one step, a builtin's or
+    a library's loop in C, or ``2 ** 2 ** n`` in a helper, is stopped by
+    neither; the annotation's own powers and its term's are kept small
     (:func:`_computable`).
     """
     monitoring = sys.monitoring
@@ -3104,8 +3120,16 @@ def _compare(
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)
         reading = _Reading(dict(draw.context), draw.samples)
         try:
-            python, term = _both_readings(
-                annotation, scope, reading, draw, unsummed, deadline, total
+            python, term = _timed(
+                deadline,
+                _both_readings,
+                annotation,
+                scope,
+                reading,
+                draw,
+                unsummed,
+                deadline,
+                total,
             )
         except _GivenUp as exc:
             yield annotation, exc.verdict, _Outcome(error=exc), _Outcome(error=exc)
@@ -3117,6 +3141,45 @@ def _compare(
             yield annotation, "differed", python, term
             continue
         yield annotation, _judge(python, term), python, term
+
+
+#: How far past a draw's deadline the interval timer that keeps it goes off
+#: (:func:`_timed`): by then the readings' own checks find the draw past its
+#: time too, where a helper caught what the timer raised and answered.
+_TIMER_GRACE = 0.05
+
+
+def _timed(deadline: float, call: Callable[..., Any], *args: Any) -> Any:
+    """``call(*args)``, stopped by an interval timer a little past ``deadline``, where one can be.
+
+    The walks, the term's reading and the user's code ask for the time as
+    they go (:func:`_on_time`, :func:`_watching`); a library's Python code
+    does not. So the readings run under :func:`lanky.deadline.deadline` too,
+    which this call owns, and which in the main thread of a POSIX process
+    with no other interval timer running raises in whatever Python code runs
+    :data:`_TIMER_GRACE` past ``deadline``: the draw is given up as too
+    slow, as at any of the checks. An :class:`~lanky.deadline.Expired` this
+    call does not own is from a deadline its caller set around the check,
+    since the check runs before any oracle and inside none of their
+    deadlines, and is raised again; under such a deadline this one sets no
+    timer, and the checks keep the draw's time alone. The timer can go off
+    in lanky's code too, so ``call`` runs in a copy of the current context,
+    and what that code set there and had no time to reset is gone with the
+    copy.
+
+    Raises:
+        _TooSlow: If the timer went off.
+    """
+    owner = object()
+    try:
+        with interval_timer(deadline - time.monotonic() + _TIMER_GRACE, owner):
+            return copy_context().run(call, *args)
+    except Expired as exc:
+        if exc.owner is not owner:
+            raise
+        raise _TooSlow(
+            f"the readings at this draw took more than {DRAW_SECONDS:g} seconds"
+        ) from None
 
 
 @contextmanager
@@ -3227,11 +3290,18 @@ class _Tally:
     unanswered: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     skipped: list[str] = field(default_factory=list)
+    #: Why each draw given up as ``slow`` was.
+    slow: list[str] = field(default_factory=list)
+    #: The draw at which the check made no more, past :data:`SLOW_DRAWS`
+    #: draws too slow (#113), or ``None``.
+    stopped: str | None = None
 
     def give_up(self, verdict: str, why: str) -> None:
         """Count a draw given up, ``unwalked`` or ``slow``, and say why."""
         self.counts[verdict] = self.counts.get(verdict, 0) + 1
         self.skipped.append(why)
+        if verdict == "slow":
+            self.slow.append(why)
 
     def record(
         self, annotation: _Annotation, verdict: str, python: _Outcome, term: _Outcome
@@ -3334,6 +3404,8 @@ def faithful_fact(theorem: Any) -> Fact:
             return refuted
     except Exception as exc:  # noqa: BLE001 - a fact, never a crash of the check
         return declined(f"the annotations could not be run again: {type(exc).__name__}: {exc}")
+    if tally.stopped is not None:
+        return declined(_too_slow(tally))
     if not tally.draws:
         why = f" ({tally.skipped[0]})" if tally.skipped else ""
         return declined(
@@ -3376,20 +3448,21 @@ def _run(
     they have to agree. Until the second reading has run, such an
     annotation's first comparison is not counted, so that a draw at which
     the second reading is given up compares nothing past where Python
-    stopped, and counts for nothing. A draw that is given up is not counted,
-    and past a draw at a written value given up as too slow, the written
-    values after it, which are larger, are not drawn at (#101).
+    stopped, and counts for nothing. A draw that is given up is not counted.
+    Each draw has :data:`DRAW_SECONDS` of its own, a written value past one
+    too slow to draw at too, since a helper slow at ``999`` can answer
+    otherwise at ``1000`` (#114); once more than :data:`SLOW_DRAWS` draws
+    have been given up as too slow, no more are made, and ``tally`` says so
+    (:attr:`_Tally.stopped`), which declines the reading (#113).
     """
     hypotheses = [prop for _, prop in theorem.hypotheses]
-    slow = False
     for draw in _draws(theorem.variables, hypotheses, extent):
         if isinstance(draw, str):
             tally.skipped.append(draw)
             continue
-        written = draw.label.startswith("written")
-        if slow and written:
-            tally.give_up("slow", f"{draw.label}: past a written value too slow to draw at")
-            continue
+        if tally.counts.get("slow", 0) > SLOW_DRAWS:
+            tally.stopped = draw.label
+            return None
         tally.draws += 1
         # both readings of the draw, and its second reading, share its time
         deadline = time.monotonic() + DRAW_SECONDS
@@ -3409,7 +3482,6 @@ def _run(
                 # given up, so the draw is not one
                 tally.draws -= 1
                 tally.give_up(verdict, f"{draw.label}: {python.error}")
-                slow = slow or (verdict == "slow" and written)
                 given_up = True
                 continue
             if python.error is not None and term.error is not None:
@@ -3428,7 +3500,6 @@ def _run(
                 # what follows where Python stopped was not compared
                 tally.draws -= 1
                 tally.give_up(verdict, f"{draw.label}, read as Lean reads it: {python.error}")
-                slow = slow or (verdict == "slow" and written)
                 break
             if (
                 annotation.name in stopped
@@ -3443,6 +3514,18 @@ def _run(
             for comparison in pending:
                 tally.record(*comparison)
     return None
+
+
+def _too_slow(tally: _Tally) -> str:
+    """Why a reading is not tested whose draws the check stopped, too many of them too slow."""
+    listing = "; ".join(tally.slow[:3])
+    if len(tally.slow) > 3:
+        listing += f"; and {len(tally.slow) - 3} more"
+    return (
+        f"{len(tally.slow)} draws were given up as too slow ({listing}), more than the "
+        f"{SLOW_DRAWS} a claim may give up so, so the check made no draw from "
+        f"{tally.stopped} on, and the reading was not compared there"
+    )
 
 
 def _not_copied(shared: Sequence[str]) -> str:

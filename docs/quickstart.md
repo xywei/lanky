@@ -408,7 +408,8 @@ theorem with the same draw.
 - **It is sampled.** A disagreement only at a point no draw reaches escapes
   it, as a counterexample no draw reaches escapes the tester. A draw whose
   readings take more than five seconds is given up, and a helper is stopped
-  there.
+  there; past four such draws of a claim, the check makes no more, and the
+  reading is `assumed`.
 
 ## Take a result on a citation
 

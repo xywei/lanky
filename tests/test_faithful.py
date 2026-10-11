@@ -1829,7 +1829,8 @@ def test_a_draw_whose_second_reading_is_given_up_counts_for_nothing(
     pairs = _pairs(check_path(_write(tmp_path, STOPPED_THEN_SLOW)))
     reading = pairs["always"][1]
     assert reading.status is Status.ASSUMED, reading.provenance
-    assert "no draw could be made" in reading.provenance["declined"]
+    # past SLOW_DRAWS draws given up so, the check makes no more (#113)
+    assert "given up as too slow" in reading.provenance["declined"]
     assert "read as Lean reads it" in reading.provenance["declined"]
     reading = pairs["from_three"][1]
     assert reading.status is Status.TESTED, reading.provenance
@@ -1837,7 +1838,7 @@ def test_a_draw_whose_second_reading_is_given_up_counts_for_nothing(
     # the two readings of a draw share its time: each naps 0.15 seconds
     reading = pairs["napping"][1]
     assert reading.status is Status.ASSUMED, reading.provenance
-    assert "no draw could be made" in reading.provenance["declined"]
+    assert "given up as too slow" in reading.provenance["declined"]
 
 
 #: Claims whose readings would run too long at a value they write (#101).
@@ -1890,8 +1891,8 @@ def test_a_draw_that_runs_too_long_is_given_up(monkeypatch, tmp_path) -> None:
     A helper's own loop, a helper that calls itself ``2 ** n`` times, and a
     power with more bits than ``POWER_BITS``, each at a value the claim
     writes, ran as long as Python takes, which is forever, or until memory
-    ran out. Each such draw is now given up, the written values past it are
-    not drawn at, and the claim's reading is tested at the draws that ran.
+    ran out. Each such draw is now given up, each written value in a time of
+    its own, and the claim's reading is tested at the draws that ran.
     A helper that catches everything catches the giving up too, and the
     draw is given up all the same, not read as an agreement with the
     helper's answer. The monitoring the check stops a helper with is
@@ -1989,6 +1990,201 @@ def test_a_draw_is_given_up_in_the_users_code_the_snapshot_does_not_copy(
         reading = pairs[owner][1]
         assert reading.status is Status.ASSUMED, (owner, reading.provenance)
         assert shared in reading.provenance["declined"], owner
+    assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
+
+
+#: A helper too slow at one value the claim writes, and misread at the next (#114).
+SLOW_THEN_MISREAD = """
+def helper(n):
+    if not isinstance(n, int):
+        return n * 0
+    while n == 999:
+        pass
+    return 1 if n == 1000 else 0
+
+
+@theorem
+def misread(n: Nat, h: n <= 1000) -> helper(n) == 0:
+    \"\"\"False at n = 1000, where the term, n*0 == 0, is true.\"\"\"
+"""
+
+
+def test_a_written_value_past_one_too_slow_to_draw_at_is_drawn_at(
+    prover, monkeypatch, tmp_path
+) -> None:
+    """Each written value is drawn at in its own time, past one too slow (#114).
+
+    The claim writes ``1000``, so its written draws include ``999``, ``1000``
+    and ``1001``, in that order. Past the draw at ``999``, given up as too
+    slow, the larger written values were not drawn at, since their walks
+    would be larger: the misreading at ``1000`` was never reached, the
+    reading read ``tested``, and a prover was shown the term ``n*0 == 0``.
+    Each written value has its own time now, so the draw at ``1000`` is
+    made, and refutes the reading.
+    """
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.5)
+    claim, reading = _pairs(check_path(_write(tmp_path, SLOW_THEN_MISREAD)))["misread"]
+    assert reading.status is Status.REFUTED, reading.provenance
+    assert reading.provenance["counterexample"] == {"n": 1000}
+    assert reading.provenance["python_answer"] == "computes False"
+    assert reading.provenance["term_answer"] == "computes True"
+    assert claim.status is Status.ASSUMED
+    assert prover.shown == []
+
+
+#: A helper too slow at the small values the corners and the tester draw (#113).
+SLOW_SMALL = """
+def spin(n):
+    while isinstance(n, int) and n >= 3:
+        pass
+    return n * 0
+
+
+@theorem
+def slow_small(n: Nat) -> spin(n) == 0:
+    \"\"\"spin never returns from 3 on, which the corners and the tester draw.\"\"\"
+
+
+@theorem
+def slow_late(n: Nat, h: n < 30) -> spin(n - 26) == 0:
+    \"\"\"spin never returns from n = 29 on, the last few draws of the claim.\"\"\"
+"""
+
+
+def test_a_claim_with_too_many_draws_too_slow_is_declined(monkeypatch, tmp_path) -> None:
+    """Past ``SLOW_DRAWS`` draws too slow, the check makes no more, and declines the reading (#113).
+
+    Each draw at which the helper was too slow cost ``DRAW_SECONDS``, and a
+    helper slow from ``3`` on is slow at most of the corners and the tester's
+    draws: nineteen of them, ninety-five seconds for one claim. One more
+    than ``SLOW_DRAWS`` are given up now, and then no draw is made, so the
+    reading, which was not compared at the draws left, is declined, naming
+    the draws given up. A claim slow at no more draws than that is tested
+    at the others, as before.
+    """
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.2)
+    given_up: list[str] = []
+    give_up = faithful._Tally.give_up
+
+    def counted(self, verdict: str, why: str) -> None:
+        given_up.append(verdict)
+        give_up(self, verdict, why)
+
+    monkeypatch.setattr(faithful._Tally, "give_up", counted)
+    pairs = _pairs(check_path(_write(tmp_path, SLOW_SMALL)))
+    reading = pairs["slow_small"][1]
+    assert reading.status is Status.ASSUMED, reading.provenance
+    declined = reading.provenance["declined"]
+    assert f"{faithful.SLOW_DRAWS + 1} draws were given up as too slow" in declined, declined
+    assert "took more than 0.2 seconds" in declined, declined
+    assert "so the check made no draw from" in declined, declined
+    reading = pairs["slow_late"][1]
+    assert reading.status is Status.TESTED, reading.provenance
+    assert 1 <= reading.provenance["slow"] <= faithful.SLOW_DRAWS, reading.provenance
+    assert given_up.count("slow") == faithful.SLOW_DRAWS + 1 + reading.provenance["slow"]
+
+
+#: A library outside the claims' source roots, whose loop the check does not watch.
+CRAWLING = """
+import time
+
+
+def crawl(n):
+    started = time.monotonic()
+    while n == 51 and time.monotonic() - started < 30:
+        pass
+    return 0
+"""
+
+#: A claim whose helper calls into :data:`CRAWLING` (#101, #108).
+SLOW_LIBRARY = """
+import faithful_crawling_101
+
+
+def through_a_library(n):
+    if not isinstance(n, int):
+        return n * 0
+    return faithful_crawling_101.crawl(n)
+
+
+@theorem
+def in_a_library(n: Nat, h: n < 52) -> through_a_library(n) == 0:
+    \"\"\"The library's loop runs thirty seconds at the written 51.\"\"\"
+"""
+
+
+def test_a_draw_is_given_up_in_a_librarys_code_by_an_interval_timer(
+    monkeypatch, tmp_path, tmp_path_factory
+) -> None:
+    """A library's Python code is stopped past ``DRAW_SECONDS`` too, by ``lanky.deadline`` (#101).
+
+    The user's code is watched with ``sys.monitoring``, and a library's,
+    which is no one's to watch, ran as long as it took: thirty seconds here
+    at the written 51, where the draw has half a second. The readings run
+    under an interval timer of ``lanky.deadline`` now, owned by the draw,
+    so the library's loop is stopped a little past the draw's time, and the
+    draw is given up as too slow. The handler of ``SIGALRM`` is the one
+    there was afterwards.
+    """
+    import signal
+    import sys
+    import time
+
+    library = tmp_path_factory.mktemp("library")
+    (library / "faithful_crawling_101.py").write_text(CRAWLING, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(library))
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.5)
+    handler = signal.getsignal(signal.SIGALRM)
+    started = time.monotonic()
+    try:
+        pairs = _pairs(check_path(_write(tmp_path, SLOW_LIBRARY)))
+    finally:
+        sys.modules.pop("faithful_crawling_101", None)
+    assert time.monotonic() - started < 20
+    reading = pairs["in_a_library"][1]
+    assert reading.status is Status.TESTED, reading.provenance
+    assert reading.provenance["slow"] == 1, reading.provenance
+    assert signal.getsignal(signal.SIGALRM) is handler
+    assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+
+
+#: A claim whose helper loops forever at a value it writes (#101).
+LOOPS = """
+def spin(n):
+    while isinstance(n, int) and n > 50:
+        pass
+    return n * 0
+
+
+@theorem
+def loops(n: Nat, h: n < 60) -> spin(n) == 0:
+    \"\"\"spin never returns past 50, and the claim writes 50 and 60.\"\"\"
+"""
+
+
+def test_a_deadline_set_around_the_check_is_raised_again(tmp_path) -> None:
+    """An ``Expired`` that is not a draw's is its owner's, and passes through the check (#101).
+
+    The draws' interval timer is ``lanky.deadline``'s, which the CAS oracle
+    and the Lean oracle's search keep their deadlines with, and what it
+    raises names its owner. A deadline set around the check, here around
+    ``check_path``, goes off in a helper's loop at the written 51, with the
+    draw's five seconds far from spent: under it the draw sets no timer of
+    its own, and the ``Expired`` is raised again to its owner rather than
+    taken for the draw's. The monitoring the check stops a helper with is
+    released on the way out.
+    """
+    import sys
+    import time
+
+    from lanky.deadline import Expired, deadline
+
+    owner = object()
+    started = time.monotonic()
+    with pytest.raises(Expired) as raised, deadline(1.0, owner):
+        check_path(_write(tmp_path, LOOPS))
+    assert raised.value.owner is owner
+    assert time.monotonic() - started < faithful.DRAW_SECONDS
     assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
 
 

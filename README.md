@@ -476,10 +476,14 @@ proved. The check is sampled, and that leaves these limits:
   tester's. A draw at which a reading would walk more than 32768 points,
   `Fin[2 ** n]` at a written `63`, is given up, and so is one whose readings
   take more than five seconds, or ask for a power of more than 2 ** 20 bits,
-  `2 ** 2 ** n` at a written `99`, together with the written values past it
+  `2 ** 2 ** n` at a written `99`
   ([#101](https://github.com/xywei/lanky/issues/101)), so that a misreading
-  at one of those is not reached
-  ([#114](https://github.com/xywei/lanky/issues/114)).
+  at one of those is not reached. Each draw has its five seconds, so a
+  written value past one too slow is drawn at too
+  ([#114](https://github.com/xywei/lanky/issues/114)), and past four draws
+  of a claim given up as too slow, the check makes no more and the reading
+  is `assumed`, naming them
+  ([#113](https://github.com/xywei/lanky/issues/113)).
 - A claim whose annotations cannot be run at a point keeps an `assumed`
   reading, and a proof of it reads `proved under faithful:name`, with the
   reason in a `DECLINED` line: a variable of a sort no value can be drawn of
@@ -525,10 +529,12 @@ proved. The check is sampled, and that leaves these limits:
   to the copy and are gone at the next draw, but a side effect outside the
   module, a file written or a line printed, happens that often. A function
   of the user's modules, a helper or a method of a class of theirs, is
-  stopped at a call or a turn of a loop once its draw has run five seconds;
-  a library's code is not, nor is one step Python takes in C, a builtin's
-  loop or `2 ** 2 ** n` inside a helper, and it runs as long as it takes
-  ([#108](https://github.com/xywei/lanky/issues/108)).
+  stopped at a call or a turn of a loop once its draw has run five seconds,
+  and a library's Python code by an interval timer, where lanky can set one:
+  in the main thread of a POSIX process, where `lanky check` and pytest run
+  the check, with no other interval timer running. One step Python takes in C, a builtin's
+  loop or `2 ** 2 ** n` inside a helper, is not stopped, and runs as long as
+  it takes ([#108](https://github.com/xywei/lanky/issues/108)).
 - `lanky check` and the pytest plugin make the check. A theorem called or
   sampled directly, `gauss(n=4)` or `gauss.report()`, as `python
   examples/gauss.py` does, evaluates its term as before;
