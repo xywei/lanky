@@ -127,6 +127,63 @@ def test_families_are_sampled_as_tables() -> None:
     assert report.valid == 20
 
 
+def test_a_family_with_several_indices_is_applied_at_all_of_them_at_once() -> None:
+    """``F[i, j]``, ``F(i, j)`` and ``F(i)(j)`` are one entry, to the tester and natively.
+
+    A matrix is ``Fn[Fin[n], Fin[m], Int]``, a family of families. The tester
+    drew it as a table of tables and applied a table at one index only, so a
+    claim that wrote ``F[i, j]`` could not be tested at all ("could not
+    run"), and a theorem called with a nested list could not read it.
+    """
+    from lanky.faithful import faithful_fact
+
+    @theorem
+    def entries(n: Nat, m: Nat, F: Fn[Fin[n], Fin[m], Int]) -> all(
+        (F[i, j] == F(i)(j)) & (F(i, j) == F[i][j]) for i in Fin[n] for j in Fin[m]
+    ):
+        """Three spellings of one entry."""
+
+    report = entries.report(n=30)
+    assert report.ok, report.counterexample
+    assert report.valid == 30
+    assert entries(n=2, m=3, F=[[1, 2, 3], [4, 5, 6]]).holds
+    assert faithful_fact(entries).status is Status.TESTED
+
+    @theorem
+    def symmetric(n: Nat, F: Fn[Fin[n], Fin[n], Int]) -> all(
+        F[i, j] == F[j, i] for i in Fin[n] for j in Fin[n]
+    ):
+        """False: a matrix is not symmetric in general."""
+
+    ok, counterexample = symmetric.test(n=60)
+    assert not ok
+    assert counterexample is not None
+    assert symmetric(n=2, F=[[1, 2], [2, 3]]).holds
+    assert not symmetric(n=2, F=[[1, 2], [3, 4]]).holds
+
+
+def test_a_family_over_a_sort_is_applied_at_several_indices_in_its_reading() -> None:
+    """A family over ``Nat`` is drawn as the reading applies it, at one index or several."""
+    from lanky.faithful import faithful_fact
+
+    @theorem
+    def entries(f: Fn[Nat, Nat, Int]) -> all(f[a, b] == f(a)(b) for a in Nat for b in Nat):
+        """Two spellings of one entry of a family the tester cannot tabulate."""
+
+    assert faithful_fact(entries).status is Status.TESTED
+
+
+def test_a_table_is_applied_at_as_many_indices_as_it_has() -> None:
+    from lanky.testing import Table
+
+    matrix = Table([Table([1, 2]), Table([3, 4])])
+    assert matrix[1, 0] == matrix(1, 0) == matrix(1)(0) == matrix[1][0] == 3
+    with pytest.raises(TypeError, match="fewer indices"):
+        matrix[1, 0, 0]
+    with pytest.raises(TypeError, match="one index at least"):
+        matrix()
+
+
 def test_the_lean_printer_is_not_here_yet() -> None:
     with pytest.raises(NotImplementedError):
         gauss.lean()

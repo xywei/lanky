@@ -44,7 +44,10 @@ from lanky.oracles.lean import (
     MATHLIB_TACTICS,
     LeanOracle,
     LeanSession,
+    combination_norm,
+    family_induction_scripts,
     reduction_scripts,
+    sum_scripts,
     tactic_ladder,
 )
 from lanky.prelude import Complex, Fin, FinType, Fn, Nat, Real, Refined
@@ -295,6 +298,93 @@ def _short_base(
     recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat),
 ) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
     """False: nothing says what ``R(1)(b)`` is."""
+
+
+@theorem
+def exchanged(n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]) -> sum(
+    sum(f[i, j] for j in Fin[m]) for i in Fin[n]
+) == sum(sum(f[i, j] for i in Fin[n]) for j in Fin[m]):
+    """Two finite sums exchange."""
+
+
+@theorem
+def factorized(
+    n: Nat,
+    F: Fn[Fin[n], Fin[n], Real],
+    G: Fn[Fin[n], Fin[n], Real],
+    H: Fn[Fin[n], Fin[n], Real],
+    u: Fn[Fin[n], Fin[n], Fin[n], Real],
+    a: Fin[n],
+    b: Fin[n],
+    c: Fin[n],
+) -> sum(
+    H[c, r] * G[b, q] * F[a, p] * u[p, q, r] for p in Fin[n] for q in Fin[n] for r in Fin[n]
+) == sum(
+    H[c, r] * sum(G[b, q] * sum(F[a, p] * u[p, q, r] for p in Fin[n]) for q in Fin[n])
+    for r in Fin[n]
+):
+    """Sum factorization: a tensor-product operator applied as three one-axis passes."""
+
+
+@theorem
+def mixed(
+    n: Nat,
+    A: Fn[Fin[n], Fin[n], Real],
+    B: Fn[Fin[n], Fin[n], Real],
+    C: Fn[Fin[n], Fin[n], Real],
+    D: Fn[Fin[n], Fin[n], Real],
+    p: Fin[n],
+    q: Fin[n],
+) -> all(
+    sum(A[i, j] * B[k, s] * (C[j, p] * D[s, q]) for j in Fin[n] for s in Fin[n])
+    == sum(A[i, j] * C[j, p] for j in Fin[n]) * sum(B[k, s] * D[s, q] for s in Fin[n])
+    for i in Fin[n]
+    for k in Fin[n]
+):
+    """The Kronecker product's mixed product, entry by entry, with the rows under universals."""
+
+
+@theorem
+def _swapped_factors(
+    n: Nat,
+    F: Fn[Fin[n], Fin[n], Real],
+    G: Fn[Fin[n], Fin[n], Real],
+    H: Fn[Fin[n], Fin[n], Real],
+    u: Fn[Fin[n], Fin[n], Fin[n], Real],
+    a: Fin[n],
+    b: Fin[n],
+    c: Fin[n],
+) -> sum(
+    H[c, r] * G[b, q] * F[a, p] * u[p, q, r] for p in Fin[n] for q in Fin[n] for r in Fin[n]
+) == sum(
+    F[c, r] * sum(G[b, q] * sum(H[a, p] * u[p, q, r] for p in Fin[n]) for q in Fin[n])
+    for r in Fin[n]
+):
+    """False: the passes apply the first axis's factor along the third."""
+
+
+@theorem
+def series(
+    alpha: Complex,
+    beta: Complex,
+    c: Fn[Nat, Complex],
+    away: alpha != 0,
+    first: alpha * c(1) == beta,
+    ode: all((n + 1) * alpha * c(n + 1) + n * beta * c(n) == 0 for n in Nat if n >= 1),
+) -> all(c(n) == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
+    """The series of ``log(alpha + tau * beta)``, from order 1 on: a claim the guard starts at 1."""
+
+
+@theorem
+def _series_lost_sign(
+    alpha: Complex,
+    beta: Complex,
+    c: Fn[Nat, Complex],
+    away: alpha != 0,
+    first: alpha * c(1) == beta,
+    ode: all((n + 1) * alpha * c(n + 1) + n * beta * c(n) == 0 for n in Nat if n >= 1),
+) -> all(c(n) == (-beta / alpha) ** n / n for n in Nat if n >= 1):
+    """False: the closed form with its sign lost is ``-c(n)``."""
 
 
 #: False in Python, ``log x - πi`` against ``log x + πi``, and true in Lean. A
@@ -753,6 +843,86 @@ def test_the_mathlib_ladder_follows_the_core_one() -> None:
     assert reduction_scripts(statement_of(scan_monotone.term, "s", mathlib=True)) == []
     constant = Forall(((x, Real),), Sum(((i, FinType(3)),), x) == 3 * x)
     assert reduction_scripts(statement_of(constant, "c", mathlib=True)) == []
+
+
+def test_finite_sums_are_exchanged_by_a_script_python_writes() -> None:
+    """Distribute, exchange adjacent sums one at a time, compare the summands under all of them.
+
+    For sum factorization, the left side's sums are ``p, q, r`` and the right
+    side's, distributed, ``r, q, p``: three exchanges, at depths 1, 0 and 1,
+    and then three ``Finset.sum_congr``. Two sums need one exchange and no
+    ``conv`` path into a binder.
+    """
+    (script,) = sum_scripts(statement_of(factorized.term, "factorized", mathlib=True))
+    lines = script.splitlines()
+    assert lines[0] == "try simp only [Finset.mul_sum, Finset.sum_mul, Finset.sum_div]"
+    assert lines[1:4] == [
+        "all_goals (conv_lhs => enter [2, x]; rw [Finset.sum_comm])",
+        "all_goals (conv_lhs => rw [Finset.sum_comm])",
+        "all_goals (conv_lhs => enter [2, x]; rw [Finset.sum_comm])",
+    ]
+    assert lines[4] == (
+        "all_goals refine Finset.sum_congr rfl fun x _ => Finset.sum_congr rfl fun x_1 _ => "
+        "Finset.sum_congr rfl fun x_2 _ => ?_"
+    )
+    assert lines[5].startswith("all_goals first | ring1 | (first | omega")
+    (script,) = sum_scripts(statement_of(exchanged.term, "exchanged", mathlib=True))
+    assert script.splitlines()[1] == "all_goals (conv_lhs => rw [Finset.sum_comm])"
+    # a goal under universals is introduced first
+    (script,) = sum_scripts(statement_of(mixed.term, "mixed", mathlib=True))
+    assert script.startswith("intro i hd hd_1 k hd_2 hd_3\n")
+    # in the ladder after the family induction and before Mathlib's whole-goal tactics
+    ladder = tactic_ladder(statement_of(factorized.term, "factorized", mathlib=True))
+    assert ladder[len(BASE_TACTICS)] == sum_scripts(
+        statement_of(factorized.term, "factorized", mathlib=True)
+    )[0]
+    # and core Lean, which has no sums, has no such script
+    assert sum_scripts(statement_of(commutes.term, "commutes", mathlib=True)) == []
+
+
+def test_no_exchange_is_proposed_where_no_order_makes_the_summands_one(cas) -> None:
+    """With the first and third axes' factors swapped, sympy finds no order: there is no script."""
+    statement = statement_of(_swapped_factors.term, "_swapped_factors", mathlib=True)
+    assert sum_scripts(statement) == []
+
+
+def test_a_claim_from_an_order_on_is_induced_with_a_step_its_guard_raises(cas) -> None:
+    """``n >= 1`` starts the claim at order 1: step 2, order 0 vacuous, the step's casts nonzero.
+
+    With step 1 the step's induction hypothesis would be needed at order 0,
+    where the guard is false; two orders at a time, order 0 is a base case
+    ``omega`` closes from the guard, order 1 is ``first``, and the step
+    divides by ``k + 2``, which it shows is not zero first.
+    """
+    from lanky.oracles.lean import _steps
+
+    statement = statement_of(series.term, "series", mathlib=True)
+    goal = statement.goal_term
+    assert _steps(goal.binders[0][0], goal, []) == [1, 2]
+    (script,) = family_induction_scripts(statement)
+    lines = script.splitlines()
+    assert "  by_cases hbase : n < 2" in lines
+    base = lines.index("  · interval_cases n")
+    assert lines[base + 1] == "    · omega"
+    assert lines[base + 2].startswith("    · linear_combination (norm := ")
+    assert lines[base + 2].endswith("((1 : ℂ) / alpha : ℂ) * (h1)")
+    nonzero = [line.strip() for line in lines if line.strip().startswith("try have hnz")]
+    assert [line.split(" : ", 1)[1].split(" := ")[0] for line in nonzero] == [
+        "((k : ℂ) + 1) ≠ 0",
+        "((k : ℂ) + 2) ≠ 0",
+    ]
+    step = lines[-1]
+    assert "(h2 (k + 1) (by omega) (by omega))" in step
+    assert "(ih (k + 1) (by omega) (by omega))" in step
+    assert "/ (alpha * (k + 2))" in step
+
+
+def test_the_combination_norm_names_its_lemmas_as_the_statement_does() -> None:
+    """A variable named ``Int`` has ``Int.toNat_natCast`` written from the root."""
+    plain = statement_of(series.term, "series", mathlib=True)
+    assert "simp only [Int.toNat_natCast, div_pow, mul_pow]" in combination_norm(plain)
+    shadowed = statement_of(Forall(((Var("Int"), Real),), Var("Int") == Var("Int")), "s", True)
+    assert "_root_.Int.toNat_natCast" in combination_norm(shadowed)
 
 
 # }}}
@@ -1799,6 +1969,39 @@ def test_a_certificate_that_uses_the_claim_where_it_is_proved_is_refused(
     fact = _lost_sign.fact()
     monkeypatch.setitem(mathlib_oracle.certificates, fact.id, circular)
     assert mathlib_oracle.establish(fact).status is Status.ASSUMED
+
+
+def test_mathlib_proves_a_claim_from_an_order_on(mathlib_oracle: LeanOracle) -> None:
+    """The line-Taylor series over ``ℂ``: step 2, a vacuous order 0, a division by the order."""
+    pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
+    proved = mathlib_oracle.establish(series.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    tactic = proved.provenance["tactic"]
+    assert "by_cases hbase : n < 2" in tactic
+    assert "    · omega" in tactic
+    assert mathlib_oracle.establish(_series_lost_sign.fact()).status is Status.ASSUMED
+
+
+# }}}
+
+
+# {{{ exchanging finite sums
+
+
+@pytest.mark.parametrize("claim", [exchanged, factorized, mixed], ids=lambda claim: claim.__name__)
+def test_mathlib_exchanges_finite_sums(mathlib_oracle: LeanOracle, claim) -> None:
+    """Distributed, the sums in one order, the summands compared: proved for every size."""
+    proved = mathlib_oracle.establish(claim.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    tactic = proved.provenance["tactic"]
+    assert "rw [Finset.sum_comm]" in tactic
+    assert "Finset.sum_congr rfl" in tactic
+
+
+def test_a_factorization_with_its_factors_swapped_is_not_proved(mathlib_oracle: LeanOracle) -> None:
+    """No order makes the summands one, and nothing else in the ladder proves it."""
+    result = mathlib_oracle.establish(_swapped_factors.fact())
+    assert result.status is Status.ASSUMED
 
 
 # }}}

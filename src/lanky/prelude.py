@@ -393,8 +393,8 @@ class _FnFamily:
         """
         if not isinstance(args, tuple) or len(args) < 2:
             raise TypeError(
-                "Fn takes its index types and then what it holds: Fn[domain, codomain], "
-                "or Fn[A, B, C] for a family with two indices"
+                "Fn takes at least two arguments, its index types and then what it holds: "
+                "Fn[domain, codomain], or Fn[A, B, C] for a family with two indices"
             )
         family = FnType(args[-2], args[-1])
         for domain in reversed(args[:-2]):

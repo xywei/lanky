@@ -89,26 +89,20 @@ def sum_factorization(
     G: Fn[Fin[n], Fin[n], Real],
     H: Fn[Fin[n], Fin[n], Real],
     u: Fn[Fin[n], Fin[n], Fin[n], Real],
-) -> all(
-    sum(
-        kron(H, G, F)(a, b, c, p, q, r) * u[p, q, r]
-        for p in Fin[n]
-        for q in Fin[n]
-        for r in Fin[n]
-    )
-    == sum(
-        H[c, r] * sum(G[b, q] * sum(F[a, p] * u[p, q, r] for p in Fin[n]) for q in Fin[n])
-        for r in Fin[n]
-    )
-    for a in Fin[n]
-    for b in Fin[n]
-    for c in Fin[n]
+    a: Fin[n],
+    b: Fin[n],
+    c: Fin[n],
+) -> sum(
+    kron(H, G, F)(a, b, c, p, q, r) * u[p, q, r] for p in Fin[n] for q in Fin[n] for r in Fin[n]
+) == sum(
+    H[c, r] * sum(G[b, q] * sum(F[a, p] * u[p, q, r] for p in Fin[n]) for q in Fin[n])
+    for r in Fin[n]
 ):
     """The tensor-product operator applied to ``u`` is three one-axis passes, at every size.
 
-    The left side is ``kron(H, G, F)`` applied to ``u``; the right side
-    applies ``F`` along the first axis, ``G`` along the second and ``H``
-    along the third, innermost first.
+    At every row ``(a, b, c)``: the left side is ``kron(H, G, F)`` applied to
+    ``u``, and the right side applies ``F`` along the first axis, ``G``
+    along the second and ``H`` along the third, innermost first.
     """
 
 
@@ -119,15 +113,14 @@ def mixed_product(
     B: Fn[Fin[n], Fin[n], Real],
     C: Fn[Fin[n], Fin[n], Real],
     D: Fn[Fin[n], Fin[n], Real],
-) -> all(
-    sum(A[i, j] * B[k, s] * (C[j, p] * D[s, q]) for j in Fin[n] for s in Fin[n])
-    == sum(A[i, j] * C[j, p] for j in Fin[n]) * sum(B[k, s] * D[s, q] for s in Fin[n])
-    for i in Fin[n]
-    for k in Fin[n]
-    for p in Fin[n]
-    for q in Fin[n]
-):
-    """``(A (x) B)(C (x) D)`` is ``AC (x) BD``, entry by entry, at every size."""
+    i: Fin[n],
+    k: Fin[n],
+    p: Fin[n],
+    q: Fin[n],
+) -> sum(A[i, j] * B[k, s] * (C[j, p] * D[s, q]) for j in Fin[n] for s in Fin[n]) == sum(
+    A[i, j] * C[j, p] for j in Fin[n]
+) * sum(B[k, s] * D[s, q] for s in Fin[n]):
+    """``(A (x) B)(C (x) D)`` is ``AC (x) BD``, at every row ``(i, k)`` and column ``(p, q)``."""
 
 
 def dense(H, G, F, n):
@@ -149,20 +142,26 @@ def flattening(
     F: Fn[Fin[n], Fin[n], Real],
     G: Fn[Fin[n], Fin[n], Real],
     H: Fn[Fin[n], Fin[n], Real],
-) -> all(
-    dense(H, G, F, n)(a + n * b + n**2 * c, p + n * q + n**2 * r)
-    == kron(H, G, F)(a, b, c, p, q, r)
-    for a in Fin[n]
-    for b in Fin[n]
-    for c in Fin[n]
-    for p in Fin[n]
-    for q in Fin[n]
-    for r in Fin[n]
+    a: Fin[n],
+    b: Fin[n],
+    c: Fin[n],
+    p: Fin[n],
+    q: Fin[n],
+    r: Fin[n],
+) -> dense(H, G, F, n)(a + n * b + n**2 * c, p + n * q + n**2 * r) == kron(H, G, F)(
+    a, b, c, p, q, r
 ):
-    """With the first axis fastest, the dense matrix is ``kron(H, kron(G, F))``: ``F`` is last."""
+    """With the first axis fastest, the dense matrix is ``kron(H, kron(G, F))``: ``F`` is last.
+
+    At every row ``(a, b, c)`` and column ``(p, q, r)``, flattened as modepy
+    flattens them, ``a + n * b + n**2 * c``.
+    """
 
 
 # {{{ running it
+
+#: How far apart the dense operator and the passes may be, in floating point.
+TOLERANCE = 1e-13
 
 
 def gll(n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -197,7 +196,7 @@ def main() -> int:
     rng = np.random.default_rng(0)
     print("The weak derivative along the first axis, S^T (x) M (x) M, on GLL hexahedra:")
     print()
-    print("order  n  dense - passes  multiplications (dense / passes)")
+    print("order  n  dense - passes   multiplications (dense / passes)")
     worst = 0.0
     for n in range(2, 9):
         points, weights = gll(n)
@@ -209,11 +208,14 @@ def main() -> int:
         applied = (np.kron(H, np.kron(G, F)) @ flat).reshape((n, n, n), order="F")
         gap = float(np.abs(applied - passes(F, G, H, u)).max())
         worst = max(worst, gap)
-        print(f"{n - 1:5d}  {n}  {gap:14.1e}  {n**6:7d} / {3 * n**4}")
+        shown = f"within {TOLERANCE:.0e}" if gap <= TOLERANCE else f"{gap:.1e}"
+        print(f"{n - 1:5d}  {n}  {shown:>15}  {n**6:7d} / {3 * n**4}")
     print()
     print(
         "numpy's kron(H, kron(G, F)) on the field flattened with its first axis fastest\n"
-        f"is the three passes at every order here, to {worst:.0e}."
+        f"is the three passes at every order here, to within {TOLERANCE:.0e}."
+        if worst <= TOLERANCE
+        else "The dense operator and the passes DISAGREE: see the table."
     )
     print()
     # the claims at exact matrices, where == means equal
@@ -221,19 +223,31 @@ def main() -> int:
     exact = rng.integers(-4, 5, size=(4, n, n)).tolist()
     F, G, H, other = ([[Fraction(x) for x in row] for row in m] for m in exact)
     u = rng.integers(-4, 5, size=(n, n, n)).tolist()
+    pairs = [(x, y) for x in range(n) for y in range(n)]
+    rows = [(a, b, c) for a in range(n) for b in range(n) for c in range(n)]
     verdicts = {
-        "sum_factorization": sum_factorization(n=n, F=F, G=G, H=H, u=u).holds,
-        "mixed_product": mixed_product(n=n, A=F, B=G, C=H, D=other).holds,
-        "flattening": flattening(n=n, F=F, G=G, H=H).holds,
+        "sum_factorization": all(
+            sum_factorization(n=n, F=F, G=G, H=H, u=u, a=a, b=b, c=c).holds for a, b, c in rows
+        ),
+        "mixed_product": all(
+            mixed_product(n=n, A=F, B=G, C=H, D=other, i=i, k=k, p=p, q=q).holds
+            for i, k in pairs
+            for p, q in pairs
+        ),
+        "flattening": all(
+            flattening(n=n, F=F, G=G, H=H, a=a, b=b, c=c, p=p, q=q, r=r).holds
+            for a, b, c in rows
+            for p, q, r in rows
+        ),
     }
     for name, holds in verdicts.items():
-        print(f"{name} at n = {n}, exact integer matrices: {holds}")
+        print(f"{name} at n = {n}, at every row and column, exact integer matrices: {holds}")
     print()
     print(
         "`lanky check examples/sum_factorization.py` puts the claims in the ledger: proved\n"
         "for every size by Lean where Mathlib is installed, tested where it is not."
     )
-    return 0 if worst < 1e-10 and all(verdicts.values()) else 1
+    return 0 if worst <= TOLERANCE and all(verdicts.values()) else 1
 
 
 if __name__ == "__main__":

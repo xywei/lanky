@@ -66,6 +66,23 @@ def test_fn_is_a_family_type() -> None:
         Fn[Nat]
 
 
+def test_a_family_with_several_indices_is_a_family_of_families() -> None:
+    """``Fn[A, B, C]`` is ``Fn[A, Fn[B, C]]``, a matrix, and prints as it is written."""
+    n, m = Var("n"), Var("m")
+    matrix = Fn[Fin[n], Fin[m], Real]
+    assert matrix == Fn[Fin[n], Fn[Fin[m], Real]]
+    assert matrix.domain == FinType(n)
+    assert matrix.codomain == Fn[Fin[m], Real]
+    assert matrix.indices == (FinType(n), FinType(m))
+    assert matrix.entries == Real
+    assert str(matrix) == "Fn[Fin(n), Fin(m), Real]"
+    assert str(Fn[Fin[n], Fn[Fin[m], Real]]) == "Fn[Fin(n), Fin(m), Real]"
+    assert Fn[Nat, Nat, Nat, Real] == Fn[Nat, Fn[Nat, Fn[Nat, Real]]]
+    assert exactness_of(matrix) == "approx"
+    # a family over families keeps its brackets: the domain is not curried
+    assert str(Fn[Fn[Fin[n], Nat], Nat]) == "Fn[Fn[Fin(n), Nat], Nat]"
+
+
 def test_refinement_with_and() -> None:
     n = Var("n")
     refined = Nat & (n > 0)

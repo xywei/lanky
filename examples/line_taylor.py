@@ -308,8 +308,8 @@ def main() -> int:
             shown = f"re(-(-beta/alpha)**{k} / {k})"
         difference = sympy.simplify(coefficient - closed)
         agree = agree and difference == 0
-        value = sympy.N(coefficient.xreplace(point), 12)
-        rows.append((str(k), shown, str(difference), str(value)))
+        value = float(coefficient.xreplace(point))
+        rows.append((str(k), shown, str(difference), f"{value:.6g}"))
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     for index, row in enumerate(rows):
         cells = zip(row, widths, strict=True)
