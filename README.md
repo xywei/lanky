@@ -343,7 +343,8 @@ raises its floor to match.
   parts are checked at once (`LANKY_LEAN_JOBS`, up to four sessions) within
   the fact's budget; a fact whose parts are all proved reads `proved lean`,
   a `LEAN` line under the table says how many of the solver's facts Lean
-  proved, and how, and one that is not keeps the status its solver gave it,
+  proved, and how, and how many the plugin did not state for Lean, and one
+  that is not proved keeps the status its solver gave it,
   with a `NOT PROVED` line naming the part and why. A refuted claim
   comes with its counterexample, and Lean proves it false there, which the
   `REFUTED` block says. Lean's answers are kept by the hash of their source

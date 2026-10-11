@@ -609,12 +609,22 @@ def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
         owner="kernel",
     )
     unproved = lean.establish(handed).with_status(Status.DECIDED, "isl")
-    CheckVerb._report(Ledger([proved, unproved]), show_lean="")
+    alone = Fact(
+        id="layout:kernel@1:x",
+        kind="layout",
+        statement="the rows of x stay apart",
+        term=Stated(Obligation(declined="stated for isl only")),
+        where="kernel.py:3",
+        owner="kernel",
+    )
+    alone = lean.establish(alone).with_status(Status.DECIDED, "isl")
+    CheckVerb._report(Ledger([proved, unproved, alone]), show_lean="")
     out = capsys.readouterr().out
     assert (
-        "LEAN proved 1 of the 2 facts isl decided, each from the plugin's own "
-        "statement of it, isl's hints checked and not trusted; --show-lean prints "
-        "the Lean"
+        "LEAN proved 1 of the 2 facts isl decided that were stated for it, each "
+        "from the plugin's own statement of it, isl's hints checked and not "
+        "trusted; 1 more isl decided was not stated for Lean (--verbose says "
+        "why); --show-lean prints the Lean"
     ) in out
     assert "NOT PROVED kernel at kernel.py:2: x[x + 1] is in bounds for every instance of S1" in out
     assert "  isl decided it; Lean did not prove it: no script closed it" in out

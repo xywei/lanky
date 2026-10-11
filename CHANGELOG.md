@@ -38,11 +38,13 @@ All notable changes to lanky are recorded here. The format follows
   that replays a proof, each part of a plugin's claim as it was tried, the
   theorem that a refuted claim is false at its counterexample, and the
   statement of a claim Lean did not prove. A long theorem is shown one
-  parameter to a line. A `NOT PROVED` line names a fact a decision procedure
-  decided and Lean did not prove, with the parts and why, and with
-  `--verbose` one Lean was not asked about; a `REFUTED` block ends with what
-  Lean made of the counterexample. `lanky.cli.report_unproved` and
-  `report_lean` print them for a plugin's verb.
+  parameter to a line. A `LEAN` line under the table says, per decision
+  procedure, how many of the facts it decided and the plugin stated Lean
+  proved, and how many more were not stated; a `NOT PROVED` line names a fact
+  a decision procedure decided and Lean did not prove, with the parts and
+  why, and with `--verbose` one Lean was not asked about; a `REFUTED` block
+  ends with what Lean made of the counterexample. `lanky.cli.report_proved`,
+  `report_unproved` and `report_lean` print them for a plugin's verb.
 
 ## [0.2.0] - 2026-10-11
 

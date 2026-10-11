@@ -607,10 +607,11 @@ def report_proved(ledger: Ledger) -> None:
 
     A plugin's fact Lean proved part by part (:mod:`lanky.obligations`) was
     decided by the plugin's solver too, and the row says only ``lean``. The
-    line says, per solver, how many of the facts it decided Lean proved, and
-    how: from the plugin's own statement of each claim, with the solver's
-    hints checked and not trusted. Nothing is printed for a ledger with no
-    such fact.
+    line says, per solver, how many of the facts it decided and the plugin
+    stated for Lean Lean proved, and how: from the plugin's own statement of
+    each claim, with the solver's hints checked and not trusted; and how many
+    more it decided the plugin did not state, which ``--verbose`` names.
+    Nothing is printed for a ledger with no such fact.
     """
     by_decider: dict[str, list[Fact]] = {}
     for fact in ledger:
@@ -618,13 +619,35 @@ def report_proved(ledger: Ledger) -> None:
             by_decider.setdefault(str(fact.provenance["lean_decider"]), []).append(fact)
     if not by_decider:
         return
+    unstated: dict[str, int] = {}
+    for fact in ledger:
+        if (
+            fact.decided_by in by_decider
+            and not fact.provenance.get("lean_parts")
+            and fact.status not in (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
+            and _recorded(fact.provenance.get("lean_declined"))
+        ):
+            unstated[fact.decided_by] = unstated.get(fact.decided_by, 0) + 1
     print()
     for decider, facts in by_decider.items():
         proved = sum(fact.status in (Status.PROVED, Status.CERTIFIED) for fact in facts)
+        more = unstated.get(decider, 0)
+        stated = (
+            f"the {len(facts)} facts {decider} decided that were"
+            if len(facts) > 1
+            else f"the one fact {decider} decided that was"
+        )
         print(
-            f"LEAN proved {proved} of the {len(facts)} facts {decider} decided, each "
-            f"from the plugin's own statement of it, {decider}'s hints checked and "
-            "not trusted; --show-lean prints the Lean"
+            f"LEAN proved {proved} of {stated} stated for it, each from the "
+            f"plugin's own statement of it, {decider}'s hints checked and not "
+            "trusted"
+            + (
+                f"; {more} more {decider} decided {'were' if more > 1 else 'was'} "
+                "not stated for Lean (--verbose says why)"
+                if more
+                else ""
+            )
+            + "; --show-lean prints the Lean"
         )
 
 
