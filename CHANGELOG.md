@@ -84,13 +84,25 @@ All notable changes to lanky are recorded here. The format follows
   Lean it would run (the pool's, else `LANKY_LEAN_VERSION`, else the
   toolchain found), and starts a session only for a part with an attempt
   that is not kept; a counterexample is checked from the cache the same
-  way. Mathlib's answers are kept under the Lean version and the Mathlib
-  revision together. `lanky check` on a file checked before, with nothing
-  changed, prints the same ledger without starting Lean:
+  way. A theorem of lanky's own is kept and read back the same way, every
+  attempt of its ladder and its side conditions, where before it was asked
+  of Lean on every check: a Mathlib theorem whose ladder tried a few dozen
+  attempts was most of a warm check's time. Mathlib's answers are kept
+  under the project's toolchain and Mathlib revision together, read from its
+  files, so a part about reals and a Mathlib theorem are read back without
+  importing Mathlib, and a Mathlib upgrade reads no stale answer. `lanky
+  check` on a file checked before, with nothing changed, prints the same
+  ledger without starting Lean:
 
   ```console
   $ lanky check examples/gauss.py   # the second time: no REPL, same rows
   ```
+
+- The `LEAN` line under the ledger counts the claims about reals core Lean
+  was not asked apart, and says where Lean checks them: `LEAN proved all 11
+  facts isl decided; 2 more are about real numbers, which Lean checks where
+  Mathlib is (LANKY_LEAN_MATHLIB)`. It said they were not stated for Lean
+  yet, and left out one a cited theorem decided.
 
 ### Fixed
 

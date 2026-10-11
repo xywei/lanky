@@ -2282,7 +2282,13 @@ class LeanOracle:
             ladder = [override]
         else:
             ladder = tactic_ladder(statement, self.certificates.get(fact.id), until)
-        key = _mathlib_key(session.mathlib) if mathlib else self._cache_version()
+        if mathlib:
+            key = _mathlib_key(session.mathlib)
+        elif self._pinned is not None:
+            # a session handed to the oracle is the Lean that answers
+            key = session.version
+        else:
+            key = self._cache_version()
         if key is not None:
             kept = self._claim_from_cache(fact, statement, ladder, key)
             if kept is not None:
@@ -2745,20 +2751,29 @@ class LeanOracle:
         """``(closed, detail, cached, answered)`` for one declaration, the cache first.
 
         A Mathlib session's answers are kept under its Lean version and the
-        Mathlib revision it imported, apart from core Lean's.
+        Mathlib revision it imported, apart from core Lean's. An answer of a
+        session whose version is not known is not kept, nor read: the key
+        would say nothing of which Lean gave it.
         """
+
+        def key() -> str | None:
+            if session.mathlib is not None:
+                found = _mathlib_key(session.mathlib)
+                if found is None and session.version is not None:
+                    found = f"{session.version}+mathlib@{session.mathlib_revision}"
+                return found
+            return session.version
+
         cache = self.proofs
-        version = session.version
-        if session.mathlib is not None:
-            version = _mathlib_key(session.mathlib) or (
-                f"{version}+mathlib@{session.mathlib_revision}"
-            )
-        if cache is not None:
+        version = key()
+        if cache is not None and version is not None:
             kept = cache.get(version, source)
             if kept is not None:
                 return kept[0], kept[1], True, True
         closed, detail, answered = session.answer(source, until)
-        if answered and cache is not None:
+        # the session may have started for this answer, and only now know it
+        version = key()
+        if answered and cache is not None and version is not None:
             cache.put(version, source, closed, detail)
         return closed, detail, False, answered
 
