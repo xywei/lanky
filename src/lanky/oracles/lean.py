@@ -41,6 +41,14 @@ A fact the ladder does not close is returned unchanged, with what was tried in
 its provenance, so the weaker oracles still run and the ledger still shows the
 claim.
 
+A plugin's claim is not printed from its term and sent up the ladder. Its term
+offers an obligation (:mod:`lanky.obligations`): the claim in parts, each a
+closed lanky term, with the hints the plugin's solver found. Each part is
+proved on its own, ``omega`` first and then with its hints, the parts at once
+in a pool of core sessions, and every answer of Lean's is kept by the hash of
+its source (:class:`ProofCache`); a claim the solver refuted is checked at its
+counterexample instead (see :meth:`LeanOracle.establish`).
+
 Availability is a two-step story, because building the Lean REPL is slow the
 first time (it clones and ``lake build``s a small project, which needs the
 network) and instantaneous afterwards. :meth:`LeanOracle.availability` answers
