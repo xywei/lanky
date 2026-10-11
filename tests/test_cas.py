@@ -406,6 +406,28 @@ def test_the_deadline_declines_a_simplification_that_runs_long(cas, monkeypatch)
     assert result.provenance["declined"] == "cas: sympy did not finish within 0.2 s"
 
 
+def test_a_deadline_set_around_the_oracle_is_raised_again(cas, monkeypatch) -> None:
+    """The oracle's deadline is its own: an outer one's expiry is its caller's, and not a decline.
+
+    Under a deadline set around it, the oracle's own sets no timer, and the
+    outer one's ``Expired`` was taken for sympy running out of time, so the
+    caller's cancellation came back as a fact declined (Codex, #109).
+    """
+    from lanky.deadline import Expired, deadline
+
+    def slow(expression):
+        time.sleep(30)
+        return expression
+
+    monkeypatch.setattr(cas, "simplify", slow)
+    outer = object()
+    started = time.monotonic()
+    with pytest.raises(Expired) as raised, deadline(0.2, outer):
+        CasOracle(timeout=60).establish(fact_of(Forall(((x, Real),), x == x)))
+    assert raised.value.owner is outer
+    assert time.monotonic() - started < 10
+
+
 def test_the_deadline_covers_the_translation(cas, monkeypatch) -> None:
     """#77: sympy's constructors evaluate as they build, and that is inside the deadline now.
 

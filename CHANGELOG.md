@@ -251,7 +251,9 @@ worth the `tested` reading it rests on.
   it again before it armed the timer, and sympy's constructors evaluate as
   they build. `can_establish` reads the shape now (`check_shape`), and the
   translation is inside `LANKY_CAS_TIMEOUT`, declined as `sympy did not
-  finish translating the statement within ... s` when it runs out there. A
+  finish translating the statement within ... s` when it runs out there. The
+  deadline is the oracle's own: a deadline set around it, which is its
+  caller's, is raised again rather than taken for sympy running out. A
   real `log` or `sqrt` of what sympy cannot show is not negative is found
   out in the translation, so such a statement is taken and declined, with
   the reason, where it was not taken at all.

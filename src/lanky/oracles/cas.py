@@ -178,6 +178,11 @@ class CasOracle:
         timer was armed. An evaluation that is one long operation in C, an
         integer power of a number sympy has just folded, does not return to
         the interpreter, and the timer is heard only after it.
+
+        The fact's deadline is its own (:attr:`lanky.deadline.Expired.owner`):
+        a deadline set around the oracle, under which this one sets no timer,
+        is its caller's, and what it raises is raised again, not taken for
+        sympy running out of time.
         """
         try:
             check_shape(fact.term)
@@ -190,8 +195,9 @@ class CasOracle:
             return self._declined(fact, str(exc))
         started = time.monotonic()
         translating = True
+        owner = object()
         try:
-            with _deadline(seconds):
+            with _deadline(seconds, owner):
                 found = equations(fact.term)
                 translating = False
                 for equation in found:
@@ -203,7 +209,9 @@ class CasOracle:
                             f"{_quoted(render(equation.term))} to {_quoted(difference)}, "
                             "not 0",
                         )
-        except _Expired:
+        except _Expired as exc:
+            if exc.owner is not owner:
+                raise
             if translating:
                 return self._declined(
                     fact, f"sympy did not finish translating the statement within {seconds:g} s"
