@@ -1392,27 +1392,764 @@ def test_a_cache_and_two_views_of_one_array_are_read_as_python_reads_them(
     function does now: ``stale(0)`` is the ``1`` its cache holds, while
     ``STATE`` holds ``0``. Made again, it hid the misreading of
     ``cached_misread`` and refuted the faithful ``cached_hit``; now the
-    cache is shared, the misreading is refuted, and the faithful reading is
-    declined, naming the cache. Two views of one array were copied apart,
-    so a write through one was not read through the other: that hid the
-    misreading of ``misread_through_a_view`` and refuted the faithful
+    cache is made again with its entries (#105), the misreading is refuted,
+    and the faithful reading is tested. Two views of one array were copied
+    apart, so a write through one was not read through the other: that hid
+    the misreading of ``misread_through_a_view`` and refuted the faithful
     ``through_a_view``. Each view is now made over one copy of the array.
     """
     pairs = _pairs(check_path(_write(tmp_path, CACHES_AND_VIEWS)))
     status = {owner: reading.status for owner, (_claim, reading) in pairs.items()}
     assert status == {
         "cached_misread": Status.REFUTED,
-        "cached_hit": Status.ASSUMED,
+        "cached_hit": Status.TESTED,
         "cached_empty": Status.TESTED,
         "through_a_view": Status.TESTED,
         "misread_through_a_view": Status.REFUTED,
     }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
-    assert (
-        "stale, a function behind functools.lru_cache whose cache holds 1 entries"
-        in pairs["cached_hit"][1].provenance["declined"]
-    )
     assert "cached_misread" not in prover.shown
     assert "misread_through_a_view" not in prover.shown
+
+
+#: Caches that hold entries from before the claims read them, of each kind
+#: CPython keys: of unbounded and of bounded size, typed, with keywords, and
+#: keyed by a function of the module's (#105).
+CACHES_WITH_ENTRIES = """
+import functools
+
+STATE = [1]
+
+
+@functools.lru_cache(maxsize=None)
+def stale(k):
+    return STATE[0]
+
+
+@functools.lru_cache(maxsize=2)
+def bounded(k, extra=0):
+    return STATE[0] + extra
+
+
+@functools.lru_cache(maxsize=None, typed=True)
+def typed(k, *, extra=0):
+    return [STATE[0] + extra]
+
+
+def helper(k):
+    return k
+
+
+@functools.cache
+def by_function(fn):
+    return STATE[0]
+
+
+@functools.lru_cache(maxsize=4)
+def bounded_tables(k):
+    return {k: STATE[0]}
+
+
+@functools.cache
+def tables(k):
+    return {"v": STATE[0]}
+
+
+@functools.lru_cache(maxsize=1)
+def single(k):
+    return k
+
+
+@functools.lru_cache(maxsize=None)
+def flagged(k):
+    return k
+
+
+@functools.cache
+def unused(k):
+    return k
+
+
+stale(0)
+bounded(0)
+bounded(1, extra=2)
+bounded(2)
+typed(0)
+typed(0, extra=5)
+by_function(helper)
+bounded_tables(0)
+bounded_tables(1)
+tables(0)
+single(0)
+single(1)
+flagged(0)
+flagged.flag = 1
+flagged.tags = [2]
+unused.flag = 3
+STATE[0] = 0
+
+
+def typed_at_a_number(i):
+    return typed(0)[0] if isinstance(i, int) else 0
+
+
+@theorem
+def hit(n: Nat) -> n * 0 + stale(0) == 1:
+    \"\"\"stale(0) is the 1 its cache holds, while STATE holds 0.\"\"\"
+
+
+@theorem
+def evicted(n: Nat) -> n * 0 + bounded(0) + bounded(1, extra=2) + bounded(2) == 2:
+    \"\"\"bounded(0) was evicted; computing it now evicts bounded(1, extra=2), the oldest.\"\"\"
+
+
+@theorem
+def keyed(n: Nat) -> n * 0 + typed(0)[0] + typed(0, extra=5)[0] + typed(0.0)[0] == 7:
+    \"\"\"1 and 6 from the cache, and 0 for the float, which a typed cache keys apart.\"\"\"
+
+
+@theorem
+def through_a_function(n: Nat) -> n * 0 + by_function(helper) == 1:
+    \"\"\"The cache is keyed by helper, and the rerun calls it with the copy of helper.\"\"\"
+
+
+@theorem
+def dict_results(n: Nat) -> (
+    n * 0 + bounded_tables(0)[0] + bounded_tables(1)[1] + tables(0)["v"] == 3
+):
+    \"\"\"Cached results that are dicts, which the cache is listed beside.\"\"\"
+
+
+@theorem
+def misses(n: Nat) -> n * 0 + single.cache_info().misses == 2:
+    \"\"\"Two misses before the claim, though the cache holds one entry.\"\"\"
+
+
+@theorem
+def hits(n: Nat) -> n * 0 + single(1) * 0 + single.cache_info().hits == 1:
+    \"\"\"single(1) is the first hit the cache counts.\"\"\"
+
+
+@theorem
+def cleared(n: Nat) -> n * 0 + (single.cache_clear(), single.cache_info().misses)[1] == 0:
+    \"\"\"Clearing the cache clears its counts.\"\"\"
+
+
+@theorem
+def attributes(n: Nat) -> n * 0 + flagged.flag + flagged.tags[0] + unused.flag == 6:
+    \"\"\"What was set on a cache after it was made, one with an entry and one without.\"\"\"
+
+
+@theorem
+def misread(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 == typed_at_a_number(i) for i in Fin[n]
+):
+    \"\"\"Misread at i = 0, where Python finds [1] in typed's cache.\"\"\"
+"""
+
+
+def test_a_cache_with_entries_is_made_again_with_them(prover, tmp_path, monkeypatch) -> None:
+    """A function behind ``functools.lru_cache`` is copied with the entries its cache holds (#105).
+
+    Made again empty, a cache answered as its function answers now, and the
+    true ``hit`` was refuted; shared instead, it was declined. Now the copy
+    holds the same entries, their results copied, in the order the cache
+    evicts them, keyed as the original keys them, and counts its hits and
+    misses on from the original's, so every claim here reads ``tested``, the
+    misreading is still refuted, and a cache whose entries cannot be read off
+    it is shared, and declined, naming it. What was set on the cache after it
+    was made, ``flagged.flag``, is copied with it (Codex): the copy, made
+    around the copy of the function, had only the function's attributes, and
+    the rerun of ``attributes`` raised ``AttributeError``, a refutation of a
+    faithful reading.
+    """
+    path = _write(tmp_path, CACHES_WITH_ENTRIES)
+    pairs = _pairs(check_path(path))
+    status = {owner: reading.status for owner, (_claim, reading) in pairs.items()}
+    assert status == {
+        "hit": Status.TESTED,
+        "evicted": Status.TESTED,
+        "keyed": Status.TESTED,
+        "through_a_function": Status.TESTED,
+        "dict_results": Status.TESTED,
+        "misses": Status.TESTED,
+        "hits": Status.TESTED,
+        "cleared": Status.TESTED,
+        "attributes": Status.TESTED,
+        "misread": Status.REFUTED,
+    }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
+    assert pairs["misread"][1].provenance["counterexample"] == {"n": 1, "f": [1]}
+    assert "misread" not in prover.shown
+
+    read = faithful._cache_entries
+    unreadable = "stale, a function behind functools.lru_cache whose cache holds 1 entries, which "
+    monkeypatch.setattr(faithful, "_cache_entries", lambda cache: None)
+    unread = _pairs(check_path(_write(tmp_path, CACHES_WITH_ENTRIES, name="unread.py")))
+    reading = unread["hit"][1]
+    assert reading.status is Status.ASSUMED
+    assert unreadable + "the check could not read" in reading.provenance["declined"]
+    assert unread["misread"][1].status is Status.REFUTED
+
+    # a copy the snapshot made that a draw's copy cannot make again is named too
+    monkeypatch.setattr(
+        faithful,
+        "_cache_entries",
+        lambda cache: None if hasattr(cache, faithful._CALLS) else read(cache),
+    )
+    again = _pairs(check_path(_write(tmp_path, CACHES_WITH_ENTRIES, name="again.py")))
+    reading = again["hit"][1]
+    assert reading.status is Status.ASSUMED
+    assert "stale, a function behind functools.lru_cache whose cache holds 1 entries" in (
+        reading.provenance["declined"]
+    )
+
+
+#: ``:=`` in a lambda the annotation writes, which binds the lambda's own
+#: name and leaves the module's alone (#105).
+WALRUS_IN_A_LAMBDA = """
+x = 1
+
+
+def table(i):
+    return {0: 1}.get(i, 0)
+
+
+@theorem
+def scoped(n: Nat) -> ((lambda: (x := n))() == n) & (x == 1):
+    \"\"\"The lambda's x is its own, and the module's is 1.\"\"\"
+
+
+@theorem
+def scoped_under_and(n: Nat) -> (lambda: ((x := n) >= 0) & (x == n))() & (x == 1):
+    \"\"\"A := in an operand of & in the lambda binds the lambda's x, which the other reads.\"\"\"
+
+
+@theorem
+def misread_in_a_lambda(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    (lambda k: ((z := table(k)) >= 0) & (f(k) * 0 == z))(i) for i in Fin[n]
+):
+    \"\"\"Misread at i = 0, where the table gives 1.\"\"\"
+
+
+@theorem
+def in_a_generator(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    w * 0 + (1 // i) * 0 == 0 for i in Fin[n] if (w := f(i)) >= 0
+):
+    \"\"\"A := in a generator binds in the annotation's globals, as before.\"\"\"
+"""
+
+
+def test_a_walrus_in_a_lambda_binds_the_lambdas_name(prover, tmp_path) -> None:
+    """``:=`` in a lambda of the annotation's binds where Python binds it, in the lambda (#105).
+
+    The rerun made every ``:=`` bind in the annotation's globals, where one
+    in a generator binds, so the lambda's ``x`` overwrote the module's and
+    ``x == 1`` was ``n == 1``: the true ``scoped`` was refuted at ``n = 0``.
+    A ``:=`` in a lambda now sets the lambda's own variable, even from an
+    operand of ``&``, and one in a generator still binds in the globals; a
+    misreading in a lambda is refuted as before.
+    """
+    pairs = _pairs(check_path(_write(tmp_path, WALRUS_IN_A_LAMBDA)))
+    status = {owner: reading.status for owner, (_claim, reading) in pairs.items()}
+    assert status == {
+        "scoped": Status.TESTED,
+        "scoped_under_and": Status.TESTED,
+        "misread_in_a_lambda": Status.REFUTED,
+        "in_a_generator": Status.TESTED,
+    }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
+    assert pairs["misread_in_a_lambda"][1].provenance["counterexample"] == {"n": 1, "f": [1]}
+    assert "misread_in_a_lambda" not in prover.shown
+
+
+def test_a_parameter_named_like_a_builtin_the_module_binds_is_the_parameter(tmp_path) -> None:
+    """A parameter named ``abs`` or ``all`` is the parameter, whatever the module binds (#105).
+
+    #100's refusal read the annotation's names and refused ``abs`` after
+    ``from numpy import abs``, though in both readings the name is the
+    theorem's parameter. A parameter's name is exempt now, and an
+    annotation that calls the module's ``abs`` is still refused.
+    """
+    path = _write(
+        tmp_path,
+        "\nfrom numpy import abs\n\n\n"
+        "def all(gen):\n    return False\n\n\n"
+        "@theorem\n"
+        "def identity(abs: Nat) -> abs == abs:\n"
+        '    """abs is the parameter."""\n\n\n'
+        "@theorem\n"
+        "def counted(all: Nat, n: Nat) -> all + n >= n:\n"
+        '    """all is the parameter."""\n',
+        name="parameters.py",
+    )
+    for owner, (claim, reading) in _pairs(check_path(path)).items():
+        assert reading.status is Status.TESTED, (owner, reading.provenance)
+        assert claim.status is not Status.REFUTED, owner
+
+    calls = _write(
+        tmp_path,
+        "\nfrom numpy import abs\n\n\n"
+        "@theorem\n"
+        "def magnitude(n: Nat, x: Real) -> abs(x) + n * 0 >= 0:\n"
+        '    """The goal calls numpy\'s abs, which lanky would read as its own."""\n',
+        name="calls.py",
+    )
+    with pytest.raises(TypeError, match=r"magnitude at calls\.py:\d+: the goal calls abs"):
+        check_path(calls)
+
+
+#: Claims whose term says something else only after an operation that has
+#: no value in Python wherever the claim reaches it, so that both readings
+#: stop there at every draw (#99), and claims read faithfully.
+PAST_NO_VALUE = """
+from lanky import log
+
+
+def table(i):
+    return {0: 1}.get(i, 0)
+
+
+def ratio(a, b):
+    return a // b
+
+
+@theorem
+def masked(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 + 1 // (i - i) == table(i) for i in Fin[n]
+):
+    \"\"\"#99's: no value in Python at any point; Lean's 1 // 0 is 0, and table(0) is 1.\"\"\"
+
+
+@theorem
+def remainder(n: Nat) -> n * 0 + n % (n - n) == table(n) + n:
+    \"\"\"Lean's n % 0 is n, and table(0) is 1.\"\"\"
+
+
+@theorem
+def outside(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i - 1) * 0 + table(i) == 0 for i in Fin[n] if i == 0
+):
+    \"\"\"f(-1) has no value, and table(0) is 1.\"\"\"
+
+
+@theorem
+def curried(n: Nat, f: Fn[Fin[n], Fn[Fin[1], Nat]]) -> all(
+    f(i - 1)(0) * 0 + table(i) == 0 for i in Fin[n]
+):
+    \"\"\"f(-1) has no value, and read as Lean reads it, is a family that is 0 everywhere.\"\"\"
+
+
+@theorem
+def logarithm(x: Real) -> log(x - x) * 0 + table(x) == 0:
+    \"\"\"log(0) has no value in Python and is 0 in Mathlib, and table(0) is 1.\"\"\"
+
+
+@theorem
+def divides(n: Nat) -> n // 0 == 0:
+    \"\"\"No value in Python, and read faithfully: n // 0 is 0 on both sides, as Lean has it.\"\"\"
+
+
+@theorem
+def where_defined(n: Nat, f: Fn[Fin[n], Nat]) -> all(
+    f(i) * 0 + (1 // i) * 0 == 0 for i in Fin[n]
+):
+    \"\"\"Read faithfully.\"\"\"
+
+
+@theorem
+def in_a_helper(n: Nat) -> ratio(1, n - n) + n * 0 == 0:
+    \"\"\"The helper's // is Python's in the rerun, so nothing more is compared.\"\"\"
+"""
+
+
+def test_what_follows_where_both_readings_stop_is_compared(prover, tmp_path) -> None:
+    """Where both readings have no value, the draw is read again as Lean reads it (#99).
+
+    ``1 // (i - i)`` stopped both readings at every point, so ``table(i)``,
+    misread as ``0``, was compared nowhere: the reading was ``tested``, and
+    Lean proved the term, where ``1 / 0`` is ``0``. Such a draw is now read
+    again with what Python has no value for read as Lean has it, ``x // 0``
+    and ``x / 0`` as ``0``, ``x % 0`` as ``x``, the logarithm of ``0`` as
+    ``0``, and a family outside its domain as ``0``, on both sides, and where
+    both then have a value they have to agree. A claim read faithfully
+    agrees there too, and an operation in a helper, which the rerun leaves
+    Python's, leaves the second reading without a value, and says nothing.
+    """
+    pairs = _pairs(check_path(_write(tmp_path, PAST_NO_VALUE)))
+    status = {owner: reading.status for owner, (_claim, reading) in pairs.items()}
+    assert status == {
+        "masked": Status.REFUTED,
+        "remainder": Status.REFUTED,
+        "outside": Status.REFUTED,
+        "curried": Status.REFUTED,
+        "logarithm": Status.REFUTED,
+        "divides": Status.TESTED,
+        "where_defined": Status.TESTED,
+        "in_a_helper": Status.TESTED,
+    }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
+    for owner in ("masked", "remainder", "outside", "curried", "logarithm"):
+        claim, reading = pairs[owner]
+        assert claim.status is Status.ASSUMED
+        assert reading.provenance["totalized"] is True, owner
+        assert reading.provenance["python_answer"] == "computes False", owner
+        assert reading.provenance["term_answer"] == "computes True", owner
+        assert owner not in prover.shown
+    masked = pairs["masked"][1].provenance
+    assert masked["counterexample"] == {"n": 1, "f": [1]}
+    assert masked["stopped"].startswith("raises ZeroDivisionError")
+    assert "read as Lean reads what has no value in Python" in masked["reason"]
+    assert pairs["remainder"][1].provenance["counterexample"] == {"n": 0}
+    assert pairs["logarithm"][1].provenance["counterexample"] == {"x": 0}
+
+
+#: Claims whose second reading runs too long: both readings stop at ``1 //
+#: 0``, and read as Lean reads it, the helper after it loops (#99, #101).
+STOPPED_THEN_SLOW = """
+import time
+
+
+def spin(n, past):
+    while isinstance(n, int) and n >= past:
+        pass
+    return n * 0
+
+
+@theorem
+def always(n: Nat) -> 1 // (n - n) + spin(n, 0) == 0:
+    \"\"\"Python stops at 1 // 0 at every draw; past it, spin never returns.\"\"\"
+
+
+@theorem
+def from_three(n: Nat) -> 1 // (n - n) + spin(n, 3) == 0:
+    \"\"\"The same from 3 on; below it, what follows 1 // 0 is compared.\"\"\"
+
+
+def nap(n):
+    if isinstance(n, int):
+        time.sleep(0.15)
+    return n * 0
+
+
+@theorem
+def napping(n: Nat) -> nap(n) + 1 // (n - n) == 0:
+    \"\"\"Each reading naps before it stops at 1 // 0, which the second passes.\"\"\"
+"""
+
+
+def test_a_draw_whose_second_reading_is_given_up_counts_for_nothing(
+    monkeypatch, tmp_path
+) -> None:
+    """A draw at which the reading as Lean reads it is given up is given up (#99, #101).
+
+    Both readings stopped at ``1 // (n - n)`` at every draw and agreed that
+    there is no value, and read as Lean reads it, ``spin`` ran past the
+    draw's time. That was dropped and the first agreement kept, so
+    ``always`` read ``tested`` though what follows ``1 // 0`` was compared at
+    no draw. Such a draw is given up as ``slow`` now: ``always`` is declined,
+    and ``from_three`` is tested at the draws below 3. The second reading
+    shares its draw's time, where it had five seconds of its own: ``napping``
+    naps in both, past the draw's time at every draw.
+    """
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.2)
+    monkeypatch.setattr(faithful, "SAMPLES", 2)
+    pairs = _pairs(check_path(_write(tmp_path, STOPPED_THEN_SLOW)))
+    reading = pairs["always"][1]
+    assert reading.status is Status.ASSUMED, reading.provenance
+    # past SLOW_DRAWS draws given up so, the check makes no more (#113)
+    assert "given up as too slow" in reading.provenance["declined"]
+    assert "read as Lean reads it" in reading.provenance["declined"]
+    reading = pairs["from_three"][1]
+    assert reading.status is Status.TESTED, reading.provenance
+    assert reading.provenance["slow"] >= 3, reading.provenance
+    # the two readings of a draw share its time: each naps 0.15 seconds
+    reading = pairs["napping"][1]
+    assert reading.status is Status.ASSUMED, reading.provenance
+    assert "given up as too slow" in reading.provenance["declined"]
+
+
+#: Claims whose readings would run too long at a value they write (#101).
+TOO_SLOW = """
+def spin(n):
+    while isinstance(n, int) and n > 50:
+        pass
+    return n * 0
+
+
+def deep(n):
+    if not isinstance(n, int):
+        return n * 0
+    return 0 if n <= 0 else deep(n - 1) + deep(n - 1)
+
+
+def catches(f, n):
+    if not isinstance(n, int):
+        return 0
+    try:
+        return f() % 7 * 0
+    except BaseException:
+        return 0
+
+
+@theorem
+def loops(n: Nat, h: n < 60) -> spin(n) == 0:
+    \"\"\"spin never returns past 50, and the claim writes 50 and 60.\"\"\"
+
+
+@theorem
+def calls(n: Nat, h: n < 64) -> deep(n) == 0:
+    \"\"\"deep makes 2 ** n calls, at a written 63.\"\"\"
+
+
+@theorem
+def towers(n: Nat, h: n < 30) -> (2 ** 2 ** n) * 0 == 0:
+    \"\"\"2 ** 2 ** 29 has more bits than the check computes.\"\"\"
+
+
+@theorem
+def caught(n: Nat, h: n < 30) -> catches(lambda: 2 ** 2 ** n, n) == 0:
+    \"\"\"The helper catches what gives the draw at the written 29 up, and answers 0.\"\"\"
+"""
+
+
+def test_a_draw_that_runs_too_long_is_given_up(monkeypatch, tmp_path) -> None:
+    """A draw whose readings run past ``DRAW_SECONDS`` is given up, as ``slow`` (#101).
+
+    A helper's own loop, a helper that calls itself ``2 ** n`` times, and a
+    power with more bits than ``POWER_BITS``, each at a value the claim
+    writes, ran as long as Python takes, which is forever, or until memory
+    ran out. Each such draw is now given up, each written value in a time of
+    its own, and the claim's reading is tested at the draws that ran.
+    A helper that catches everything catches the giving up too, and the
+    draw is given up all the same, not read as an agreement with the
+    helper's answer. The monitoring the check stops a helper with is
+    released afterwards.
+    """
+    import sys
+    import time
+
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.5)
+    started = time.monotonic()
+    pairs = _pairs(check_path(_write(tmp_path, TOO_SLOW)))
+    assert time.monotonic() - started < 60
+    for owner in ("loops", "calls", "towers", "caught"):
+        reading = pairs[owner][1]
+        assert reading.status is Status.TESTED, (owner, reading.provenance)
+        assert reading.provenance["slow"] >= 1, owner
+        assert reading.provenance["draws"] >= faithful.CORNERS, owner
+    assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
+
+
+#: A module of the user's beside the claims of :data:`SLOW_UNCOPIED`.
+SPINNING = """
+def spin(n):
+    while isinstance(n, int) and n > 50:
+        pass
+    return n * 0
+"""
+
+#: Claims whose helper loops forever at a value they write, in code the
+#: snapshot does not copy (#101).
+SLOW_UNCOPIED = """
+import faithful_spinning_101
+
+
+class Spinner:
+    def spin(self, n):
+        while isinstance(n, int) and n > 50:
+            pass
+        return n * 0
+
+
+SPINNER = Spinner()
+
+
+def imports_spin(n):
+    import faithful_spinning_101
+
+    return faithful_spinning_101.spin(n)
+
+
+@theorem
+def in_a_method(n: Nat, h: n < 60) -> SPINNER.spin(n) == 0:
+    \"\"\"A method of a class of the user's, reached through an instance the snapshot shares.\"\"\"
+
+
+@theorem
+def in_an_import(n: Nat, h: n < 60) -> imports_spin(n) == 0:
+    \"\"\"A function of a module beside, which the helper imports as it runs.\"\"\"
+"""
+
+
+def test_a_draw_is_given_up_in_the_users_code_the_snapshot_does_not_copy(
+    monkeypatch, tmp_path
+) -> None:
+    """The user's code the snapshot shares is stopped past ``DRAW_SECONDS`` too (#101).
+
+    Only the code of the helpers the snapshot copied was watched, so a loop
+    in a method of a class of the user's, reached through an instance, or in
+    a function of a module a helper imports as it runs, never ended. Any
+    code from a file under the claim's source roots is watched now. The
+    readings are declined, since they reach what the snapshot shares, and
+    the draws past the time are given up on the way.
+    """
+    import sys
+    import time
+
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.5)
+    given_up: list[str] = []
+    give_up = faithful._Tally.give_up
+
+    def counted(self, verdict: str, why: str) -> None:
+        given_up.append(verdict)
+        give_up(self, verdict, why)
+
+    monkeypatch.setattr(faithful._Tally, "give_up", counted)
+    (tmp_path / "faithful_spinning_101.py").write_text(SPINNING, encoding="utf-8")
+    started = time.monotonic()
+    try:
+        pairs = _pairs(check_path(_write(tmp_path, SLOW_UNCOPIED)))
+    finally:
+        sys.modules.pop("faithful_spinning_101", None)
+    assert time.monotonic() - started < 60
+    assert given_up.count("slow") >= 2, given_up
+    for owner, shared in (("in_a_method", "SPINNER"), ("in_an_import", "faithful_spinning_101")):
+        reading = pairs[owner][1]
+        assert reading.status is Status.ASSUMED, (owner, reading.provenance)
+        assert shared in reading.provenance["declined"], owner
+    assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
+
+
+#: A helper too slow at one value the claim writes, and misread at the next (#114).
+SLOW_THEN_MISREAD = """
+def helper(n):
+    if not isinstance(n, int):
+        return n * 0
+    while n == 999:
+        pass
+    return 1 if n == 1000 else 0
+
+
+@theorem
+def misread(n: Nat, h: n <= 1000) -> helper(n) == 0:
+    \"\"\"False at n = 1000, where the term, n*0 == 0, is true.\"\"\"
+"""
+
+
+def test_a_written_value_past_one_too_slow_to_draw_at_is_drawn_at(
+    prover, monkeypatch, tmp_path
+) -> None:
+    """Each written value is drawn at in its own time, past one too slow (#114).
+
+    The claim writes ``1000``, so its written draws include ``999``, ``1000``
+    and ``1001``, in that order. Past the draw at ``999``, given up as too
+    slow, the larger written values were not drawn at, since their walks
+    would be larger: the misreading at ``1000`` was never reached, the
+    reading read ``tested``, and a prover was shown the term ``n*0 == 0``.
+    Each written value has its own time now, so the draw at ``1000`` is
+    made, and refutes the reading.
+    """
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.5)
+    claim, reading = _pairs(check_path(_write(tmp_path, SLOW_THEN_MISREAD)))["misread"]
+    assert reading.status is Status.REFUTED, reading.provenance
+    assert reading.provenance["counterexample"] == {"n": 1000}
+    assert reading.provenance["python_answer"] == "computes False"
+    assert reading.provenance["term_answer"] == "computes True"
+    assert claim.status is Status.ASSUMED
+    assert prover.shown == []
+
+
+#: A helper too slow at the small values the corners and the tester draw (#113).
+SLOW_SMALL = """
+def spin(n):
+    while isinstance(n, int) and n >= 3:
+        pass
+    return n * 0
+
+
+@theorem
+def slow_small(n: Nat) -> spin(n) == 0:
+    \"\"\"spin never returns from 3 on, which the corners and the tester draw.\"\"\"
+
+
+@theorem
+def slow_late(n: Nat, h: n < 30) -> spin(n - 26) == 0:
+    \"\"\"spin never returns from n = 29 on, the last few draws of the claim.\"\"\"
+"""
+
+
+def test_a_claim_with_too_many_draws_too_slow_is_declined(monkeypatch, tmp_path) -> None:
+    """Past ``SLOW_DRAWS`` draws too slow, the check makes no more, and declines the reading (#113).
+
+    Each draw at which the helper was too slow cost ``DRAW_SECONDS``, and a
+    helper slow from ``3`` on is slow at most of the corners and the tester's
+    draws: nineteen of them, ninety-five seconds for one claim. One more
+    than ``SLOW_DRAWS`` are given up now, and then no draw is made, so the
+    reading, which was not compared at the draws left, is declined, naming
+    the draws given up. A claim slow at no more draws than that is tested
+    at the others, as before.
+    """
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.2)
+    given_up: list[str] = []
+    give_up = faithful._Tally.give_up
+
+    def counted(self, verdict: str, why: str) -> None:
+        given_up.append(verdict)
+        give_up(self, verdict, why)
+
+    monkeypatch.setattr(faithful._Tally, "give_up", counted)
+    pairs = _pairs(check_path(_write(tmp_path, SLOW_SMALL)))
+    reading = pairs["slow_small"][1]
+    assert reading.status is Status.ASSUMED, reading.provenance
+    declined = reading.provenance["declined"]
+    assert f"{faithful.SLOW_DRAWS + 1} draws were given up as too slow" in declined, declined
+    assert "took more than 0.2 seconds" in declined, declined
+    assert "so the check made no draw from" in declined, declined
+    reading = pairs["slow_late"][1]
+    assert reading.status is Status.TESTED, reading.provenance
+    assert 1 <= reading.provenance["slow"] <= faithful.SLOW_DRAWS, reading.provenance
+    assert given_up.count("slow") == faithful.SLOW_DRAWS + 1 + reading.provenance["slow"]
+
+
+#: A claim whose helper loops forever at a value it writes (#101).
+LOOPS = """
+def spin(n):
+    while isinstance(n, int) and n > 50:
+        pass
+    return n * 0
+
+
+@theorem
+def loops(n: Nat, h: n < 60) -> spin(n) == 0:
+    \"\"\"spin never returns past 50, and the claim writes 50 and 60.\"\"\"
+"""
+
+
+def test_a_deadline_set_around_the_check_is_its_owners(tmp_path) -> None:
+    """A ``lanky.deadline`` set around the check goes off, and passes through it (#101, #109).
+
+    The CAS oracle and the Lean oracle's search keep their deadlines with
+    ``lanky.deadline``'s interval timer, and what it raises names its owner.
+    The draws keep their time with no timer, by asking for it as they go,
+    so they neither clobber one set around them nor take what it raises for
+    a draw too slow: a deadline of one second around ``check_path`` goes
+    off in a helper's loop at the written 51, with the draw's five seconds
+    far from spent, and its ``Expired`` reaches its owner. The monitoring
+    the check stops a helper with is released on the way out, and the
+    handler of ``SIGALRM`` is the one there was.
+    """
+    import signal
+    import sys
+    import time
+
+    from lanky.deadline import Expired, deadline
+
+    handler = signal.getsignal(signal.SIGALRM)
+    owner = object()
+    started = time.monotonic()
+    with pytest.raises(Expired) as raised, deadline(1.0, owner):
+        check_path(_write(tmp_path, LOOPS))
+    assert raised.value.owner is owner
+    assert time.monotonic() - started < faithful.DRAW_SECONDS
+    assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
+    assert signal.getsignal(signal.SIGALRM) is handler
 
 
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
@@ -1628,3 +2365,35 @@ def test_the_quickstart_shows_what_check_prints_for_a_misread_claim(tmp_path, ca
             break
         shown.append(line.rstrip())
     assert printed == shown
+
+
+def test_an_agreement_on_a_draw_given_up_later_is_not_counted(monkeypatch) -> None:
+    """A draw given up counts for nothing, the agreements made on it before included.
+
+    Codex's P1 on #110: an annotation that agreed at a draw on which a later
+    annotation was then given up as too slow kept that agreement in the
+    tally, though the draw was taken back. An annotation that agrees only at
+    such draws could then read as agreeing, and the reading as tested.
+    """
+    from types import SimpleNamespace
+
+    first, second = SimpleNamespace(name="h"), SimpleNamespace(name="goal")
+    draws = [SimpleNamespace(label=f"n = {n}") for n in (998, 999, 1000)]
+    monkeypatch.setattr(faithful, "_draws", lambda *args, **kwargs: iter(draws))
+
+    def compare(namespace, parameters, annotations, draw, total=False, deadline=None):
+        yield first, "agreed", faithful._Outcome(value=True), faithful._Outcome(value=True)
+        yield second, "slow", faithful._Outcome(error=TimeoutError("too slow")), faithful._Outcome()
+
+    monkeypatch.setattr(faithful, "_compare", compare)
+    snapshot = SimpleNamespace(fresh_copy=lambda: ({}, []))
+    theorem = SimpleNamespace(hypotheses=[], variables=[])
+    tally = faithful._Tally()
+    refuted = faithful._run(
+        lambda *args, **kwargs: None, tally, snapshot, [], [first, second], theorem, None
+    )
+    assert refuted is None
+    assert tally.draws == 0
+    assert tally.agreed == {}
+    assert tally.counts == {"slow": 3}
+

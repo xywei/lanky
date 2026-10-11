@@ -92,7 +92,20 @@ values join the samples of the sorts; a draw of such a claim at which a
 reading walks more than :data:`WALK_POINTS` points all the same, over
 ``Fin[2 ** n]`` say, is given up as too large to walk (``unwalked``). Then
 come :data:`SAMPLES` of the property tester's draws
-(:func:`lanky.testing.sample_value`, from its seed).
+(:func:`lanky.testing.sample_value`, from its seed). A draw whose readings
+take more than :data:`DRAW_SECONDS`, a helper that takes time exponential in
+its argument at a value the claim writes, or ask for a power of more than
+:data:`POWER_BITS` bits, ``2 ** 2 ** n`` there, is given up as too slow
+(``slow``) (#101): the walks and the term's reading ask for the time as they
+go, and the user's code is stopped at a call or a turn of a loop
+(:func:`_watching`). No interval timer keeps that time, so the check sets
+none that would clobber one set around it (:mod:`lanky.deadline`'s, which
+the oracles keep their deadlines with), and what such a deadline raises is
+no ``Exception`` and passes through the check to its owner. Each draw has
+that time of its own, a written value past one too slow to draw at too,
+since a helper slow at ``999`` can answer otherwise at ``1000`` (#114);
+once more than :data:`SLOW_DRAWS` draws of a claim have been given up so,
+the check makes no more, and the reading is declined (#113).
 The definitional hypotheses are satisfied by construction
 (:func:`lanky.testing.satisfy_hypotheses`) so that a scan is one. A bounded
 quantifier enumerates every point of its domain anyway. A family over a sort
@@ -113,9 +126,21 @@ outside its domain, a division by zero, an elementary function outside its
 domain or an overflow, neither has a value, and they agree: ``n // 0 == 0`` is
 read faithfully, and what Lean's total division makes of it is the semantics
 gap :mod:`lanky.semantics` notes. Two other exceptions are no comparison
-(``silent``). Nothing is put down to rounding: the two readings make the same
-operations in the same order, a sum included, and round alike, so a truth
-value that differs is a disagreement.
+(``silent``). Where both have no value, whatever the reason, what Python would
+have evaluated after the operation that had none is compared on neither side,
+so the draw is read again on both with what Python has no value for read as
+Lean has it (:func:`lanky.terms.totalized`): ``x // 0`` and ``x / 0`` are
+``0``, ``x % 0`` is ``x``, a logarithm or a square root outside its Python
+domain is Mathlib's, and a family outside its domain is ``0``. Where both
+then have a value they have to agree (#99): ``f(i) * 0 + 1 // (i - i) ==
+table(i)`` is ``0 == 1`` at ``i = 0`` read so, and its misread term ``0 ==
+0``. The rerun reads the operators the annotation writes so, and a helper's
+are Python's, so a helper's division leaves the rerun without a value there,
+and says nothing more; the term reads all of its own so, and has a value
+wherever the rerun has one, the same one if it is faithful. Nothing is put
+down to rounding: the two readings make the same operations in the same
+order, a sum included, and round alike, so a truth value that differs is a
+disagreement.
 
 *The fact.* Its kind is ``faithful`` (:data:`lanky.ledger.FAITHFUL`), its id
 is the claim's with that kind (``faithful:gauss.gauss@31``), and it has the
@@ -134,9 +159,10 @@ claim's owner and location. It is
   reach what the snapshot could not copy (:attr:`Snapshot.shared`).
 
 The check is sampled: a disagreement only at a point no draw reaches escapes
-it, and so does one in a part of an annotation that comes after a point where
-both readings stop with no answer, in a sum or in an operation that is not a
-connective or a quantifier. :meth:`lanky.theory.Theorem.faithful_fact` makes
+it, and so does one in a part of an annotation that comes after an operation
+with no value in Python that Lean's reading leaves without one too, an
+overflow, or that a helper makes, whose operations the rerun leaves Python's.
+:meth:`lanky.theory.Theorem.faithful_fact` makes
 the fact once per claim, and :func:`lanky.check.establish` rests every pass,
 decision and proof of the claim on it, and offers a claim whose reading is
 refuted to no oracle.
@@ -149,6 +175,7 @@ import builtins
 import collections
 import enum
 import functools
+import gc
 import inspect
 import itertools
 import math
@@ -160,10 +187,11 @@ import re
 import site
 import sys
 import sysconfig
+import time
 import types
 import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import closing
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
@@ -188,8 +216,10 @@ from lanky.terms import (
     concrete_sorts,
     evaluate,
     init_args,
+    is_totalized,
     render,
     sort_free_names,
+    totalized,
 )
 from lanky.terms import Sum as SumTerm
 from lanky.testing import (
@@ -204,6 +234,7 @@ from lanky.testing import (
     sampling_order,
     satisfy_hypotheses,
     statement_free_names,
+    totalized_value,
 )
 
 __all__ = [
@@ -211,10 +242,13 @@ __all__ = [
     "COPY_ITEMS",
     "CORNERS",
     "DECIDED_BY",
+    "DRAW_SECONDS",
     "KIND",
+    "POWER_BITS",
     "SAMPLES",
     "SEED",
     "SIZE_POINTS",
+    "SLOW_DRAWS",
     "SORT_POINTS",
     "STATEMENT",
     "WALK_POINTS",
@@ -272,6 +306,25 @@ SIZE_POINTS = 1024
 #: too large to walk: a size kept to :data:`SIZE_POINTS` can still size a
 #: domain of ``2 ** n`` points.
 WALK_POINTS = 1 << 15
+
+#: How many seconds the readings of a claim's annotations may take at one
+#: draw, both readings of every annotation together and the draw's second
+#: reading with them (#99), before the draw is given up as too slow (#101): a
+#: helper that takes time exponential in its argument, at a value the claim
+#: writes.
+DRAW_SECONDS = 5.0
+
+#: How many draws of one claim may be given up as too slow: at one more the
+#: check draws no more, and the reading is declined (#113). Each such draw
+#: costs :data:`DRAW_SECONDS`, and a helper slow at the small values the
+#: corners and the tester draw made one claim cost a minute and more.
+SLOW_DRAWS = 4
+
+#: How many bits a power or a left shift may have that an annotation, or its
+#: term, computes at a draw, an integer's or a fraction's: one past it, ``2 **
+#: 2 ** n`` at a written ``99``, gives the draw up as too slow, since Python
+#: computes it in one step that no deadline stops.
+POWER_BITS = 1 << 20
 
 #: The small values each sort's sample starts with.
 _SMALL: dict[str, tuple[Any, ...]] = {
@@ -408,32 +461,209 @@ def _truthy(value: Any) -> bool:
     return bool(value) if not _is_truth(value) else value
 
 
-class _TooLarge(BaseException):  # noqa: N818 - not an error, a walk given up
-    """A reading at a counted draw walked more than :data:`WALK_POINTS` points (see :class:`_Draw`).
+class _GivenUp(BaseException):  # noqa: N818 - not an error, a draw given up
+    """A draw given up: it is no ``Exception``, so neither reading passes over it.
 
-    It is no ``Exception``, so that neither reading passes over it as a point
-    with no answer: it gives the draw up (see :func:`_compare`).
+    Neither reading takes it for a point or an operand with no answer, and a
+    helper's ``except Exception`` lets it through: it gives the draw up (see
+    :func:`_compare`), as one at which nothing was compared. ``verdict`` is
+    what the draw is counted as.
     """
+
+    verdict = "given up"
+
+
+class _TooLarge(_GivenUp):
+    """A reading at a counted draw walked more than :data:`WALK_POINTS` points (:class:`_Draw`)."""
+
+    verdict = "unwalked"
+
+
+class _TooSlow(_GivenUp):
+    """The readings at a draw ran past :data:`DRAW_SECONDS`, or a power past :data:`POWER_BITS`."""
+
+    verdict = "slow"
 
 
 #: The points the walk at the current draw may still take, or ``None`` where
 #: the draw is not counted (see :class:`_Draw`).
 _BUDGET: ContextVar[list[int] | None] = ContextVar("lanky_faithful_budget", default=None)
 
+#: When, by :func:`time.monotonic`, the readings at the current draw are given
+#: up as too slow, or ``None`` outside a reading (see :func:`_both_readings`).
+_DEADLINE: ContextVar[float | None] = ContextVar("lanky_faithful_deadline", default=None)
+
+#: What gave the current reading up, or ``None`` outside a reading: kept, so
+#: that a helper that catches it does not keep the draw (see :func:`_kept`).
+_GIVEN_UP: ContextVar[list[_GivenUp] | None] = ContextVar("lanky_faithful_given_up", default=None)
+
+
+def _giving_up(exc: _GivenUp) -> _GivenUp:
+    """``exc``, noted as what gave the current reading up, to be raised."""
+    given = _GIVEN_UP.get()
+    if given is not None:
+        given.append(exc)
+    return exc
+
+
+def _kept() -> None:
+    """Give the draw up where a reading that has ended was given up, or is past its time.
+
+    A helper that catches everything, ``except BaseException`` or a bare
+    ``except``, catches what gives a draw up too, and the reading goes on
+    with what the helper answered instead: that answer is not Python's, so
+    the draw is given up all the same once the reading ends.
+
+    Raises:
+        _GivenUp: What gave the reading up, if anything did.
+        _TooSlow: If the readings at this draw have run past their time.
+    """
+    given = _GIVEN_UP.get()
+    if given:
+        raise given[0]
+    _on_time()
+
+
+def _on_time() -> None:
+    """Give the draw up if its readings have run past its time.
+
+    The walks of both readings ask at every point (:func:`_step`), the
+    term's reading at every node it evaluates (:meth:`_Reading.rec`), and
+    the user's code at every call and every turn of a loop
+    (:func:`_watching`).
+
+    Raises:
+        _TooSlow: If the readings at this draw have taken more than
+            :data:`DRAW_SECONDS`.
+    """
+    deadline = _DEADLINE.get()
+    if deadline is not None and time.monotonic() > deadline:
+        raise _giving_up(
+            _TooSlow(f"the readings at this draw took more than {DRAW_SECONDS:g} seconds")
+        )
+
 
 def _step() -> None:
-    """Count one point a walk takes, and give the draw up past its budget.
+    """Count one point a walk takes, and give the draw up past its budget or its time.
 
     Raises:
         _TooLarge: If the walks at this draw have taken :data:`WALK_POINTS`
             points.
+        _TooSlow: If the readings at this draw have run past their time.
     """
+    _on_time()
     budget = _BUDGET.get()
     if budget is None:
         return
     budget[0] -= 1
     if budget[0] < 0:
-        raise _TooLarge(f"the walk took more than {WALK_POINTS} points")
+        raise _giving_up(_TooLarge(f"the walk took more than {WALK_POINTS} points"))
+
+
+def _bits(value: Any) -> int | None:
+    """How many bits an exact number has, an integer's, or a fraction's larger part's."""
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, int):
+        return value.bit_length()
+    if isinstance(value, Fraction):
+        return max(value.numerator.bit_length(), value.denominator.bit_length())
+    return None
+
+
+def _computable(name: str, left: Any, right: Any) -> None:
+    """Give the draw up where a power or a left shift would have more than :data:`POWER_BITS` bits.
+
+    Python computes such a number in one step, which no deadline stops
+    (:func:`_on_time`): ``2 ** 2 ** n`` at a written ``99`` is never
+    computed. A power of a float overflows instead, and one of an integer to
+    a negative integer is a float.
+
+    Raises:
+        _TooSlow: If it would.
+    """
+    if name == "lshift":
+        if isinstance(left, int) and isinstance(right, int) and left and right > POWER_BITS:
+            raise _giving_up(
+                _TooSlow(f"a left shift by {right} has more than {POWER_BITS} bits")
+            )
+        return
+    if isinstance(right, Fraction) and right.denominator == 1:
+        right = right.numerator
+    if not isinstance(right, int) or isinstance(right, bool):
+        return
+    bits = _bits(left)
+    if bits is None or bits < 2 or (right < 0 and isinstance(left, int)):
+        return
+    if abs(right) * bits > POWER_BITS:
+        raise _giving_up(
+            _TooSlow(
+                f"a power of a number of {bits} bits to the {right} has more than "
+                f"{POWER_BITS} bits"
+            )
+        )
+
+
+def _lean_total(name: str, left: Any, right: Any) -> Any:
+    """Lean's value where Python's operation raised ``ZeroDivisionError``; else ``_MISSING``.
+
+    ``x / 0`` and ``x // 0`` are ``0``, ``x % 0`` is ``x``, and ``0 ** -k`` is
+    ``0`` (``0⁻¹ = 0``), as :func:`lanky.terms.totalized` says.
+    """
+    try:
+        zero = left == 0 and right < 0 if name == "pow" else right == 0
+    except Exception:  # noqa: BLE001 - operands that cannot say are not a division by zero
+        return _MISSING
+    if not _is_truth(zero) or not zero:
+        return _MISSING
+    return left if name == "mod" else 0
+
+
+def _arithmetic(name: str) -> Callable[[Any, Any], Any]:
+    """Python's operator ``name``, as both readings compute it at a draw.
+
+    It is Python's, except that a power or a left shift past
+    :data:`POWER_BITS` gives the draw up (:func:`_computable`), and that
+    inside :func:`lanky.terms.totalized` a division, a remainder or a power
+    by zero is Lean's (:func:`_lean_total`). The rerun calls it for the
+    operators the annotation writes (:class:`_Rerun`), and the term's
+    reading for the term's (:class:`_Reading`), so that both read the same
+    operation alike.
+    """
+    python = getattr(operator, name)
+
+    def apply(left: Any, right: Any) -> Any:
+        if name in ("pow", "lshift"):
+            _computable(name, left, right)
+        try:
+            return python(left, right)
+        except ZeroDivisionError:
+            if not is_totalized():
+                raise
+            total = _lean_total(name, left, right)
+            if total is _MISSING:
+                raise
+            return total
+
+    apply.__name__ = apply.__qualname__ = f"lanky_{name}"
+    return apply
+
+
+_TRUEDIV = _arithmetic("truediv")
+_FLOORDIV = _arithmetic("floordiv")
+_MOD = _arithmetic("mod")
+_POW = _arithmetic("pow")
+_LSHIFT = _arithmetic("lshift")
+
+#: The name the rerun calls each of the annotation's operators by, that
+#: :func:`_arithmetic` reads (see :meth:`_Rerun.visit_BinOp`).
+_ARITHMETIC: dict[type, str] = {
+    ast.Div: "__lanky_truediv__",
+    ast.FloorDiv: "__lanky_floordiv__",
+    ast.Mod: "__lanky_mod__",
+    ast.Pow: "__lanky_pow__",
+    ast.LShift: "__lanky_lshift__",
+}
 
 
 def _domain(opened: list[Exception], thunk: Callable[[], Any]) -> Iterator[Any]:
@@ -573,9 +803,20 @@ def _add(log: list[list[tuple[str, Any]]], make: Callable[[list[Exception]], Any
     return builtins.sum(values)
 
 
-def _bind(scope: dict[str, Any], name: str, value: Any) -> Any:
-    """``name := value``, bound in the annotation's globals ``scope`` (see :class:`_Rerun`)."""
-    scope[name] = value
+def _bind(scope: dict[str, Any], variable: Callable[[], Any], name: str, value: Any) -> Any:
+    """``name := value``, bound in the scope Python binds it in (see :class:`_Rerun`).
+
+    ``variable`` is ``lambda: name``, written where the ``:=`` was. Where
+    ``name`` is a variable of a lambda of the annotation's, that lambda is
+    where Python binds it, and ``variable`` closes over its cell, which is
+    set; anywhere else Python binds it in the annotation's globals,
+    ``scope``.
+    """
+    cells = variable.__closure__
+    if cells:
+        cells[0].cell_contents = value
+    else:
+        scope[name] = value
     return value
 
 
@@ -587,26 +828,35 @@ _RERUN_NAMES: dict[str, Any] = {
     "__lanky_both__": _both,
     "__lanky_domain__": _domain,
     "__lanky_quantify__": _quantify,
+    "__lanky_live__": True,
+    "__lanky_truediv__": _TRUEDIV,
+    "__lanky_floordiv__": _FLOORDIV,
+    "__lanky_mod__": _MOD,
+    "__lanky_pow__": _POW,
+    "__lanky_lshift__": _LSHIFT,
 }
 
 #: Stands for a binder that had no value before the walk bound it.
 _ABSENT = object()
 
 
-def _reduction_names(namespace: dict[str, Any]) -> dict[str, str]:
+def _reduction_names(namespace: dict[str, Any], parameters: Iterable[str] = ()) -> dict[str, str]:
     """The names an annotation quantifies and sums by: ``"all"``, ``"any"`` or ``"sum"`` for each.
 
     ``all``, ``any`` and ``sum`` are lanky's in an annotation whatever the
     module binds them to (:data:`lanky.terms.BUILTIN_OVERRIDES`), and so is a
     name the module binds to lanky's own :func:`~lanky.terms.forall`,
     :func:`~lanky.terms.exists` or :func:`~lanky.terms.sum_`, such as
-    loopty's ``reduce_sum``.
+    loopty's ``reduce_sum``. A name that is one of the claim's
+    ``parameters`` is the parameter, in both readings (#105).
     """
     names = {name: name for name in ("all", "any", "sum")}
     ours = {id(BUILTIN_OVERRIDES[name]): name for name in ("all", "any", "sum")}
     for name, value in namespace.items():
         if id(value) in ours:
             names[name] = ours[id(value)]
+    for name in parameters:
+        names.pop(name, None)
     return names
 
 
@@ -654,13 +904,25 @@ class _Rerun(ast.NodeTransformer):
     when :func:`_quantify` asks for it, so that what one raises does not end
     the walk. ``sum`` over a generator becomes ``__lanky_sum__`` of the same
     points (:func:`_add`). An ``and`` in an ``if`` clause is read three-valued
-    too (:func:`_both`), and ``name := value`` binds the name in the
-    annotation's globals, where Python binds it from a generator and where
-    every thunk reads it.
+    too (:func:`_both`).
+
+    ``name := value`` binds the name where Python binds it, which a thunk
+    would not: a thunk is a scope of its own, and ``:=`` in it would bind the
+    name there alone. Python binds it in the nearest scope around it that is
+    not a generator's, the annotation's globals or a lambda the annotation
+    writes, and every thunk inside that scope reads it there. So it becomes
+    ``__lanky_walrus__(lambda: name, "name", value)`` (:func:`_bind`): inside
+    a lambda of the annotation's, ``lambda: name`` closes over the lambda's
+    variable, whose cell is set, and the lambda's body is made to bind the
+    name, in a branch never taken, so that the name is its variable as it is
+    in Python; anywhere else the name is bound in the globals (#105).
     """
 
     def __init__(self, names: dict[str, str]) -> None:
         self.names = names
+        #: The names ``:=`` binds in each lambda of the annotation's around
+        #: the node visited, the innermost last.
+        self.lambdas: list[dict[str, None]] = []
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
         """``~operand`` as ``__lanky_not__(operand)``; any other operator as it is."""
@@ -670,22 +932,60 @@ class _Rerun(ast.NodeTransformer):
         return ast.copy_location(_call("__lanky_not__", node.operand), node)
 
     def visit_BinOp(self, node: ast.BinOp) -> Any:
-        """``left & right`` and ``left | right`` as calls on thunks; anything else as it is."""
-        self.generic_visit(node)
-        name = {ast.BitAnd: "__lanky_and__", ast.BitOr: "__lanky_or__"}.get(type(node.op))
-        if name is None:
-            return node
-        return ast.copy_location(_call(name, _thunk(node.left), _thunk(node.right)), node)
+        """``&`` and ``|`` as calls on thunks, ``/``, ``//``, ``%``, ``**`` and ``<<`` as calls.
 
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:
-        """``name := value`` as ``__lanky_walrus__("name", value)``, which binds it in the globals.
-
-        In a generator ``:=`` binds the name in the scope around it, which is
-        the annotation's globals, and a thunk would bind it for itself alone;
-        so the binding is made in the globals, where every thunk reads it.
+        ``left | right`` is ``__lanky_or__(lambda: left, lambda: right)``
+        (:func:`_connective`), and ``left // right`` is
+        ``__lanky_floordiv__(left, right)``, Python's ``//`` but for what
+        :func:`_arithmetic` says; any other operator is as it is.
         """
         self.generic_visit(node)
-        call = _call("__lanky_walrus__", ast.Constant(node.target.id), node.value)
+        name = {ast.BitAnd: "__lanky_and__", ast.BitOr: "__lanky_or__"}.get(type(node.op))
+        if name is not None:
+            return ast.copy_location(_call(name, _thunk(node.left), _thunk(node.right)), node)
+        name = _ARITHMETIC.get(type(node.op))
+        if name is not None:
+            return ast.copy_location(_call(name, node.left, node.right), node)
+        return node
+
+    def visit_Lambda(self, node: ast.Lambda) -> Any:
+        """A lambda the annotation writes, a scope of its own for the ``:=`` in its body.
+
+        Its defaults are evaluated in the scope around it, and are visited
+        there. A name ``:=`` binds in its body is made its variable by a
+        branch never taken, ``body if __lanky_live__ else ((name := None),)``,
+        as the ``:=`` itself made it in Python, since the ``:=`` becomes a call
+        (:meth:`visit_NamedExpr`). The thunks this rewrite makes are lambdas
+        too, made after their contents are visited, so none is visited here.
+        """
+        node.args = self.visit(node.args)
+        self.lambdas.append({})
+        try:
+            node.body = self.visit(node.body)
+        finally:
+            bound = self.lambdas.pop()
+        if bound:
+            never = ast.Tuple(
+                [ast.NamedExpr(ast.Name(name, ast.Store()), ast.Constant(None)) for name in bound],
+                ast.Load(),
+            )
+            node.body = ast.IfExp(ast.Name("__lanky_live__", ast.Load()), node.body, never)
+        return node
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> Any:
+        """``name := value`` as ``__lanky_walrus__(lambda: name, "name", value)`` (:func:`_bind`).
+
+        Python binds the name in the nearest lambda of the annotation's around
+        it, or in the annotation's globals, never in a generator's scope or a
+        thunk's; ``lambda: name``, where the ``:=`` was, reads the name where
+        Python binds it, and :func:`_bind` binds it there.
+        """
+        self.generic_visit(node)
+        name = node.target.id
+        if self.lambdas:
+            self.lambdas[-1][name] = None
+        variable = _thunk(ast.Name(name, ast.Load()))
+        call = _call("__lanky_walrus__", variable, ast.Constant(name), node.value)
         return ast.copy_location(call, node)
 
     def visit_Call(self, node: ast.Call) -> Any:
@@ -945,6 +1245,143 @@ class _World:
         return self.module.__dict__
 
 
+def _cache_entries(cache: Any) -> list[tuple[Any, Any]] | None:
+    """The entries of a function behind ``functools.lru_cache``, as ``(key, result)``; or ``None``.
+
+    The cache offers no way to read its entries, so they are read off what
+    it holds, as the garbage collector lists it (:func:`gc.get_referents`):
+    the dict that is the cache comes just before the function it wraps. One
+    of unbounded size maps each key to its result, in the order they went
+    in. One of bounded size maps each key to a link of its own, and the
+    links are listed before the cache, oldest first, each as its key and its
+    result, and the link's type where the version lists it. ``None`` where
+    what is listed is not laid out so, which leaves the cache shared
+    (:meth:`_Copier.cache`).
+    """
+    held = cache.cache_info().currsize
+    listed = gc.get_referents(cache)
+    # the function the cache calls: the one it wraps, or for a copy the check
+    # made (:meth:`_Copier.cache`), the one that put its entries in
+    function = getattr(cache, _CALLS, None) or getattr(cache, "__wrapped__", None)
+    # the cache's own reference to its function is listed after any result
+    at = max((k for k, item in enumerate(listed) if item is function), default=0)
+    table = listed[at - 1] if at else None
+    if type(table) is not dict or len(table) != held:
+        return None
+    if cache.cache_parameters()["maxsize"] is None:
+        return list(table.items())
+    start = 1 if listed and listed[0] is type(cache) else 0
+    span = at - 1 - start
+    if not held or span % held or span // held not in (2, 3):
+        return None
+    stride = span // held
+    entries = [(listed[start + k * stride], listed[start + k * stride + 1]) for k in range(held)]
+    if sorted(id(key) for key, _ in entries) != sorted(id(key) for key in table):
+        return None
+    # where the links' type is listed, it is listed after each result, which
+    # tells a result from what else a version could list there
+    if stride == 3 and any(
+        listed[start + k * stride + 2] is not type(table[key]) for k, (key, _) in enumerate(entries)
+    ):
+        return None
+    return entries
+
+
+#: The attribute of a cache the check made again that holds the function it
+#: calls, which is not the one it wraps (see :meth:`_Copier.cache`).
+_CALLS = "_lanky_calls"
+
+
+def _counted(cache: Any, info: Any) -> Any:
+    """``cache``, made again by the check, counting its hits and misses on from ``info``'s.
+
+    The copy counts the calls that put its entries in, and none before, while
+    the original counts on from what it counted when the claim was read, which
+    an annotation may read (``cache_info().misses``). So the copy's
+    ``cache_info`` adds what the original had counted, and its
+    ``cache_clear`` clears that too, as it clears the original's counts.
+    """
+    kind = type(cache)
+    own = kind.cache_info(cache)
+    offset = [info.hits - own.hits, info.misses - own.misses]
+
+    def cache_info() -> Any:
+        now = kind.cache_info(cache)
+        return type(now)(now.hits + offset[0], now.misses + offset[1], now.maxsize, now.currsize)
+
+    def cache_clear() -> None:
+        kind.cache_clear(cache)
+        offset[0] = offset[1] = 0
+
+    # attributes of the object's own, which come before the methods of its type
+    cache.cache_info = cache_info
+    cache.cache_clear = cache_clear
+    return cache
+
+
+@functools.cache
+def _cache_mark() -> Any:
+    """What ``functools.lru_cache`` puts in a key between the positional and keyword arguments."""
+    probe = functools.lru_cache(maxsize=None)(lambda **kwargs: None)
+    probe(x=0)
+    entries = _cache_entries(probe)
+    if not entries or not isinstance(entries[0][0], tuple) or len(entries[0][0]) != 3:
+        return None
+    return entries[0][0][0]
+
+
+def _cache_key(args: tuple[Any, ...], kwargs: dict[str, Any], typed: bool) -> Any:
+    """The key ``functools.lru_cache`` keeps a call's result under, as CPython makes it."""
+    if not typed and not kwargs:
+        if len(args) == 1 and type(args[0]) in (int, str):
+            return args[0]
+        return args
+    key = args
+    if kwargs:
+        key += (_cache_mark(), *itertools.chain.from_iterable(kwargs.items()))
+    if typed:
+        key += tuple(type(arg) for arg in (*args, *kwargs.values()))
+    return key
+
+
+def _cache_call(key: Any, typed: bool) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
+    """The call a cache's ``key`` was made of, its arguments and keywords; or ``None``.
+
+    The key is read back as :func:`_cache_key` makes it, and made again from
+    the call, which has to give the same key, item for item, by identity.
+    """
+    if not isinstance(key, tuple):
+        call: tuple[tuple[Any, ...], dict[str, Any]] = ((key,), {})
+    else:
+        mark = _cache_mark()
+        at = next((k for k, item in enumerate(key) if item is mark), None)
+        if at is None:
+            if typed and len(key) % 2:
+                return None
+            call = (key[: len(key) // 2] if typed else key, {})
+        else:
+            args, rest = key[:at], key[at + 1 :]
+            if typed:
+                if (len(rest) - len(args)) % 3:
+                    return None
+                rest = rest[: 2 * ((len(rest) - len(args)) // 3)]
+            names = rest[0::2]
+            if len(rest) % 2 or not all(type(name) is str for name in names):
+                return None
+            call = (args, dict(zip(names, rest[1::2], strict=True)))
+    made = _cache_key(*call, typed)
+    if made is key:
+        return call
+    if (
+        type(made) is not tuple
+        or type(key) is not tuple
+        or len(made) != len(key)
+        or any(new is not old for new, old in zip(made, key, strict=True))
+    ):
+        return None
+    return call
+
+
 class _Copier:
     """One copy of the part of the user's modules that a claim's annotations reach.
 
@@ -970,10 +1407,10 @@ class _Copier:
       twice is copied once, and a view of an array is made again over the
       copy of the array it views (:meth:`array`);
     * a ``functools.partial``, a function behind ``functools.lru_cache``
-      whose cache is empty, a method bound to a copied object
-      (``TABLE.get``), and a library's function that closes over a function
-      of the user's (a decorator's wrapper) are made again around the
-      copies.
+      with the entries its cache holds (:meth:`cache`), a method bound to a
+      copied object (``TABLE.get``), and a library's function that closes
+      over a function of the user's (a decorator's wrapper) are made again
+      around the copies.
 
     Numbers, texts, terms, lanky's types, the modules, the classes and the
     functions of libraries need no copy (:func:`_unchanging`). A module of
@@ -992,9 +1429,9 @@ class _Copier:
       instances and methods read it, and their module, as they are;
     * a value read off a class or a library's module by name that would
       need a copy, ``Rules.table``, since the check copies neither;
-    * a function behind ``functools.lru_cache`` whose cache holds entries,
-      which answer as the function might no longer, and a view the copy
-      cannot make again;
+    * a function behind ``functools.lru_cache`` whose entries cannot be
+      read off its cache, which answer as the function might no longer, and
+      a view the copy cannot make again;
     * a module of the user's that a function imports as it runs
       (:meth:`imported`), which binds the module and not its copy.
     """
@@ -1013,6 +1450,8 @@ class _Copier:
         self.items = 0
         self.elements = 0
         self.shared: list[str] = []
+        #: The code of the functions of the user's that the copy made again.
+        self.codes: set[Any] = set()
 
     # {{{ modules and names
 
@@ -1285,18 +1724,7 @@ class _Copier:
             wrapped = self.copy(value.__wrapped__, path)
             if wrapped is value.__wrapped__:
                 return value
-            # a cache is state: an entry it holds answers where the function
-            # would answer otherwise now, and an empty cache made again
-            # would not, so only an empty one is made again
-            held = value.cache_info().currsize
-            if held:
-                return self.share(
-                    value,
-                    path,
-                    f"a function behind functools.lru_cache whose cache holds {held} "
-                    "entries, which the check does not copy",
-                )
-            return self.remember(value, functools.lru_cache(**value.cache_parameters())(wrapped))
+            return self.cache(value, wrapped, path)
         if isinstance(value, types.MethodType):
             owner = self.copy(value.__self__, path)
             function = self.copy(value.__func__, path)
@@ -1316,6 +1744,84 @@ class _Copier:
             path,
             f"an object of type {kind.__qualname__}, whose state the check does not copy",
         )
+
+    def cache(self, value: Any, wrapped: Any, path: str) -> Any:
+        """A function behind ``functools.lru_cache`` made again around ``wrapped``, entries and all.
+
+        A cache is state: an entry answers where the function, run again on
+        the copy, may answer otherwise, from what the module holds now. So
+        the copy is a cache of the same size around the copy of the function,
+        holding the same entries, their results copied, in the order in which
+        the cache would evict them: a call they answer is answered from them,
+        as Python answers it, and any other runs the copy of the function
+        (#105). An entry is put in by calling the new cache as the original
+        was called, the arguments read back off the entry's key
+        (:func:`_cache_call`), and the call answered with the copy of its
+        result. Where the entries cannot be read off the cache
+        (:func:`_cache_entries`), or a key cannot be read back into a call,
+        the cache is shared, and the reading declined, naming it. The copy
+        counts its hits and misses on from the original's (:func:`_counted`),
+        and holds copies of what was set on the original after it was made
+        (:meth:`cache_attributes`).
+        """
+        info = value.cache_info()
+        held = info.currsize
+        parameters = value.cache_parameters()
+        if not held:
+            out = self.remember(value, functools.lru_cache(**parameters)(wrapped))
+            self.cache_attributes(value, out, path)
+            return _counted(out, info)
+        entries = _cache_entries(value)
+        calls = [] if entries is not None else None
+        for key, result in entries or ():
+            call = _cache_call(key, parameters["typed"])
+            if call is None:
+                calls = None
+                break
+            calls.append((call, result))
+        if calls is None:
+            return self.share(
+                value,
+                path,
+                f"a function behind functools.lru_cache whose cache holds {held} entries, "
+                "which the check could not read",
+            )
+        answers: list[Any] = []
+
+        def answer(*args: Any, **kwargs: Any) -> Any:
+            return answers.pop() if answers else wrapped(*args, **kwargs)
+
+        out = self.remember(value, functools.lru_cache(**parameters)(answer))
+        functools.update_wrapper(out, wrapped)
+        self.cache_attributes(value, out, path)
+        setattr(out, _CALLS, answer)
+        for (args, kwargs), result in calls:
+            # the rerun calls the copy with copies of what the original was
+            # called with, a function of the user's say, so its keys are made
+            # of the copies
+            where = f"an entry of the cache of {path}"
+            args = self.copy(args, where)
+            kwargs = {name: self.copy(item, where) for name, item in kwargs.items()}
+            answers.append(self.copy(result, where))
+            out(*args, **kwargs)
+        if answers or out.cache_info().currsize != held:
+            raise RuntimeError("the entries of the cache did not go in as they were")
+        return _counted(out, info)
+
+    def cache_attributes(self, value: Any, out: Any, path: str) -> None:
+        """Give ``out``, made again from the cache ``value``, copies of what was set on ``value``.
+
+        ``functools.update_wrapper`` gives a cache made around the copy of a
+        function that function's name, text and attributes, and not what was
+        set on the original cache after it was made, ``cached.flag = 1``,
+        which an annotation may read, and which the rerun had no value for.
+        What the check sets on a cache it makes (:data:`_CALLS`, the counts of
+        :func:`_counted`) is its own, and not copied from a copy.
+        """
+        own = {"__wrapped__", _CALLS, "cache_info", "cache_clear", *functools.WRAPPER_ASSIGNMENTS}
+        for name, item in vars(value).items():
+            if name not in own:
+                setattr(out, name, self.copy(item, f"{path}.{name}"))
 
     def array(self, value: numpy.ndarray, path: str) -> Any:
         """A numpy array as the copy has it: copied, a view made again over the copy it views.
@@ -1383,6 +1889,8 @@ class _Copier:
             cells.append(new)
             pending.append((variable, cell, new))
         globals_ = world.target if world is not None else value.__globals__
+        if world is not None:
+            self.codes.add(code)
         out = types.FunctionType(code, globals_, value.__name__, None, tuple(cells) or None)
         self.remember(value, out)
         out.__qualname__ = value.__qualname__
@@ -1454,11 +1962,19 @@ class Snapshot:
             reason. A reading that reaches any of it is not tested: the rerun
             reads it as it is, not as it was when the claim was read.
         codes: The annotations, compiled, whose reads the copy follows.
+        watched: The code of the functions of the user's that the copy
+            makes again, which a draw that runs past its time stops
+            (:func:`_watching`).
+        roots: The source roots of the claim's file: the functions of the
+            modules under them are the user's too, which a draw that runs
+            past its time stops (:func:`_watching`).
     """
 
     namespace: dict[str, Any]
     shared: tuple[str, ...] = ()
     codes: tuple[Any, ...] = ()
+    watched: frozenset[Any] = frozenset()
+    roots: tuple[Path, ...] = ()
     skip: frozenset[str] = frozenset()
     worlds: frozenset[int] = frozenset()
     kept: frozenset[int] = frozenset()
@@ -1466,13 +1982,23 @@ class Snapshot:
 
     def fresh(self) -> dict[str, Any]:
         """A copy for one draw: the module's globals, with what is reached copied again."""
+        return self.fresh_copy()[0]
+
+    def fresh_copy(self) -> tuple[dict[str, Any], tuple[str, ...]]:
+        """A copy for one draw, as :meth:`fresh` makes it, and what it could not copy again.
+
+        What the snapshot shared is shared again, and is not listed: it is in
+        :attr:`shared`. Anything else the copy for the draw has to share is
+        something the snapshot holds as it was and the copy cannot make
+        again, and the draw would read it as it is, so it is listed.
+        """
         copier = _Copier(lambda globals_: id(globals_) in self.worlds, self.kept)
         world = copier.world(self.namespace, "")
         if world is None:
-            return dict(self.namespace)
+            return dict(self.namespace), ()
         for code in self.codes:
             copier.reach(code, world, self.skip)
-        return world.target
+        return world.target, tuple(dict.fromkeys(copier.shared))
 
 
 def _annotation_codes(fn: Any) -> tuple[Any, ...]:
@@ -1526,6 +2052,8 @@ def capture(fn: Any) -> Snapshot:
         worlds=frozenset(id(each.target) for each in worlds),
         kept=frozenset(copier.kept),
         held=(*(each.module for each in worlds), *copier.left),
+        watched=frozenset(copier.codes),
+        roots=roots,
     )
 
 
@@ -1561,6 +2089,36 @@ class _Reading(LankyEvaluationMapper):
         self.exact = False
         #: What each sum that had no value came to at each of its points.
         self.unsummed: list[list[tuple[str, Any]]] = []
+
+    def rec(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
+        """Evaluate ``expr``, giving the draw up past its time (:func:`_on_time`)."""
+        # _on_time, written out: this runs at every node
+        deadline = _DEADLINE.get()
+        if deadline is not None and time.monotonic() > deadline:
+            _on_time()
+        return LankyEvaluationMapper.rec(self, expr, *args, **kwargs)
+
+    __call__ = rec
+
+    def map_quotient(self, expr: prim.Quotient) -> Any:
+        """True division, as the rerun's ``/`` divides (:func:`_arithmetic`)."""
+        return _TRUEDIV(self.rec(expr.numerator), self.rec(expr.denominator))
+
+    def map_floor_div(self, expr: prim.FloorDiv) -> Any:
+        """Floor division, as the rerun's ``//`` divides (:func:`_arithmetic`)."""
+        return _FLOORDIV(self.rec(expr.numerator), self.rec(expr.denominator))
+
+    def map_remainder(self, expr: prim.Remainder) -> Any:
+        """The remainder, as the rerun's ``%`` takes it (:func:`_arithmetic`)."""
+        return _MOD(self.rec(expr.numerator), self.rec(expr.denominator))
+
+    def map_power(self, expr: prim.Power) -> Any:
+        """A power, as the rerun's ``**`` takes it (:func:`_arithmetic`)."""
+        return _POW(self.rec(expr.base), self.rec(expr.exponent))
+
+    def map_left_shift(self, expr: prim.LeftShift) -> Any:
+        """A left shift, as the rerun's ``<<`` takes it (:func:`_arithmetic`)."""
+        return _LSHIFT(self.rec(expr.shiftee), self.rec(expr.shift))
 
     @staticmethod
     def is_exhaustive(domain: Any) -> bool:
@@ -1962,12 +2520,19 @@ class DrawnFamily:
         self.values: dict[Any, Any] = {}
 
     def __call__(self, point: Any) -> Any:
-        """The value at ``point``, drawn the first time it is asked for."""
+        """The value at ``point``, drawn the first time it is asked for.
+
+        Outside the domain it has none, and inside
+        :func:`lanky.terms.totalized` it is what a table's is there
+        (:func:`lanky.testing.totalized_value`).
+        """
         if (
             _is_truth(point)
             or not isinstance(point, numbers.Number)
             or not in_sort(point, self.domain, self.context)
         ):
+            if is_totalized():
+                return totalized_value(self.codomain)
             raise Undecided(
                 f"{self.name} is applied at {point!r}, which is outside the domain "
                 f"{self.domain} it declares, so this draw decides nothing"
@@ -2036,6 +2601,7 @@ def _draw(
             return Table(
                 [_draw(codomain, source, context, size=size) for _ in range(bound)],
                 name=name or "a family",
+                codomain=codomain,
             )
         return DrawnFamily(domain, codomain, source, dict(context), name or "a family", size)
     if isinstance(source, _Pinned):
@@ -2361,33 +2927,224 @@ def _judge(python: _Outcome, term: _Outcome) -> str:
     return "agreed" if same else "differed"
 
 
+#: The ids :mod:`sys.monitoring` names no tool for, one of which the check
+#: takes while it runs a claim's draws (:func:`_watching`).
+_TOOL_IDS = (3, 4)
+
+#: Where lanky's own code lives, which is never the user's, whatever the
+#: claim's source roots hold (:func:`_users_code`).
+_LANKY = Path(__file__).resolve().parent
+
+
+@functools.lru_cache(maxsize=4096)
+def _users_code(file: str, roots: tuple[Path, ...]) -> bool:
+    """Whether code compiled from ``file`` is the user's, which a draw past its time stops.
+
+    That is code from a file under the claim's source roots, as for the
+    snapshot (:func:`_users`), and not where Python, a package or lanky
+    lives; code compiled from no file, ``<string>``, is no one's in
+    particular.
+    """
+    if not roots or file.startswith("<"):
+        return False
+    return not Path(file).resolve().is_relative_to(_LANKY) and _users_file(file, roots)
+
+
+def _users_codes(roots: tuple[Path, ...], namespace: dict[str, Any] | None = None) -> list[Any]:
+    """The code of the functions the user's modules hold now, their methods included.
+
+    A module is the user's where its file is (:func:`_users_code`), and the
+    claim's own module, whose globals are ``namespace``, is one, though
+    ``lanky check`` takes it out of ``sys.modules`` once it has run. Their
+    globals are read for functions, for their classes and those of their
+    objects, for what wraps a function (a ``functools.partial``, a cache, a
+    bound method, a decorator's wrapper), and for what a function closes
+    over, at any depth, and the code of each function compiled from a file
+    of the user's is kept: a method of a class of the user's, which the
+    snapshot shares, and a function of a module the snapshot does not copy,
+    which a helper imports as it runs, among them (see :func:`_watching`).
+    What a library defines is not.
+    """
+    if not roots:
+        return []
+    # a module of a subclass, a lazy one say, is no module of the user's,
+    # and reading its attributes could load it
+    modules = {
+        name: module.__dict__
+        for name, module in list(sys.modules.items())
+        if type(module) is types.ModuleType
+        and isinstance(module.__dict__.get("__file__"), str)
+        and _users_code(module.__dict__["__file__"], roots)
+    }
+    if namespace is not None and isinstance(namespace.get("__name__"), str):
+        modules.setdefault(namespace["__name__"], namespace)
+    files: dict[str, bool] = {}
+    found: list[Any] = []
+    seen: set[int] = set()
+    pending: list[Any] = [value for globals_ in modules.values() for value in globals_.values()]
+    while pending:
+        value = pending.pop()
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, types.FunctionType):
+            code = value.__code__
+            if code.co_filename not in files:
+                files[code.co_filename] = _users_code(code.co_filename, roots)
+            if files[code.co_filename]:
+                found.append(code)
+            for cell in value.__closure__ or ():
+                try:
+                    pending.append(cell.cell_contents)
+                except ValueError:  # an empty cell
+                    continue
+            pending.extend(value.__dict__.values())
+        elif isinstance(value, type):
+            name = getattr(value, "__module__", None)
+            if isinstance(name, str) and name in modules:
+                pending.extend(vars(value).values())
+        elif isinstance(value, staticmethod | classmethod | types.MethodType):
+            pending.append(value.__func__)
+        elif isinstance(value, property):
+            pending.extend((value.fget, value.fset, value.fdel))
+        elif isinstance(value, functools.partial):
+            pending.append(value.func)
+        elif isinstance(value, _CACHED):
+            pending.append(value.__wrapped__)
+        elif not isinstance(value, types.ModuleType) and not _unchanging(value):
+            # an object: its class's methods are what it runs
+            pending.append(type(value))
+    return found
+
+
+def _nested_codes(code: Any) -> Iterator[Any]:
+    """``code`` and the code compiled inside it, its lambdas and generators."""
+    yield code
+    for constant in code.co_consts:
+        if isinstance(constant, types.CodeType):
+            yield from _nested_codes(constant)
+
+
+def _late(code: Any, offset: int, *rest: Any) -> None:
+    """At a call or a turn of a loop in the user's code, give the draw up past its time."""
+    # _on_time, written out: this runs at every turn of the user's loops
+    deadline = _DEADLINE.get()
+    if deadline is not None and time.monotonic() > deadline:
+        _on_time()
+
+
+@contextmanager
+def _watching(
+    codes: Iterable[Any], roots: tuple[Path, ...] = (), namespace: dict[str, Any] | None = None
+) -> Iterator[None]:
+    """Stop the user's code at a draw that runs past its time, while the block runs (#101).
+
+    The walks and the term's reading ask for the time themselves
+    (:func:`_on_time`); a helper's own loop, or a helper that calls itself,
+    does not. So the user's code is watched with :mod:`sys.monitoring` at
+    every call and every turn of a loop (``PY_START`` and ``JUMP``), under an
+    id it names no tool for, and past :data:`DRAW_SECONDS` the next of these
+    gives the draw up. The user's code is ``codes``, the annotations and the
+    helpers the snapshot copied, and the functions of the user's modules,
+    those whose files lie under the claim's source ``roots`` and the claim's
+    own, whose globals are ``namespace``, their methods included
+    (:func:`_users_codes`), with the code compiled inside each. The
+    events are switched on for that code alone, and off again when the
+    block ends. Where every such id is taken, nothing is watched, and a
+    helper that loops forever at a draw stops the check there.
+
+    What Python runs in one step, a builtin's or a library's loop in C, or
+    ``2 ** 2 ** n`` in a helper, is not stopped, nor is a library's code, nor
+    a function no module of the user's holds when the draws start; the
+    annotation's own powers and its term's are kept small
+    (:func:`_computable`).
+    """
+    monitoring = sys.monitoring
+    tool = None
+    for candidate in _TOOL_IDS:
+        if monitoring.get_tool(candidate) is not None:
+            continue
+        try:
+            monitoring.use_tool_id(candidate, "lanky faithful")
+        except ValueError:  # pragma: no cover - taken since it was asked
+            continue
+        tool = candidate
+        break
+    if tool is None:
+        yield
+        return
+    events = monitoring.events.PY_START | monitoring.events.JUMP
+    watched: dict[int, Any] = {}
+    try:
+        monitoring.register_callback(tool, monitoring.events.PY_START, _late)
+        monitoring.register_callback(tool, monitoring.events.JUMP, _late)
+        try:
+            users = _users_codes(roots, namespace)
+        except Exception:  # noqa: BLE001 - what cannot be read is not watched
+            users = []
+        for each in (*codes, *users):
+            for code in _nested_codes(each):
+                # by id: hashing a code object reads all of it
+                if id(code) in watched:
+                    continue
+                try:
+                    monitoring.set_local_events(tool, code, events)
+                except (TypeError, ValueError):  # pragma: no cover - code it cannot watch
+                    continue
+                watched[id(code)] = code
+        yield
+    finally:
+        for code in watched.values():
+            monitoring.set_local_events(tool, code, 0)
+        monitoring.register_callback(tool, monitoring.events.PY_START, None)
+        monitoring.register_callback(tool, monitoring.events.JUMP, None)
+        monitoring.free_tool_id(tool)
+
+
 def _compare(
     namespace: dict[str, Any],
     parameters: Sequence[str],
     annotations: Sequence[_Annotation],
     draw: _Draw,
+    total: bool = False,
+    deadline: float | None = None,
 ) -> Iterator[tuple[_Annotation, str, _Outcome, _Outcome]]:
     """Each annotation, how its two readings compare at ``draw``, and the two outcomes.
 
     ``namespace`` is the function's globals as they were when lanky read the
     annotations, what they reach copied for this draw and its helpers bound
     to it (:meth:`Snapshot.fresh`), and the rerun runs in it
-    (:func:`_scope`).
+    (:func:`_scope`). With ``total`` both readings read what Python has no
+    value for as Lean has it (:func:`lanky.terms.totalized`), and a sum with
+    no value is not compared point by point: a helper's operation is
+    Python's in the rerun and Lean's in the term, so the two may have
+    values at other points, and only where both have a value do they say
+    the same if the term is faithful.
+
+    The readings of all the annotations at the draw may run until
+    ``deadline``, :data:`DRAW_SECONDS` from now unless the draw has one
+    already (:func:`_run`). Where they run longer, or walk more than
+    :data:`WALK_POINTS` points, the draw is given up: the annotation is
+    yielded with the verdict ``slow`` or ``unwalked``, and none after it.
     """
     scope = _scope(namespace)
     for name in parameters:
         scope[name] = draw.context[name] if name in draw.context else Var(name)
     scope["__lanky_walrus__"] = functools.partial(_bind, scope)
+    if deadline is None:
+        deadline = time.monotonic() + DRAW_SECONDS
     for annotation in annotations:
         unsummed: list[list[tuple[str, Any]]] = []
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)
         reading = _Reading(dict(draw.context), draw.samples)
         try:
-            python, term = _both_readings(annotation, scope, reading, draw, unsummed)
-        except _TooLarge as exc:
-            yield annotation, "unwalked", _Outcome(error=exc), _Outcome(error=exc)
+            python, term = _both_readings(
+                annotation, scope, reading, draw, unsummed, deadline, total
+            )
+        except _GivenUp as exc:
+            yield annotation, exc.verdict, _Outcome(error=exc), _Outcome(error=exc)
             return
-        if not _same_points(unsummed, reading.unsummed):
+        if not total and not _same_points(unsummed, reading.unsummed):
             # a sum had no value on both sides, or on one, and its points differ
             python = replace(python, sums=_points_of(unsummed))
             term = replace(term, sums=_points_of(reading.unsummed))
@@ -2396,48 +3153,68 @@ def _compare(
         yield annotation, _judge(python, term), python, term
 
 
+@contextmanager
+def _reading(draw: _Draw, deadline: float, total: bool) -> Iterator[None]:
+    """One reading at ``draw``: its walk's budget, the draw's time, and, with ``total``, Lean's."""
+    budget = _BUDGET.set([WALK_POINTS] if draw.counted else None)
+    late = _DEADLINE.set(deadline)
+    given = _GIVEN_UP.set([])
+    try:
+        if total:
+            with totalized():
+                yield
+        else:
+            yield
+    finally:
+        _GIVEN_UP.reset(given)
+        _DEADLINE.reset(late)
+        _BUDGET.reset(budget)
+
+
 def _both_readings(
     annotation: _Annotation,
     scope: dict[str, Any],
     reading: _Reading,
     draw: _Draw,
     unsummed: list[list[tuple[str, Any]]],
+    deadline: float,
+    total: bool = False,
 ) -> tuple[_Outcome, _Outcome]:
     """What the rerun of ``annotation`` and its term came to at ``draw``.
 
     ``unsummed`` is where the rerun's sums with no value go (:func:`_add`).
+    With ``total`` both read what Python has no value for as Lean has it.
 
     Where the draw is counted (:class:`_Draw`), each reading may walk
-    :data:`WALK_POINTS` points.
+    :data:`WALK_POINTS` points, and both together may run until
+    ``deadline``.
 
     Raises:
         _TooLarge: If one of them walked more than that, which gives the draw
             up.
+        _TooSlow: If they ran past ``deadline``, or a power past
+            :data:`POWER_BITS` was asked for, which gives the draw up too.
     """
-    token = _BUDGET.set([WALK_POINTS] if draw.counted else None)
-    try:
-        with concrete_sorts(draw.samples):
-            try:
-                if annotation.code is not None:
-                    value = eval(annotation.code, scope, None)
-                else:
-                    value = annotation.given
-                # a term the rerun built, read at the draw, logs its sums with the rerun's
-                built = _Reading(dict(draw.context), draw.samples)
-                built.unsummed = unsummed
-                python = _Outcome(_value_at(value, built))
-            except Exception as exc:  # noqa: BLE001 - what the annotation raises is its answer
-                python = _Outcome(error=exc)
-    finally:
-        _BUDGET.reset(token)
-    token = _BUDGET.set([WALK_POINTS] if draw.counted else None)
-    try:
+    with _reading(draw, deadline, total), concrete_sorts(draw.samples):
+        try:
+            if annotation.code is not None:
+                value = eval(annotation.code, scope, None)
+            else:
+                value = annotation.given
+            # a term the rerun built, read at the draw, logs its sums with the rerun's
+            built = _Reading(dict(draw.context), draw.samples)
+            built.unsummed = unsummed
+            python = _Outcome(_value_at(value, built))
+        except Exception as exc:  # noqa: BLE001 - what the annotation raises is its answer
+            python = _Outcome(error=exc)
+        # a helper may have caught the draw's giving up and answered all the same
+        _kept()
+    with _reading(draw, deadline, total):
         try:
             term = _Outcome(_value_at(annotation.term, reading))
         except Exception as exc:  # noqa: BLE001 - what the term raises is its answer
             term = _Outcome(error=exc)
-    finally:
-        _BUDGET.reset(token)
+        _kept()
     return python, term
 
 
@@ -2479,9 +3256,23 @@ class _Tally:
 
     draws: int = 0
     agreed: dict[str, int] = field(default_factory=dict)
+    #: What a draw's copy of the snapshot could not make again (:meth:`Snapshot.fresh_copy`).
+    shared: dict[str, None] = field(default_factory=dict)
     unanswered: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     skipped: list[str] = field(default_factory=list)
+    #: Why each draw given up as ``slow`` was.
+    slow: list[str] = field(default_factory=list)
+    #: The draw at which the check made no more, past :data:`SLOW_DRAWS`
+    #: draws too slow (#113), or ``None``.
+    stopped: str | None = None
+
+    def give_up(self, verdict: str, why: str) -> None:
+        """Count a draw given up, ``unwalked`` or ``slow``, and say why."""
+        self.counts[verdict] = self.counts.get(verdict, 0) + 1
+        self.skipped.append(why)
+        if verdict == "slow":
+            self.slow.append(why)
 
     def record(
         self, annotation: _Annotation, verdict: str, python: _Outcome, term: _Outcome
@@ -2512,7 +3303,7 @@ def _annotations(theorem: Any) -> list[_Annotation] | str:
     terms: dict[str, tuple[str, Any]] = {name: ("sort", sort) for name, sort in theorem.variables}
     terms.update((name, ("hypothesis", prop)) for name, prop in theorem.hypotheses)
     terms["return"] = ("goal", theorem.goal)
-    names = _reduction_names(theorem.namespace)
+    names = _reduction_names(theorem.namespace, inspect.signature(fn).parameters)
     out: list[_Annotation] = []
     for name, annotation in raw.items():
         if name not in terms:
@@ -2578,26 +3369,14 @@ def faithful_fact(theorem: Any) -> Fact:
         snapshot = theorem.snapshot
         codes = [annotation.code for annotation in annotations if annotation.code is not None]
         extent = _extent(theorem, codes, snapshot.namespace)
-        for draw in _draws(theorem.variables, hypotheses, extent):
-            if isinstance(draw, str):
-                tally.skipped.append(draw)
-                continue
-            tally.draws += 1
-            # each draw starts from the module as the reading found it (#103)
-            for annotation, verdict, python, term in _compare(
-                snapshot.fresh(), parameters, annotations, draw
-            ):
-                if verdict == "differed":
-                    return _refuted(fact, annotation, draw, python, term)
-                if verdict == "unwalked":
-                    # given up as too large to walk, so the draw is not one
-                    tally.draws -= 1
-                    tally.skipped.append(f"{draw.label}: {python.error}")
-                    tally.counts["unwalked"] = tally.counts.get("unwalked", 0) + 1
-                    continue
-                tally.record(annotation, verdict, python, term)
+        with _watching((*codes, *snapshot.watched), snapshot.roots, snapshot.namespace):
+            refuted = _run(fact, tally, snapshot, parameters, annotations, theorem, extent)
+        if refuted is not None:
+            return refuted
     except Exception as exc:  # noqa: BLE001 - a fact, never a crash of the check
         return declined(f"the annotations could not be run again: {type(exc).__name__}: {exc}")
+    if tally.stopped is not None:
+        return declined(_too_slow(tally))
     if not tally.draws:
         why = f" ({tally.skipped[0]})" if tally.skipped else ""
         return declined(
@@ -2607,16 +3386,124 @@ def faithful_fact(theorem: Any) -> Fact:
         if not tally.agreed.get(annotation.name):
             return declined(
                 f"{annotation.what} had no answer on both sides at any of {tally.draws} "
-                f"draws, so its reading was not compared ({tally.unanswered[annotation.name]})"
+                f"draws, so its reading was not compared "
+                f"({tally.unanswered.get(annotation.name, 'no draw compared it')})"
             )
-    if snapshot.shared:
-        return declined(_not_copied(snapshot.shared))
+    if snapshot.shared or tally.shared:
+        return declined(_not_copied((*snapshot.shared, *tally.shared)))
     return fact(
         Status.TESTED,
         draws=tally.draws,
         compared=sum(tally.agreed.values()),
         seed=SEED,
         **tally.counts,
+    )
+
+
+def _run(
+    fact: Callable[..., Fact],
+    tally: _Tally,
+    snapshot: Snapshot,
+    parameters: Sequence[str],
+    annotations: Sequence[_Annotation],
+    theorem: Any,
+    extent: _Extent,
+) -> Fact | None:
+    """Compare the readings at every draw, counting in ``tally``; the refutation, if one disagrees.
+
+    Each draw starts from the module as the reading found it (#103). Where
+    both readings of an annotation have no value at a draw, the draw is
+    read again with what Python has no value for read as Lean has it
+    (:func:`lanky.terms.totalized`), so that what follows where Python
+    stopped is compared on both sides (#99): where both then have a value,
+    they have to agree. Until the second reading has run, such an
+    annotation's first comparison is not counted, so that a draw at which
+    the second reading is given up compares nothing past where Python
+    stopped, and counts for nothing. A draw that is given up is not counted.
+    Each draw has :data:`DRAW_SECONDS` of its own, a written value past one
+    too slow to draw at too, since a helper slow at ``999`` can answer
+    otherwise at ``1000`` (#114); once more than :data:`SLOW_DRAWS` draws
+    have been given up as too slow, no more are made, and ``tally`` says so
+    (:attr:`_Tally.stopped`), which declines the reading (#113).
+    """
+    hypotheses = [prop for _, prop in theorem.hypotheses]
+    for draw in _draws(theorem.variables, hypotheses, extent):
+        if isinstance(draw, str):
+            tally.skipped.append(draw)
+            continue
+        if tally.counts.get("slow", 0) > SLOW_DRAWS:
+            tally.stopped = draw.label
+            return None
+        tally.draws += 1
+        # both readings of the draw, and its second reading, share its time
+        deadline = time.monotonic() + DRAW_SECONDS
+        stopped: dict[str, tuple[_Outcome, _Outcome]] = {}
+        # the comparisons of the annotations that stopped, counted once the
+        # second reading has compared what follows
+        pending: list[tuple[_Annotation, str, _Outcome, _Outcome]] = []
+        # every other comparison of the draw, counted only once the draw is
+        # one: an annotation that agreed before a later one was given up must
+        # not count that agreement, since the draw is not a draw
+        done: list[tuple[_Annotation, str, _Outcome, _Outcome]] = []
+        given_up = False
+        namespace, shared = snapshot.fresh_copy()
+        tally.shared.update(dict.fromkeys(shared))
+        for annotation, verdict, python, term in _compare(
+            namespace, parameters, annotations, draw, deadline=deadline
+        ):
+            if verdict == "differed":
+                return _refuted(fact, annotation, draw, python, term)
+            if verdict in ("unwalked", "slow"):
+                # given up, so the draw is not one
+                tally.draws -= 1
+                tally.give_up(verdict, f"{draw.label}: {python.error}")
+                given_up = True
+                continue
+            if python.error is not None and term.error is not None:
+                stopped[annotation.name] = (python, term)
+                pending.append((annotation, verdict, python, term))
+                continue
+            done.append((annotation, verdict, python, term))
+        if given_up:
+            continue
+        if not stopped:
+            for comparison in done:
+                tally.record(*comparison)
+            continue
+        namespace, shared = snapshot.fresh_copy()
+        tally.shared.update(dict.fromkeys(shared))
+        for annotation, verdict, python, term in _compare(
+            namespace, parameters, annotations, draw, total=True, deadline=deadline
+        ):
+            if verdict in ("unwalked", "slow"):
+                # what follows where Python stopped was not compared
+                tally.draws -= 1
+                tally.give_up(verdict, f"{draw.label}, read as Lean reads it: {python.error}")
+                break
+            if (
+                annotation.name in stopped
+                and verdict == "differed"
+                and python.error is None
+                and term.error is None
+            ):
+                return _refuted(
+                    fact, annotation, draw, python, term, stopped=stopped[annotation.name]
+                )
+        else:
+            for comparison in done + pending:
+                tally.record(*comparison)
+    return None
+
+
+def _too_slow(tally: _Tally) -> str:
+    """Why a reading is not tested whose draws the check stopped, too many of them too slow."""
+    listing = "; ".join(tally.slow[:3])
+    if len(tally.slow) > 3:
+        listing += f"; and {len(tally.slow) - 3} more"
+    return (
+        f"{len(tally.slow)} draws were given up as too slow ({listing}), more than the "
+        f"{SLOW_DRAWS} a claim may give up so, so the check made no draw from "
+        f"{tally.stopped} on, and the reading was not compared there"
     )
 
 
@@ -2632,14 +3519,43 @@ def _not_copied(shared: Sequence[str]) -> str:
     )
 
 
+#: What the second reading of a draw reads as Lean has it (see :func:`lanky.terms.totalized`).
+_TOTALIZED = (
+    "x / 0 and x // 0 are 0, x % 0 is x, 0 ** -k is 0, a logarithm and a square root "
+    "outside their Python domain are Mathlib's, and a family outside its domain is 0"
+)
+
+
 def _refuted(
-    fact: Any, annotation: _Annotation, draw: _Draw, python: _Outcome, term: _Outcome
+    fact: Any,
+    annotation: _Annotation,
+    draw: _Draw,
+    python: _Outcome,
+    term: _Outcome,
+    stopped: tuple[_Outcome, _Outcome] | None = None,
 ) -> Fact:
-    """The refutation at ``draw``, where ``annotation`` and its term disagree."""
+    """The refutation at ``draw``, where ``annotation`` and its term disagree.
+
+    ``stopped`` are the two outcomes of the first reading of the draw where
+    both had no value, and ``python`` and ``term`` those of the second, which
+    reads what Python has no value for as Lean has it (#99).
+    """
     counterexample = {name: _described(value) for name, value in draw.context.items()}
     sampled = draw.samples.described()
     iterated = f" with each sort iterating its sample {sampled}" if sampled else ""
     term_text = _shown(annotation.term)
+    found = f"{python.text()}, and its term, {term_text}, {term.text()}"
+    differs = "the term says"
+    extra: dict[str, Any] = {}
+    if stopped is not None:
+        first, second = stopped
+        found = (
+            f"{first.text()}, and its term, {term_text}, {second.text()}; read as Lean "
+            f"reads what has no value in Python ({_TOTALIZED}), it {python.text()} "
+            f"and its term {term.text()}"
+        )
+        differs = "what follows where Python stopped says"
+        extra = {"totalized": True, "stopped": first.text()}
     return fact(
         Status.REFUTED,
         counterexample=counterexample,
@@ -2647,10 +3563,10 @@ def _refuted(
         python_answer=python.text(),
         term_answer=term.text(),
         draw=draw.label,
+        **extra,
         reason=(
             f"{annotation.what}, run again as Python at these values{iterated}, "
-            f"{python.text()}, and its term, {term_text}, {term.text()}: the term "
-            "says something else than what was written, so no oracle that decides "
-            "or proves is asked about the claim"
+            f"{found}: {differs} something else than what was written, so no "
+            "oracle that decides or proves is asked about the claim"
         ),
     )

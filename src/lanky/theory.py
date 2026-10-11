@@ -179,9 +179,9 @@ class Theorem:
             ``x: int``, or names one anywhere in its annotation without
             calling it, ``f: Fn[Fin[n], float]`` (see
             :func:`_refuse_a_builtin_annotation`). And if an annotation reads
-            ``all``, ``any``, ``sum`` or ``abs`` and the module binds that
-            name to something other than Python's builtin or lanky's own,
-            which lanky would read in its place (see
+            ``all``, ``any``, ``sum`` or ``abs``, which no parameter is named,
+            and the module binds that name to something other than Python's
+            builtin or lanky's own, which lanky would read in its place (see
             :func:`lanky.terms.evaluate_annotations`, #100).
     """
 

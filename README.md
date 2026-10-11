@@ -456,7 +456,8 @@ types ([#79](https://github.com/xywei/lanky/issues/79)). lanky refuses the
 cases it can see while it reads, a term's hash, text or truth value asked for
 in the annotation's own code, an `if` statement in a function the annotation
 calls, a builtin of Python's at a variable, an `all`, `any`, `sum` or `abs`
-that the module binds to a function of its own
+that the module binds to a function of its own and that is no parameter of
+the claim
 ([#100](https://github.com/xywei/lanky/issues/100)), since in an annotation
 lanky reads these four as its own, and checks the rest by their
 results ([#91](https://github.com/xywei/lanky/issues/91)): each claim's
@@ -473,21 +474,35 @@ proved. The check is sampled, and that leaves these limits:
   to 4096 and, for a variable that sizes a domain, only up to a size at which
   the claim's nested domains hold about 1024 points, and 32 of the property
   tester's. A draw at which a reading would walk more than 32768 points,
-  `Fin[2 ** n]` at a written `63`, is given up.
+  `Fin[2 ** n]` at a written `63`, is given up, and so is one whose readings
+  take more than five seconds, or ask for a power of more than 2 ** 20 bits,
+  `2 ** 2 ** n` at a written `99`
+  ([#101](https://github.com/xywei/lanky/issues/101)), so that a misreading
+  at one of those is not reached. Each draw has its five seconds, so a
+  written value past one too slow is drawn at too
+  ([#114](https://github.com/xywei/lanky/issues/114)), and past four draws
+  of a claim given up as too slow, the check makes no more and the reading
+  is `assumed`, naming them
+  ([#113](https://github.com/xywei/lanky/issues/113)).
 - A claim whose annotations cannot be run at a point keeps an `assumed`
   reading, and a proof of it reads `proved under faithful:name`, with the
   reason in a `DECLINED` line: a variable of a sort no value can be drawn of
   (the pytential demonstration's boundaries), an annotation Python evaluated
   when the function was defined, without `from __future__ import annotations`,
   and one with no answer on both sides at any draw.
-- Where both readings have no answer at a point, a division by zero or a
-  family outside its domain, they agree there, and what Python would have
-  evaluated after it in the same operation is not compared: in `1 // i ==
-  table(i)` at `i = 0`, `table(0)`. A quantifier, `&` and `|` pass over such a
-  point or operand on both sides, and a sum with no value is compared point by
-  point, so what comes after it there is compared; what Lean's total division
-  makes of the point itself is the semantics gap lanky already notes
-  ([#99](https://github.com/xywei/lanky/issues/99)).
+- Where both readings have no answer at a point, they agree there. A
+  quantifier, `&` and `|` pass over such a point or operand on both sides, and
+  a sum with no value is compared point by point. Inside any other operation
+  Python stops at the operand with no answer, so the draw is read again on
+  both sides with what Python has no value for read as Lean has it, `x // 0`
+  and `x / 0` as `0`, `x % 0` as `x`, a logarithm or a square root outside
+  its Python domain as Mathlib's, and a family outside its domain as `0`, and
+  where both then have a value they have to agree: in `1 // (i - i) ==
+  table(i)` at `i = 0`, `table(0)` is compared
+  ([#99](https://github.com/xywei/lanky/issues/99)). What follows an overflow,
+  which has no value either way, or an operation inside a helper, which the
+  rerun leaves Python's, is still not compared there
+  ([#107](https://github.com/xywei/lanky/issues/107)).
 - The rerun runs inside lanky, as the reading does, so a helper that answers
   otherwise when it finds lanky on its caller's stack answers alike in both.
   The check is against misreadings, not against code written to evade it.
@@ -502,17 +517,22 @@ proved. The check is sampled, and that leaves these limits:
   naming it: an object of a type it does not know, such as an instance of a
   class of the user's or a random generator, a class of the user's that
   holds methods or data, a structure past the budget, a table read off a
-  class or an installed module by name, a function behind
-  `functools.lru_cache` whose cache holds entries, and a module of the
-  user's that a helper imports as it runs. An installed library, lanky included, is read as
-  it is when the check runs, and so is what code reaches through
-  `sys.modules` or `importlib`
+  class or an installed module by name, and a module of the user's that a
+  helper imports as it runs. A function behind `functools.lru_cache` is
+  copied with the entries its cache holds
+  ([#105](https://github.com/xywei/lanky/issues/105)). An installed library,
+  lanky included, is read as it is when the check runs, and so is what code
+  reaches through `sys.modules` or `importlib`
   ([#104](https://github.com/xywei/lanky/issues/104)).
 - The check runs the annotations' Python, helpers included, at every draw,
   about forty times a claim. A helper's changes to the module's data are made
   to the copy and are gone at the next draw, but a side effect outside the
-  module, a file written or a line printed, happens that often, and a helper
-  that never returns at some value stops the check there.
+  module, a file written or a line printed, happens that often. A function
+  of the user's modules, a helper or a method of a class of theirs, is
+  stopped at a call or a turn of a loop once its draw has run five seconds;
+  a library's code is not, nor is one step Python takes in C, a builtin's
+  loop or `2 ** 2 ** n` inside a helper, and it runs as long as it takes
+  ([#108](https://github.com/xywei/lanky/issues/108)).
 - `lanky check` and the pytest plugin make the check. A theorem called or
   sampled directly, `gauss(n=4)` or `gauss.report()`, as `python
   examples/gauss.py` does, evaluates its term as before;

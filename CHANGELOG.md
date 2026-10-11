@@ -33,9 +33,11 @@ worth the `tested` reading it rests on.
     elements. The functions are bound to the copy, two that closed over one
     cell close over one copy of it, a view of an array is made again over
     the copy of the array it views, so that a write through one view is read
-    through another, and a `functools.partial`, a function behind an empty
-    `functools.lru_cache` and a method bound to a copied table (`TABLE.get`)
-    are made again around the copies. Every draw runs in a
+    through another, and a `functools.partial`, a function behind
+    `functools.lru_cache`, with the entries its cache holds and its hit and
+    miss counts (#105), and a
+    method bound to a copied table (`TABLE.get`) are made again around the
+    copies. Every draw runs in a
     copy of that copy, so a helper reads what it read when the claim was
     read, whatever the module rebinds or changes in place after the claim
     (`TABLE.clear()`, `list.append`, `ARRAY[:] = 0`), and whatever a helper
@@ -45,8 +47,9 @@ worth the `tested` reading it rests on.
     generator), a structure past the budget, a class of the user's that holds
     a method or data, a value read off a class or an installed module by name
     that would need a copy (`Rules.table`), a function behind
-    `functools.lru_cache` whose cache holds entries, and a module of the
-    user's that a function imports as it runs. A reading that reaches any of it and agrees
+    `functools.lru_cache` whose entries cannot be read off its cache, and a
+    module of the user's that a function imports as it runs. A reading that
+    reaches any of it and agrees
     at every draw is `assumed`, not `tested`, with each such object and why
     in the reason, so a proof of the claim reads `proved under
     faithful:name`. Libraries, lanky included, are read as they are.
@@ -81,6 +84,47 @@ worth the `tested` reading it rests on.
     0 == table(i) for i in Fin[n])`, misread at `table(1)`, read `tested` and
     Lean proved its term. A `sum` walks every point too, has no value where a
     point has none, and is then compared point by point.
+  - What follows an operation with no value (#99). Inside any other
+    operation Python stops at the operand that has no value, and so does the
+    term, so what came after it was compared on neither side: `all(f(i) * 0 +
+    1 // (i - i) == table(i) for i in Fin[n])`, misread at `table(0)`, read
+    `tested`, and Lean proved its term, where `1 // 0` is `0`. A draw at which
+    both readings of an annotation have no value is read again on both sides
+    with what Python has no value for read as Lean has it
+    (`lanky.terms.totalized`): `x / 0` and `x // 0` are `0`, `x % 0` is `x`,
+    `0 ** -k` is `0`, a logarithm or a square root outside its Python domain
+    is Mathlib's, and a family outside its domain is `0` (a family that is `0`
+    everywhere for a family of families, `False` for truth values). Where both then have
+    a value they have to agree, and a disagreement refutes the reading, with
+    `totalized` and what the first reading `stopped` at in its provenance.
+    The rerun reads so the operators the annotation writes, and the term all
+    of its own, so a helper's division, which the rerun leaves Python's, gives
+    the second reading no value and says nothing more. A draw whose second
+    reading is given up is given up, and the first reading's agreement there
+    is not counted.
+  - A time budget per draw (#101). The readings of a claim's annotations at
+    one draw, and the draw's second reading with them, may take
+    `DRAW_SECONDS = 5` seconds, and a power or a left shift either asks for
+    may have `POWER_BITS = 2 ** 20` bits; past either, the draw is given up
+    as `slow`, as a walk past `WALK_POINTS` is given up as `unwalked`. The
+    walks and the term's reading ask for the time as they go, and the user's
+    code, the annotations and the functions of the claim's module and of the
+    modules under its source roots, the methods of their classes included,
+    is watched with `sys.monitoring` while the draws run, so that a helper's
+    own loop, or a helper that calls itself, is stopped at its next call or
+    turn of a loop. No interval timer keeps that time, so a `lanky.deadline`
+    set around the check keeps its own, and what it raises passes through
+    the check to its owner. A draw given up stays given up where a helper
+    catches everything, the giving up included, and answers. A helper that
+    took time exponential in its argument, at a value the claim writes, ran
+    as long as Python took.
+  - Each draw has that time of its own, a written value past one too slow
+    to draw at too (#114): a helper too slow at `999` that answers
+    otherwise at `1000` is refuted there. Past `SLOW_DRAWS = 4` draws of a
+    claim given up as `slow`, the check makes no more, and the reading is
+    declined, naming them (#113), so a helper slow at the small values the
+    corners and the tester draw costs a claim five draws' time, 25 seconds,
+    where one cost 95.
   - The term is evaluated at the same values in Python's arithmetic, its
     sums added with Python's `sum` over the same values, which compensates as
     it adds since 3.12, so that both readings round alike.
@@ -115,6 +159,13 @@ worth the `tested` reading it rests on.
   import, read off the instructions.
 - `lanky.terms.concrete_sorts`, `sort_points` and `rerunning`: what a sort
   iterates while an annotation is run again at concrete values.
+- `lanky.terms.totalized` and `is_totalized`: a block in which
+  `elementary_value`, a `lanky.testing.Table` and the faithful fact's
+  operators read what Python has no value for as Lean has it (#99), and
+  `lanky.testing.totalized_value`, what a family is there outside its domain,
+  with the `codomain` a `Table` now takes.
+- `lanky.faithful.DRAW_SECONDS`, `POWER_BITS` (#101) and `SLOW_DRAWS`
+  (#113).
 - **The pytest plugin fails a theorem whose reading is refuted**, with the
   annotation, the draw and the reason, before any draw of its term, which
   would test another statement.
@@ -193,8 +244,9 @@ worth the `tested` reading it rests on.
   calls the module's binding in both readings.
 - The README's Known limits section says what the check leaves: points no
   draw reaches, claims whose annotations cannot be run at a point, a part of
-  an annotation after a point where both readings have no answer, and what
-  the snapshot does not copy. The
+  an annotation after an overflow or a helper's operation with no value, a
+  step Python takes in C that no time budget stops, and what the snapshot
+  does not copy. The
   quickstart has a Check the reading section, and every ledger in both is run
   again.
 - The publish workflow builds in a job that can only read the repository, with
@@ -277,6 +329,40 @@ worth the `tested` reading it rests on.
   seconds a tenth of one (#85), where a quick `omega` given a microsecond
   could be answered before lean-interact's timeout was kept, on a busy
   machine, and read as closed.
+
+### Fixed
+
+- An annotation that agreed at a draw on which a later annotation was then
+  given up, as too slow or unwalked, no longer keeps that agreement: a draw's
+  comparisons count only once the whole draw, its second reading included,
+  is made. Before, an annotation that agreed only at such draws could make
+  the reading read tested.
+
+- **A function behind `functools.lru_cache` is copied with its entries**
+  (#105). The snapshot made it again with an empty cache, and later declined
+  a reading that reached one with entries: an entry answers where the
+  function, run on the copy, may answer otherwise. The copy is now a cache
+  of the same size around the copy of the function, holding the same
+  entries, their results copied, in the order the cache evicts them, and
+  counting its hits and misses on from the original's, so a claim that reads
+  a cached value from before it, or the cache's counts, reads `tested`,
+  where it was refuted and then declined. The entries are read off the cache as the
+  garbage collector lists them, and a cache whose entries cannot be read so
+  is shared, and the reading declined, naming it. So is a reading whose
+  draw's copy cannot make again what the snapshot copied
+  (`Snapshot.fresh_copy`), which the draw read as it was, saying nothing.
+- **`:=` in a lambda of the annotation's binds in the lambda** (#105). The
+  rerun bound every `:=` in the annotation's globals, where one in a
+  generator binds, so with a module-level `x = 1`, `((lambda: (x := n))() ==
+  n) & (x == 1)` read `x == 1` as `n == 1` and was refuted. A `:=` in a
+  lambda now sets the lambda's own variable, from an operand of `&` or a
+  quantifier inside it too.
+- **A parameter named like a builtin the module binds is the parameter**
+  (#105). #100's refusal read every name the annotation reads, so after
+  `from numpy import abs`, `def identity(abs: Nat) -> abs == abs` was
+  refused, though in both readings `abs` is the parameter. A parameter's
+  name is exempt from it, and the rerun does not read a parameter named
+  `all`, `any` or `sum` as a quantifier or a sum.
 
 ## [0.1.0] - 2026-10-08
 
