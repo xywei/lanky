@@ -83,6 +83,7 @@ from lanky.terms import (
 __all__ = [
     "Equation",
     "Untranslatable",
+    "check_shape",
     "equations",
     "from_sympy",
     "symbol_for",
@@ -138,36 +139,55 @@ def symbol_for(name: str, domain: Any) -> Any:
         Untranslatable: For any other domain, ``Bool`` and ``Prop``, a
             family, or a sort a plugin made, whose values need not be numbers.
     """
-    sympy = sympy_module()
+    assumptions = _assumptions(name, domain)
+    return sympy_module().Symbol(name, **assumptions)
+
+
+def _assumptions(name: str, domain: Any) -> dict[str, bool]:
+    """The sympy assumptions a variable of ``domain`` is made with; read without sympy.
+
+    Raises:
+        Untranslatable: For a domain that is not a set of numbers (see
+            :func:`symbol_for`).
+    """
     base = domain
     while isinstance(base, Refined):
         base = base.base
     if isinstance(base, FinType):
-        return sympy.Symbol(name, integer=True, nonnegative=True)
+        return {"integer": True, "nonnegative": True}
     if isinstance(base, Sort) and base.name in _ASSUMPTIONS:
-        return sympy.Symbol(name, **_ASSUMPTIONS[base.name])
+        return dict(_ASSUMPTIONS[base.name])
     raise Untranslatable(
         f"{name} ranges over {domain}, which is not a set of numbers a simplifier "
         "may treat as commuting scalars"
     )
 
 
-def _number(value: Any) -> Any:
-    """A Python number as the sympy number it is, exactly."""
-    sympy = sympy_module()
+def _number(value: Any, sympy: Any = None) -> Any:
+    """A Python number as the sympy number it is, exactly; with no ``sympy``, only checked.
+
+    Raises:
+        Untranslatable: For a truth value, an infinity or a NaN, and anything
+            that is not a number.
+    """
     if isinstance(value, bool):
         raise Untranslatable(f"{value} is a truth value, not a number")
     if isinstance(value, numbers.Integral):
-        return sympy.Integer(int(value))
+        return None if sympy is None else sympy.Integer(int(value))
     if isinstance(value, numbers.Rational):
+        if sympy is None:
+            return None
         return sympy.Rational(int(value.numerator), int(value.denominator))
     if isinstance(value, numbers.Real):
         if not math.isfinite(float(value)):
             raise Untranslatable(f"{value} is not a finite number")
+        if sympy is None:
+            return None
         exact = Fraction(float(value))
         return sympy.Rational(exact.numerator, exact.denominator)
     if isinstance(value, numbers.Complex):
-        return _number(value.real) + sympy.I * _number(value.imag)
+        real, imag = _number(value.real, sympy), _number(value.imag, sympy)
+        return None if sympy is None else real + sympy.I * imag
     raise Untranslatable(f"{value!r} is not a number")
 
 
@@ -189,30 +209,50 @@ def to_sympy(expr: Any, symbols: Mapping[str, Any]) -> Any:
         Untranslatable: For anything outside the fragment the module's
             docstring lists, with the reason.
     """
-    sympy = sympy_module()
+    return _translate(expr, symbols, sympy_module())
+
+
+def _translate(expr: Any, symbols: Mapping[str, Any], sympy: Any) -> Any:
+    """:func:`to_sympy` of ``expr``; with no ``sympy``, only its shape checked.
+
+    Without sympy nothing is built, and what is checked is everything that
+    refuses a term but sympy's own reading of it: the node types, the
+    numbers, and that each variable is bound (it is a key of ``symbols``).
+    That a real logarithm's or square root's argument may be negative is
+    sympy's to say, and is checked only where the term is translated.
+
+    Raises:
+        Untranslatable: As :func:`to_sympy` does.
+    """
     if isinstance(expr, prim.Variable):
-        symbol = symbols.get(expr.name)
-        if symbol is None:
+        if expr.name not in symbols:
             raise Untranslatable(
                 f"{expr.name} is not bound by a quantifier of the statement, so its "
                 "sort is not known"
             )
-        return symbol
+        return symbols[expr.name]
     if not isinstance(expr, prim.ExpressionNode):
-        return _number(expr)
-    if isinstance(expr, prim.Sum):
-        return sympy.Add(*(to_sympy(child, symbols) for child in expr.children))
-    if isinstance(expr, prim.Product):
-        return sympy.Mul(*(to_sympy(child, symbols) for child in expr.children))
+        return _number(expr, sympy)
+    if isinstance(expr, prim.Sum | prim.Product):
+        children = [_translate(child, symbols, sympy) for child in expr.children]
+        if sympy is None:
+            return None
+        return (sympy.Add if isinstance(expr, prim.Sum) else sympy.Mul)(*children)
     if isinstance(expr, prim.FloorDiv | prim.Remainder):
         kind = "floor division" if isinstance(expr, prim.FloorDiv) else "remainder"
         raise Untranslatable(f"{render(expr)} is a {kind}, which the bridge does not take")
     if isinstance(expr, prim.Quotient):
-        return to_sympy(expr.numerator, symbols) / to_sympy(expr.denominator, symbols)
+        numerator = _translate(expr.numerator, symbols, sympy)
+        denominator = _translate(expr.denominator, symbols, sympy)
+        return None if sympy is None else numerator / denominator
     if isinstance(expr, prim.Power):
-        return sympy.Pow(to_sympy(expr.base, symbols), to_sympy(expr.exponent, symbols))
+        base = _translate(expr.base, symbols, sympy)
+        exponent = _translate(expr.exponent, symbols, sympy)
+        return None if sympy is None else sympy.Pow(base, exponent)
     if isinstance(expr, Elementary):
-        argument = to_sympy(expr.argument, symbols)
+        argument = _translate(expr.argument, symbols, sympy)
+        if sympy is None:
+            return None
         if (
             expr.function in _REAL_DOMAIN
             and argument.is_extended_real
@@ -226,7 +266,8 @@ def to_sympy(expr: Any, symbols: Mapping[str, Any]) -> Any:
         function = getattr(sympy, _ELEMENTARY_NAMES[expr.function])
         return function(argument)
     if isinstance(expr, Abs):
-        return sympy.Abs(to_sympy(expr.operand, symbols))
+        operand = _translate(expr.operand, symbols, sympy)
+        return None if sympy is None else sympy.Abs(operand)
     if isinstance(expr, prim.Call):
         what = "a family applied to an argument"
     elif isinstance(expr, prim.Subscript):
@@ -269,18 +310,19 @@ def equations(term: Any) -> tuple[Equation, ...]:
     an identity that holds only under them, which is declined, and never makes
     a wrong one.
 
-    The shape is read first, without sympy, so a statement of another shape
-    is refused before sympy is imported: a file of orders and sums costs a
-    check nothing for the oracle's being installed.
+    The shape is read first, without sympy (:func:`check_shape`), so a
+    statement of another shape is refused before sympy is imported: a file of
+    orders and sums costs a check nothing for the oracle's being installed.
+    sympy's constructors evaluate as they build, so the translation itself
+    can take time on a large statement, which is why the CAS oracle asks for
+    it inside its deadline and asks only for the shape before it.
 
     Raises:
         Untranslatable: For a statement of any other shape (an order, a
             disequality, a disjunction, an existential), for one that
             asserts no equation, and for a side outside the fragment.
     """
-    found = list(_comparisons(term, ()))
-    if not found:
-        raise Untranslatable(f"{render(term)} asserts no equation")
+    found = check_shape(term)
     symbols: dict[tuple[str, int], Any] = {}
     out = []
     for comparison, binders in found:
@@ -298,6 +340,35 @@ def equations(term: Any) -> tuple[Equation, ...]:
             )
         )
     return tuple(out)
+
+
+def check_shape(term: Any) -> tuple[tuple[Any, tuple], ...]:
+    """The equations a statement asserts, with the binders around each, checked without sympy.
+
+    Everything :func:`equations` refuses a statement for is checked here but
+    what only sympy can say: the statement's shape, that each binder ranges
+    over a set of numbers, and that each side is built of the nodes and
+    numbers the bridge takes, over variables a quantifier binds. Whether a
+    real logarithm's or square root's argument may be negative is sympy's
+    reading, and is left to the translation. Nothing is built and sympy is
+    not imported, so this is cheap whatever the size of the statement, which
+    is what :meth:`lanky.oracles.cas.CasOracle.can_establish` asks (#77).
+
+    Raises:
+        Untranslatable: As :func:`equations` does, for all but the domain of
+            a real logarithm or square root.
+    """
+    found = tuple(_comparisons(term, ()))
+    if not found:
+        raise Untranslatable(f"{render(term)} asserts no equation")
+    for comparison, binders in found:
+        scope: dict[str, None] = {}
+        for var, domain in binders:
+            _assumptions(var.name, domain)
+            scope[var.name] = None
+        _translate(comparison.left, scope, None)
+        _translate(comparison.right, scope, None)
+    return found
 
 
 def _comparisons(term: Any, binders: tuple) -> Iterator[tuple[Any, tuple]]:

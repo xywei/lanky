@@ -19,6 +19,7 @@ from typing import NoReturn
 import pymbolic.primitives as prim
 import pytest
 
+import lanky.oracles.lean as lean_module
 from conftest import ProcessWatch, claims
 from lanky import theorem
 from lanky.check import import_path
@@ -2245,7 +2246,7 @@ def test_lean_reports_a_goal_it_cannot_close(lean_oracle: LeanOracle) -> None:
     assert result.provenance["lean_reason"]
 
 
-def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle) -> None:
+def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle, monkeypatch) -> None:
     """A failed proof is not a counterexample, and must never be read as one.
 
     Three ways the ladder can fail: a statement that is false, one that is true
@@ -2272,8 +2273,17 @@ def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle) -> None:
 
     # A timeout is a failed attempt, not a refutation either. The timeout that
     # applies is the session's, so the impatient oracle gets a session of its
-    # own: an oracle handed the module's session never timed out at all.
-    impatient = LeanOracle(session=LeanSession(timeout=1e-6))
+    # own: an oracle handed the module's session never timed out at all. Each
+    # attempt sleeps in Lean before it starts, so that it times out whatever
+    # the load (#85): with quick attempts and a timeout of a microsecond, a
+    # busy machine could let the REPL answer before the timeout was kept.
+    real_ladder = lean_module.tactic_ladder
+
+    def sleeping_ladder(*args, **kwargs) -> list[str]:
+        return [f"sleep 5000\n{script}" for script in real_ladder(*args, **kwargs)]
+
+    monkeypatch.setattr(lean_module, "tactic_ladder", sleeping_ladder)
+    impatient = LeanOracle(session=LeanSession(timeout=0.1))
     try:
         result = impatient.establish(plainly_false.fact())
     finally:
@@ -2289,13 +2299,21 @@ def test_a_session_survives_an_attempt_that_timed_out(lean_oracle: LeanOracle) -
     The driver kills the REPL on a timeout. The next command used to come back
     as "The Lean server is not running", on this fact and on every fact after
     it in the process; the session now starts the REPL again first.
+
+    The attempt that times out sleeps in Lean for five seconds before it
+    proves anything, and is given a tenth of one, so that it times out
+    whatever the load (#85). It used to be the quick ``omega`` with a
+    timeout of a microsecond, which lean-interact keeps by joining the
+    thread that reads the answer: on a busy machine the join could return
+    after the REPL had answered, and the attempt read as closed.
     """
     source = "theorem t (x : Nat) : x + 0 = x := by omega\n"
+    sleeps = "theorem t (x : Nat) : x + 0 = x := by\n  sleep 5000\n  omega\n"
     session = LeanSession(timeout=lean_oracle.session.timeout)
     try:
         assert session.run(source) == (True, "")
-        session.timeout = 1e-6
-        closed, detail = session.run(source)
+        session.timeout = 0.1
+        closed, detail = session.run(sleeps)
         assert not closed
         assert detail.startswith("TimeoutError")
         session.timeout = lean_oracle.session.timeout

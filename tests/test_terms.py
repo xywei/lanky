@@ -9,8 +9,9 @@ from contextlib import closing
 import pymbolic.primitives as prim
 import pytest
 
-from lanky.prelude import Complex, Fin, Fn, Nat, Real, Refined
+from lanky.prelude import Complex, Fin, Fn, Int, Nat, Real, Refined
 from lanky.terms import (
+    Abs,
     BuiltinName,
     Comparison,
     Exists,
@@ -84,6 +85,37 @@ def test_a_comparison_of_an_xor_or_a_shift_is_a_term_not_a_bool() -> None:
     assert evaluate((n << 2) > 5, {"n": 2}) is True
     assert evaluate((8 >> n) != 2, {"n": 2}) is False
     assert structurally_equal(n ^ 1, prim.BitwiseXor((Var("n"), 1)))
+
+
+def test_python_abs_of_a_term_is_lankys_abs() -> None:
+    """#94: ``abs()`` of a term was pymbolic's ``Call`` of a variable named ``abs``.
+
+    An ordering of that raised ``expressions don't have an order``, and its
+    ``==`` was pymbolic's structural equality, a ``bool`` while the term was
+    built: ``(127 == abs(c[i])) * 1`` held ``0``, so a kernel traced it as a
+    constant where its body compares.
+    """
+    k = Var("k")
+    element = Var("c")[Var("i")]
+    assert isinstance(abs(k), Abs)
+    assert structurally_equal(abs(k), Abs(k))
+    assert render(abs(k)) == "abs(k)"
+    for claim in (
+        abs(k) > 2,
+        abs(k) + 1 > 2,
+        abs(k) * 2 <= k,
+        127 == abs(element),
+        abs(element) == 127,
+        k != abs(element),
+        abs(k - 1) >= 0,
+    ):
+        assert isinstance(claim, Comparison), claim
+    assert evaluate(abs(k) > 2, {"k": -3}) is True
+    assert evaluate(abs(k) > 2, {"k": 2}) is False
+    assert evaluate(127 == abs(element), {"c": [-127], "i": 0}) is True
+    assert evaluate(127 == abs(element), {"c": [126], "i": 0}) is False
+    # and in a claim, which the property tester samples
+    assert check([("k", Int)], [], abs(k) >= 0).ok
 
 
 def test_truth_value_of_a_proposition_is_refused() -> None:

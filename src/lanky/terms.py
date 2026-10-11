@@ -420,7 +420,8 @@ class SymbolicMixin:
     are mathematics and not bit patterns. ``^``, ``<<`` and ``>>`` are integer
     arithmetic, and re-tagged as the rest is: left as pymbolic's own nodes,
     ``(k ^ 1) == 0`` compared them structurally and answered ``False``, and
-    ``(k << 2) > 5`` raised, where a program means the proposition.
+    ``(k << 2) > 5`` raised, where a program means the proposition. Python's
+    ``abs`` of a term is lanky's :class:`Abs`, as an annotation's is.
     """
 
     def __hash__(self) -> int:
@@ -542,6 +543,20 @@ class SymbolicMixin:
         return LogicalNot(self)
 
     # }}}
+
+    def __abs__(self) -> Abs:
+        """Build the absolute value ``abs(self)``, as lanky's :class:`Abs` (#94).
+
+        Python's ``abs`` of a term used to fall through to pymbolic's
+        ``__abs__``, which builds a plain ``Call`` of a variable named
+        ``abs``: an ordering of it raised ``expressions don't have an
+        order``, and ``==`` and ``!=`` of it were pymbolic's structural
+        equality, a ``bool`` while the term was built, so ``(127 ==
+        abs(c[i])) * 1`` held ``0`` where the body compares. It is the node
+        an annotation's ``abs`` builds (:func:`abs_`), which the evaluator,
+        the Lean printer and the CAS bridge read, and a plugin lowers.
+        """
+        return Abs(self)
 
     def __call__(self, *args: Any) -> Call:
         """Build an application ``self(...)``, the way a family is indexed."""
@@ -1249,7 +1264,9 @@ class Elementary(SymbolicMixin, prim.ExpressionNode):
     knows. At concrete values it is ``math``'s function for a real argument and
     ``cmath``'s for a complex one (:func:`elementary_value`); the Lean printer
     writes it as ``Real.exp`` or ``Complex.exp``, which is Mathlib. Its mapper
-    method is ``map_elementary``.
+    method is ``map_elementary``. Its argument can be a number: an
+    annotation's ``exp(1)`` is ``e`` to every oracle, and not the float
+    nearest it (#81).
     """
 
     function: str
@@ -1635,17 +1652,41 @@ def elementary_value(function: str, value: Any) -> Any:
 
 
 def _elementary(function: str) -> Callable[[Any], Any]:
-    """The function a statement calls to apply one elementary function."""
+    """The function a statement calls to apply one elementary function.
+
+    Of a term it is an :class:`Elementary` node. Of a number it is one too
+    where the code of an annotation being read calls it (#81): ``exp(1) >
+    2.718281828459045`` was the float ``math.exp(1)`` compared with its own
+    value, the constant ``False``, while the annotation was read, and the
+    tester refuted a claim that is true of ``e``, which every oracle reads as
+    the rational the float holds. Kept a node, each oracle reads it its own
+    way: the tester encloses ``e`` (:func:`lanky.intervals.elementary`), the
+    Lean printer writes ``Real.exp 1``, and the CAS bridge sympy's ``E``.
+    Anywhere else it is Python's value (:func:`elementary_value`): in the file
+    run as a program, in the annotation run again as Python by the
+    faithfulness check, and in a function the annotation calls, whose code
+    may compute with the number as Python does (``math.floor(exp(2))``, an
+    ``if``). That is where an annotation reads a name a helper defined, so a
+    helper's ``exp(1)`` is the float it computes, as any number is.
+    """
 
     def apply(value: Any) -> Any:
         if isinstance(value, prim.ExpressionNode):
+            return Elementary(function, value)
+        if (
+            _ANNOTATION_CODE.get()
+            and isinstance(value, numbers.Complex)
+            and not isinstance(value, bool)
+            and _asked_by_annotation(sys._getframe(1))
+        ):
             return Elementary(function, value)
         return elementary_value(function, value)
 
     apply.__name__ = apply.__qualname__ = function
     apply.__doc__ = (
-        f"``{function}`` of a term, as an :class:`Elementary` node, or of a number, "
-        "as Python computes it (see :func:`elementary_value`)."
+        f"``{function}`` of a term, as an :class:`Elementary` node, of a number in an "
+        "annotation being read, as one too, and of a number anywhere else, as Python "
+        "computes it (see :func:`elementary_value`)."
     )
     return apply
 

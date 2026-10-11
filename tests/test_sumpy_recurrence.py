@@ -271,6 +271,9 @@ def test_the_ledger_records_what_each_oracle_did(cas) -> None:
     assert sampled.provenance["samples"] == 20
     assert sampled.provenance["digits"] == 30
     assert sampled.provenance["largest_difference"] <= 1e-20
+    assert sampled.provenance["tolerance"] == (
+        "1e-20, relative to the derivative or to 1, whichever is larger"
+    )
     assert (symbolic.status, symbolic.decided_by) == (Status.DECIDED, "cas")
     assert symbolic.provenance["cas_equations"] == 28
     assert symbolic.provenance["trust_class"] == "heuristic"
@@ -319,6 +322,31 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(cas, capsys) -> None:
 
 
 # }}}
+
+
+def test_the_tolerance_is_relative_to_the_derivative_or_to_1(demo) -> None:
+    """#78: below a derivative of size 1 the tolerance is absolute, and is said to be.
+
+    The difference was always measured against ``max(1, |derivative|)``, and
+    the docstrings, the reason of a refutation and the run's last lines
+    called it relative. A derivative of ``1e-30`` reconstructed as ``1e-21``
+    passes, which is what an absolute floor allows; above ``1`` the same
+    difference is relative.
+    """
+    from fractions import Fraction
+
+    tolerance = demo.compressed_taylor.tolerance
+    assert tolerance == Fraction(1, 10**20)
+    assert demo.difference(Fraction(1, 10**21), Fraction(1, 10**30)) <= tolerance
+    assert demo.difference(Fraction(1, 10**19), Fraction(1, 10**30)) > tolerance
+    assert demo.difference(1000 + Fraction(1, 10**18), 1000) == Fraction(1, 10**21)
+    assert demo.difference(Fraction(1, 2) + Fraction(1, 10**18), Fraction(1, 2)) == Fraction(
+        1, 10**18
+    )
+    assert demo.TOLERANCE_POLICY == "relative to the derivative or to 1, whichever is larger"
+    for name in ("tolerance", "sampled"):
+        doc = getattr(demo.Reconstruction, name).__doc__
+        assert "absolute" in doc and "relative to the derivative" not in doc.split(".")[0]
 
 
 # {{{ a wrong recurrence
@@ -393,7 +421,9 @@ def test_a_weight_off_by_one_part_in_a_quadrillion_is_refuted_on_both_rows(cas, 
     path.write_text(text, encoding="utf-8")
     sampled, symbolic = check_path(path)
     assert (sampled.status, sampled.decided_by) == (Status.REFUTED, "mpmath")
-    assert sampled.provenance["reason"].endswith("apart relative to it")
+    assert sampled.provenance["reason"].endswith(
+        "apart, relative to the derivative or to 1, whichever is larger"
+    )
     assert 0 < float(sampled.provenance["counterexample"]["difference"]) < 1e-14
     assert (symbolic.status, symbolic.decided_by) == (Status.REFUTED, "property-test")
     assert symbolic.provenance["declined"].startswith("cas: sympy simplifies the difference")

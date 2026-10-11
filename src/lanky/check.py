@@ -624,6 +624,20 @@ def _cross_check(
     of a goal whose guard never holds is valid and says nothing, as a proof
     from hypotheses nothing satisfies does, and :func:`_examine_goal_guard`
     examines it.
+
+    The two kinds of evidence are collected apart, as :func:`_examine_axiom`
+    collects them (#41): what is said about the hypotheses (``unsatisfied``,
+    ``untestable``, ``semantics_undecided``) comes from the first tester that
+    says anything about them, and the goal's count from the first tester that
+    has one, so the walk goes on through the testers of the ``test`` class
+    until the goal's count is found or they run out. A tester registered ahead
+    of the property tester (a plugin's sampler) that reports no valid draw and
+    counts nothing about the goal used to end the walk, and the property
+    tester's ``goal_reached: 0`` was never heard, so a proof of a goal whose
+    guard is empty wherever the hypotheses hold read ``proved`` with a warning
+    about the hypotheses, and not ``vacuous``. A counterexample still ends the
+    walk at once, and is recorded alone: the draw that refutes the statement
+    satisfied its hypotheses, whatever an earlier tester's draws did.
     """
     if fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
         return fact
@@ -636,7 +650,8 @@ def _cross_check(
     ):
         return fact
     sampled = fact if handed is None else handed
-    recorded = None
+    hypotheses: dict[str, Any] | None = None
+    goal: dict[str, Any] = {}
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
@@ -651,66 +666,72 @@ def _cross_check(
             continue
         if result is None:
             continue
-        if result.status is Status.REFUTED and heuristic:
-            if verbose:
-                answer = f"{fact.decided_by}, a heuristic, {fact.status.value}"
-                print(f"  {oracle.name} refutes what {answer}")
-            return _overruled(fact, result, oracle.name)
-        if recorded is not None:
-            # After a heuristic every tester is asked for a counterexample,
-            # and the first one to say anything else is what is recorded.
-            continue
-        recorded = _record_sample(fact, result, oracle.name, gaps, verbose=verbose)
-        if recorded is not None and not heuristic:
-            return recorded
-    return fact if recorded is None else recorded
+        if result.status is Status.REFUTED:
+            if heuristic:
+                if verbose:
+                    answer = f"{fact.decided_by}, a heuristic, {fact.status.value}"
+                    print(f"  {oracle.name} refutes what {answer}")
+                return _overruled(fact, result, oracle.name)
+            return _record_refutation(fact, result, oracle.name, verbose=verbose)
+        if hypotheses is None:
+            hypotheses = _hypotheses_marks(result, oracle.name, gaps, verbose=verbose)
+        if not goal:
+            goal = _goal_marks(result.provenance, fact.term)
+            if verbose and goal.get("goal_unreached"):
+                print(f"  {oracle.name}: {goal['goal_unreached']}")
+        # After a heuristic every tester is asked for a counterexample;
+        # otherwise the walk ends once the goal's count is heard.
+        if goal and not heuristic:
+            break
+    marks = {**(hypotheses or {}), **goal}
+    return fact.with_status(fact.status, **marks) if marks else fact
 
 
-def _record_sample(
-    fact: Fact, result: Fact, tester: str, gaps: tuple[str, ...], verbose: bool = False
-) -> Fact | None:
-    """``fact`` with what one sample of it found recorded, or ``None`` when it found nothing.
+def _record_refutation(fact: Fact, result: Fact, tester: str, verbose: bool = False) -> Fact:
+    """``fact`` with the counterexample a tester found to its sampled reading recorded.
 
     ``result`` is what the oracle ``tester`` made of the fact, whose status a
     stronger oracle gave and which stands (see :func:`_cross_check`).
     """
-    if result.status is Status.REFUTED:
-        counterexample = result.provenance.get("counterexample")
-        if verbose:
-            print(
-                f"  {tester} refutes the sampled reading of a "
-                f"{fact.status.value} fact: {counterexample}"
-            )
-        return fact.with_status(
-            fact.status,
-            semantics_disagreement=f"{tester} refutes this statement under lanky's Python reading",
-            semantics_counterexample=counterexample,
+    counterexample = result.provenance.get("counterexample")
+    if verbose:
+        print(
+            f"  {tester} refutes the sampled reading of a "
+            f"{fact.status.value} fact: {counterexample}"
         )
-    goal = _goal_marks(result.provenance, fact.term)
-    if verbose and goal.get("goal_unreached"):
-        print(f"  {tester}: {goal['goal_unreached']}")
+    return fact.with_status(
+        fact.status,
+        semantics_disagreement=f"{tester} refutes this statement under lanky's Python reading",
+        semantics_counterexample=counterexample,
+    )
+
+
+def _hypotheses_marks(
+    result: Fact, tester: str, gaps: tuple[str, ...], verbose: bool = False
+) -> dict[str, Any] | None:
+    """What one sample says against a fact's hypotheses, or ``None`` when it says nothing.
+
+    ``result`` is what the oracle ``tester`` made of the fact (see
+    :func:`_cross_check`): that no draw satisfied the hypotheses
+    (``unsatisfied``), that no draw could be completed (``untestable``), or,
+    for a fact with a semantics gap, that the sampled reading could not be
+    run (``semantics_undecided``).
+    """
     unsatisfied = _never_satisfied(result.provenance)
     if unsatisfied:
         if verbose:
             print(f"  {tester}: {unsatisfied}")
-        return fact.with_status(
-            fact.status,
-            unsatisfied=unsatisfied,
-            unsatisfied_detail=_skipped(result.provenance),
-            **goal,
-        )
+        return {"unsatisfied": unsatisfied, "unsatisfied_detail": _skipped(result.provenance)}
     untestable = _never_drawn(result.provenance)
     if untestable:
         if verbose:
             print(f"  {tester}: {untestable}")
-        return fact.with_status(fact.status, untestable=untestable, **goal)
+        return {"untestable": untestable}
     undecided = result.provenance.get("untested")
     if gaps and undecided and result.provenance.get("undecided"):
         if verbose:
             print(f"  {tester} could not run the sampled reading: {undecided}")
-        return fact.with_status(fact.status, semantics_undecided=undecided, **goal)
-    if goal:
-        return fact.with_status(fact.status, **goal)
+        return {"semantics_undecided": undecided}
     return None
 
 

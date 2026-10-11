@@ -67,9 +67,10 @@ take is not known there, and that is the only place where it matters.
 
 What is not enclosed is left undecided, never guessed: a complex logarithm or
 square root on its branch cut, an exponential, a cosine or a sine of an
-argument beyond :data:`EXP_LIMIT`, a negative number to a power that is not an
-integer, which Python answers with a complex number, and a complex power that
-is not an integer power. A logarithm or a square root outside its Python
+argument beyond :data:`EXP_LIMIT`, and a complex power that is not an integer
+power. A negative number to a power that is not an integer is the complex
+number Python answers with, its principal value, ``(-8) ** (1/3)`` being ``1 +
+√3 i`` (:func:`power`). A logarithm or a square root outside its Python
 domain raises :class:`~lanky.terms.UndefinedValue`, as Python's functions do,
 which is the gap to Mathlib's total functions that :mod:`lanky.semantics`
 notes, and so does the logarithm of a complex zero; an argument whose
@@ -990,13 +991,13 @@ def power(base: Any, exponent: Any) -> Any:
     is ``exp(exponent * log(base))`` for a positive base, and a square root,
     exact where it is rational, when the exponent's denominator is two. A zero
     base to a positive power is zero, and to a power that is not positive
-    raises ``ZeroDivisionError``, as Python's ``0 ** -0.5`` does.
+    raises ``ZeroDivisionError``, as Python's ``0 ** -0.5`` does. A negative
+    base to a power that is not an integer is the complex number Python
+    answers with, its principal value (:func:`_principal_power`, #89).
 
     Raises:
-        Undecided: For a negative base to a power that is not an integer, which
-            Python answers with a complex number, a complex power that is not
-            an integer power, and a base or an exponent whose enclosure leaves
-            its sign unknown.
+        Undecided: For a complex power that is not an integer power, and a
+            base or an exponent whose enclosure leaves its sign unknown.
     """
     k = _integer(exponent)
     if k is not None:
@@ -1017,11 +1018,7 @@ def power(base: Any, exponent: Any) -> Any:
         )
     if not positive:
         if not _is_zero(base):
-            raise Undecided(
-                f"{describe(base)} ** {describe(exponent)} is a negative number to a power "
-                "that is not an integer, which Python answers with a complex number "
-                "and the tester does not read, so this draw decides nothing"
-            )
+            return _principal_power(base, exponent)
         above = _order(">", exponent, 0)
         if above is None:
             raise Undecided(
@@ -1034,6 +1031,38 @@ def power(base: Any, exponent: Any) -> Any:
     if isinstance(exponent, Fraction) and exponent.denominator == 2:
         return sqrt_value(power(base, exponent.numerator))
     return exp_value(exponent * log_value(base))
+
+
+def _principal_power(base: Fraction | Interval, exponent: Fraction | Interval) -> ComplexValue:
+    """A negative ``base`` to a real ``exponent`` that is not an integer, as Python answers it.
+
+    Python computes ``(-8) ** Fraction(1, 3)``, and ``(-8.0) ** 0.5``, as a
+    complex number, the principal value ``exp(exponent * log(base))``, whose
+    logarithm has the imaginary part ``π`` for a negative real base: so it is
+    ``|base| ** exponent * (cos(π exponent) + i sin(π exponent))``, and
+    ``(-8) ** (1/3)`` is ``1 + √3 i``. The modulus is the power of ``|base|``,
+    exact where that is rational. For an exponent whose denominator is two
+    the angle is a right one, and the value is the modulus times ``i`` or
+    ``-i``, exactly; otherwise the cosine and the sine are enclosed, with
+    ``π`` (:func:`pi_value`). The exponent is not an integer, so the
+    imaginary part is not zero, and its enclosure is away from zero but for
+    an exponent that is an enclosure itself: a comparison with a real number
+    is then decided, ``(x ** 3) ** Fraction(1, 3) == x`` refuted at ``x =
+    -1`` (#89), where it used to decide nothing, and a claim false only at
+    negative bases was ``tested`` on the positive draws. Like any complex
+    number it has no order, and an order between it and another number is
+    refused, as Python refuses it.
+
+    Raises:
+        Undecided: For an angle beyond :data:`EXP_LIMIT`.
+    """
+    modulus = power(-base, exponent)
+    if isinstance(exponent, Fraction) and exponent.denominator == 2:
+        # i ** numerator, the numerator odd
+        turned = modulus if exponent.numerator % 4 == 1 else -modulus
+        return ComplexValue(Fraction(0), turned)
+    cos_value, sin_value = _cos_sin(exponent * pi_value())
+    return ComplexValue(modulus * cos_value, modulus * sin_value)
 
 
 # }}}

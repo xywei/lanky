@@ -751,8 +751,8 @@ kernel, stores 13 of the 28 derivatives through order 6 and reconstructs the res
 (6, 0)  -(0, 6)        -120*(x - y)*(x + y)*(x**2 - 4*x*y + y**2)*(x**2 + 4*x*y + y**2)/(x**2 + y**2)**6  0                   within 1e-20
 
 Every reconstructed coefficient is the direct derivative. sympy simplifies each
-difference to 0, and mpmath's derivatives, at 30 digits, agree to within 1e-20
-of each other, relative, at 20 points.
+difference to 0, and mpmath's derivatives, at 30 digits, agree at 20 points to
+within 1e-20, relative to the derivative or to 1, whichever is larger.
 
 Through order 6 the wrangler follows the recurrence
 reconstructed(a + 2, b) == -reconstructed(a, b + 2), which is the PDE sumpy
@@ -792,8 +792,13 @@ CITED harmonic at sumpy_recurrence.py:128: R. Kress, Linear Integral Equations, 
 - **The claim at points.** mpmath takes every derivative numerically, by
   finite differences at 30 digits, at 20 points away from the origin, and
   finds each reconstructed one within `1e-20` of the derivative it stands
-  for. The oracle that does it, `mpmath`, of the trust class `test`, is the
-  file's own, as a plugin's would be.
+  for, relative to the derivative or to 1, whichever is larger: relative to
+  a derivative of size 1 or more, and absolutely below that, where the
+  finite differences are accurate to their digits of the kernel's scale
+  rather than of the derivative's, and a derivative that is `0` at a point
+  comes out as a few units in its last digits. The oracle that does it,
+  `mpmath`, of the trust class `test`, is the file's own, as a plugin's
+  would be, and records the tolerance with the fact.
 - **The claim as formulas.** One statement over real `x` and `y`, with
   `x**2 + y**2 > 0` as its hypothesis and an equation per coefficient, between
   the wrangler's combination of sympy's derivatives and sympy's derivative.

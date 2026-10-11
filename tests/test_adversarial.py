@@ -2391,6 +2391,85 @@ def test_an_axiom_goal_guard_is_examined_past_a_test_oracle_that_counts_nothing(
     assert fact.is_vacuous
 
 
+class DrawsNothingValid:
+    """A test-class oracle that finds no draw satisfying the hypotheses, and counts nothing else.
+
+    That is a plugin's sampler that misses where the hypotheses hold: its
+    record says that no draw satisfied them, and has no ``goal_reached``.
+    """
+
+    name = "missing-test"
+
+    def trust_class(self) -> str:
+        return "test"
+
+    def can_establish(self, fact: Fact, /) -> bool:
+        return fact.term is not None
+
+    def establish(self, fact: Fact, /) -> Fact:
+        return fact.with_status(
+            fact.status,
+            untested="no draw satisfied the hypotheses, so nothing was tested",
+            samples=3,
+            valid=0,
+        )
+
+
+def test_a_cross_check_hears_a_later_testers_goal_count(tmp_path, oracles, capsys) -> None:
+    """#41: a tester with something to say about the hypotheses no longer ends the cross-check.
+
+    The stand-in proves the claim and shows the goal's guard empty, and
+    declines the question whether the hypotheses are inconsistent. The
+    cross-check stopped at the first tester with any evidence, here one that
+    drew nothing valid and counted nothing about the goal, so the property
+    tester after it never ran: the fact was ``proved`` with a warning about
+    its hypotheses, and its goal's guard, which is empty, was never asked
+    about. The two kinds of evidence are now collected apart, the
+    hypotheses' from the first tester that has any and the goal's count from
+    the first that has one.
+    """
+    shown: list[str] = []
+
+    class Recording(ProvesAllButInconsistency):
+        def establish(self, fact: Fact, /) -> Fact:
+            shown.append(fact.kind)
+            return super().establish(fact)
+
+    oracles(Recording(), DrawsNothingValid(), TestOracle())
+    path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
+    (fact,) = claims(check_path(path))
+    assert shown == ["theorem", "goal-guard"]
+    assert fact.status is Status.PROVED
+    # what the first tester said about the hypotheses is kept, as it was
+    assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 3 draws"
+    assert fact.provenance["goal_reached"] == 0
+    assert fact.is_vacuous
+    assert fact.provenance["vacuous"] == (
+        "the goal's guard is empty wherever the hypotheses hold: proved by stub-kernel"
+    )
+    assert cli.main(["check", path]) == 1
+    assert "VACUOUS flipped at scan_guard.py:7:" in capsys.readouterr().out
+
+
+def test_a_cross_check_still_stops_at_a_counterexample(tmp_path, oracles) -> None:
+    """#41: walking on for the goal's count does not walk past a refutation.
+
+    A counterexample is recorded alone, whatever a tester before it said
+    about the hypotheses: its draw satisfied them.
+    """
+    source = SCAN_GUARD.replace("if (p < q) & (p > q)", "if p < q").replace(
+        "off(p) <= off(q)", "off(p) > off(q)"
+    )
+    oracles(ProvesEverything(), DrawsNothingValid(), TestOracle())
+    path = _write(tmp_path, source, "scan_guard.py")
+    (fact,) = claims(check_path(path))
+    assert fact.status is Status.PROVED
+    assert fact.provenance["semantics_disagreement"] == (
+        "property-test refutes this statement under lanky's Python reading"
+    )
+    assert "unsatisfied" not in fact.provenance
+
+
 def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() -> None:
     """The question put to the stronger oracles, as the fact they are offered."""
     from lanky.check import goal_guard_fact
