@@ -448,6 +448,13 @@ def test_a_claim_false_only_at_negative_bases_is_refuted() -> None:
     # and the cube of a cube root is the number, at every draw now
     report = check([("x", Real)], [], (x**third) ** 3 == x)
     assert report.ok and report.valid == 200 and report.undecided == 0, report
+    # an order with it is refused, as Python refuses one: the claim is not a
+    # proposition at a negative x, so it is not tested on the positive draws
+    with pytest.raises(TypeError, match="no order"):
+        check([("x", Real)], [], x**half >= 0)
+    with pytest.raises(TypeError, match="not supported"):
+        (-1) ** 0.5 >= 0  # noqa: B015 - Python's own refusal
+    assert check([("x", Real & (x >= 0))], [], x**half >= 0).ok
 
 
 def test_an_enclosure_is_no_truth_value_and_no_float() -> None:
