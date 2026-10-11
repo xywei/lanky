@@ -29,6 +29,12 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Fixed
 
+- **A fact a plugin names shortly is named so in the status column.** A
+  fact that rests on one of a kernel's many facts showed that fact's id,
+  `decided under assumption:demo.k@4:[c].assume('n % 4 == 0')` for a cast
+  under a schedule's assumption; a `label` in the fact's provenance is
+  shown instead where the owner does not name one fact, `decided under
+  assume('n % 4 == 0')`.
 - **A family whose values are a `Fin` keeps their bound in Lean.**
   `cell: Fn[Fin[nc], Fin[d], Fin[nv]]` prints as `Int → Int → Nat`, which
   says the values are not negative and not that they are below `nv`, so a
