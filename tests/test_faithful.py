@@ -1459,6 +1459,16 @@ def single(k):
     return k
 
 
+@functools.lru_cache(maxsize=None)
+def flagged(k):
+    return k
+
+
+@functools.cache
+def unused(k):
+    return k
+
+
 stale(0)
 bounded(0)
 bounded(1, extra=2)
@@ -1471,6 +1481,10 @@ bounded_tables(1)
 tables(0)
 single(0)
 single(1)
+flagged(0)
+flagged.flag = 1
+flagged.tags = [2]
+unused.flag = 3
 STATE[0] = 0
 
 
@@ -1521,6 +1535,11 @@ def cleared(n: Nat) -> n * 0 + (single.cache_clear(), single.cache_info().misses
 
 
 @theorem
+def attributes(n: Nat) -> n * 0 + flagged.flag + flagged.tags[0] + unused.flag == 6:
+    \"\"\"What was set on a cache after it was made, one with an entry and one without.\"\"\"
+
+
+@theorem
 def misread(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == typed_at_a_number(i) for i in Fin[n]
 ):
@@ -1537,7 +1556,11 @@ def test_a_cache_with_entries_is_made_again_with_them(prover, tmp_path, monkeypa
     evicts them, keyed as the original keys them, and counts its hits and
     misses on from the original's, so every claim here reads ``tested``, the
     misreading is still refuted, and a cache whose entries cannot be read off
-    it is shared, and declined, naming it.
+    it is shared, and declined, naming it. What was set on the cache after it
+    was made, ``flagged.flag``, is copied with it (Codex): the copy, made
+    around the copy of the function, had only the function's attributes, and
+    the rerun of ``attributes`` raised ``AttributeError``, a refutation of a
+    faithful reading.
     """
     path = _write(tmp_path, CACHES_WITH_ENTRIES)
     pairs = _pairs(check_path(path))
@@ -1551,6 +1574,7 @@ def test_a_cache_with_entries_is_made_again_with_them(prover, tmp_path, monkeypa
         "misses": Status.TESTED,
         "hits": Status.TESTED,
         "cleared": Status.TESTED,
+        "attributes": Status.TESTED,
         "misread": Status.REFUTED,
     }, {owner: reading.provenance for owner, (_claim, reading) in pairs.items()}
     assert pairs["misread"][1].provenance["counterexample"] == {"n": 1, "f": [1]}

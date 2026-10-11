@@ -1760,13 +1760,17 @@ class _Copier:
         result. Where the entries cannot be read off the cache
         (:func:`_cache_entries`), or a key cannot be read back into a call,
         the cache is shared, and the reading declined, naming it. The copy
-        counts its hits and misses on from the original's (:func:`_counted`).
+        counts its hits and misses on from the original's (:func:`_counted`),
+        and holds copies of what was set on the original after it was made
+        (:meth:`cache_attributes`).
         """
         info = value.cache_info()
         held = info.currsize
         parameters = value.cache_parameters()
         if not held:
-            return self.remember(value, _counted(functools.lru_cache(**parameters)(wrapped), info))
+            out = self.remember(value, functools.lru_cache(**parameters)(wrapped))
+            self.cache_attributes(value, out, path)
+            return _counted(out, info)
         entries = _cache_entries(value)
         calls = [] if entries is not None else None
         for key, result in entries or ():
@@ -1789,6 +1793,7 @@ class _Copier:
 
         out = self.remember(value, functools.lru_cache(**parameters)(answer))
         functools.update_wrapper(out, wrapped)
+        self.cache_attributes(value, out, path)
         setattr(out, _CALLS, answer)
         for (args, kwargs), result in calls:
             # the rerun calls the copy with copies of what the original was
@@ -1802,6 +1807,21 @@ class _Copier:
         if answers or out.cache_info().currsize != held:
             raise RuntimeError("the entries of the cache did not go in as they were")
         return _counted(out, info)
+
+    def cache_attributes(self, value: Any, out: Any, path: str) -> None:
+        """Give ``out``, made again from the cache ``value``, copies of what was set on ``value``.
+
+        ``functools.update_wrapper`` gives a cache made around the copy of a
+        function that function's name, text and attributes, and not what was
+        set on the original cache after it was made, ``cached.flag = 1``,
+        which an annotation may read, and which the rerun had no value for.
+        What the check sets on a cache it makes (:data:`_CALLS`, the counts of
+        :func:`_counted`) is its own, and not copied from a copy.
+        """
+        own = {"__wrapped__", _CALLS, "cache_info", "cache_clear", *functools.WRAPPER_ASSIGNMENTS}
+        for name, item in vars(value).items():
+            if name not in own:
+                setattr(out, name, self.copy(item, f"{path}.{name}"))
 
     def array(self, value: numpy.ndarray, path: str) -> Any:
         """A numpy array as the copy has it: copied, a view made again over the copy it views.
