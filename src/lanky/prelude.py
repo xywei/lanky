@@ -344,25 +344,39 @@ class FnType(LankyType):
 
     @property
     def indices(self) -> tuple[Any, ...]:
-        """The domain of each index in turn: ``(A, B)`` for ``Fn[A, B, C]``."""
-        found = [self.domain]
-        codomain = self.codomain
-        while isinstance(codomain, FnType):
-            found.append(codomain.domain)
-            codomain = codomain.codomain
-        return tuple(found)
+        """The domain of each index in turn: ``(A, B)`` for ``Fn[A, B, C]``.
+
+        A row that is refined, ``Fn[A, Fn[B, C] & p]``, is a family all the
+        same, and its index counts: ``(A, B)``.
+        """
+        return self._chain(through_refinements=True)[0]
 
     @property
     def entries(self) -> Any:
         """What the family holds once every index is given: ``C`` for ``Fn[A, B, C]``."""
+        return self._chain(through_refinements=True)[1]
+
+    def _chain(self, *, through_refinements: bool) -> tuple[tuple[Any, ...], Any]:
+        """The index domains in turn, and what the family holds once they are given."""
+        found = [self.domain]
         codomain = self.codomain
-        while isinstance(codomain, FnType):
-            codomain = codomain.codomain
-        return codomain
+        while True:
+            inner = codomain
+            while through_refinements and isinstance(inner, Refined):
+                inner = inner.base
+            if not isinstance(inner, FnType):
+                return tuple(found), codomain
+            found.append(inner.domain)
+            codomain = inner.codomain
 
     def __str__(self) -> str:
-        """Print as ``Fn[A, B]``, and a family of families as ``Fn[A, B, C]``."""
-        return f"Fn[{', '.join(str(index) for index in (*self.indices, self.entries))}]"
+        """Print as ``Fn[A, B]``, and a family of families as ``Fn[A, B, C]``.
+
+        A refined row keeps its brackets, ``Fn[A, Fn[B, C] & (p)]``, so that
+        the refinement is shown on what it refines.
+        """
+        indices, entries = self._chain(through_refinements=False)
+        return f"Fn[{', '.join(str(index) for index in (*indices, entries))}]"
 
     def __repr__(self) -> str:
         """Print as ``Fn[A, B]``."""

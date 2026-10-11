@@ -249,6 +249,15 @@ def test_a_function_given_for_a_matrix_is_applied_as_the_claim_writes_the_entry(
         assert not symmetric(n=2, F=F, i=1, j=0).holds
     assert symmetric(n=3, F=lambda i, j: i + j, i=2, j=1).holds
 
+    @theorem
+    def refined_rows(
+        n: Nat, F: Fn[Fin[n], Fn[Fin[n], Int] & True], i: Fin[n], j: Fin[n]
+    ) -> F[i, j] == F(i)(j):
+        """A family whose rows are refined has two indices all the same."""
+
+    assert refined_rows(n=2, F=at_once, i=1, j=0).holds
+    assert refined_rows(n=2, F=[[1, 2], [3, 4]], i=1, j=0).holds
+
 
 def test_a_counterexample_shows_a_matrix_as_nested_lists() -> None:
     """As a theorem called as a function takes it, and as the JSON ledger can hold it."""

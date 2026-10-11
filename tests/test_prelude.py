@@ -83,6 +83,19 @@ def test_a_family_with_several_indices_is_a_family_of_families() -> None:
     assert str(Fn[Fn[Fin[n], Nat], Nat]) == "Fn[Fn[Fin(n), Nat], Nat]"
 
 
+def test_a_refined_row_is_a_family_all_the_same() -> None:
+    """``Fn[A, Fn[B, C] & p]`` has two indices, and prints its refinement on the row it refines."""
+    n, x = Var("n"), Var("x")
+    refined = Fn[Fin[n], Fn[Fin[n], Real] & (x > 0)]
+    assert refined.indices == (FinType(n), FinType(n))
+    assert refined.entries == Real
+    assert str(refined) == "Fn[Fin(n), Fn[Fin(n), Real] & (x > 0)]"
+    # a refinement of the entries is what the family holds
+    entries = Fn[Fin[n], Fin[n], Nat & (x > 0)]
+    assert entries.indices == (FinType(n), FinType(n))
+    assert str(entries.entries) == "Nat & (x > 0)"
+
+
 def test_refinement_with_and() -> None:
     n = Var("n")
     refined = Nat & (n > 0)

@@ -739,6 +739,20 @@ def _definition(prop: Any) -> tuple[Any, Any] | None:
     return None
 
 
+def _family_sort(sort: Any) -> Any:
+    """``sort`` with the refinements of a family taken off: the family they refine."""
+    inner = sort
+    while isinstance(inner, Refined):
+        inner = inner.base
+    return inner if isinstance(inner, FnType) else sort
+
+
+def _row_sort(sort: Any) -> Any:
+    """What a family of ``sort`` holds at one index; ``None`` when ``sort`` is not a family."""
+    family = _family_sort(sort)
+    return family.codomain if isinstance(family, FnType) else None
+
+
 def _applied(expr: Any) -> tuple[str, tuple[Any, ...]] | None:
     """``(family, indices)`` of an application, ``F(i)(j)`` and ``F[i, j]`` alike; else ``None``."""
     indices: tuple[Any, ...] = ()
@@ -780,10 +794,7 @@ def _assign_definition(
         return
     name, index_exprs = applied
     table = context.get(name)
-    sort = sorts.get(name)
-    while isinstance(sort, Refined):
-        sort = sort.base
-    codomain = sort if isinstance(sort, FnType) else None
+    codomain = sorts.get(name)
     indices = []
     for index_expr in index_exprs:
         if not isinstance(table, Table):
@@ -794,11 +805,9 @@ def _assign_definition(
         indices.append(index)
         if len(indices) < len(index_exprs):
             table = table.values[index]
-        codomain = codomain.codomain if isinstance(codomain, FnType) else None
-    while isinstance(codomain, Refined) and isinstance(codomain.base, FnType):
-        codomain = codomain.base
-    if isinstance(codomain, FnType):
-        return
+        codomain = _row_sort(codomain)
+    if isinstance(_family_sort(codomain), FnType):
+        return  # a row defined whole
     value = evaluate(value_expr, context)
     if codomain is not None and not in_sort(value, codomain, context):
         at = ", ".join(map(str, indices))
