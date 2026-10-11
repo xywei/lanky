@@ -9,6 +9,7 @@ green suite.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Iterator
@@ -19,6 +20,7 @@ from typing import NoReturn
 import pymbolic.primitives as prim
 import pytest
 
+import lanky.oracles.lean as lean_module
 from conftest import ProcessWatch, claims
 from lanky import theorem
 from lanky.check import import_path
@@ -1498,6 +1500,178 @@ def test_a_core_session_starts_a_killed_server_again(monkeypatch) -> None:
     assert "could not be restarted" in detail
 
 
+class _Slow:
+    """A stand-in server whose every attempt fails after ``seconds``, unless its timeout is shorter.
+
+    It records the timeout each command was given, and is killed by a timeout
+    as lean-interact's server is.
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.alive = True
+        self.timeouts: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def start(self) -> None:
+        self.alive = True
+
+    def kill(self) -> None:
+        self.alive = False
+
+    def run(self, command, timeout=None):
+        import time
+        from types import SimpleNamespace
+
+        self.timeouts.append(timeout)
+        if timeout is not None and timeout < self.seconds:
+            time.sleep(timeout)
+            self.kill()
+            raise TimeoutError("The Lean server did not respond in time and is now killed.")
+        time.sleep(self.seconds)
+        error = SimpleNamespace(severity="error", data="unsolved goals")
+        return SimpleNamespace(messages=(error,), sorries=())
+
+
+def _slow_oracle(monkeypatch, seconds: float, **budgets) -> tuple[LeanOracle, _Slow]:
+    """An oracle over a session whose attempts each take ``seconds``, and that says it is there."""
+    import sys
+    from types import SimpleNamespace
+
+    monkeypatch.setitem(
+        sys.modules, "lean_interact", SimpleNamespace(Command=lambda **fields: fields)
+    )
+    session = LeanSession(timeout=60)
+    session.server = server = _Slow(seconds)
+    oracle = LeanOracle(session=session, **budgets)
+    monkeypatch.setattr(LeanOracle, "availability", lambda self: (True, ""))
+    return oracle, server
+
+
+def test_the_ladder_stops_when_its_budget_is_spent(monkeypatch) -> None:
+    """#83: a statement no attempt fits paid for every attempt, each up to its timeout.
+
+    In Mathlib mode that was minutes. The ladder has a budget now, and an
+    attempt is given what is left of it when that is less than its timeout,
+    so the attempts that fit are made and the rest are not; the fact says
+    after how many, and keeps its status.
+    """
+    import time
+
+    @theorem
+    def plainly_false(x: Nat, y: Nat) -> x <= y:
+        """False, and every attempt fails slowly."""
+
+    fact = plainly_false.fact()
+    ladder = tactic_ladder(statement_of(fact.term, fact.owner))
+    assert len(ladder) > 4
+    oracle, server = _slow_oracle(monkeypatch, 0.4, budget=1.0)
+    started = time.monotonic()
+    result = oracle.establish(fact)
+    assert time.monotonic() - started < 2
+    assert result.status is Status.ASSUMED
+    tried = result.provenance["lean_tried"]
+    assert 2 <= tried < len(ladder)
+    assert result.provenance["lean_budget"] == 1.0
+    assert result.provenance["lean_reason"].startswith(
+        f"the ladder's budget of 1 s ran out after {tried} of its {len(ladder)} attempts; "
+        "the last: "
+    )
+    # each attempt was given what was left, the one the budget cut short too
+    assert all(timeout <= 1.0 for timeout in server.timeouts)
+    assert server.timeouts[-1] < 0.4
+
+    # with no budget, every attempt is made
+    oracle, server = _slow_oracle(monkeypatch, 0.01, budget=0)
+    result = oracle.establish(fact)
+    assert result.provenance["lean_tried"] == len(ladder)
+    assert "lean_budget" not in result.provenance
+
+
+def test_the_budget_is_read_when_a_fact_is_offered(monkeypatch) -> None:
+    """``LANKY_LEAN_BUDGET`` for a claim, ``LANKY_LEAN_VACUITY_BUDGET`` for a vacuity question."""
+    from lanky.check import hypotheses_fact
+    from lanky.oracles.lean import DEFAULT_BUDGET, DEFAULT_VACUITY_BUDGET
+
+    @theorem
+    def guarded(x: Nat, h: x > 3) -> x > 2:
+        """A claim with a hypothesis, so that it has a vacuity question."""
+
+    claim = guarded.fact()
+    question = hypotheses_fact(claim)
+    oracle = LeanOracle()
+    monkeypatch.delenv("LANKY_LEAN_BUDGET", raising=False)
+    monkeypatch.delenv("LANKY_LEAN_VACUITY_BUDGET", raising=False)
+    assert (DEFAULT_BUDGET, DEFAULT_VACUITY_BUDGET) == (120, 30)
+    assert oracle._budget(claim) == DEFAULT_BUDGET
+    assert oracle._budget(question) == DEFAULT_VACUITY_BUDGET
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "45")
+    monkeypatch.setenv("LANKY_LEAN_VACUITY_BUDGET", "7.5")
+    assert (oracle._budget(claim), oracle._budget(question)) == (45, 7.5)
+    assert LeanOracle(budget=3, vacuity_budget=2)._budget(question) == 2
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "0")
+    assert oracle._budget(claim) is None
+    for given in ("a minute", "nan", "inf"):
+        monkeypatch.setenv("LANKY_LEAN_BUDGET", given)
+        with pytest.raises(ValueError, match="not a finite number of seconds"):
+            oracle._budget(claim)
+    oracle, _server = _slow_oracle(monkeypatch, 0.01)
+    result = oracle.establish(claim)
+    assert result.provenance["declined"] == (
+        "lean: LANKY_LEAN_BUDGET is 'inf', which is not a finite number of seconds"
+    )
+    # a budget the oracle is made with is held to the same, where nan and inf
+    # were no budget at all (Codex, #109)
+    monkeypatch.delenv("LANKY_LEAN_BUDGET")
+    for given in (math.nan, math.inf):
+        with pytest.raises(ValueError, match="oracle's budget is .*not a finite number"):
+            LeanOracle(budget=given)._budget(claim)
+        with pytest.raises(ValueError, match="oracle's vacuity_budget is"):
+            LeanOracle(vacuity_budget=given)._budget(question)
+        assert LeanOracle(vacuity_budget=given)._budget(claim) == DEFAULT_BUDGET
+    oracle, _server = _slow_oracle(monkeypatch, 0.01, budget=math.inf)
+    assert oracle.establish(claim).provenance["declined"] == (
+        "lean: the oracle's budget is inf, which is not a finite number of seconds"
+    )
+
+
+def test_a_question_whether_a_fact_is_vacuous_gets_the_attempts_that_can_answer_it() -> None:
+    """#83: a goal that is ``False`` under binders gets no induction and no ring or positivity.
+
+    The questions a check asks after a proof, whether the hypotheses are
+    inconsistent and whether the goal's guard is empty, are each a full
+    ladder, and their answer is almost always no. What cannot show ``False``
+    from the hypotheses is left out: the inductions, which need an equation
+    or a recurrence to work on, and the whole-goal tactics that close only an
+    equation or an order.
+    """
+    from lanky.check import goal_guard_fact, hypotheses_fact
+
+    @theorem
+    def scan(
+        n: Nat,
+        cnt: Fn[Fin[n], Nat],
+        off: Fn[Fin[n + 1], Nat],
+        h: (off(0) == 0) & all(off(r + 1) == off(r) + cnt(r) for r in Fin[n]),
+    ) -> all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if p <= q):
+        """The scan's postcondition, whose ladder ends with an induction."""
+
+    claim = scan.fact()
+    full = tactic_ladder(statement_of(claim.term, claim.owner))
+    assert induction_scripts(statement_of(claim.term, claim.owner))
+    for question in (hypotheses_fact(claim), goal_guard_fact(claim)):
+        for mathlib in (False, True):
+            ladder = tactic_ladder(statement_of(question.term, question.owner, mathlib=mathlib))
+            assert ladder[: len(lean_module.BASE_TACTICS)] == list(lean_module.BASE_TACTICS)
+            assert not any("induction" in script for script in ladder), ladder
+            assert not {"positivity", "ring", "field_simp", "(push_cast; ring)"} & set(ladder)
+            if mathlib:
+                assert {"norm_num", "linarith", "nlinarith"} <= set(ladder)
+    assert any("induction" in script for script in full)
+
+
 class _Interrupted:
     """A stand-in server whose command is interrupted, as Ctrl-C interrupts one."""
 
@@ -2245,7 +2419,7 @@ def test_lean_reports_a_goal_it_cannot_close(lean_oracle: LeanOracle) -> None:
     assert result.provenance["lean_reason"]
 
 
-def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle) -> None:
+def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle, monkeypatch) -> None:
     """A failed proof is not a counterexample, and must never be read as one.
 
     Three ways the ladder can fail: a statement that is false, one that is true
@@ -2272,8 +2446,17 @@ def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle) -> None:
 
     # A timeout is a failed attempt, not a refutation either. The timeout that
     # applies is the session's, so the impatient oracle gets a session of its
-    # own: an oracle handed the module's session never timed out at all.
-    impatient = LeanOracle(session=LeanSession(timeout=1e-6))
+    # own: an oracle handed the module's session never timed out at all. Each
+    # attempt sleeps in Lean before it starts, so that it times out whatever
+    # the load (#85): with quick attempts and a timeout of a microsecond, a
+    # busy machine could let the REPL answer before the timeout was kept.
+    real_ladder = lean_module.tactic_ladder
+
+    def sleeping_ladder(*args, **kwargs) -> list[str]:
+        return [f"sleep 5000\n{script}" for script in real_ladder(*args, **kwargs)]
+
+    monkeypatch.setattr(lean_module, "tactic_ladder", sleeping_ladder)
+    impatient = LeanOracle(session=LeanSession(timeout=0.1))
     try:
         result = impatient.establish(plainly_false.fact())
     finally:
@@ -2289,13 +2472,21 @@ def test_a_session_survives_an_attempt_that_timed_out(lean_oracle: LeanOracle) -
     The driver kills the REPL on a timeout. The next command used to come back
     as "The Lean server is not running", on this fact and on every fact after
     it in the process; the session now starts the REPL again first.
+
+    The attempt that times out sleeps in Lean for five seconds before it
+    proves anything, and is given a tenth of one, so that it times out
+    whatever the load (#85). It used to be the quick ``omega`` with a
+    timeout of a microsecond, which lean-interact keeps by joining the
+    thread that reads the answer: on a busy machine the join could return
+    after the REPL had answered, and the attempt read as closed.
     """
     source = "theorem t (x : Nat) : x + 0 = x := by omega\n"
+    sleeps = "theorem t (x : Nat) : x + 0 = x := by\n  sleep 5000\n  omega\n"
     session = LeanSession(timeout=lean_oracle.session.timeout)
     try:
         assert session.run(source) == (True, "")
-        session.timeout = 1e-6
-        closed, detail = session.run(source)
+        session.timeout = 0.1
+        closed, detail = session.run(sleeps)
         assert not closed
         assert detail.startswith("TimeoutError")
         session.timeout = lean_oracle.session.timeout

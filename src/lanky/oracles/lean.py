@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import math
 import os
 import re
 import shutil
@@ -62,6 +63,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import weakref
 from importlib.util import find_spec
 from typing import Any
@@ -69,6 +71,7 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky import mathlib as mathlib_mode
+from lanky.deadline import Expired, deadline
 from lanky.induction import (
     Case,
     Finder,
@@ -123,6 +126,31 @@ __all__ = [
 #: Seconds one tactic attempt may take before the session is asked to give up.
 DEFAULT_TIMEOUT = float(os.environ.get("LANKY_LEAN_TIMEOUT", "60"))
 
+#: Seconds the whole ladder may take over one fact, unless ``LANKY_LEAN_BUDGET``
+#: says otherwise (#83): the search for an induction's certificates, the side
+#: conditions and every attempt, each attempt given what is left when it is
+#: less than its timeout. Two attempts that run to the default timeout.
+DEFAULT_BUDGET = 120.0
+
+#: Seconds the ladder may take over a question whether a fact is vacuous,
+#: unless ``LANKY_LEAN_VACUITY_BUDGET`` says otherwise: whether its hypotheses
+#: are inconsistent, or its goal's guard empty, which a check asks after a
+#: proof and whose answer is almost always no (#83).
+DEFAULT_VACUITY_BUDGET = 30.0
+
+#: The kinds of the facts that ask whether a claim is vacuous
+#: (:func:`lanky.check.hypotheses_fact`, :func:`lanky.check.goal_guard_fact`).
+VACUITY_KINDS = frozenset({"hypotheses", "goal-guard"})
+
+#: What :meth:`LeanSession.run` answers for an attempt it did not send, because
+#: nothing was left of the budget it was given.
+BUDGET_SPENT = "the budget ran out before the attempt was sent"
+
+
+def _spent(until: float | None) -> bool:
+    """Whether the budget that ends at ``until``, on :func:`time.monotonic`'s clock, is spent."""
+    return until is not None and time.monotonic() >= until
+
 #: The cheap tactics, tried on the goal as printed, before any script is built.
 #: The last one is for a goal ``simp_all`` reduces to linear arithmetic over
 #: ``Int``: a natural is an ``Int`` with ``0 ≤ n`` as a hypothesis, so a fact
@@ -153,9 +181,16 @@ _ELEMENTARY_LEMMAS = (
 )
 
 
-def _mathlib_tactics(lemmas: tuple[str, ...]) -> tuple[str, ...]:
-    """The whole-goal attempts of Mathlib mode, with ``lemmas`` for the elementary functions."""
-    return (
+def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[str, ...]:
+    """The whole-goal attempts of Mathlib mode, with ``lemmas`` for the elementary functions.
+
+    ``refuting`` is for a goal that is ``False`` under binders, the question
+    whether a fact is vacuous: ``positivity``, ``ring``, ``field_simp`` and
+    ``ring`` after ``push_cast`` close an order, an equation or what
+    ``field_simp`` simplifies to one, and none of them can show ``False``
+    from the hypotheses, so they are left out (#83).
+    """
+    tactics = (
         "norm_num",
         "positivity",
         "ring",
@@ -166,6 +201,14 @@ def _mathlib_tactics(lemmas: tuple[str, ...]) -> tuple[str, ...]:
         f"simp [{', '.join(lemmas)}]",
         f"simp_all [{', '.join(lemmas)}] <;> linarith",
     )
+    if refuting:
+        return tuple(tactic for tactic in tactics if tactic not in _CANNOT_REFUTE)
+    return tactics
+
+
+#: The whole-goal attempts of Mathlib mode that cannot close ``False`` (see
+#: :func:`_mathlib_tactics`).
+_CANNOT_REFUTE = frozenset({"positivity", "ring", "field_simp", "(push_cast; ring)"})
 
 
 #: The whole-goal attempts Mathlib mode adds after :data:`BASE_TACTICS`. An
@@ -613,13 +656,28 @@ class LeanSession:
         """
         self.close()
 
-    def run(self, source: str) -> tuple[bool, str]:
+    def ready(self) -> bool:
+        """Open the session, or start again the REPL a timeout killed; whether it is running.
+
+        The oracle asks before it starts a fact's budget, so that starting the
+        REPL, which in a Mathlib session imports Mathlib, is not counted
+        against the first fact, or against the fact after a timeout.
+        """
+        return self.start() and self._revive()
+
+    def run(self, source: str, until: float | None = None) -> tuple[bool, str]:
         """Elaborate one declaration; ``(closed, first diagnostic)``.
 
         A declaration is closed when Lean reports no error and no ``sorry``:
         the kernel accepted the proof term the tactics built. A command
         interrupted by anything but an error, a ``KeyboardInterrupt`` above
         all, stops the REPL (:meth:`_interrupted`) and is raised again.
+
+        ``until`` is a time on :func:`time.monotonic`'s clock, the end of a
+        budget (see :class:`LeanOracle`): the command is given what is left of
+        it, when that is less than :attr:`timeout`, and is not sent at all
+        when nothing is left. What is left is read after the REPL is started
+        again, if a timeout killed it.
         """
         from lean_interact import Command
 
@@ -627,12 +685,18 @@ class LeanSession:
             return False, self.error or "no Lean session"
         if not self._revive():
             return False, self.error or "no Lean session"
+        timeout = self.timeout
+        if until is not None:
+            left = until - time.monotonic()
+            if left <= 0:
+                return False, BUDGET_SPENT
+            timeout = min(timeout, left)
         if self.mathlib is not None:
             command = Command(cmd=source, env=self.environment)
         else:
             command = Command(cmd=source)
         try:
-            response = self.server.run(command, timeout=self.timeout)
+            response = self.server.run(command, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 - a timeout must not stop the ladder
             return False, f"{type(exc).__name__}: {exc}"
         except BaseException:
@@ -1328,7 +1392,7 @@ def _bounds_of(domain: Any) -> tuple[Any, Any] | None:
 
 
 def family_induction_scripts(
-    statement: LeanStatement, finder: Finder | None = None
+    statement: LeanStatement, finder: Finder | None = None, until: float | None = None
 ) -> list[str]:
     """Induction on an order, with each case closed by a certificate a finder gives.
 
@@ -1355,6 +1419,12 @@ def family_induction_scripts(
     checks its certificates as polynomial identities first, so it gives at
     most one, while a plugin's hook may answer for a step it does not mean
     (:attr:`lanky.induction.Case.step` says which), and Lean is the judge.
+
+    The search is Python, sympy's above all, and runs before any attempt, so
+    it is counted in the fact's budget (#83): ``until``, a time on
+    :func:`time.monotonic`'s clock, ends it, by an interval timer
+    (:func:`lanky.deadline.deadline`) where one can be set, and the scripts
+    written before then are kept.
     """
     if not statement.mathlib:
         return []
@@ -1383,14 +1453,24 @@ def family_induction_scripts(
     with dialect(statement.mathlib):
         names, variables, _, naturals, introduced = _goal_intro(statement)
     shared = _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced)
-    scripts = []
+    scripts: list[str] = []
     for target in variables:
         if target.name not in naturals:
             continue
         for step in _steps(target, goal, lemmas):
-            script = _family_induction(
-                statement, shared, target, step, finder or find_certificate
-            )
+            left = None if until is None else until - time.monotonic()
+            if left is not None and left <= 0:
+                return scripts
+            owner = object()
+            try:
+                with deadline(left, owner):
+                    script = _family_induction(
+                        statement, shared, target, step, finder or find_certificate
+                    )
+            except Expired as exc:
+                if exc.owner is not owner:
+                    raise
+                return scripts
             if script is not None:
                 scripts.append(script)
     return scripts
@@ -1641,7 +1721,9 @@ def _is_number(value: Any, number: int) -> bool:
     return not isinstance(value, bool | prim.ExpressionNode) and value == number
 
 
-def tactic_ladder(statement: LeanStatement, finder: Finder | None = None) -> list[str]:
+def tactic_ladder(
+    statement: LeanStatement, finder: Finder | None = None, until: float | None = None
+) -> list[str]:
     """Every script the oracle tries, cheapest and most general first.
 
     A statement printed in the Mathlib dialect gets the core ladder first, as
@@ -1656,15 +1738,28 @@ def tactic_ladder(statement: LeanStatement, finder: Finder | None = None) -> lis
     same ``simp`` with a discharger that does, through the arithmetic tactics
     (:data:`_NONZERO_CLOSERS`): ``exp(log(x + y * 1j)) == x + y * 1j`` under
     ``y > 0``, and ``exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j``.
+
+    A goal that is ``False`` under binders, which is what a question whether a
+    fact is vacuous asks (:data:`VACUITY_KINDS`), gets only the attempts that
+    can show ``False`` from the hypotheses (#83): no induction over a family,
+    on a recurrence or on a reduction's bound, none of which has an equation
+    to work on, and no whole-goal tactic that closes only an equation or an
+    order (:func:`_mathlib_tactics`).
+
+    ``until``, a time on :func:`time.monotonic`'s clock, ends the search for
+    the family induction's certificates (:func:`family_induction_scripts`),
+    which is Python and runs here, before any attempt.
     """
     with dialect(statement.mathlib):
         names, _, _, _, _ = _goal_intro(statement)
+    refuting = _goal_is_false(statement)
     ladder = list(BASE_TACTICS)
     if statement.mathlib:
-        ladder += family_induction_scripts(statement, finder)
+        if not refuting:
+            ladder += family_induction_scripts(statement, finder, until)
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
-        ladder += _mathlib_tactics(lemmas)
-        if statement.side_conditions:
+        ladder += _mathlib_tactics(lemmas, refuting)
+        if statement.side_conditions and not refuting:
             ext = statement.qualified("Complex.ext_iff")
             parts = ", ".join((*lemmas, ext))
             ladder.append(f"simp [{parts}]")
@@ -1675,9 +1770,18 @@ def tactic_ladder(statement: LeanStatement, finder: Finder | None = None) -> lis
             f"{introduction}\n{_closers(statement)}",
             f"{introduction}\nsimp_all\nomega",
         ]
-    ladder += induction_scripts(statement)
-    ladder += reduction_scripts(statement)
+    if not refuting:
+        ladder += induction_scripts(statement)
+        ladder += reduction_scripts(statement)
     return ladder
+
+
+def _goal_is_false(statement: LeanStatement) -> bool:
+    """Whether the statement's goal is ``False``, under any number of universals."""
+    goal = statement.goal_term
+    while isinstance(goal, Forall):
+        goal = goal.body
+    return goal is False
 
 
 # }}}
@@ -1700,14 +1804,37 @@ class LeanOracle:
     always been, and set, it is a session in the Mathlib project the variable
     names (see :mod:`lanky.mathlib`). Each mode keeps its own session. An
     oracle given a ``session`` uses that one, in whichever mode it was made.
+
+    Each attempt has its timeout, and the ladder as a whole has a budget
+    (#83): a statement no attempt fits used to pay for every attempt, each up
+    to the timeout, and in Mathlib mode that was minutes. The budget is
+    ``budget`` seconds for a claim (``LANKY_LEAN_BUDGET``, by default
+    :data:`DEFAULT_BUDGET`), and ``vacuity_budget`` for a question whether a
+    fact is vacuous (``LANKY_LEAN_VACUITY_BUDGET``, by default
+    :data:`DEFAULT_VACUITY_BUDGET`), whose answer is almost always no. It
+    counts the search for an induction's certificates, the side conditions
+    and the attempts, and starts once the REPL is running, so that starting
+    it, which imports Mathlib, is counted against no fact. An attempt is
+    given what is left of it where that is less than its timeout, and when
+    nothing is left the ladder stops, and the fact says after how many of its
+    attempts. ``0`` is no budget.
     """
 
     name = "lean"
 
     def __init__(
-        self, timeout: float = DEFAULT_TIMEOUT, session: LeanSession | None = None
+        self,
+        timeout: float = DEFAULT_TIMEOUT,
+        session: LeanSession | None = None,
+        budget: float | None = None,
+        vacuity_budget: float | None = None,
     ) -> None:
         self.timeout = timeout
+        #: Seconds for the ladder of a claim; ``None`` reads ``LANKY_LEAN_BUDGET``.
+        self.budget = budget
+        #: Seconds for the ladder of a question whether a fact is vacuous;
+        #: ``None`` reads ``LANKY_LEAN_VACUITY_BUDGET``.
+        self.vacuity_budget = vacuity_budget
         self._pinned = session
         self._sessions: dict[str | None, LeanSession] = {}
         #: ``fact id -> tactic script``, consulted before the ladder.
@@ -1806,6 +1933,42 @@ class LeanOracle:
         """Whether the session in effect has Mathlib."""
         return self.session.mathlib is not None
 
+    def _budget(self, fact: Fact) -> float | None:
+        """The seconds the ladder may take over ``fact``; ``None`` for no budget.
+
+        Read when the fact is offered, so that a variable set after lanky is
+        imported counts.
+
+        Raises:
+            ValueError: If the variable, or the budget the oracle was made
+                with, is not a finite number, ``nan`` and ``inf`` included,
+                which :meth:`establish` declines the fact for, saying so: a
+                budget that is no number would be no budget, and the ladder
+                would run unbounded where a bound was asked for.
+        """
+        vacuity = fact.kind in VACUITY_KINDS
+        given = self.vacuity_budget if vacuity else self.budget
+        if given is not None and not math.isfinite(given):
+            keyword = "vacuity_budget" if vacuity else "budget"
+            raise ValueError(
+                f"the oracle's {keyword} is {given!r}, which is not a finite number of seconds"
+            )
+        if given is None:
+            variable = "LANKY_LEAN_VACUITY_BUDGET" if vacuity else "LANKY_LEAN_BUDGET"
+            text = os.environ.get(variable)
+            if text is None:
+                given = DEFAULT_VACUITY_BUDGET if vacuity else DEFAULT_BUDGET
+            else:
+                try:
+                    given = float(text)
+                except ValueError:
+                    given = math.nan
+                if not math.isfinite(given):
+                    raise ValueError(
+                        f"{variable} is {text!r}, which is not a finite number of seconds"
+                    )
+        return given if given > 0 else None
+
     def establish(self, fact: Fact, /) -> Fact | None:
         """Try the ladder; ``PROVED`` on success, the fact unchanged otherwise.
 
@@ -1840,10 +2003,29 @@ class LeanOracle:
             return fact.with_status(
                 fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
             )
-        conditions, declined = self._side_conditions(statement)
+        try:
+            budget = self._budget(fact)
+        except ValueError as exc:
+            return fact.with_status(
+                fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
+            )
+        if not session.ready():
+            return fact.with_status(fact.status, lean_tried=0, lean_reason=session.error)
+        until = None if budget is None else time.monotonic() + budget
+        conditions, declined = self._side_conditions(statement, until)
         if declined is not None:
             if session.error is not None:
                 return fact.with_status(fact.status, lean_tried=0, lean_reason=session.error)
+            if _spent(until):
+                return fact.with_status(
+                    fact.status,
+                    lean_tried=0,
+                    lean_budget=budget,
+                    lean_reason=(
+                        f"the ladder's budget of {budget:g} s ran out while the statement's "
+                        "side conditions were tried"
+                    ),
+                )
             return fact.with_status(
                 fact.status, lean_declined=declined, declined=f"{self.name}: {declined}"
             )
@@ -1851,11 +2033,17 @@ class LeanOracle:
         if override is not None:
             ladder = [override]
         else:
-            ladder = tactic_ladder(statement, self.certificates.get(fact.id))
+            ladder = tactic_ladder(statement, self.certificates.get(fact.id), until)
         last = ""
+        tried = 0
         for tactic in ladder:
+            if _spent(until):
+                break
             source = statement.source(tactic)
-            closed, detail = session.run(source)
+            closed, detail = session.run(source, until)
+            if detail == BUDGET_SPENT:
+                break
+            tried += 1
             if closed:
                 extra: dict[str, Any] = {}
                 if conditions:
@@ -1879,13 +2067,26 @@ class LeanOracle:
             last = detail
             if session.error is not None:
                 break
+        if session.error is None and tried < len(ladder):
+            spent = (
+                f"the ladder's budget of {budget:g} s ran out after {tried} of its "
+                f"{len(ladder)} attempts"
+            )
+            return fact.with_status(
+                fact.status,
+                lean_tried=tried,
+                lean_budget=budget,
+                lean_reason=f"{spent}; the last: {last}" if last else spent,
+            )
         return fact.with_status(
             fact.status,
-            lean_tried=len(ladder),
+            lean_tried=tried,
             lean_reason=session.error or last,
         )
 
-    def _side_conditions(self, statement: LeanStatement) -> tuple[list[str], str | None]:
+    def _side_conditions(
+        self, statement: LeanStatement, until: float | None = None
+    ) -> tuple[list[str], str | None]:
         """Prove a statement's side conditions, before the statement itself is tried.
 
         A side condition is what makes the printed statement mean in Lean what
@@ -1895,6 +2096,7 @@ class LeanOracle:
         come back, to be kept with the proof, or, at the first one no attempt
         closes, why the statement is declined: a proof of it would be a proof
         of what Lean reads on the cut, which is not what Python computes there.
+        ``until`` is the end of the fact's budget, which they count against.
         """
         session = self.session
         proved: list[str] = []
@@ -1902,12 +2104,14 @@ class LeanOracle:
             closing = None
             for tactic in SIDE_CONDITION_TACTICS:
                 source = condition.source(f"intros\n{tactic}")
-                closed, _detail = session.run(source)
+                closed, _detail = session.run(source, until)
                 if closed:
                     closing = source
                     break
                 if session.error is not None:
                     return proved, session.error
+                if _spent(until):
+                    return proved, BUDGET_SPENT
             if closing is None:
                 return proved, (
                     f"Lean could not prove {condition.proposition}, so the statement "

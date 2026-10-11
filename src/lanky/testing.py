@@ -85,9 +85,12 @@ anywhere but where the statement asserts it (see
 :meth:`~lanky.terms.LankyEvaluationMapper.map_comparison`). So is a value the
 exact reading does not enclose: a complex logarithm or square root on its
 branch cut, where Python picks a side by the sign of a zero, an
-argument of ``exp`` beyond :data:`lanky.intervals.EXP_LIMIT`, a negative
-number to a power that is not an integer, and an enclosure computed with a
-float infinity or NaN, which is no real number.
+argument of ``exp`` beyond :data:`lanky.intervals.EXP_LIMIT`, a complex
+power that is not an integer power, and an enclosure computed with a float
+infinity or NaN, which is no real number. A negative number to a power that
+is not an integer is no such value: it is the complex number Python answers
+with, the principal value, enclosed part by part, so that ``(x ** 3) **
+Fraction(1, 3) == x`` is refuted at a negative ``x`` (#89).
 
 *A family applied outside the domain it declares.* ``f(n)`` for an
 ``f : Fn[Fin[n], Nat]`` names a point the statement's own types say is not

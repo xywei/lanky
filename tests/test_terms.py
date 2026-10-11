@@ -9,8 +9,9 @@ from contextlib import closing
 import pymbolic.primitives as prim
 import pytest
 
-from lanky.prelude import Complex, Fin, Fn, Nat, Real, Refined
+from lanky.prelude import Complex, Fin, Fn, Int, Nat, Real, Refined
 from lanky.terms import (
+    Abs,
     BuiltinName,
     Comparison,
     Exists,
@@ -84,6 +85,37 @@ def test_a_comparison_of_an_xor_or_a_shift_is_a_term_not_a_bool() -> None:
     assert evaluate((n << 2) > 5, {"n": 2}) is True
     assert evaluate((8 >> n) != 2, {"n": 2}) is False
     assert structurally_equal(n ^ 1, prim.BitwiseXor((Var("n"), 1)))
+
+
+def test_python_abs_of_a_term_is_lankys_abs() -> None:
+    """#94: ``abs()`` of a term was pymbolic's ``Call`` of a variable named ``abs``.
+
+    An ordering of that raised ``expressions don't have an order``, and its
+    ``==`` was pymbolic's structural equality, a ``bool`` while the term was
+    built: ``(127 == abs(c[i])) * 1`` held ``0``, so a kernel traced it as a
+    constant where its body compares.
+    """
+    k = Var("k")
+    element = Var("c")[Var("i")]
+    assert isinstance(abs(k), Abs)
+    assert structurally_equal(abs(k), Abs(k))
+    assert render(abs(k)) == "abs(k)"
+    for claim in (
+        abs(k) > 2,
+        abs(k) + 1 > 2,
+        abs(k) * 2 <= k,
+        127 == abs(element),
+        abs(element) == 127,
+        k != abs(element),
+        abs(k - 1) >= 0,
+    ):
+        assert isinstance(claim, Comparison), claim
+    assert evaluate(abs(k) > 2, {"k": -3}) is True
+    assert evaluate(abs(k) > 2, {"k": 2}) is False
+    assert evaluate(127 == abs(element), {"c": [-127], "i": 0}) is True
+    assert evaluate(127 == abs(element), {"c": [126], "i": 0}) is False
+    # and in a claim, which the property tester samples
+    assert check([("k", Int)], [], abs(k) >= 0).ok
 
 
 def test_truth_value_of_a_proposition_is_refused() -> None:
@@ -379,6 +411,41 @@ def test_the_ways_the_refusal_names_keep_the_condition() -> None:
     assert render(kept) == "sum(1 for i in Fin(m) if n > 100)"
     assert evaluate(kept, {"m": 3, "n": 3}) == 0
     assert evaluate(kept, {"m": 3, "n": 101}) == 3
+
+
+def test_all_and_any_over_a_concrete_domain_join_the_terms_they_are_given() -> None:
+    """A body that is a term at each point is their conjunction, or their disjunction.
+
+    The builtin asked each value for a truth value: a proposition refused it,
+    so ``all(exp(k) >= 1 + k for k in range(3))`` could not be read once
+    ``exp`` of a number was a term in an annotation (#81), and a term that is
+    a number answered from its structure, so ``all(f(k) for k in range(3))``
+    was ``True``. A concrete value that settles the quantifier still does.
+    """
+    f, n, x = Var("f"), Var("n"), Var("x")
+    joined = forall(x > k for k in range(3))
+    assert structurally_equal(joined, prim.LogicalAnd((x > 0, x > 1, x > 2)))
+    assert evaluate(joined, {"x": 3}) is True
+    assert evaluate(joined, {"x": 2}) is False
+    some = exists(x > k for k in Fin[3])
+    assert structurally_equal(some, prim.LogicalOr((x > 0, x > 1, x > 2)))
+    assert evaluate(some, {"x": 1}) is True
+    assert evaluate(some, {"x": 0}) is False
+    # a single term is itself, and a concrete value settles what it can
+    assert structurally_equal(forall(x > k for k in range(1)), x > 0)
+    assert forall(x > k if k else k > 0 for k in range(2)) is False
+    assert exists(x > k if k else k == 0 for k in range(2)) is True
+    assert structurally_equal(forall(x > k if k else k == 0 for k in range(2)), x > 1)
+    assert forall(x > k for k in range(0)) is True
+    assert exists(x > k for k in range(0)) is False
+    # a term that is a number is held as it is, and has no truth value there
+    numbers = forall(f(k) for k in range(2))
+    assert structurally_equal(numbers, prim.LogicalAnd((f(0), f(1))))
+    with pytest.raises(TypeError, match="not a truth value"):
+        evaluate(numbers, {"f": Table([0, 1], name="f")})
+    # the body can carry a condition the guard could not
+    carried = forall(~(n > 100) | (i >= 0) for i in Fin[2])
+    assert evaluate(carried, {"n": 3}) is True
 
 
 # }}}

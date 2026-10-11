@@ -406,6 +406,44 @@ def test_a_hook_that_finds_nothing_or_fails_gives_no_script(searching) -> None:
     assert family_induction_scripts(statement, lambda case: (Use("h1", ()),)) == []
 
 
+def test_the_search_is_counted_in_the_ladders_budget(searching) -> None:
+    """#83: the search runs before any attempt, in Python, and the budget ends it.
+
+    It had no budget of its own, and on an older machine took about ten
+    seconds for each Helmholtz claim. The budget of the fact's ladder ends
+    it now, by an interval timer, and the scripts written before then are
+    kept.
+    """
+    import time
+
+    statement = _statement(laplace)
+    found = family_induction_scripts(statement)
+    assert found
+
+    def slow(case: Case):
+        time.sleep(30)
+
+    started = time.monotonic()
+    assert family_induction_scripts(statement, slow, time.monotonic() + 0.3) == []
+    ladder = tactic_ladder(statement, slow, time.monotonic() + 0.3)
+    assert time.monotonic() - started < 5
+    assert ladder[: len(BASE_TACTICS)] == list(BASE_TACTICS)
+    assert not any("linear_combination" in script for script in ladder)
+    # a budget already spent asks the finder nothing
+    asked: list[Case] = []
+    assert family_induction_scripts(statement, asked.append, time.monotonic()) == []
+    assert asked == []
+    # one that is not spent leaves the search as it was
+    assert family_induction_scripts(statement, None, time.monotonic() + 600) == found
+    # and a deadline set around the search is the caller's, and is raised again
+    from lanky.deadline import Expired, deadline
+
+    outer = object()
+    with pytest.raises(Expired) as raised, deadline(0.3, outer):
+        family_induction_scripts(statement, slow, time.monotonic() + 600)
+    assert raised.value.owner is outer
+
+
 def test_the_family_induction_comes_after_the_core_attempts(searching) -> None:
     ladder = tactic_ladder(_statement(laplace))
     assert ladder[: len(BASE_TACTICS)] == list(BASE_TACTICS)
