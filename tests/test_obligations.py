@@ -700,6 +700,66 @@ def test_importing_mathlib_does_not_count_against_a_parts_budget(
     assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
 
 
+def test_a_mathlib_without_a_revision_keeps_no_answer(
+    no_session, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A key that does not name the Mathlib would let another one's answers be read (Codex)."""
+    from lanky.oracles.lean import LeanSession
+
+    project = tmp_path / "unpinned"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v0.0.0-test\n")
+    (project / "lake-manifest.json").write_text('{"packages": []}')
+    oracle, _started = no_session
+    session = LeanSession(mathlib=str(project))
+    session.version = "v0.0.0-test"
+    monkeypatch.setattr(
+        LeanSession, "answer", lambda self, source, until=None: (True, "", True)
+    )
+    assert oracle._ask(session, "theorem t : True := trivial\n", None)[2] is False
+    assert not any((tmp_path / "proofs").rglob("*.json"))
+
+
+def test_a_claim_all_about_reals_starts_no_core_lean(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its parts are the Mathlib session's: the core pool is not built for it (Codex)."""
+    oracle, _started = no_session
+    _slow_start(monkeypatch, 0.01)
+    pooled: list = []
+    monkeypatch.setattr(oracle, "_part_sessions", lambda: pooled.append(1) or [])
+    u, v = Var("u"), Var("v")
+    part = Part("S0", "u == v", claim(((u, Real), (v, Real)), [u == v], v == u), mathlib=True)
+    fact = oracle.establish(fact_of(Obligation(parts=(part,), decider="isl")))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+    assert pooled == []
+
+
+def test_a_counterexample_to_a_part_about_reals_goes_to_the_mathlib_session(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Printed with ``ℝ``, it elaborates only where Mathlib is imported (Codex)."""
+    from lanky.oracles.lean import LeanSession
+
+    oracle, _started = no_session
+    asked: list[bool] = []
+
+    def answer(session: LeanSession, source: str, until: float | None = None) -> tuple:
+        asked.append(session.mathlib is not None)
+        return True, "", True
+
+    monkeypatch.setattr(LeanSession, "ready", lambda self: True)
+    monkeypatch.setattr(LeanSession, "answer", answer)
+    monkeypatch.setattr(oracle, "_part_sessions", lambda: [LeanSession()])
+    u = Var("u")
+    part = Part("S0", "u < 1", claim(((u, Real),), [u > 0], u < 1), mathlib=True)
+    obligation = Obligation(
+        parts=(part,), counterexample=Counterexample("S0", {"u": 2}, "u=2")
+    )
+    oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert asked and all(asked)
+
+
 def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
     no_session, fake_mathlib: str
 ) -> None:

@@ -2582,8 +2582,17 @@ class LeanOracle:
             if records is not None and reals:
                 version = mathlib_mode.toolchain(directory) if directory else None
         if records is None:
-            sessions = self._part_sessions()
-            if not sessions:
+            # the core pool only for a part of core Lean's, or a counterexample to one
+            if obligation.counterexample is not None:
+                refuted = next(
+                    (p for p in obligation.parts if p.name == obligation.counterexample.part),
+                    None,
+                )
+                core = refuted is None or not getattr(refuted, "mathlib", False)
+            else:
+                core = any(not getattr(part, "mathlib", False) for part in obligation.parts)
+            sessions = self._part_sessions() if core else []
+            if core and not sessions:
                 return fact.with_status(
                     fact.status, lean_tried=0, lean_reason=self._pool_error()
                 )
@@ -2776,8 +2785,9 @@ class LeanOracle:
         def key() -> str | None:
             if session.mathlib is not None:
                 found = _mathlib_key(session.mathlib)
-                if found is None and session.version is not None:
+                if found is None and session.version and session.mathlib_revision:
                     found = f"{session.version}+mathlib@{session.mathlib_revision}"
+                # a Mathlib whose revision is not known keys nothing
                 return found
             return session.version
 
@@ -2915,7 +2925,11 @@ class LeanOracle:
                 lean_counterexample=f"Lean did not check the counterexample: {exc}",
             )
         if version is None:
-            session = self._part_sessions()[0]
+            # a part about reals is the Mathlib session's, as _check_parts has it
+            if getattr(part, "mathlib", False):
+                session = self.session
+            else:
+                session = self._part_sessions()[0]
             version = session.version
 
             def ask(source: str) -> tuple[bool, str, bool, bool] | None:
