@@ -244,6 +244,18 @@ def every_order_along_b(
 
 
 @theorem
+def on_the_triangle(
+    p: Nat,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2 if a + b <= p),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat if a + b + 2 <= p),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a + b <= p):
+    """The reconstruction of order ``p``: the recurrence inside the triangle alone (#86)."""
+
+
+@theorem
 def counting(
     n: Nat,
     f: Fn[Nat, Fn[Nat, Real]],
@@ -284,6 +296,18 @@ def _doubled(
     recurrence: all(R(a + 2)(b) == -2 * R(a)(b + 2) for a in Nat for b in Nat),
 ) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat):
     """False: the recurrence's coefficient is twice the PDE's."""
+
+
+@theorem
+def _short_of_the_triangle(
+    p: Nat,
+    D: Fn[Nat, Fn[Nat, Real]],
+    R: Fn[Nat, Fn[Nat, Real]],
+    pde: all(D(a + 2)(b) + D(a)(b + 2) == 0 for a in Nat for b in Nat),
+    stored: all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a < 2 if a + b <= p),
+    recurrence: all(R(a + 2)(b) == -R(a)(b + 2) for a in Nat for b in Nat if a + b + 3 <= p),
+) -> all(R(a)(b) == D(a)(b) for a in Nat for b in Nat if a + b <= p):
+    """False: the recurrence stops one order short of the triangle's edge."""
 
 
 @theorem
@@ -1695,6 +1719,7 @@ def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOr
         telescoping,
         every_order_along_b,
         counting,
+        on_the_triangle,
     ],
     ids=lambda claim: claim.__name__,
 )
@@ -1707,7 +1732,8 @@ def test_mathlib_proves_a_claim_for_every_order(mathlib_oracle: LeanOracle, clai
     on its second variable, and its step takes the hypothesis at ``a + 2``,
     which holds there because the first is generalized too; ``counting``'s
     order is a point of ``Fin[n]``, whose bound comes before the later
-    variable.
+    variable. ``on_the_triangle`` asks the recurrence only inside ``a + b <=
+    p``, and its step takes it where the goal's own guard says so.
     """
     pytest.importorskip("sympy", reason="the search for the certificate is sympy's")
     proved = mathlib_oracle.establish(claim.fact())
@@ -1750,7 +1776,7 @@ def test_lean_checks_a_certificate_and_refuses_a_wrong_one(mathlib_oracle: LeanO
 
 @pytest.mark.parametrize(
     "claim",
-    [_lost_sign, _shifted_index, _doubled, _short_base],
+    [_lost_sign, _shifted_index, _doubled, _short_base, _short_of_the_triangle],
     ids=lambda claim: claim.__name__,
 )
 def test_a_claim_for_every_order_from_a_wrong_recurrence_is_not_proved(
@@ -1759,7 +1785,8 @@ def test_a_claim_for_every_order_from_a_wrong_recurrence_is_not_proved(
     """No certificate is found for it, and nothing else in the ladder proves it.
 
     The recurrence with its sign lost, an index off by one, a coefficient
-    doubled, and a base that leaves ``R(1)(b)`` unsaid.
+    doubled, a base that leaves ``R(1)(b)`` unsaid, and a recurrence that
+    stops one order short of the triangle's edge.
     """
     from lanky.oracles.lean import family_induction_scripts
 

@@ -19,8 +19,11 @@ Run it as ``gauss.py`` and ``pytential_skie.py`` are run, where sumpy imports.
     by Lean, where Mathlib is installed (see :mod:`lanky.mathlib`). Without
     the CAS oracle the second row reads ``tested`` by the property tester,
     which evaluates the same equations exactly, in rational arithmetic, and
-    without Mathlib the third reads ``assumed``. Above them is the kernel's
-    harmonicity, ``assumed`` on its citation.
+    without Mathlib the third reads ``assumed``. The fourth is the third's
+    corollary on the triangle ``a + b <= p`` of every order ``p``, the claim
+    a wrangler of order ``p`` makes and a kernel of that order can cite,
+    proved the same way. Above them is the kernel's harmonicity, ``assumed``
+    on its citation.
 
 The mathematics. A Taylor expansion of a kernel ``G`` needs every derivative
 ``d^(a+b) G / dx^a dy^b`` with ``a + b`` up to the order. When ``G`` satisfies a
@@ -57,6 +60,14 @@ the kernel, as the wrangler reads it, and checked against the wrangler's
 weights through ``ORDER``; a wrangler whose weights do not follow it makes no
 claim for every order.
 
+The fourth row is the third's corollary on the triangle. A wrangler of order
+``p`` has the coefficients through ``p`` and nothing past it, so it follows the
+recurrence only where the derivative it gives is inside the order, ``a + b +
+2 <= p``, and the claim is about the triangle ``a + b <= p``, for every ``p``:
+the statement a kernel that reconstructs the coefficients of order ``p`` can
+cite. Its induction is the third's, with the recurrence taken where the goal's
+own guard ``a + b <= p`` says the order reaches.
+
 The CAS's row is the claim through ``ORDER``, 28 equations, and Lean is not
 asked about it (:func:`lanky.oracles.lean.decline`): Lean's row is the one for
 every order, and the ladder would spend minutes on a conjunction it has no
@@ -92,7 +103,7 @@ from lanky.ledger import Fact, Status, fact_id
 from lanky.oracles.lean import decline
 from lanky.plugins import registry
 from lanky.prelude import Fn, Nat, Real
-from lanky.terms import Add, Comparison, Forall, LogicalAnd, LogicalOr, Product, Var
+from lanky.terms import Add, Comparison, Forall, LogicalAnd, LogicalOr, Product, Var, conjuncts
 from lanky.theory import fact_ids
 
 #: The order through which every coefficient is checked.
@@ -362,11 +373,44 @@ class Reconstruction:
             LogicalAnd((pde, stored, recurrence)),
         )
 
+    def triangle_term(self) -> Forall:
+        """The claim for every order ``p``, on the triangle ``a + b <= p`` alone.
+
+        What a wrangler of order ``p`` does: it has the coefficients up to
+        that order and follows the recurrence only inside it. Over the order
+        ``p`` and the two tables of :meth:`every_order_term`: if ``D``
+        satisfies the PDE, ``R`` agrees with ``D`` where the wrangler stores
+        and the order reaches (``a < 2`` and ``a + b <= p``), and ``R``
+        follows the recurrence wherever the derivative it gives is inside the
+        order (``a + b + 2 <= p`` for Laplace's), then ``R`` is ``D`` on the
+        triangle. The corollary of the claim for every order that a kernel of
+        order ``p`` can cite, since its arrays end at the order (#86).
+        """
+        assert self.pde is not None and self.leading is not None
+        p, a, b = Var("p"), Var("a"), Var("b")
+        claim = self.every_order_term()
+        pde, stored, recurrence = claim.guard.children
+        inside = Comparison(a + b, "<=", p)
+        reach = Comparison(a + b + sum(self.leading), "<=", p)
+
+        def within(universal: Forall, bound: Any) -> Forall:
+            guards = [*conjuncts(universal.guard), bound]
+            guard = guards[0] if len(guards) == 1 else LogicalAnd(tuple(guards))
+            return Forall(universal.binders, universal.body, guard)
+
+        return Forall(
+            ((p, Nat), *claim.binders),
+            within(claim.body, inside),
+            LogicalAnd((pde, within(stored, inside), within(recurrence, reach))),
+        )
+
     def facts(self) -> tuple[Fact, ...]:
         """The claim at points, for mpmath; as formulas, for the CAS; for every order, for Lean.
 
-        The last only where the wrangler's weights follow the recurrence the
-        PDE gives (see :func:`_read_pde`).
+        The last two only where the wrangler's weights follow the recurrence
+        the PDE gives (see :func:`_read_pde`): the claim for every order, and
+        its corollary on the triangle of every order ``p``
+        (:meth:`triangle_term`).
         """
         facts = [
             self._fact("sampled", str(Sampled(self)), Sampled(self)),
@@ -382,6 +426,17 @@ class Reconstruction:
                     "every-order",
                     self.statement("every order: ", f"for every a, b, by {self.recurrence_text()}"),
                     self.every_order_term(),
+                    rests_on=self.uses,
+                )
+            )
+            facts.append(
+                self._fact(
+                    "on-the-triangle",
+                    self.statement(
+                        "every order p: ",
+                        f"for a + b <= p, by {self.recurrence_text()} inside it",
+                    ),
+                    self.triangle_term(),
                     rests_on=self.uses,
                 )
             )

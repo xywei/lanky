@@ -1654,6 +1654,10 @@ def _family_induction(
             conditions=(Comparison(0, "<=", m),),
         )
 
+    # the goal's guards, which every case has as hypotheses: a guard of a
+    # lemma is shown from them too (lanky.induction.Case.facts)
+    guards = [substitute(guard, renaming) for guard in conjuncts(goal.guard)]
+
     def case(label: str, value: Any, own: dict[str, Any], inductive: bool) -> Case | None:
         """The case where the order is ``value``; ``own`` maps its new name to its bounds."""
         lemmas = list(shared.lemmas)
@@ -1671,6 +1675,7 @@ def _family_induction(
             families=shared.families,
             step=step,
             order=name,
+            facts=tuple(substitute(guard, {name: value}) for guard in guards),
         )
 
     printing = {**types, name: Nat, successor: Nat}

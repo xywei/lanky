@@ -97,8 +97,8 @@ is worth less than its status, what it is worth.
   wrangler for the 2-D Laplace kernel claims that its recurrence reconstructs
   every derivative, and the ledger has the claim `tested` by mpmath and
   `decided (heuristic)` by sympy through order 6, and, with Mathlib, `proved
-  under harmonic` by Lean for every order, the kernel's harmonicity
-  `assumed` on its citation.
+  under harmonic` by Lean for every order and on the triangle `a + b <= p`
+  of every order `p`, the kernel's harmonicity `assumed` on its citation.
 
 ## Status
 
@@ -332,7 +332,11 @@ raises its floor to match.
   `lanky.oracles.lean.use_certificate` is the hook through which a plugin
   hands over multipliers of its own, and `lanky.oracles.lean.decline` leaves
   a claim to the oracles after Lean, saying why. The sumpy demonstration's
-  claim for every order is proved this way.
+  claim for every order is proved this way, and so is its corollary on the
+  triangle `a + b <= p` of every order `p`, whose recurrence holds only
+  inside the order: a hypothesis is used where its guards follow from the
+  bounds of the variables and from the goal's own guards, `k + b + 2 <= p`
+  from the goal's `a + b <= p` at `a = k + 2`.
 - A plugin's claims checked by Lean (`lanky.obligations`). A plugin with a
   decision procedure of its own states each claim it decides for Lean too,
   as parts, each a closed lanky term, through one method of the fact's term,

@@ -144,6 +144,13 @@ class Case:
         order: The goal's variable the induction is on, by the name the
             case's terms give it where it is still a variable, in the base
             case taken for every order below the step at once.
+        facts: Propositions over the case's names that hold in it besides
+            the bounds: the goal's own guards at the case's order, which
+            Lean has as hypotheses there. A guard of a lemma is shown from
+            them as well as from the bounds (:func:`_implied`), so a claim
+            over the triangle ``a + b <= p`` takes the recurrence at ``(k,
+            b)`` in the step at ``k + 2``, where ``k + b + 2 <= p`` is the
+            goal's guard and no bound of ``k`` or ``b`` alone.
     """
 
     name: str
@@ -154,6 +161,7 @@ class Case:
     families: frozenset[str]
     step: int = 1
     order: str = ""
+    facts: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, eq=False)
@@ -470,21 +478,80 @@ def _extreme(sympy: Any, expr: Any, bounds: Mapping[Any, tuple[Any, Any]], large
     return None
 
 
-def _implied(algebra: _Algebra, guard: Any, scope: Mapping[str, Any], bounds: Any) -> bool:
-    """Whether the case's bounds show ``guard`` at the values ``scope`` gives.
+def _known(algebra: _Algebra, facts: Any) -> list[Any]:
+    """The case's facts that are affine inequalities, each as an ``e`` with ``e <= 0``.
+
+    An equation gives two, ``l - r`` and ``r - l``, and a strict inequality
+    between integers is one by at least ``1``. A fact the search cannot read
+    as integer arithmetic gives none.
+    """
+    sympy = algebra.sympy
+    out: list[Any] = []
+    for fact in facts:
+        if not isinstance(fact, prim.Comparison):
+            continue
+        try:
+            difference = algebra.convert(fact.left, {}) - algebra.convert(fact.right, {})
+        except _Unsupported:
+            continue
+        if difference.atoms(sympy.core.function.AppliedUndef) or not difference.is_integer:
+            continue
+        if fact.operator == "<=":
+            out.append(difference)
+        elif fact.operator == "<":
+            out.append(difference + 1)
+        elif fact.operator == ">=":
+            out.append(-difference)
+        elif fact.operator == ">":
+            out.append(1 - difference)
+        elif fact.operator == "==":
+            out += [difference, -difference]
+    return out
+
+
+def _at_most(sympy: Any, expr: Any, limit: int, bounds: Any, known: list[Any]) -> bool:
+    """Whether ``expr <= limit`` follows from the bounds, and from at most two known facts.
+
+    Each fact ``e <= 0`` taken away leaves a remainder whose largest value
+    within the bounds, if it is at most ``limit``, shows the claim: ``expr``
+    is that remainder plus facts that are not positive.
+    """
+    from itertools import combinations
+
+    for count in range(min(2, len(known)) + 1):
+        for chosen in combinations(known, count):
+            rest = expr - sum(chosen, sympy.Integer(0))
+            highest = _extreme(sympy, rest, bounds, largest=True)
+            if highest is not None and highest.is_number and highest <= limit:
+                return True
+    return False
+
+
+def _implied(
+    algebra: _Algebra,
+    guard: Any,
+    scope: Mapping[str, Any],
+    bounds: Any,
+    known: list[Any] | None = None,
+) -> bool:
+    """Whether the case's bounds and facts show ``guard`` at the values ``scope`` gives.
 
     A comparison of integers is read as an affine inequality, an equation as
     an identity, and a conjunction and a disjunction as their parts. Anything
     else, a guard over the reals among them, is not shown, so the instance
-    that needs it is not proposed.
+    that needs it is not proposed. An inequality is shown from the bounds of
+    its variables, or with the help of the case's facts (:attr:`Case.facts`,
+    read by :func:`_known`), each of which Lean has as a hypothesis where
+    ``omega`` discharges the guard.
     """
     sympy = algebra.sympy
+    known = known or []
     if guard is True:
         return True
     if isinstance(guard, prim.LogicalAnd):
-        return all(_implied(algebra, child, scope, bounds) for child in guard.children)
+        return all(_implied(algebra, child, scope, bounds, known) for child in guard.children)
     if isinstance(guard, prim.LogicalOr):
-        return any(_implied(algebra, child, scope, bounds) for child in guard.children)
+        return any(_implied(algebra, child, scope, bounds, known) for child in guard.children)
     if not isinstance(guard, prim.Comparison):
         return False
     try:
@@ -497,16 +564,14 @@ def _implied(algebra: _Algebra, guard: Any, scope: Mapping[str, Any], bounds: An
         return sympy.expand(difference) == 0
     # between integers a strict inequality is one by at least 1
     gap = 1 if difference.is_integer else 0
+    # the facts are about integers, and help with an integer guard alone
+    usable = known if difference.is_integer else []
     if guard.operator in ("<", "<="):
-        highest = _extreme(sympy, difference, bounds, largest=True)
-        if highest is None or not highest.is_number:
-            return False
-        return bool(highest <= -gap) if guard.operator == "<" else bool(highest <= 0)
+        limit = -gap if guard.operator == "<" else 0
+        return _at_most(sympy, difference, limit, bounds, usable)
     if guard.operator in (">", ">="):
-        lowest = _extreme(sympy, difference, bounds, largest=False)
-        if lowest is None or not lowest.is_number:
-            return False
-        return bool(lowest >= gap) if guard.operator == ">" else bool(lowest >= 0)
+        limit = -gap if guard.operator == ">" else 0
+        return _at_most(sympy, -difference, limit, bounds, usable)
     if guard.operator == "!=":
         highest = _extreme(sympy, difference, bounds, largest=True)
         lowest = _extreme(sympy, difference, bounds, largest=False)
@@ -668,6 +733,7 @@ def find_certificate(case: Case) -> tuple[Use, ...] | None:
         bounds = _bounds(algebra, case)
     except _Unsupported:
         return None
+    facts = _known(algebra, case.facts)
     patterns = []
     for lemma in case.lemmas:
         found = _patterns(algebra, lemma)
@@ -693,7 +759,9 @@ def find_certificate(case: Case) -> tuple[Use, ...] | None:
                         continue
                     seen.add(key)
                     at = dict(zip((var.name for var, _ in lemma.binders), ordered, strict=True))
-                    if not all(_implied(algebra, guard, at, bounds) for guard in lemma.guards):
+                    if not all(
+                        _implied(algebra, guard, at, bounds, facts) for guard in lemma.guards
+                    ):
                         continue
                     instance_side = side.xreplace(values)
                     instance = _Instance(

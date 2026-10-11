@@ -280,11 +280,16 @@ jobs:
 
       # The ledger #3 asks for: the claim tested by mpmath, decided by the CAS
       # oracle through the order, and proved by Lean for every order, under the
-      # kernel's harmonicity.
+      # kernel's harmonicity, and on the triangle of every order p (#86's
+      # corollary, which a kernel of order p cites).
       - name: Check the sumpy demonstration with Mathlib
         run: |
           set -euo pipefail
           uv run lanky check examples/sumpy_recurrence.py | tee ledger.txt
           grep -q '^tested  *tested  *mpmath ' ledger.txt
           grep -q '^decided (heuristic)  *decided (heuristic)  *cas ' ledger.txt
-          grep -q '^proved under harmonic  *assumed  *lean ' ledger.txt
+          proved=$(grep -cE '^proved under harmonic +assumed +lean ' ledger.txt)
+          if (( proved != 2 )); then
+            echo "expected the claim for every order and on the triangle proved, found ${proved}" >&2
+            exit 1
+          fi
