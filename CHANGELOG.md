@@ -108,7 +108,8 @@ worth the `tested` reading it rests on.
     modules under its source roots, the methods of their classes included,
     is watched with `sys.monitoring` while the draws run, so that a helper's
     own loop, or a helper that calls itself, is stopped at its next call or
-    turn of a loop.
+    turn of a loop. A draw given up stays given up where a helper catches
+    everything, the giving up included, and answers.
     A helper that took time exponential in its argument, at a value the
     claim writes, ran as long as Python took.
   - The term is evaluated at the same values in Python's arithmetic, its

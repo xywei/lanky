@@ -506,11 +506,11 @@ proved. The check is sampled, and that leaves these limits:
 - The check runs the annotations' Python, helpers included, at every draw,
   about forty times a claim. A helper's changes to the module's data are made
   to the copy and are gone at the next draw, but a side effect outside the
-  module, a file written or a line printed, happens that often. The user's
-  code, a helper or a method of a class of the user's, is stopped at a call
-  or a turn of a loop once its draw has run five seconds; a library's code
-  is not, nor is one step Python takes in C, a builtin's loop or `2 ** 2 **
-  n` inside a helper, and it runs as long as it takes
+  module, a file written or a line printed, happens that often. A function
+  of the user's modules, a helper or a method of a class of theirs, is
+  stopped at a call or a turn of a loop once its draw has run five seconds;
+  a library's code is not, nor is one step Python takes in C, a builtin's
+  loop or `2 ** 2 ** n` inside a helper, and it runs as long as it takes
   ([#108](https://github.com/xywei/lanky/issues/108)).
 - `lanky check` and the pytest plugin make the check. A theorem called or
   sampled directly, `gauss(n=4)` or `gauss.report()`, as `python
