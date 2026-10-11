@@ -369,8 +369,19 @@ class _Algebra:
         raise _Unsupported(f"a {type(expr).__name__}")
 
     def side(self, equation: Any, scope: Mapping[str, Any]) -> Any:
-        """An equation as one expression, its left side less its right."""
-        return self.convert(equation.left, scope) - self.convert(equation.right, scope)
+        """An equation as one expression, its left side less its right.
+
+        A power whose exponent is a sum is split, ``x ** (k + 2)`` into ``x **
+        k * x ** 2``, so that the same base at two orders, which a recurrence
+        relates, shares a factor the linear algebra can see: ``(-b / a) ** (k
+        + 2)`` and ``(-b / a) ** (k + 1)`` were two unrelated atoms to it, and
+        a step that multiplies one by ``-b / a`` to get the other had no
+        certificate. It is forced, since sympy splits it only where it knows
+        the exponents are not negative, and an order is an integer symbol to
+        it; what the search proposes from it, Lean checks.
+        """
+        difference = self.convert(equation.left, scope) - self.convert(equation.right, scope)
+        return _split_powers(self.sympy, difference)
 
     def applications(self, expr: Any) -> set[Any]:
         """The applications of a family in ``expr``: its atoms."""
@@ -381,19 +392,48 @@ class _Algebra:
 
         A sum is written with its constant last, ``b + 2`` where sympy keeps
         ``2 + b``, which is how a hypothesis is usually written, so that the
-        application a use brings in reads as the one it is to cancel. The
-        script normalizes what does not (see
-        :data:`lanky.oracles.lean.COMBINATION_NORM`).
+        application a use brings in reads as the one it is to cancel, and a
+        factor of a multiplier reads as the one the step has shown is not zero
+        (``k + 2``, see :func:`lanky.oracles.lean.family_induction_scripts`):
+        every sum in the term, at any depth. The script normalizes what does
+        not (see :data:`lanky.oracles.lean.COMBINATION_NORM`).
         """
         from lanky.cas import from_sympy
 
-        term = from_sympy(expr, {name: Var(name) for name in self.case.variables})
-        if isinstance(term, prim.Sum):
-            numbers_last = sorted(
-                term.children, key=lambda child: isinstance(child, numbers.Number)
-            )
-            term = type(term)(tuple(numbers_last))
+        return _numbers_last(from_sympy(expr, {name: Var(name) for name in self.case.variables}))
+
+
+def _numbers_last(term: Any) -> Any:
+    """``term`` with the constant of every sum in it written last: ``b + 2`` for ``2 + b``."""
+    if isinstance(term, tuple):
+        return tuple(_numbers_last(item) for item in term)
+    if not isinstance(term, prim.ExpressionNode) or isinstance(term, Forall | Exists | Sum):
         return term
+    rebuilt = type(term)(*(_numbers_last(argument) for argument in init_args(term)))
+    if isinstance(rebuilt, prim.Sum):
+        children = sorted(rebuilt.children, key=lambda child: isinstance(child, numbers.Number))
+        rebuilt = type(rebuilt)(tuple(children))
+    return rebuilt
+
+
+def _split_powers(sympy: Any, expr: Any) -> Any:
+    """``expr`` with each power whose exponent is a sum split into a product of powers.
+
+    See :meth:`_Algebra.side`. Applied again wherever sympy may have put the
+    powers back together: after values are put into a lemma, and after
+    ``simplify``.
+    """
+    return sympy.expand(
+        expr,
+        power_exp=True,
+        force=True,
+        deep=True,
+        mul=False,
+        multinomial=False,
+        power_base=False,
+        log=False,
+        basic=False,
+    )
 
 
 def _number(sympy: Any, value: Any) -> Any:
@@ -597,8 +637,8 @@ def _linear(sympy: Any, side: Any, atoms: list[Any]) -> tuple[list[Any], Any] | 
         coefficient = sympy.diff(replaced, mark)
         if any(sympy.simplify(sympy.diff(coefficient, other)) != 0 for other in marks):
             return None
-        coefficients.append(sympy.simplify(coefficient))
-    constant = sympy.simplify(replaced.subs({mark: 0 for mark in marks}))
+        coefficients.append(_split_powers(sympy, sympy.simplify(coefficient)))
+    constant = _split_powers(sympy, sympy.simplify(replaced.subs({mark: 0 for mark in marks})))
     return coefficients, constant
 
 
@@ -644,9 +684,55 @@ def _solve(sympy: Any, goal: Any, instances: list[_Instance]) -> list[Any] | Non
     multipliers = [sympy.factor(sympy.simplify(value.subs(free))) for value in solution]
     combined = zip(multipliers, instances, strict=True)
     residual = goal - sum((multiplier * instance.side for multiplier, instance in combined), zero)
-    if sympy.simplify(residual) != 0:
+    if not _vanishes(sympy, residual):
         return None
     return multipliers
+
+
+#: How many points :func:`_vanishes` evaluates a residual at, where sympy's
+#: ``simplify`` does not take it to zero.
+_POINTS = 4
+
+
+def _vanishes(sympy: Any, residual: Any) -> bool:
+    """Whether a certificate's residual is zero, as far as Python can tell before Lean checks.
+
+    ``simplify`` first. It does not take every zero to zero: with a power of
+    a quotient in it, ``(-b / a) ** k``, it writes ``(-b) ** k * a ** -k``
+    and then leaves ``(-b) ** (k + 2)`` beside ``b * (-b) ** (k + 1)``. So a
+    residual it leaves is evaluated, exactly, at :data:`_POINTS` points with
+    every family's application a variable of its own, the integers at small
+    naturals and every other variable at a small rational: zero at each, the
+    certificate is proposed. That is a filter and not a proof; Lean checks
+    what is proposed, and a residual that is not zero costs an attempt.
+    """
+    if sympy.simplify(_split_powers(sympy, residual)) == 0:
+        return True
+    applications = sorted(residual.atoms(sympy.core.function.AppliedUndef), key=str)
+    marks = {
+        application: sympy.Dummy(f"atom{index}") for index, application in enumerate(applications)
+    }
+    flat = residual.xreplace(marks)
+    symbols = sorted(flat.free_symbols, key=str)
+    checked = 0
+    for attempt in range(4 * _POINTS):
+        values = {}
+        for place, symbol in enumerate(symbols):
+            if symbol.is_integer:
+                values[symbol] = sympy.Integer(2 + (3 * attempt + place) % 7)
+            else:
+                values[symbol] = sympy.Rational(
+                    3 + (5 * attempt + 2 * place) % 11, 2 + (attempt + place) % 5
+                )
+        value = sympy.simplify(flat.xreplace(values))
+        if value.has(sympy.zoo, sympy.nan, sympy.oo):
+            continue
+        if value != 0:
+            return False
+        checked += 1
+        if checked == _POINTS:
+            return True
+    return False
 
 
 def find_certificate(case: Case) -> tuple[Use, ...] | None:
@@ -695,7 +781,7 @@ def find_certificate(case: Case) -> tuple[Use, ...] | None:
                     at = dict(zip((var.name for var, _ in lemma.binders), ordered, strict=True))
                     if not all(_implied(algebra, guard, at, bounds) for guard in lemma.guards):
                         continue
-                    instance_side = side.xreplace(values)
+                    instance_side = _split_powers(sympy, side.xreplace(values))
                     instance = _Instance(
                         lemma, ordered, instance_side, algebra.applications(instance_side)
                     )

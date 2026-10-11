@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import builtins
 import functools
+import inspect
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,7 +52,7 @@ from lanky.terms import (
     render,
     truth_value,
 )
-from lanky.testing import Table, TestReport, check
+from lanky.testing import Table, TestReport, apply_at, check
 
 __all__ = ["Axiom", "Theorem", "TheoremTheory", "Verdict", "axiom", "fact_ids", "theorem"]
 
@@ -143,6 +145,160 @@ def fact_ids(uses: Any) -> tuple[str, ...]:
         if name not in out:
             out.append(name)
     return tuple(out)
+
+
+def _as_family(value: Any, sort: Any, name: str) -> Any:
+    """A value given for a parameter, with a sequence given for a family read as a table.
+
+    A family with several indices, ``Fn[A, B, C]``, is a family of families,
+    so a nested sequence, or an array of as many dimensions, is a table of
+    tables, each row read the same way: ``F[i, j]`` and ``F(i)(j)`` then
+    both reach an entry. A function is applied at all of the indices at once
+    or one at a time, as it takes them (:class:`_Function`), whichever way the
+    statement writes the entry. A table, or anything else that is both called
+    and indexed, is taken as it is, and so is anything given for a parameter
+    that is not a family.
+
+    Raises:
+        TypeError: If the value has another shape than the family: a
+            mapping, a single value, a flat list for a matrix, or a nested
+            list or array with more levels than the family has indices. The
+            message names the parameter, its type and the shape it takes.
+    """
+    while isinstance(sort, Refined):
+        sort = sort.base
+    if not isinstance(sort, FnType):
+        return value
+    shape = _Shape(name, sort)
+    return _as_table(value, sort, shape, name)
+
+
+@dataclass(frozen=True)
+class _Shape:
+    """A family parameter, as the messages about a value of the wrong shape name it."""
+
+    name: str
+    sort: FnType
+
+    def wanted(self) -> str:
+        """What the parameter takes, in a message."""
+        count = len(self.sort.indices)
+        if count == 1:
+            return f"a list, {self.name}=[...], an array with one axis, or a function"
+        return (
+            f"nested lists, one level per index, {self.name}=[[...], [...]], an array "
+            f"with {count} axes, or a function"
+        )
+
+    def __str__(self) -> str:
+        """``F, a family with 2 indices (Fn[Fin(n), Fin(n), Real])``."""
+        count = len(self.sort.indices)
+        indices = "one index" if count == 1 else f"{count} indices"
+        return f"{self.name}, a family with {indices} ({self.sort})"
+
+
+def _as_table(value: Any, sort: FnType, shape: _Shape, at: str) -> Any:
+    """``value``, the part ``at`` of the parameter, as a family of type ``sort``.
+
+    ``at`` is ``F`` and then ``F[0]``, ``F[0][1]``: the part of the value
+    being read, which a message names.
+    """
+    if callable(value):
+        if callable(getattr(value, "__getitem__", None)):
+            return value  # a table, or a family of a plugin's
+        return _Function(value, len(sort.indices), at)
+    if isinstance(value, (Mapping, str, bytes)) or not _iterable(value):
+        raise TypeError(
+            f"{at} is {_short(value)}, where {shape}, needs "
+            f"{'a family' if at == shape.name else 'a row'}: give {shape.name} as "
+            f"{shape.wanted()}"
+        )
+    inner = sort.codomain
+    while isinstance(inner, Refined) and isinstance(inner.base, FnType):
+        inner = inner.base
+    rows = []
+    for index, item in enumerate(value):
+        where = f"{at}[{index}]"
+        if isinstance(inner, FnType):
+            rows.append(_as_table(item, inner, shape, where))
+        elif _iterable(item) and not isinstance(item, (str, bytes)):
+            raise TypeError(
+                f"{where} is {_short(item)}, where {shape}, has an entry: the value "
+                f"has more levels than {shape.name} has indices; give {shape.name} as "
+                f"{shape.wanted()}"
+            )
+        else:
+            rows.append(item)
+    return Table(rows, name=at)
+
+
+def _iterable(value: Any) -> bool:
+    """Whether ``value`` can be iterated: a list, a tuple, an array of one axis or more."""
+    if getattr(value, "ndim", 1) == 0:
+        return False
+    try:
+        iter(value)
+    except TypeError:
+        return False
+    return True
+
+
+def _short(value: Any) -> str:
+    """A value as a message names it, cut short."""
+    if isinstance(value, Mapping):
+        return "a dict"
+    text = repr(value)
+    return text if len(text) <= 40 else f"{text[:37]}..."
+
+
+class _Function:
+    """A Python function given for a family, applied as the statement writes the entry.
+
+    ``F[i, j]``, ``F(i, j)`` and ``F(i)(j)`` are one entry of a family with
+    two indices, and a function given for it may take both indices at once,
+    ``lambda i, j: ...``, or one at a time, ``lambda i: lambda j: ...``.
+    The indices are collected until there are as many as the family has,
+    and the function is then called as it takes them: at all of them at once
+    if its signature admits that many, else at one after another.
+    """
+
+    def __init__(self, fn: Any, count: int, name: str, given: tuple[Any, ...] = ()) -> None:
+        self.fn, self.count, self.name, self.given = fn, count, name, given
+
+    def _at(self, index: Any) -> Any:
+        """The function at one more index: a row until every index is given."""
+        given = (*self.given, index)
+        if len(given) < self.count:
+            return _Function(self.fn, self.count, self.name, given)
+        if _takes(self.fn, len(given)):
+            return self.fn(*given)
+        value = self.fn(given[0])
+        for later in given[1:]:
+            value = value(later) if callable(value) else value[later]
+        return value
+
+    def __call__(self, *indices: Any) -> Any:
+        """The value at ``indices``: ``f(i)``, ``f(i, j)``, or a row for fewer."""
+        return apply_at(self._at, indices, self.name)
+
+    def __getitem__(self, index: Any) -> Any:
+        """The same as a call: ``f[i, j]`` is ``f(i, j)``."""
+        return apply_at(self._at, index if isinstance(index, tuple) else (index,), self.name)
+
+    def __repr__(self) -> str:
+        """Print as the function, with the indices given so far."""
+        return f"{self.fn!r}" + "".join(f"[{index!r}]" for index in self.given)
+
+
+def _takes(fn: Any, count: int) -> bool:
+    """Whether ``fn`` can be called with ``count`` positional arguments, as far as Python says."""
+    try:
+        inspect.signature(fn).bind(*range(count))
+    except TypeError:
+        return False
+    except ValueError:  # no signature to read, as for some builtins: call it at all of them
+        return True
+    return True
 
 
 class Theorem:
@@ -297,7 +453,9 @@ class Theorem:
 
         The proof body is not run: it is a script for an oracle, not code. What
         running a theorem means is checking what it says. A value for a family
-        parameter may be given as a sequence, which is read as a table.
+        parameter may be given as a sequence, which is read as a table, and
+        one for a family with several indices as nested sequences or an
+        array, ``F=[[1, 2], [3, 4]]`` for ``F: Fn[Fin[2], Fin[2], Nat]``.
 
         Raises:
             lanky.terms.Undecided: If the statement applies a family outside
@@ -315,10 +473,7 @@ class Theorem:
             raise TypeError(f"{self.__name__} needs values for {', '.join(missing)}")
         sorts = dict(self.variables)
         context = {
-            name: Table(value, name=name)
-            if isinstance(sorts.get(name), FnType) and not callable(value)
-            else value
-            for name, value in concrete.items()
+            name: _as_family(value, sorts.get(name), name) for name, value in concrete.items()
         }
         return Verdict(
             hypotheses={

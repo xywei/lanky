@@ -331,14 +331,52 @@ class FnType(LankyType):
     A function used as a family is how a theorem talks about the data a kernel
     writes, without owning the array: ``off: Fn[Fin[n + 1], Nat]`` is applied as
     ``off(r)``, and a property test supplies a table.
+
+    A family with several indices is a family of families, ``Fn[A, Fn[B, C]]``,
+    which is written ``Fn[A, B, C]``: a matrix is ``Fn[Fin[n], Fin[m], Real]``.
+    It is applied one index at a time, ``F(i)(j)``, or at all of them at once,
+    as an engineer writes a matrix entry, ``F[i, j]`` or ``F(i, j)``; the three
+    are one application to every reading, and Lean's is ``F i j``.
     """
 
     domain: Any
     codomain: Any
 
+    @property
+    def indices(self) -> tuple[Any, ...]:
+        """The domain of each index in turn: ``(A, B)`` for ``Fn[A, B, C]``.
+
+        A row that is refined, ``Fn[A, Fn[B, C] & p]``, is a family all the
+        same, and its index counts: ``(A, B)``.
+        """
+        return self._chain(through_refinements=True)[0]
+
+    @property
+    def entries(self) -> Any:
+        """What the family holds once every index is given: ``C`` for ``Fn[A, B, C]``."""
+        return self._chain(through_refinements=True)[1]
+
+    def _chain(self, *, through_refinements: bool) -> tuple[tuple[Any, ...], Any]:
+        """The index domains in turn, and what the family holds once they are given."""
+        found = [self.domain]
+        codomain = self.codomain
+        while True:
+            inner = codomain
+            while through_refinements and isinstance(inner, Refined):
+                inner = inner.base
+            if not isinstance(inner, FnType):
+                return tuple(found), codomain
+            found.append(inner.domain)
+            codomain = inner.codomain
+
     def __str__(self) -> str:
-        """Print as ``Fn[A, B]``."""
-        return f"Fn[{self.domain}, {self.codomain}]"
+        """Print as ``Fn[A, B]``, and a family of families as ``Fn[A, B, C]``.
+
+        A refined row keeps its brackets, ``Fn[A, Fn[B, C] & (p)]``, so that
+        the refinement is shown on what it refines.
+        """
+        indices, entries = self._chain(through_refinements=False)
+        return f"Fn[{', '.join(str(index) for index in (*indices, entries))}]"
 
     def __repr__(self) -> str:
         """Print as ``Fn[A, B]``."""
@@ -361,10 +399,21 @@ class _FnFamily:
     """The ``Fn`` name itself: ``Fn[A, B]`` builds a :class:`FnType`."""
 
     def __getitem__(self, args: Any) -> FnType:
-        """Build the family type from a ``(domain, codomain)`` pair."""
-        if not isinstance(args, tuple) or len(args) != 2:
-            raise TypeError("Fn takes exactly two arguments: Fn[domain, codomain]")
-        return FnType(args[0], args[1])
+        """Build the family type from its index types and what it holds.
+
+        ``Fn[A, B]`` is a family of ``B`` indexed by ``A``, and ``Fn[A, B, C]``
+        one with two indices, the family of families ``Fn[A, Fn[B, C]]``; any
+        number of indices is curried the same way.
+        """
+        if not isinstance(args, tuple) or len(args) < 2:
+            raise TypeError(
+                "Fn takes at least two arguments, its index types and then what it holds: "
+                "Fn[domain, codomain], or Fn[A, B, C] for a family with two indices"
+            )
+        family = FnType(args[-2], args[-1])
+        for domain in reversed(args[:-2]):
+            family = FnType(domain, family)
+        return family
 
     def __repr__(self) -> str:
         """Print as ``Fn``."""

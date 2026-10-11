@@ -98,7 +98,12 @@ is worth less than its status, what it is worth.
   every derivative, and the ledger has the claim `tested` by mpmath and
   `decided (heuristic)` by sympy through order 6, and, with Mathlib, `proved
   under harmonic` by Lean for every order, the kernel's harmonicity
-  `assumed` on its citation.
+  `assumed` on its citation. `examples/sum_factorization.py` proves, for
+  every size, that a tensor-product operator on a hexahedron is three
+  one-axis passes, as grudge applies it, and `examples/line_taylor.py` that
+  the line-Taylor coefficients pytential's QBX evaluates are the series of a
+  logarithm, at every order, with sumpy's own through order 6 decided beside
+  them.
 
 ## Status
 
@@ -211,8 +216,13 @@ raises its floor to match.
   within it.
 - The ledger: six statuses, provenance, JSON, a rendered table.
 - The prelude: `Nat`, `Int`, `Real`, `Complex`, `Bool`, `Prop`, `Fin[n]`,
-  `Fn[A, B]`, refinement by `T & prop`, the sum `Fin[n] + Fin[m]` of index
-  types (carried for plugins, not yet a binder domain), exactness classes;
+  `Fn[A, B]` and `Fn[A, B, C]`, a family with two indices (a matrix,
+  `Fn[Fin[n], Fin[m], Real]`, which is `Fn[Fin[n], Fn[Fin[m], Real]]`),
+  applied as `F[i, j]`, `F(i, j)` or `F(i)(j)`, one entry to every reading
+  and to Lean, and given to a theorem called as a function as nested lists,
+  an array or a function, refinement by `T & prop`, the sum
+  `Fin[n] + Fin[m]` of index types (carried for plugins, not yet a binder
+  domain), exactness classes;
   and `lanky.exp`, `lanky.log` and `lanky.sqrt`, which build a term from a
   term, and from a number in an annotation, so that `exp(1)` there is `e` to
   every oracle and not the float nearest it, and are `math`'s (or `cmath`'s)
@@ -332,7 +342,23 @@ raises its floor to match.
   `lanky.oracles.lean.use_certificate` is the hook through which a plugin
   hands over multipliers of its own, and `lanky.oracles.lean.decline` leaves
   a claim to the oracles after Lean, saying why. The sumpy demonstration's
-  claim for every order is proved this way.
+  claim for every order is proved this way. So is a claim from an order on,
+  `all(c(n) == -(-beta / alpha) ** n / n for n in Nat if n >= 1)`: the
+  guard's lower bound raises the step, the orders it rules out are base
+  cases `omega` closes from the guard, and a step that divides by the
+  order over `ℝ` or `ℂ` shows first that the order is not zero there, which
+  `field_simp` cannot see for itself.
+- Exchanging finite sums, in Mathlib mode: an equation between sums,
+  products of sums and quotients of a sum, under any universals, is proved
+  by distributing the products into the sums (`Finset.mul_sum`,
+  `Finset.sum_mul`, `Finset.sum_div`), exchanging the left side's sums one
+  adjacent pair at a time until they are in the right side's order
+  (`Finset.sum_comm`), and comparing the summands under all of them with
+  `Finset.sum_congr` and `ring`. Python finds the order (`lanky.sums`),
+  comparing the summands with sympy where it is installed; Lean checks it.
+  Sum factorization, a tensor-product operator applied as three one-axis
+  passes, and the Kronecker product's mixed product are proved this way for
+  every size (`examples/sum_factorization.py`).
 - A plugin's claims checked by Lean (`lanky.obligations`). A plugin with a
   decision procedure of its own states each claim it decides for Lean too,
   as parts, each a closed lanky term, through one method of the fact's term,
@@ -388,10 +414,19 @@ raises its floor to match.
   hypothesis used other than as an equation to combine, an inequality, or an
   instance whose guards are not linear arithmetic over the integers is not
   found, nor is a base case that holds only because the goal's own guard
-  excludes it (`all(f(n) == n for n in Nat if n >= 1)`, whose order 0 is no
-  equation to combine). A function Mathlib does not have, a Bessel or Hankel
-  function, has no form yet in which its recurrence is declared and a proof
-  rests on it (#82).
+  excludes it, unless that guard is a lower bound on the order by a number
+  (`n >= 1`): one by another variable, or by anything else, leaves its base
+  cases with no equation to combine. A function Mathlib does not have, a
+  Bessel or Hankel function, has no form yet in which its recurrence is
+  declared and a proof rests on it (#82).
+- The exchange of finite sums reads a sum over a `Fin` with no `if`, whose
+  bound mentions no other sum's binder: a filtered sum, a triangle
+  (`for i in Fin[n] for j in Fin[i]`, whose sums `Finset.sum_comm` does not
+  exchange) and a sum inside anything but a product, a quotient's numerator or
+  another sum are left to the rest of the ladder, and so is a side with more
+  than six sums. The order of the sums after distributing is the one Lean's
+  `simp` was seen to leave, the right factor's sums outside the left's; a
+  `simp` that leaves another costs the attempt, not a wrong proof (#128).
 - The Lean printer covers core Lean: `Sum`, `Abs`, `Real`, true division and
   an exponent that could be negative raise rather than emit source Lean would
   reject. In Mathlib mode all but the last are printed, and what is still
