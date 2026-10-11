@@ -950,8 +950,17 @@ def test_a_family_into_a_fin_is_bounded_where_lean_reads_it() -> None:
     )
     # it follows the family, once nc, d and nv are parameters
     assert "(cell : Int → Int → Nat) (h3 : ∀ cell_arg" in statement.source("sorry")
-    # a family into a plain sort gets none
+    # a refinement anywhere in the type is looked through
     f = Var("f")
+    for refined in (
+        Fn[Fin[n], Fn[Fin[m], Fin[n]] & (m >= 1)],
+        Fn[Fin[n], Fn[Fin[m], Fin[n] & (n >= 1)]],
+        Fn[Fin[n] & (n >= 1), Fin[m]],
+    ):
+        claim = Forall(((n, Nat), (m, Nat), (f, refined)), n >= 0)
+        statement = statement_of(claim, "refined", mathlib=True)
+        assert [family for family, _ in statement.codomain_bounds] == ["f"], refined
+    # a family into a plain sort gets none
     plain = Forall(((n, Nat), (f, Fn[Fin[n + 1], Nat])), f(0) >= 0)
     assert statement_of(plain, "plain", mathlib=True).codomain_bounds == ()
 

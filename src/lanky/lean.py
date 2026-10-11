@@ -2361,22 +2361,27 @@ def codomain_bound(var: Var, domain: Any, taken: set[str] | None = None) -> Any:
     Only for arguments over a ``Fin``, a ``Nat`` or an ``Int`` whose bound
     mentions none of the arguments before it, and a ``Fin`` of the values
     that mentions none of them either: ``None`` otherwise, and the statement
-    is as it was. The binders are named afresh from ``taken``, which gets
-    them.
+    is as it was. A refinement anywhere in the type is looked through: of an
+    argument, it guards the binder as it guards a quantifier's; of the
+    values, or of the family at some index, it is erased in Lean, and the
+    ``Fin`` under it still bounds the values. The binders are named afresh
+    from ``taken``, which gets them.
     """
-    if not isinstance(domain, FnType):
+    if not isinstance(_unrefined(domain), FnType):
         return None
     arguments: list[Any] = []
-    current: Any = domain
+    current: Any = _unrefined(domain)
     while isinstance(current, FnType):
         arguments.append(current.domain)
-        current = current.codomain
+        # a refinement of a family's values is erased in Lean as the
+        # family's own is; the Fin under it still bounds them
+        current = _unrefined(current.codomain)
     if not isinstance(current, FinType):
         return None
     taken = set() if taken is None else taken
     binders: list[tuple[Var, Any]] = []
     for argument in arguments:
-        base = argument
+        base = _unrefined(argument)
         if isinstance(base, FinType):
             if _names_of(base.bound) & {v.name for v, _ in binders}:
                 return None
