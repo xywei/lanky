@@ -571,19 +571,24 @@ def test_lean_goes_first_and_the_solver_decides_what_it_does_not_prove(
 def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
     lean: LeanOracle, capsys
 ) -> None:
-    proved = lean.establish(fact_of(Obligation(parts=(IN_BOUNDS,))))
+    proved = lean.establish(fact_of(Obligation(parts=(IN_BOUNDS,), decider="isl")))
     wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
     handed = Fact(
         id="in-bounds:kernel@1:S1",
         kind="in-bounds",
         statement="x[x + 1] is in bounds for every instance of S1",
-        term=Stated(Obligation(parts=(wrong,))),
+        term=Stated(Obligation(parts=(wrong,), decider="isl")),
         where="kernel.py:2",
         owner="kernel",
     )
     unproved = lean.establish(handed).with_status(Status.DECIDED, "isl")
     CheckVerb._report(Ledger([proved, unproved]), show_lean="")
     out = capsys.readouterr().out
+    assert (
+        "LEAN proved 1 of the 2 facts isl decided, each from the plugin's own "
+        "statement of it, isl's hints checked and not trusted; --show-lean prints "
+        "the Lean"
+    ) in out
     assert "NOT PROVED kernel at kernel.py:2: x[x + 1] is in bounds for every instance of S1" in out
     assert "  isl decided it; Lean did not prove it: no script closed it" in out
     assert "LEAN kernel at kernel.py:1: x[i] is in bounds for every instance of S0" in out

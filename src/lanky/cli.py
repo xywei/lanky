@@ -94,6 +94,7 @@ __all__ = [
     "main",
     "refutation_lines",
     "report_lean",
+    "report_proved",
     "report_unproved",
 ]
 
@@ -365,6 +366,7 @@ class CheckVerb:
         neither fails the check.
         """
         print(ledger.render())
+        report_proved(ledger)
         CheckVerb._report_citations(ledger)
         CheckVerb._report_declines(ledger)
         CheckVerb._report_unproved(ledger, verbose=verbose)
@@ -598,6 +600,32 @@ class CheckVerb:
         detail = fact.provenance.get("unsatisfied_detail")
         if detail:
             print(f"  {detail}")
+
+
+def report_proved(ledger: Ledger) -> None:
+    """Say in a line what ``proved lean`` means for the facts a solver decided.
+
+    A plugin's fact Lean proved part by part (:mod:`lanky.obligations`) was
+    decided by the plugin's solver too, and the row says only ``lean``. The
+    line says, per solver, how many of the facts it decided Lean proved, and
+    how: from the plugin's own statement of each claim, with the solver's
+    hints checked and not trusted. Nothing is printed for a ledger with no
+    such fact.
+    """
+    by_decider: dict[str, list[Fact]] = {}
+    for fact in ledger:
+        if fact.provenance.get("lean_parts") and fact.provenance.get("lean_decider"):
+            by_decider.setdefault(str(fact.provenance["lean_decider"]), []).append(fact)
+    if not by_decider:
+        return
+    print()
+    for decider, facts in by_decider.items():
+        proved = sum(fact.status in (Status.PROVED, Status.CERTIFIED) for fact in facts)
+        print(
+            f"LEAN proved {proved} of the {len(facts)} facts {decider} decided, each "
+            f"from the plugin's own statement of it, {decider}'s hints checked and "
+            "not trusted; --show-lean prints the Lean"
+        )
 
 
 def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
