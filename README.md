@@ -342,8 +342,9 @@ raises its floor to match.
   then with the hints, and a wrong hint leaves a goal it cannot close. The
   parts are checked at once (`LANKY_LEAN_JOBS`, up to four sessions) within
   the fact's budget; a fact whose parts are all proved reads `proved lean`,
-  and one that is not keeps the status its solver gave it, with a `NOT
-  PROVED` line under the table naming the part and why. A refuted claim
+  a `LEAN` line under the table says how many of the solver's facts Lean
+  proved, and how, and one that is not keeps the status its solver gave it,
+  with a `NOT PROVED` line naming the part and why. A refuted claim
   comes with its counterexample, and Lean proves it false there, which the
   `REFUTED` block says. Lean's answers are kept by the hash of their source
   (`LANKY_LEAN_PROOF_CACHE`), so a file checked again is quick. loopty
