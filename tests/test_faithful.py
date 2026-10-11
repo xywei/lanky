@@ -2365,3 +2365,35 @@ def test_the_quickstart_shows_what_check_prints_for_a_misread_claim(tmp_path, ca
             break
         shown.append(line.rstrip())
     assert printed == shown
+
+
+def test_an_agreement_on_a_draw_given_up_later_is_not_counted(monkeypatch) -> None:
+    """A draw given up counts for nothing, the agreements made on it before included.
+
+    Codex's P1 on #110: an annotation that agreed at a draw on which a later
+    annotation was then given up as too slow kept that agreement in the
+    tally, though the draw was taken back. An annotation that agrees only at
+    such draws could then read as agreeing, and the reading as tested.
+    """
+    from types import SimpleNamespace
+
+    first, second = SimpleNamespace(name="h"), SimpleNamespace(name="goal")
+    draws = [SimpleNamespace(label=f"n = {n}") for n in (998, 999, 1000)]
+    monkeypatch.setattr(faithful, "_draws", lambda *args, **kwargs: iter(draws))
+
+    def compare(namespace, parameters, annotations, draw, total=False, deadline=None):
+        yield first, "agreed", faithful._Outcome(value=True), faithful._Outcome(value=True)
+        yield second, "slow", faithful._Outcome(error=TimeoutError("too slow")), faithful._Outcome()
+
+    monkeypatch.setattr(faithful, "_compare", compare)
+    snapshot = SimpleNamespace(fresh_copy=lambda: ({}, []))
+    theorem = SimpleNamespace(hypotheses=[], variables=[])
+    tally = faithful._Tally()
+    refuted = faithful._run(
+        lambda *args, **kwargs: None, tally, snapshot, [], [first, second], theorem, None
+    )
+    assert refuted is None
+    assert tally.draws == 0
+    assert tally.agreed == {}
+    assert tally.counts == {"slow": 3}
+

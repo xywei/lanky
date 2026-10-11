@@ -3441,6 +3441,10 @@ def _run(
         # the comparisons of the annotations that stopped, counted once the
         # second reading has compared what follows
         pending: list[tuple[_Annotation, str, _Outcome, _Outcome]] = []
+        # every other comparison of the draw, counted only once the draw is
+        # one: an annotation that agreed before a later one was given up must
+        # not count that agreement, since the draw is not a draw
+        done: list[tuple[_Annotation, str, _Outcome, _Outcome]] = []
         given_up = False
         namespace, shared = snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
@@ -3459,8 +3463,12 @@ def _run(
                 stopped[annotation.name] = (python, term)
                 pending.append((annotation, verdict, python, term))
                 continue
-            tally.record(annotation, verdict, python, term)
-        if given_up or not stopped:
+            done.append((annotation, verdict, python, term))
+        if given_up:
+            continue
+        if not stopped:
+            for comparison in done:
+                tally.record(*comparison)
             continue
         namespace, shared = snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
@@ -3482,7 +3490,7 @@ def _run(
                     fact, annotation, draw, python, term, stopped=stopped[annotation.name]
                 )
         else:
-            for comparison in pending:
+            for comparison in done + pending:
                 tally.record(*comparison)
     return None
 

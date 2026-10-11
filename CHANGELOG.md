@@ -332,6 +332,12 @@ worth the `tested` reading it rests on.
 
 ### Fixed
 
+- An annotation that agreed at a draw on which a later annotation was then
+  given up, as too slow or unwalked, no longer keeps that agreement: a draw's
+  comparisons count only once the whole draw, its second reading included,
+  is made. Before, an annotation that agreed only at such draws could make
+  the reading read tested.
+
 - **A function behind `functools.lru_cache` is copied with its entries**
   (#105). The snapshot made it again with an empty cache, and later declined
   a reading that reached one with entries: an entry answers where the
