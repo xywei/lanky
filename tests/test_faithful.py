@@ -1797,6 +1797,86 @@ def test_a_draw_that_runs_too_long_is_given_up(monkeypatch, tmp_path) -> None:
     assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
 
 
+#: A module of the user's beside the claims of :data:`SLOW_UNCOPIED`.
+SPINNING = """
+def spin(n):
+    while isinstance(n, int) and n > 50:
+        pass
+    return n * 0
+"""
+
+#: Claims whose helper loops forever at a value they write, in code the
+#: snapshot does not copy (#101).
+SLOW_UNCOPIED = """
+import faithful_spinning_101
+
+
+class Spinner:
+    def spin(self, n):
+        while isinstance(n, int) and n > 50:
+            pass
+        return n * 0
+
+
+SPINNER = Spinner()
+
+
+def imports_spin(n):
+    import faithful_spinning_101
+
+    return faithful_spinning_101.spin(n)
+
+
+@theorem
+def in_a_method(n: Nat, h: n < 60) -> SPINNER.spin(n) == 0:
+    \"\"\"A method of a class of the user's, reached through an instance the snapshot shares.\"\"\"
+
+
+@theorem
+def in_an_import(n: Nat, h: n < 60) -> imports_spin(n) == 0:
+    \"\"\"A function of a module beside, which the helper imports as it runs.\"\"\"
+"""
+
+
+def test_a_draw_is_given_up_in_the_users_code_the_snapshot_does_not_copy(
+    monkeypatch, tmp_path
+) -> None:
+    """The user's code the snapshot shares is stopped past ``DRAW_SECONDS`` too (#101).
+
+    Only the code of the helpers the snapshot copied was watched, so a loop
+    in a method of a class of the user's, reached through an instance, or in
+    a function of a module a helper imports as it runs, never ended. Any
+    code from a file under the claim's source roots is watched now. The
+    readings are declined, since they reach what the snapshot shares, and
+    the draws past the time are given up on the way.
+    """
+    import sys
+    import time
+
+    monkeypatch.setattr(faithful, "DRAW_SECONDS", 0.5)
+    given_up: list[str] = []
+    give_up = faithful._Tally.give_up
+
+    def counted(self, verdict: str, why: str) -> None:
+        given_up.append(verdict)
+        give_up(self, verdict, why)
+
+    monkeypatch.setattr(faithful._Tally, "give_up", counted)
+    (tmp_path / "faithful_spinning_101.py").write_text(SPINNING, encoding="utf-8")
+    started = time.monotonic()
+    try:
+        pairs = _pairs(check_path(_write(tmp_path, SLOW_UNCOPIED)))
+    finally:
+        sys.modules.pop("faithful_spinning_101", None)
+    assert time.monotonic() - started < 60
+    assert given_up.count("slow") >= 2, given_up
+    for owner, shared in (("in_a_method", "SPINNER"), ("in_an_import", "faithful_spinning_101")):
+        reading = pairs[owner][1]
+        assert reading.status is Status.ASSUMED, (owner, reading.provenance)
+        assert shared in reading.provenance["declined"], owner
+    assert all(sys.monitoring.get_tool(tool) is None for tool in faithful._TOOL_IDS)
+
+
 def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
     """The tester cannot tabulate ``Fn[Nat, Nat]``; the check draws it point by point.
 

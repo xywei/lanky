@@ -103,10 +103,12 @@ worth the `tested` reading it rests on.
     shift either asks for may have `POWER_BITS = 2 ** 20` bits; past either,
     the draw is given up as `slow`, as a walk past `WALK_POINTS` is given up
     as `unwalked`, and the written values past it are not drawn at. The walks
-    and the term's reading ask for the time as they go, and the code of the
-    annotations and of the helpers the snapshot copied is watched with
-    `sys.monitoring` while the draws run, so that a helper's own loop, or a
-    helper that calls itself, is stopped at its next call or turn of a loop.
+    and the term's reading ask for the time as they go, and the user's code,
+    the annotations and the functions of the claim's module and of the
+    modules under its source roots, the methods of their classes included,
+    is watched with `sys.monitoring` while the draws run, so that a helper's
+    own loop, or a helper that calls itself, is stopped at its next call or
+    turn of a loop.
     A helper that took time exponential in its argument, at a value the
     claim writes, ran as long as Python took.
   - The term is evaluated at the same values in Python's arithmetic, its

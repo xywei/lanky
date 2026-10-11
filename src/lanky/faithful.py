@@ -1858,12 +1858,16 @@ class Snapshot:
         watched: The code of the functions of the user's that the copy
             makes again, which a draw that runs past its time stops
             (:func:`_watching`).
+        roots: The source roots of the claim's file: the functions of the
+            modules under them are the user's too, which a draw that runs
+            past its time stops (:func:`_watching`).
     """
 
     namespace: dict[str, Any]
     shared: tuple[str, ...] = ()
     codes: tuple[Any, ...] = ()
     watched: frozenset[Any] = frozenset()
+    roots: tuple[Path, ...] = ()
     skip: frozenset[str] = frozenset()
     worlds: frozenset[int] = frozenset()
     kept: frozenset[int] = frozenset()
@@ -1942,6 +1946,7 @@ def capture(fn: Any) -> Snapshot:
         kept=frozenset(copier.kept),
         held=(*(each.module for each in worlds), *copier.left),
         watched=frozenset(copier.codes),
+        roots=roots,
     )
 
 
@@ -1980,8 +1985,11 @@ class _Reading(LankyEvaluationMapper):
 
     def rec(self, expr: Any, *args: Any, **kwargs: Any) -> Any:
         """Evaluate ``expr``, giving the draw up past its time (:func:`_on_time`)."""
-        _on_time()
-        return super().rec(expr, *args, **kwargs)
+        # _on_time, written out: this runs at every node
+        deadline = _DEADLINE.get()
+        if deadline is not None and time.monotonic() > deadline:
+            _on_time()
+        return LankyEvaluationMapper.rec(self, expr, *args, **kwargs)
 
     __call__ = rec
 
@@ -2814,10 +2822,90 @@ def _judge(python: _Outcome, term: _Outcome) -> str:
 #: takes while it runs a claim's draws (:func:`_watching`).
 _TOOL_IDS = (3, 4)
 
+#: Where lanky's own code lives, which is never the user's, whatever the
+#: claim's source roots hold (:func:`_users_code`).
+_LANKY = Path(__file__).resolve().parent
 
-def _late(code: Any, offset: int, *rest: Any) -> None:
-    """At a call or a turn of a loop in the user's code, give the draw up past its time."""
-    _on_time()
+
+@functools.lru_cache(maxsize=4096)
+def _users_code(file: str, roots: tuple[Path, ...]) -> bool:
+    """Whether code compiled from ``file`` is the user's, which a draw past its time stops.
+
+    That is code from a file under the claim's source roots, as for the
+    snapshot (:func:`_users`), and not where Python, a package or lanky
+    lives; code compiled from no file, ``<string>``, is no one's in
+    particular.
+    """
+    if not roots or file.startswith("<"):
+        return False
+    return not Path(file).resolve().is_relative_to(_LANKY) and _users_file(file, roots)
+
+
+def _users_codes(roots: tuple[Path, ...], namespace: dict[str, Any] | None = None) -> list[Any]:
+    """The code of the functions the user's modules hold now, their methods included.
+
+    A module is the user's where its file is (:func:`_users_code`), and the
+    claim's own module, whose globals are ``namespace``, is one, though
+    ``lanky check`` takes it out of ``sys.modules`` once it has run. Their
+    globals are read for functions, for their classes and those of their
+    objects, for what wraps a function (a ``functools.partial``, a cache, a
+    bound method, a decorator's wrapper), and for what a function closes
+    over, at any depth, and the code of each function compiled from a file
+    of the user's is kept: a method of a class of the user's, which the
+    snapshot shares, and a function of a module the snapshot does not copy,
+    which a helper imports as it runs, among them (see :func:`_watching`).
+    What a library defines is not.
+    """
+    if not roots:
+        return []
+    # a module of a subclass, a lazy one say, is no module of the user's,
+    # and reading its attributes could load it
+    modules = {
+        name: module.__dict__
+        for name, module in list(sys.modules.items())
+        if type(module) is types.ModuleType
+        and isinstance(module.__dict__.get("__file__"), str)
+        and _users_code(module.__dict__["__file__"], roots)
+    }
+    if namespace is not None and isinstance(namespace.get("__name__"), str):
+        modules.setdefault(namespace["__name__"], namespace)
+    files: dict[str, bool] = {}
+    found: list[Any] = []
+    seen: set[int] = set()
+    pending: list[Any] = [value for globals_ in modules.values() for value in globals_.values()]
+    while pending:
+        value = pending.pop()
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, types.FunctionType):
+            code = value.__code__
+            if code.co_filename not in files:
+                files[code.co_filename] = _users_code(code.co_filename, roots)
+            if files[code.co_filename]:
+                found.append(code)
+            for cell in value.__closure__ or ():
+                try:
+                    pending.append(cell.cell_contents)
+                except ValueError:  # an empty cell
+                    continue
+            pending.extend(value.__dict__.values())
+        elif isinstance(value, type):
+            name = getattr(value, "__module__", None)
+            if isinstance(name, str) and name in modules:
+                pending.extend(vars(value).values())
+        elif isinstance(value, staticmethod | classmethod | types.MethodType):
+            pending.append(value.__func__)
+        elif isinstance(value, property):
+            pending.extend((value.fget, value.fset, value.fdel))
+        elif isinstance(value, functools.partial):
+            pending.append(value.func)
+        elif isinstance(value, _CACHED):
+            pending.append(value.__wrapped__)
+        elif not isinstance(value, types.ModuleType) and not _unchanging(value):
+            # an object: its class's methods are what it runs
+            pending.append(type(value))
+    return found
 
 
 def _nested_codes(code: Any) -> Iterator[Any]:
@@ -2828,24 +2916,39 @@ def _nested_codes(code: Any) -> Iterator[Any]:
             yield from _nested_codes(constant)
 
 
+def _late(code: Any, offset: int, *rest: Any) -> None:
+    """At a call or a turn of a loop in the user's code, give the draw up past its time."""
+    # _on_time, written out: this runs at every turn of the user's loops
+    deadline = _DEADLINE.get()
+    if deadline is not None and time.monotonic() > deadline:
+        _on_time()
+
+
 @contextmanager
-def _watching(codes: Iterable[Any]) -> Iterator[None]:
+def _watching(
+    codes: Iterable[Any], roots: tuple[Path, ...] = (), namespace: dict[str, Any] | None = None
+) -> Iterator[None]:
     """Stop the user's code at a draw that runs past its time, while the block runs (#101).
 
     The walks and the term's reading ask for the time themselves
     (:func:`_on_time`); a helper's own loop, or a helper that calls itself,
-    does not. So ``codes``, the annotations and the helpers the snapshot
-    copied, and the code compiled inside them, are watched with
-    :mod:`sys.monitoring` at every call and every turn of a loop
-    (``PY_START`` and ``JUMP``), under an id it names no tool for, and past
-    :data:`DRAW_SECONDS` the next of these gives the draw up. The events are
-    switched on for that code alone, and off again when the block ends.
-    Where every such id is taken, nothing is watched, and a helper that
-    loops forever at a draw stops the check there.
+    does not. So the user's code is watched with :mod:`sys.monitoring` at
+    every call and every turn of a loop (``PY_START`` and ``JUMP``), under an
+    id it names no tool for, and past :data:`DRAW_SECONDS` the next of these
+    gives the draw up. The user's code is ``codes``, the annotations and the
+    helpers the snapshot copied, and the functions of the user's modules,
+    those whose files lie under the claim's source ``roots`` and the claim's
+    own, whose globals are ``namespace``, their methods included
+    (:func:`_users_codes`), with the code compiled inside each. The
+    events are switched on for that code alone, and off again when the
+    block ends. Where every such id is taken, nothing is watched, and a
+    helper that loops forever at a draw stops the check there.
 
     What Python runs in one step, a builtin's or a library's loop in C, or
-    ``2 ** 2 ** n`` in a helper, is not stopped; the annotation's own powers
-    and its term's are kept small (:func:`_computable`).
+    ``2 ** 2 ** n`` in a helper, is not stopped, nor is a library's code, nor
+    a function no module of the user's holds when the draws start; the
+    annotation's own powers and its term's are kept small
+    (:func:`_computable`).
     """
     monitoring = sys.monitoring
     tool = None
@@ -2862,19 +2965,27 @@ def _watching(codes: Iterable[Any]) -> Iterator[None]:
         yield
         return
     events = monitoring.events.PY_START | monitoring.events.JUMP
-    watched: list[Any] = []
+    watched: dict[int, Any] = {}
     try:
         monitoring.register_callback(tool, monitoring.events.PY_START, _late)
         monitoring.register_callback(tool, monitoring.events.JUMP, _late)
-        for code in dict.fromkeys(nested for each in codes for nested in _nested_codes(each)):
-            try:
-                monitoring.set_local_events(tool, code, events)
-            except (TypeError, ValueError):  # pragma: no cover - code it cannot watch
-                continue
-            watched.append(code)
+        try:
+            users = _users_codes(roots, namespace)
+        except Exception:  # noqa: BLE001 - what cannot be read is not watched
+            users = []
+        for each in (*codes, *users):
+            for code in _nested_codes(each):
+                # by id: hashing a code object reads all of it
+                if id(code) in watched:
+                    continue
+                try:
+                    monitoring.set_local_events(tool, code, events)
+                except (TypeError, ValueError):  # pragma: no cover - code it cannot watch
+                    continue
+                watched[id(code)] = code
         yield
     finally:
-        for code in watched:
+        for code in watched.values():
             monitoring.set_local_events(tool, code, 0)
         monitoring.register_callback(tool, monitoring.events.PY_START, None)
         monitoring.register_callback(tool, monitoring.events.JUMP, None)
@@ -3137,7 +3248,7 @@ def faithful_fact(theorem: Any) -> Fact:
         snapshot = theorem.snapshot
         codes = [annotation.code for annotation in annotations if annotation.code is not None]
         extent = _extent(theorem, codes, snapshot.namespace)
-        with _watching((*codes, *snapshot.watched)):
+        with _watching((*codes, *snapshot.watched), snapshot.roots, snapshot.namespace):
             refuted = _run(fact, tally, snapshot, parameters, annotations, theorem, extent)
         if refuted is not None:
             return refuted
