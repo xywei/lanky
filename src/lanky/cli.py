@@ -665,6 +665,7 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
         for line in str(reason).splitlines():
             print(f"  {line}")
 
+
 def report_lean(ledger: Ledger, text: str = "") -> None:
     """``--show-lean``: the Lean of every row that has some, last.
 
