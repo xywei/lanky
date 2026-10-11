@@ -22,6 +22,7 @@ from lanky.check import establish
 from lanky.cli import CheckVerb, refutation_lines
 from lanky.ledger import Fact, Ledger, Status
 from lanky.obligations import (
+    Application,
     Counterexample,
     Hints,
     Instance,
@@ -36,7 +37,7 @@ from lanky.obligations import (
 )
 from lanky.oracles.lean import LeanOracle, ProofCache
 from lanky.plugins import registry
-from lanky.prelude import FinType, Fn, Int
+from lanky.prelude import FinType, Fn, Int, Real
 from lanky.terms import Exists, Forall, LogicalAnd, LogicalOr, Var
 
 n, x, y, i, a, r, j = (Var(name) for name in ("n", "x", "y", "i", "a", "r", "j"))
@@ -259,6 +260,87 @@ def test_an_instance_reading_a_cell_the_claim_reads_otherwise_is_equated() -> No
         "have hc0 : off (q - 1 + 1) = off q := by congr 1 <;> omega",
         "omega",
     ]
+
+
+#: A table of reals over two indices, and a second one.
+R2, c2, b = Var("R"), Var("c"), Var("b")
+TABLE = Fn[Int, Fn[Int, Real]]
+
+#: ``R`` follows the recurrence; the claim is that it does at ``(a + 2, b)``.
+RECURRENCE = Forall(
+    ((a, Int), (b, Int)), R2(a)(b) == -R2(a - 2)(b + 2), (a >= 2) & (b >= 0)
+)
+REAL_PART = Part(
+    "post",
+    "R[a + 2, b] == -R[a, b + 2]",
+    claim(
+        ((R2, TABLE), a, b),
+        [RECURRENCE, a >= 0, b >= 0],
+        R2(a + 2)(b) == -R2(a)(b + 2),
+    ),
+    Hints(instances=(Instance(0, (a + 2, b)),)),
+    mathlib=True,
+)
+
+
+def test_a_part_about_reals_is_printed_in_mathlibs_dialect() -> None:
+    statement = part_statement(REAL_PART, "post")
+    assert statement.mathlib
+    assert "(R : Int → Int → ℝ)" in statement.parameters
+
+
+def test_a_part_about_reals_takes_instances_with_their_premises_shown() -> None:
+    """``linarith`` reads equations, not the implications an instance of ``omega``'s keeps.
+
+    Each premise is shown by ``omega`` at the point, the instance left out
+    where one is not; an application of two arguments is equated with the
+    claim's one argument at a time, where ``congr`` takes ``b + 2`` apart.
+    """
+    [_, (how, script)] = attempts(REAL_PART, part_statement(REAL_PART, "post"))
+    assert how == "linarith, with the hypotheses taken at 1 point"
+    lines = script.splitlines()
+    assert lines[0] == "try have hi0 := h0 (a + 2) b (by omega) (by omega)"
+    assert lines[1] == (
+        "try have hc0 : R (a + 2 - 2) (b + 2) = R a (b + 2) := "
+        "((congrArg (fun x_cong => R x_cong (b + 2)) (by omega : (a + 2 - 2) = a))"
+        ".trans (congrArg (fun x_cong => R a x_cong) (by omega : (b + 2) = (b + 2))))"
+    )
+    assert lines[-1] == "linarith"
+
+
+def test_a_theorem_a_hypothesis_is_is_applied_with_what_the_plugin_bound() -> None:
+    """``apply h0 (p := p) (c := c)``: Lean finds the rest, and each premise is a hypothesis."""
+    p, D = Var("p"), Var("D")
+    theorem = Forall(
+        ((p, Int), (c2, TABLE), (D, TABLE)),
+        Forall(((a, Int),), c2(a)(0) == D(a)(0)),
+        Forall(((a, Int),), D(a)(0) == c2(a)(0)),
+    )
+    copies = Forall(((a, Int),), D(a)(0) == c2(a)(0))
+    part = Part(
+        "applied",
+        "the theorem applied",
+        claim(
+            ((c2, TABLE), (D, TABLE), p),
+            [theorem, copies],
+            Forall(((a, Int),), c2(a)(0) == D(a)(0)),
+        ),
+        Hints(applications=(Application(0, (("p", p), ("c", c2))),)),
+        mathlib=True,
+    )
+    tried = attempts(part, part_statement(part, "applied"))
+    assert ("the theorem applied", "intros\napply h0 (p := p) (c := c)\n"
+            "all_goals first | assumption | omega | linarith") in tried
+
+
+def test_without_mathlib_a_claim_about_reals_is_declined_saying_why(no_session) -> None:
+    oracle, started = no_session
+    fact = oracle.establish(fact_of(Obligation(parts=(REAL_PART,))))
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_declined"].startswith(
+        "the claim is about real numbers, which core Lean does not have"
+    )
+    assert started == []
 
 
 def test_the_negation_instantiates_every_binder_at_the_point() -> None:

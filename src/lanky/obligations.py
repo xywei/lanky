@@ -339,10 +339,18 @@ def _applications(expr: Any, out: list[tuple[str, tuple[Any, ...], Any]]) -> Non
         if expr.guard is not None:
             _applications(expr.guard, out)
         return
-    if isinstance(expr, prim.Call) and isinstance(expr.function, prim.Variable):
-        out.append((expr.function.name, tuple(expr.parameters), expr))
-        _applications(tuple(expr.parameters), out)
-        return
+    if isinstance(expr, prim.Call):
+        # a family of families applied one argument at a time, R(a)(b), is
+        # one application, as an array indexed R[a, b] is
+        arguments: tuple[Any, ...] = ()
+        head: Any = expr
+        while isinstance(head, prim.Call):
+            arguments = (*head.parameters, *arguments)
+            head = head.function
+        if isinstance(head, prim.Variable):
+            out.append((head.name, arguments, expr))
+            _applications(arguments, out)
+            return
     if isinstance(expr, prim.Subscript) and isinstance(expr.aggregate, prim.Variable):
         index = expr.index if isinstance(expr.index, tuple) else (expr.index,)
         out.append((expr.aggregate.name, index, expr))
