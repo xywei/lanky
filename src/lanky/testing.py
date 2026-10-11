@@ -172,6 +172,7 @@ __all__ = [
     "TestReport",
     "Unevaluable",
     "Unsampleable",
+    "apply_at",
     "check",
     "goal_unreached_reason",
     "in_sort",
@@ -267,6 +268,33 @@ class Unevaluable(SkipSample):
     """
 
 
+def apply_at(first: Any, indices: tuple[Any, ...]) -> Any:
+    """A family applied at ``indices`` in turn, ``first`` being its application at one index.
+
+    A family with several indices is a family of families (``Fn[A, B, C]`` is
+    ``Fn[A, Fn[B, C]]``), so ``F[i, j]`` and ``F(i, j)`` are ``F(i)(j)``: the
+    family at the first index, and what that holds at the rest. What it holds
+    is indexed as it indexes itself, whether it is a :class:`Table`, a drawn
+    family or a family that is one value everywhere.
+
+    Raises:
+        TypeError: If no index is given, or if the family is applied at more
+            indices than its type has, where what it holds is not a family.
+    """
+    if not indices:
+        raise TypeError("a family is applied at one index at least")
+    value = first(indices[0])
+    rest = indices[1:]
+    if not rest:
+        return value
+    if not callable(getattr(value, "__getitem__", None)) or isinstance(value, str):
+        raise TypeError(
+            f"a family applied at {len(indices)} indices holds {value!r} after the first, "
+            "which is not a family: it has fewer indices than that"
+        )
+    return value[rest if len(rest) > 1 else rest[0]]
+
+
 def totalized_value(codomain: Any) -> Any:
     """What a family over ``codomain`` is outside its domain inside :func:`lanky.terms.totalized`.
 
@@ -292,11 +320,17 @@ class _TotalizedFamily:
     def __init__(self, codomain: Any) -> None:
         self.codomain = codomain
 
-    def __call__(self, index: Any) -> Any:
+    def _at(self, index: Any) -> Any:
         """:func:`totalized_value` of the codomain, wherever it is applied."""
         return totalized_value(self.codomain)
 
-    __getitem__ = __call__
+    def __call__(self, *indices: Any) -> Any:
+        """:func:`totalized_value` of the codomain, at one index or several."""
+        return apply_at(self._at, indices)
+
+    def __getitem__(self, index: Any) -> Any:
+        """The same as a call: ``f[i, j]`` is ``f(i, j)``."""
+        return apply_at(self._at, index if isinstance(index, tuple) else (index,))
 
     def __repr__(self) -> str:
         """Print as what it is everywhere."""
@@ -335,12 +369,18 @@ class Table:
             )
         return position
 
-    def __call__(self, index: Any) -> Any:
-        """The value at ``index``, as a family application."""
-        return self[index]
+    def __call__(self, *indices: Any) -> Any:
+        """The value at ``indices``: ``f(i)``, or ``f(i, j)`` for ``f(i)(j)``."""
+        return apply_at(self._at, indices)
 
     def __getitem__(self, index: Any) -> Any:
-        """The value at ``index``.
+        """The value at ``index``: ``f[i]``, or ``f[i, j]`` for ``f[i][j]`` (:func:`apply_at`)."""
+        if isinstance(index, tuple):
+            return apply_at(self._at, index)
+        return self._at(index)
+
+    def _at(self, index: Any) -> Any:
+        """The value at one index.
 
         Outside the domain, inside :func:`lanky.terms.totalized`, it is
         :func:`totalized_value` of the codomain.

@@ -145,6 +145,23 @@ def fact_ids(uses: Any) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _as_family(value: Any, sort: Any, name: str) -> Any:
+    """A value given for a parameter, with a sequence given for a family read as a table.
+
+    A family with several indices, ``Fn[A, B, C]``, is a family of families,
+    so a nested sequence, or an array of as many dimensions, is a table of
+    tables, each row read the same way: ``F[i, j]`` and ``F(i)(j)`` then
+    both reach an entry. A value that is callable already, a function or a
+    table, is taken as it is, and so is anything given for a parameter that
+    is not a family.
+    """
+    while isinstance(sort, Refined):
+        sort = sort.base
+    if not isinstance(sort, FnType) or callable(value):
+        return value
+    return Table((_as_family(item, sort.codomain, name) for item in value), name=name)
+
+
 class Theorem:
     """A statement read off a typed Python function.
 
@@ -297,7 +314,9 @@ class Theorem:
 
         The proof body is not run: it is a script for an oracle, not code. What
         running a theorem means is checking what it says. A value for a family
-        parameter may be given as a sequence, which is read as a table.
+        parameter may be given as a sequence, which is read as a table, and
+        one for a family with several indices as nested sequences or an
+        array, ``F=[[1, 2], [3, 4]]`` for ``F: Fn[Fin[2], Fin[2], Nat]``.
 
         Raises:
             lanky.terms.Undecided: If the statement applies a family outside
@@ -315,10 +334,7 @@ class Theorem:
             raise TypeError(f"{self.__name__} needs values for {', '.join(missing)}")
         sorts = dict(self.variables)
         context = {
-            name: Table(value, name=name)
-            if isinstance(sorts.get(name), FnType) and not callable(value)
-            else value
-            for name, value in concrete.items()
+            name: _as_family(value, sorts.get(name), name) for name, value in concrete.items()
         }
         return Verdict(
             hypotheses={

@@ -129,6 +129,7 @@ __all__ = [
     "LeanOracle",
     "LeanSession",
     "ProofCache",
+    "combination_norm",
     "decline",
     "default_cache_dir",
     "default_proof_cache_dir",
@@ -136,6 +137,7 @@ __all__ = [
     "induction_scripts",
     "kill_servers",
     "reduction_scripts",
+    "sum_scripts",
     "tactic_ladder",
     "use_certificate",
     "use_tactic",
@@ -1330,6 +1332,74 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
     return scripts
 
 
+def sum_scripts(statement: LeanStatement) -> list[str]:
+    """Exchange finite sums: distribute, put the sums in one order, and compare the summands.
+
+    Mathlib mode only, for a goal that is an equation, under any universals,
+    between two sides that are sums, products of sums or quotients of a sum
+    (see :mod:`lanky.sums`). Python reads both sides as ``simp only`` leaves
+    them once it has distributed the products into the sums
+    (:func:`lanky.sums.spread`), and finds the order of the left side's sums
+    under which its summand is the right side's (:func:`lanky.sums.orders`).
+    The script distributes with ``Finset.mul_sum``, ``Finset.sum_mul`` and
+    ``Finset.sum_div``, exchanges adjacent sums of the left side with
+    ``Finset.sum_comm`` until they are in that order, one exchange per
+    ``conv``, and then compares the summands under every sum at once with
+    ``Finset.sum_congr`` and ``ring``, or the closers after it. One script per
+    order Python proposes; Lean checks each, so an order that is wrong costs
+    an attempt and never a proof. Sum factorization, ``sum(H[c, r] * G[b, q]
+    * F[a, p] * u[p, q, r] for p ... for q ... for r ...)`` against the three
+    one-axis passes, is proved this way for every size.
+    """
+    if not statement.mathlib:
+        return []
+    from lanky import sums
+
+    goal = statement.goal_term
+    body = goal.body if isinstance(goal, Forall) else goal
+    if not (isinstance(body, prim.Comparison) and body.operator == "=="):
+        return []
+    with dialect(statement.mathlib):
+        names, _, _, _, _ = _goal_intro(statement)
+    taken = sums.mentioned(goal) | set(statement.types)
+    left = sums.spread(body.left, taken)
+    right = sums.spread(body.right, taken)
+    if left is None or right is None or not left.binders:
+        return []
+    found = sums.orders(left, right)
+    if not found:
+        return []
+    used = set(names) | {name for name, _ in statement.binders}
+    used |= {name for name, _ in statement.hypotheses}
+    binders = [_fresh("x", used) for _ in left.binders]
+    commute = statement.qualified("Finset.sum_comm")
+    congruence = statement.qualified("Finset.sum_congr")
+    distribute = ", ".join(statement.qualified(name) for name in sums.DISTRIBUTE)
+    # each step after the first may find the goal closed already: simp and
+    # conv close it by rfl once the two sides are one term
+    head = [f"intro {' '.join(names)}"] if names else []
+    head.append(f"try simp only [{distribute}]")
+    tail = [
+        "all_goals refine "
+        + " ".join(f"{congruence} rfl fun {name} _ =>" for name in binders)
+        + " ?_",
+        f"all_goals first | ring1 | ({_closers(statement)})",
+    ]
+    scripts = []
+    for order in found:
+        current = list(range(len(order)))
+        exchanges = []
+        for place, wanted in enumerate(order):
+            at = current.index(wanted)
+            for depth in range(at - 1, place - 1, -1):
+                current[depth], current[depth + 1] = current[depth + 1], current[depth]
+                path = ", ".join(f"2, {name}" for name in binders[:depth])
+                enter = f"enter [{path}]; " if path else ""
+                exchanges.append(f"all_goals (conv_lhs => {enter}rw [{commute}])")
+        scripts.append("\n".join([*head, *exchanges, *tail]))
+    return scripts
+
+
 #: How a linear combination is checked once it is moved to one side. The casts
 #: are pushed down to the variables first, since the order a step is at is a
 #: ``Nat`` inside an ``Int`` inside a ``ℝ``. Then ``ring``; ``ring_nf``, which
@@ -1341,8 +1411,28 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
 COMBINATION_NORM = (
     "(first | ((try push_cast) <;> ring1) | ((try push_cast) <;> ring_nf <;> done) "
     "| ((try push_cast) <;> field_simp <;> ring1) "
-    "| ((try push_cast) <;> ring_nf <;> field_simp <;> ring1))"
+    "| ((try push_cast) <;> ring_nf <;> field_simp <;> ring1) "
+    "| ((try simp only [Int.toNat_natCast, div_pow, mul_pow]) <;> (try push_cast) "
+    "<;> field_simp <;> ring_nf <;> done))"
 )
+
+
+def combination_norm(statement: LeanStatement) -> str:
+    """:data:`COMBINATION_NORM`, with its root names as the statement's source names them.
+
+    The last arm is for a step whose terms have a power of a quotient with
+    the order in its exponent, ``(-β / α) ^ n.toNat`` over ``ℂ``, and the
+    order in a denominator: ``Int.toNat_natCast`` gives the exponent back as
+    the natural it is, ``div_pow`` and ``mul_pow`` split the power so that
+    ``field_simp`` clears ``α ^ (k + 2)`` (it takes a power with a variable
+    exponent whole otherwise, and ``ring_nf`` then leaves ``α⁻¹ ^ k`` it
+    cannot cancel), and ``ring_nf`` comes last, so that it normalizes the
+    arguments of the families after the denominators are gone and not the
+    denominators ``field_simp`` has to see as products.
+    """
+    return COMBINATION_NORM.replace(
+        "Int.toNat_natCast", statement.qualified("Int.toNat_natCast")
+    )
 
 #: What discharges a guard of a hypothesis a certificate applies: the search
 #: proposes a use only where the case's bounds show its guards as linear
@@ -1418,6 +1508,14 @@ def _steps(target: Var, goal: Forall, lemmas: list[Lemma]) -> list[int]:
     in an argument, a hypothesis that applies the same family there at ``a +
     2`` and at ``a`` relates orders two apart, and the step is ``2``. One is
     always tried.
+
+    And read off the goal's guard: a claim for every order from ``g`` on,
+    ``all(c(n) == ... for n in Nat if n >= 1)``, has no equation at the
+    orders below ``g``, and its induction hypothesis holds only from ``g``,
+    so each step is tried again ``g`` larger. The orders below ``g`` are
+    then among the base cases, where the guard is false and ``omega`` says
+    so, and the step's induction hypothesis is taken at an order the guard
+    admits.
     """
     positions = {
         (name, index)
@@ -1437,7 +1535,57 @@ def _steps(target: Var, goal: Forall, lemmas: list[Lemma]) -> list[int]:
             spread = max(values) - min(values)
             if 0 < spread <= _MAX_STEP:
                 steps.add(spread)
+    start = _lowest_order(target, goal.guard)
+    if start:
+        steps |= {step + start for step in steps if step + start <= _MAX_STEP}
     return sorted(steps)
+
+
+def _lowest_order(target: Var, guard: Any) -> int:
+    """The order a goal's guard starts ``target`` at: ``1`` for ``n >= 1``, else ``0``.
+
+    Only a comparison of the target with an integer literal, among the
+    guard's conjuncts, is read: ``n >= g``, ``n > g - 1``, ``g <= n`` and
+    ``g - 1 < n``.
+    """
+    lowest = 0
+    for condition in conjuncts(guard):
+        if not isinstance(condition, prim.Comparison):
+            continue
+        left, operator, right = condition.left, condition.operator, condition.right
+        if isinstance(right, Var) and right.name == target.name:
+            left, right = right, left
+            operator = {"<=": ">=", "<": ">", ">=": "<=", ">": "<"}.get(operator, operator)
+        if not (isinstance(left, Var) and left.name == target.name):
+            continue
+        if not isinstance(right, int) or isinstance(right, bool):
+            continue
+        if operator == ">=":
+            lowest = max(lowest, right)
+        elif operator == ">":
+            lowest = max(lowest, right + 1)
+    return lowest
+
+
+def _guard_excludes(guard: Any, target: Var, value: int) -> bool:
+    """Whether the goal's guard is false with ``target`` at ``value``, whatever else holds.
+
+    A conjunct that mentions no other variable once the order is put in is
+    evaluated; one that is false makes the case vacuous, closed by ``omega``
+    from the guard among the hypotheses.
+    """
+    from lanky.terms import evaluate
+
+    for condition in conjuncts(guard):
+        instance = substitute(condition, {target.name: value})
+        if free_variables(instance):
+            continue
+        try:
+            if evaluate(instance, {}) is False:
+                return True
+        except Exception:  # noqa: BLE001 - a guard that cannot be evaluated excludes nothing
+            continue
+    return False
 
 
 def _bounds_of(domain: Any) -> tuple[Any, Any] | None:
@@ -1698,6 +1846,10 @@ def _family_induction(
     else:
         base_lines = [f"interval_cases {order}"]
         for value in range(step):
+            if _guard_excludes(goal.guard, target, value):
+                # the goal's guard is false here, and among the hypotheses
+                base_lines.append("· omega")
+                continue
             closed = closing(case(str(value), value, {}, inductive=True))
             if closed is None:
                 return None
@@ -1708,6 +1860,17 @@ def _family_induction(
     )
     if successive is None:
         return None
+    # The orders the step reaches are naturals cast into the ring, k + 1 to k +
+    # step, which a certificate may divide by; field_simp's own discharger
+    # shows only ↑k + 1 is not zero, so the step says so of each.
+    nonzero = []
+    if ring in ("ℝ", "ℂ"):
+        for offset in range(1, step + 1):
+            fact = _fresh("hnz", used)
+            nonzero.append(
+                f"    try have {fact} : (({successor} : {ring}) + {offset}) ≠ 0 := "
+                "by first | (norm_cast <;> omega) | norm_cast | positivity"
+            )
     lines = [
         f"intro {' '.join([*earlier, order, natural_guard])}",
         f"obtain ⟨{order}, rfl⟩ := {statement.qualified('Int.eq_ofNat_of_zero_le')} "
@@ -1728,6 +1891,7 @@ def _family_induction(
         *(f"    {line}" for line in base_lines[1:]),
         f"  · obtain ⟨{successor}, rfl⟩ : ∃ {successor} : {statement.qualified('Nat')}, "
         f"{order} = {successor} + {step} := ⟨{order} - {step}, by omega⟩",
+        *nonzero,
         f"    {successive}",
     ]
     return "\n".join(lines)
@@ -1773,7 +1937,7 @@ def _combination(
         parts.append(f"+ {term}" if parts else term)
     if not parts:
         return None
-    return f"linear_combination (norm := {COMBINATION_NORM}) {' '.join(parts)}"
+    return f"linear_combination (norm := {combination_norm(statement)}) {' '.join(parts)}"
 
 
 def _is_number(value: Any, number: int) -> bool:
@@ -1817,6 +1981,7 @@ def tactic_ladder(
     if statement.mathlib:
         if not refuting:
             ladder += family_induction_scripts(statement, finder, until)
+            ladder += sum_scripts(statement)
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
         ladder += _mathlib_tactics(lemmas, refuting)
         if statement.side_conditions and not refuting:
