@@ -1869,6 +1869,24 @@ def default_proof_cache_dir() -> str | None:
     return os.path.join(base, "lanky", "proofs")
 
 
+def _mathlib_key(directory: str | None) -> str | None:
+    """The key a Mathlib project's answers are kept under, read from its files.
+
+    ``v4.29.1+mathlib@v4.29.1 (5e932f9...)``: the toolchain its REPL runs and
+    the Mathlib its manifest pins, both known without starting a session, so
+    that a warm check reads them back without one (#118). A Mathlib upgrade
+    is a new key, and reads no stale answer. ``None`` when either cannot be
+    read.
+    """
+    if directory is None:
+        return None
+    version = mathlib_mode.toolchain(directory)
+    revision = mathlib_mode.revision(directory)
+    if not version or not revision:
+        return None
+    return f"{version}+mathlib@{revision}"
+
+
 class ProofCache:
     """Lean's answers to the declarations an obligation sends, kept by their source.
 
@@ -2221,6 +2239,13 @@ class LeanOracle:
         statement has any, then the statement's, after ``import Mathlib`` in
         Mathlib mode. The propositions the side conditions proved are listed
         as ``lean_side_conditions``.
+
+        Lean's answer to each attempt is kept in the :class:`ProofCache`, as
+        an obligation's are, and a claim every answer of which is kept is
+        read back without starting a session (#118): the ladder is Python's,
+        the same each time for the same statement, and the key is the Lean
+        version a session would run, known without one (:meth:`_cache_version`,
+        and a Mathlib project's toolchain and revision).
         """
         declined = self.declines.get(fact.id)
         if declined is not None:
@@ -2248,9 +2273,22 @@ class LeanOracle:
             return fact.with_status(
                 fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
             )
+        until = None if budget is None else time.monotonic() + budget
+        if self.proofs is None:
+            self.proofs = ProofCache(default_proof_cache_dir())
+        # the ladder is Python's, and the same whether Lean is asked or the cache
+        override = self.tactics.get(fact.id)
+        if override is not None:
+            ladder = [override]
+        else:
+            ladder = tactic_ladder(statement, self.certificates.get(fact.id), until)
+        key = _mathlib_key(session.mathlib) if mathlib else self._cache_version()
+        if key is not None:
+            kept = self._claim_from_cache(fact, statement, ladder, key)
+            if kept is not None:
+                return kept
         if not session.ready():
             return fact.with_status(fact.status, lean_tried=0, lean_reason=session.error)
-        until = None if budget is None else time.monotonic() + budget
         conditions, declined = self._side_conditions(statement, until)
         if declined is not None:
             if session.error is not None:
@@ -2268,40 +2306,19 @@ class LeanOracle:
             return fact.with_status(
                 fact.status, lean_declined=declined, declined=f"{self.name}: {declined}"
             )
-        override = self.tactics.get(fact.id)
-        if override is not None:
-            ladder = [override]
-        else:
-            ladder = tactic_ladder(statement, self.certificates.get(fact.id), until)
         last = ""
         tried = 0
         for tactic in ladder:
             if _spent(until):
                 break
             source = statement.source(tactic)
-            closed, detail = session.run(source, until)
+            closed, detail, _cached, _answered = self._ask(session, source, until)
             if detail == BUDGET_SPENT:
                 break
             tried += 1
             if closed:
-                extra: dict[str, Any] = {}
-                if conditions:
-                    source = "\n".join((*conditions, source))
-                    extra["lean_side_conditions"] = [
-                        condition.proposition for condition in statement.side_conditions
-                    ]
-                if mathlib:
-                    # the file that replays it, which the REPL command, run in
-                    # the environment the import left, could not spell
-                    source = f"import Mathlib\n\n{source}"
-                    extra["lean_mathlib"] = session.mathlib_revision
-                return fact.with_status(
-                    Status.PROVED,
-                    self.name,
-                    tactic=tactic,
-                    lean_source=source,
-                    lean_version=session.version,
-                    **extra,
+                return self._proved_claim(
+                    fact, statement, tactic, source, conditions, session.version
                 )
             last = detail
             if session.error is not None:
@@ -2323,6 +2340,86 @@ class LeanOracle:
             lean_reason=session.error or last,
         )
 
+    def _proved_claim(
+        self,
+        fact: Fact,
+        statement: LeanStatement,
+        tactic: str,
+        source: str,
+        conditions: list[str],
+        version: str | None,
+    ) -> Fact:
+        """``fact`` proved by ``tactic``, with the file that replays the proof."""
+        extra: dict[str, Any] = {}
+        if conditions:
+            source = "\n".join((*conditions, source))
+            extra["lean_side_conditions"] = [
+                condition.proposition for condition in statement.side_conditions
+            ]
+        if statement.mathlib:
+            # the file that replays it, which the REPL command, run in the
+            # environment the import left, could not spell
+            source = f"import Mathlib\n\n{source}"
+            directory = self.session.mathlib
+            extra["lean_mathlib"] = self.session.mathlib_revision or (
+                mathlib_mode.revision(directory) if directory else None
+            )
+        return fact.with_status(
+            Status.PROVED,
+            self.name,
+            tactic=tactic,
+            lean_source=source,
+            lean_version=version,
+            **extra,
+        )
+
+    def _claim_from_cache(
+        self, fact: Fact, statement: LeanStatement, ladder: list[str], key: str
+    ) -> Fact | None:
+        """``fact`` as the kept answers settle it, or ``None`` if Lean has to be asked (#118).
+
+        The side conditions and the ladder are walked as :meth:`establish`
+        walks them, each attempt's answer read from the cache under ``key``:
+        the first attempt that closed proves the claim, and every attempt
+        kept as failed leaves it as Lean left it. An attempt the cache does
+        not hold, or a side condition no kept attempt proved, sends the
+        claim to Lean.
+        """
+        cache = self.proofs
+        if cache is None:
+            return None
+        conditions: list[str] = []
+        for condition in statement.side_conditions:
+            closing = None
+            for tactic in SIDE_CONDITION_TACTICS:
+                source = condition.source(f"intros\n{tactic}")
+                kept = cache.get(key, source)
+                if kept is None:
+                    return None
+                if kept[0]:
+                    closing = source
+                    break
+            if closing is None:
+                return None
+            conditions.append(closing)
+        last = ""
+        for tactic in ladder:
+            source = statement.source(tactic)
+            kept = cache.get(key, source)
+            if kept is None:
+                return None
+            closed, detail = kept
+            if closed:
+                version = key
+                if statement.mathlib:
+                    directory = self.session.mathlib
+                    version = mathlib_mode.toolchain(directory) if directory else None
+                return self._proved_claim(
+                    fact, statement, tactic, source, conditions, version
+                )
+            last = detail
+        return fact.with_status(fact.status, lean_tried=len(ladder), lean_reason=last)
+
     def _side_conditions(
         self, statement: LeanStatement, until: float | None = None
     ) -> tuple[list[str], str | None]:
@@ -2343,7 +2440,7 @@ class LeanOracle:
             closing = None
             for tactic in SIDE_CONDITION_TACTICS:
                 source = condition.source(f"intros\n{tactic}")
-                closed, _detail = session.run(source, until)
+                closed, _detail, _cached, _answered = self._ask(session, source, until)
                 if closed:
                     closing = source
                     break
@@ -2397,7 +2494,9 @@ class LeanOracle:
         the REPL to ask nothing was most of what a warm check cost. The cache
         is keyed by the Lean version as well as the source, and the version
         is the one the session would run (:meth:`_cache_version`), read
-        without starting it; a part with an attempt the cache does not hold
+        without starting it; a part about reals is kept under the Mathlib
+        project's toolchain and revision, read from its files
+        (:func:`_mathlib_key`). A part with an attempt the cache does not hold
         sends the whole obligation to the sessions, which read the cache in
         their turn.
         """
@@ -2445,17 +2544,22 @@ class LeanOracle:
         if self.proofs is None:
             self.proofs = ProofCache(default_proof_cache_dir())
         owner = fact.owner or fact.id
-        # a part about reals is Mathlib's session's, which is read as it is asked
-        version = None if reals else self._cache_version()
+        # a part about reals is kept under the Mathlib project's key, the
+        # others under the core version, both known without a session
+        directory = self.session.mathlib if reals else None
+        version = self._cache_version()
+        real_key = _mathlib_key(directory) if reals else None
         records: list[dict] | None = None
-        if version is not None:
+        if obligation.counterexample is not None:
             # every answer from the cache, or none: no session is started (#118)
-            if obligation.counterexample is not None:
+            if version is not None and not reals:
                 found = self._check_counterexample(fact, obligation, owner, None, version)
                 if found is not None:
                     return found
-            else:
-                records = self._cached_parts(obligation.parts, owner, version)
+        elif not reals or real_key is not None:
+            records = self._cached_parts(obligation.parts, owner, version, real_key)
+            if records is not None and reals:
+                version = mathlib_mode.toolchain(directory) if directory else None
         if records is None:
             sessions = self._part_sessions()
             if not sessions:
@@ -2478,7 +2582,9 @@ class LeanOracle:
         if obligation.stated_by:
             common["lean_stated_by"] = obligation.stated_by
         if reals:
-            common["lean_mathlib"] = self.session.mathlib_revision
+            common["lean_mathlib"] = self.session.mathlib_revision or (
+                mathlib_mode.revision(directory) if directory else None
+            )
         if all(record.get("proved") for record in records):
             source = "\n".join(record["source"] for record in records)
             if reals:
@@ -2548,17 +2654,29 @@ class LeanOracle:
             self._on_path = (_lean_on_path_version() or "",)
         return self._on_path[0] or None
 
-    def _cached_parts(self, parts: Any, owner: str, version: str) -> list[dict] | None:
-        """Every part's record read from the cache, or ``None`` if one needs Lean (#118)."""
+    def _cached_parts(
+        self, parts: Any, owner: str, version: str | None, real_key: str | None = None
+    ) -> list[dict] | None:
+        """Every part's record read from the cache, or ``None`` if one needs Lean (#118).
+
+        A part about reals is read under ``real_key``, the Mathlib project's
+        (:func:`_mathlib_key`), the others under ``version``.
+        """
         cache = self.proofs
 
-        def kept(source: str) -> tuple[bool, str, bool, bool] | None:
-            found = cache.get(version, source) if cache is not None else None
-            return None if found is None else (found[0], found[1], True, True)
+        def reader(key: str | None) -> Any:
+            def kept(source: str) -> tuple[bool, str, bool, bool] | None:
+                found = cache.get(key, source) if cache is not None and key else None
+                return None if found is None else (found[0], found[1], True, True)
+
+            return kept
 
         records = []
         for part in parts:
-            record = self._check_part(part, owner, None, kept)
+            key = real_key if getattr(part, "mathlib", False) else version
+            if key is None:
+                return None
+            record = self._check_part(part, owner, None, reader(key))
             if record is None:
                 return None
             records.append(record)
@@ -2629,7 +2747,9 @@ class LeanOracle:
         cache = self.proofs
         version = session.version
         if session.mathlib is not None:
-            version = f"{version}+mathlib@{session.mathlib_revision}"
+            version = _mathlib_key(session.mathlib) or (
+                f"{version}+mathlib@{session.mathlib_revision}"
+            )
         if cache is not None:
             kept = cache.get(version, source)
             if kept is not None:

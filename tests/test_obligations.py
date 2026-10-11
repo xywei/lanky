@@ -492,6 +492,109 @@ def test_a_counterexample_is_read_back_without_starting_lean(no_session) -> None
     assert fact.provenance["lean_version"] == "v0.0.0-test"
 
 
+def _claim_fact(term: Any) -> Fact:
+    """A claim of lanky's own, not a plugin's: Lean is asked its ladder."""
+    return Fact(id="succ", kind="theorem", statement="n + 1 > n", term=term, owner="succ")
+
+
+def test_a_claim_of_lankys_own_is_read_back_without_starting_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#118 for a theorem: its ladder's answers are kept as a part's are.
+
+    The ladder is Python's, the same for the same statement, so the attempts
+    a check made are read back in their order, and the first that closed
+    proves the claim. A Mathlib theorem was the most of a warm check's time:
+    every attempt before the one that closed was asked again.
+    """
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import tactic_ladder
+
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    term = claim((n,), [n >= 0], n + 1 > n)
+    statement = statement_of(term, "succ", mathlib=False)
+    ladder = tactic_ladder(statement)
+    oracle.proofs.put("v0.0.0-test", statement.source(ladder[0]), False, "no")
+    oracle.proofs.put("v0.0.0-test", statement.source(ladder[1]), True, "")
+    fact = oracle.establish(_claim_fact(term))
+    assert started == []
+    assert fact.status is Status.PROVED
+    assert fact.provenance["tactic"] == ladder[1]
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+
+
+def test_a_claim_with_an_attempt_the_cache_does_not_hold_starts_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import tactic_ladder
+
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    term = claim((n,), [n >= 0], n + 1 > n)
+    statement = statement_of(term, "succ", mathlib=False)
+    oracle.proofs.put("v0.0.0-test", statement.source(tactic_ladder(statement)[0]), False, "")
+    fact = oracle.establish(_claim_fact(term))
+    assert started
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_reason"] == "no Lean in this test"
+
+
+@pytest.fixture
+def fake_mathlib(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
+    """A Mathlib project's files, which the cache's key is read from, and no Mathlib."""
+    import json
+
+    project = tmp_path / "mathlib"
+    project.mkdir()
+    (project / "lean-toolchain").write_text("leanprover/lean4:v0.0.0-test\n")
+    manifest = {"packages": [{"name": "mathlib", "inputRev": "v0.0.0-test", "rev": "abc"}]}
+    (project / "lake-manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setenv("LANKY_LEAN_MATHLIB", str(project))
+    return "v0.0.0-test+mathlib@v0.0.0-test (abc)"
+
+
+def test_a_part_about_reals_is_read_back_without_starting_mathlib(
+    no_session, fake_mathlib: str
+) -> None:
+    """The key of a Mathlib answer is the project's toolchain and Mathlib revision.
+
+    Both are in its files, so a part about reals is read back as an integer
+    part is, without the session that would import Mathlib (#118).
+    """
+    oracle, started = no_session
+    u, v = Var("u"), Var("v")
+    part = Part("S0", "u == v", claim(((u, Real), (v, Real)), [u == v], v == u), mathlib=True)
+    statement = part_statement(part, theorem_name("kernel", part))
+    _how, tactic = attempts(part, statement)[0]
+    oracle.proofs.put(fake_mathlib, statement.source(tactic), True, "")
+    fact = oracle.establish(fact_of(Obligation(parts=(part,), decider="isl")))
+    assert started == []
+    assert fact.status is Status.PROVED
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+    assert fact.provenance["lean_mathlib"] == "v0.0.0-test (abc)"
+
+
+def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
+    no_session, fake_mathlib: str
+) -> None:
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import tactic_ladder
+
+    oracle, started = no_session
+    u = Var("u")
+    term = claim(((u, Real),), [u > 0], u + 1 > u)
+    statement = statement_of(term, "succ", mathlib=True)
+    ladder = tactic_ladder(statement)
+    oracle.proofs.put(fake_mathlib, statement.source(ladder[0]), True, "")
+    fact = oracle.establish(_claim_fact(term))
+    assert started == []
+    assert fact.status is Status.PROVED
+    assert fact.provenance["lean_source"].startswith("import Mathlib\n")
+    assert fact.provenance["lean_mathlib"] == "v0.0.0-test (abc)"
+
+
 # }}}
 
 
