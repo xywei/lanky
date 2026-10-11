@@ -3272,14 +3272,16 @@ def _refuted(
     iterated = f" with each sort iterating its sample {sampled}" if sampled else ""
     term_text = _shown(annotation.term)
     found = f"{python.text()}, and its term, {term_text}, {term.text()}"
+    differs = "the term says"
     extra: dict[str, Any] = {}
     if stopped is not None:
         first, second = stopped
         found = (
             f"{first.text()}, and its term, {term_text}, {second.text()}; read as Lean "
             f"reads what has no value in Python ({_TOTALIZED}), it {python.text()} "
-            f"and its term {term.text()}, so what follows where Python stopped"
+            f"and its term {term.text()}"
         )
+        differs = "what follows where Python stopped says"
         extra = {"totalized": True, "stopped": first.text()}
     return fact(
         Status.REFUTED,
@@ -3291,7 +3293,7 @@ def _refuted(
         **extra,
         reason=(
             f"{annotation.what}, run again as Python at these values{iterated}, "
-            f"{found}: the term says something else than what was written, so no "
+            f"{found}: {differs} something else than what was written, so no "
             "oracle that decides or proves is asked about the claim"
         ),
     )
