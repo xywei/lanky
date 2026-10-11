@@ -477,6 +477,36 @@ _BUDGET: ContextVar[list[int] | None] = ContextVar("lanky_faithful_budget", defa
 #: up as too slow, or ``None`` outside a reading (see :func:`_both_readings`).
 _DEADLINE: ContextVar[float | None] = ContextVar("lanky_faithful_deadline", default=None)
 
+#: What gave the current reading up, or ``None`` outside a reading: kept, so
+#: that a helper that catches it does not keep the draw (see :func:`_kept`).
+_GIVEN_UP: ContextVar[list[_GivenUp] | None] = ContextVar("lanky_faithful_given_up", default=None)
+
+
+def _giving_up(exc: _GivenUp) -> _GivenUp:
+    """``exc``, noted as what gave the current reading up, to be raised."""
+    given = _GIVEN_UP.get()
+    if given is not None:
+        given.append(exc)
+    return exc
+
+
+def _kept() -> None:
+    """Give the draw up where a reading that has ended was given up, or is past its time.
+
+    A helper that catches everything, ``except BaseException`` or a bare
+    ``except``, catches what gives a draw up too, and the reading goes on
+    with what the helper answered instead: that answer is not Python's, so
+    the draw is given up all the same once the reading ends.
+
+    Raises:
+        _GivenUp: What gave the reading up, if anything did.
+        _TooSlow: If the readings at this draw have run past their time.
+    """
+    given = _GIVEN_UP.get()
+    if given:
+        raise given[0]
+    _on_time()
+
 
 def _on_time() -> None:
     """Give the draw up if its readings have run past its time.
@@ -492,7 +522,9 @@ def _on_time() -> None:
     """
     deadline = _DEADLINE.get()
     if deadline is not None and time.monotonic() > deadline:
-        raise _TooSlow(f"the readings at this draw took more than {DRAW_SECONDS:g} seconds")
+        raise _giving_up(
+            _TooSlow(f"the readings at this draw took more than {DRAW_SECONDS:g} seconds")
+        )
 
 
 def _step() -> None:
@@ -509,7 +541,7 @@ def _step() -> None:
         return
     budget[0] -= 1
     if budget[0] < 0:
-        raise _TooLarge(f"the walk took more than {WALK_POINTS} points")
+        raise _giving_up(_TooLarge(f"the walk took more than {WALK_POINTS} points"))
 
 
 def _bits(value: Any) -> int | None:
@@ -536,7 +568,9 @@ def _computable(name: str, left: Any, right: Any) -> None:
     """
     if name == "lshift":
         if isinstance(left, int) and isinstance(right, int) and left and right > POWER_BITS:
-            raise _TooSlow(f"a left shift by {right} has more than {POWER_BITS} bits")
+            raise _giving_up(
+                _TooSlow(f"a left shift by {right} has more than {POWER_BITS} bits")
+            )
         return
     if isinstance(right, Fraction) and right.denominator == 1:
         right = right.numerator
@@ -546,8 +580,11 @@ def _computable(name: str, left: Any, right: Any) -> None:
     if bits is None or bits < 2 or (right < 0 and isinstance(left, int)):
         return
     if abs(right) * bits > POWER_BITS:
-        raise _TooSlow(
-            f"a power of a number of {bits} bits to the {right} has more than {POWER_BITS} bits"
+        raise _giving_up(
+            _TooSlow(
+                f"a power of a number of {bits} bits to the {right} has more than "
+                f"{POWER_BITS} bits"
+            )
         )
 
 
@@ -1224,6 +1261,12 @@ def _cache_entries(cache: Any) -> list[tuple[Any, Any]] | None:
     stride = span // held
     entries = [(listed[start + k * stride], listed[start + k * stride + 1]) for k in range(held)]
     if sorted(id(key) for key, _ in entries) != sorted(id(key) for key in table):
+        return None
+    # where the links' type is listed, it is listed after each result, which
+    # tells a result from what else a version could list there
+    if stride == 3 and any(
+        listed[start + k * stride + 2] is not type(table[key]) for k, (key, _) in enumerate(entries)
+    ):
         return None
     return entries
 
@@ -3046,6 +3089,7 @@ def _reading(draw: _Draw, deadline: float, total: bool) -> Iterator[None]:
     """One reading at ``draw``: its walk's budget, the draw's time, and, with ``total``, Lean's."""
     budget = _BUDGET.set([WALK_POINTS] if draw.counted else None)
     late = _DEADLINE.set(deadline)
+    given = _GIVEN_UP.set([])
     try:
         if total:
             with totalized():
@@ -3053,6 +3097,7 @@ def _reading(draw: _Draw, deadline: float, total: bool) -> Iterator[None]:
         else:
             yield
     finally:
+        _GIVEN_UP.reset(given)
         _DEADLINE.reset(late)
         _BUDGET.reset(budget)
 
@@ -3094,13 +3139,13 @@ def _both_readings(
         except Exception as exc:  # noqa: BLE001 - what the annotation raises is its answer
             python = _Outcome(error=exc)
         # a helper may have caught the draw's giving up and answered all the same
-        _on_time()
+        _kept()
     with _reading(draw, deadline, total):
         try:
             term = _Outcome(_value_at(annotation.term, reading))
         except Exception as exc:  # noqa: BLE001 - what the term raises is its answer
             term = _Outcome(error=exc)
-        _on_time()
+        _kept()
     return python, term
 
 

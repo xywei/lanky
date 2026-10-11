@@ -1756,6 +1756,15 @@ def deep(n):
     return 0 if n <= 0 else deep(n - 1) + deep(n - 1)
 
 
+def catches(f, n):
+    if not isinstance(n, int):
+        return 0
+    try:
+        return f() % 7 * 0
+    except BaseException:
+        return 0
+
+
 @theorem
 def loops(n: Nat, h: n < 60) -> spin(n) == 0:
     \"\"\"spin never returns past 50, and the claim writes 50 and 60.\"\"\"
@@ -1769,6 +1778,11 @@ def calls(n: Nat, h: n < 64) -> deep(n) == 0:
 @theorem
 def towers(n: Nat, h: n < 30) -> (2 ** 2 ** n) * 0 == 0:
     \"\"\"2 ** 2 ** 29 has more bits than the check computes.\"\"\"
+
+
+@theorem
+def caught(n: Nat, h: n < 30) -> catches(lambda: 2 ** 2 ** n, n) == 0:
+    \"\"\"The helper catches what gives the draw at the written 29 up, and answers 0.\"\"\"
 """
 
 
@@ -1780,7 +1794,10 @@ def test_a_draw_that_runs_too_long_is_given_up(monkeypatch, tmp_path) -> None:
     writes, ran as long as Python takes, which is forever, or until memory
     ran out. Each such draw is now given up, the written values past it are
     not drawn at, and the claim's reading is tested at the draws that ran.
-    The monitoring the check stops a helper with is released afterwards.
+    A helper that catches everything catches the giving up too, and the
+    draw is given up all the same, not read as an agreement with the
+    helper's answer. The monitoring the check stops a helper with is
+    released afterwards.
     """
     import sys
     import time
@@ -1789,7 +1806,7 @@ def test_a_draw_that_runs_too_long_is_given_up(monkeypatch, tmp_path) -> None:
     started = time.monotonic()
     pairs = _pairs(check_path(_write(tmp_path, TOO_SLOW)))
     assert time.monotonic() - started < 60
-    for owner in ("loops", "calls", "towers"):
+    for owner in ("loops", "calls", "towers", "caught"):
         reading = pairs[owner][1]
         assert reading.status is Status.TESTED, (owner, reading.provenance)
         assert reading.provenance["slow"] >= 1, owner
