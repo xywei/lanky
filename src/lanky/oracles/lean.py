@@ -1926,6 +1926,23 @@ class ProofCache:
             return
 
 
+def _fallback_attempts(part: Any, statement: LeanStatement) -> list[tuple[str, str]]:
+    """The scripts a part's ``fallback`` hints make, ``omega`` alone left out."""
+    from dataclasses import replace as replaced
+
+    try:
+        hints = part.fallback()
+    except Exception:  # noqa: BLE001 - a solver's failure is no hint
+        return []
+    if not hints:
+        return []
+    return [
+        (how, tactic)
+        for how, tactic in attempts(replaced(part, hints=hints, fallback=None), statement)
+        if how != "omega"
+    ]
+
+
 def _jobs() -> int:
     """How many parts of an obligation Lean checks at once: ``LANKY_LEAN_JOBS``, or up to 4."""
     text = os.environ.get("LANKY_LEAN_JOBS")
@@ -2487,7 +2504,10 @@ class LeanOracle:
             return record
         start = time.monotonic()
         last = ""
-        for how, tactic in tried:
+        tried = list(tried)
+        asked = False
+        while tried:
+            how, tactic = tried.pop(0)
             source = statement.source(tactic)
             record["source"] = source
             if _spent(until):
@@ -2509,6 +2529,10 @@ class LeanOracle:
             last = detail
             record.pop("timed_out", None)
             record["reason"] = f"no script closed it; Lean said: {last}"
+            if not tried and not asked and callable(getattr(part, "fallback", None)):
+                # what the solver finds only when asked: a case split, say
+                asked = True
+                tried = _fallback_attempts(part, statement)
         record["seconds"] = round(time.monotonic() - start, 3)
         return record
 

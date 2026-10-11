@@ -556,6 +556,33 @@ class _Decider:
         return fact.with_status(Status.DECIDED, self.name)
 
 
+def test_a_fallback_is_asked_only_when_omega_and_the_hints_fail(lean: LeanOracle) -> None:
+    asked: list[str] = []
+
+    def splits() -> Hints:
+        asked.append("asked")
+        return Hints(splits=(LogicalOr(((x == 1), (x == 2))),))
+
+    pugh = claim(
+        (x, y),
+        [
+            11 * x + 13 * y >= 27,
+            11 * x + 13 * y <= 45,
+            7 * x - 9 * y >= -10,
+            7 * x - 9 * y <= 4,
+        ],
+        False,
+    )
+    part = Part("pugh", "Pugh's example", pugh, fallback=splits)
+    fact = lean.establish(fact_of(Obligation(parts=(part,))))
+    assert fact.status is Status.PROVED
+    assert fact.provenance["lean_parts"][0]["how"] == "omega, with a case split"
+    assert asked == ["asked"]
+    easy = Part("S0", "x in bounds", IN_BOUNDS.term, fallback=splits)
+    assert lean.establish(fact_of(Obligation(parts=(easy,)))).status is Status.PROVED
+    assert asked == ["asked"]
+
+
 def test_lean_goes_first_and_the_solver_decides_what_it_does_not_prove(
     lean: LeanOracle, monkeypatch
 ) -> None:
@@ -597,8 +624,8 @@ def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
     assert "  part S1 (x + 1 < n): not proved: no script closed it" in out
     # the rows a text names, and only those
     CheckVerb._report(Ledger([proved, unproved]), show_lean="S1")
-    shown = capsys.readouterr().out.split("LEAN ", 1)[1]
-    assert shown.startswith("kernel at kernel.py:2")
+    shown = capsys.readouterr().out.split("\nLEAN kernel ", 1)[1]
+    assert shown.startswith("at kernel.py:2")
 
 
 # }}}

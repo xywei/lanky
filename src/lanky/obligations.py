@@ -142,12 +142,18 @@ class Part:
     proved. ``term`` is a closed lanky term: a universal whose guard holds
     the hypotheses, printed as a theorem whose parameters are its variables
     and hypotheses (:func:`lanky.lean.statement_of`).
+
+    ``fallback``, when given, is asked for more hints only when ``omega`` and
+    ``hints`` have not closed the part: what costs the solver more to find
+    and is seldom needed, the case split ``omega``'s missing dark and grey
+    shadows want. It takes nothing and returns :class:`Hints`.
     """
 
     name: str
     label: str
     term: Any
     hints: Hints = field(default_factory=Hints)
+    fallback: Any = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
