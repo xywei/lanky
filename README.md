@@ -462,7 +462,9 @@ proved. The check is sampled, and that leaves these limits:
   `Fin[2 ** n]` at a written `63`, is given up, and so is one whose readings
   take more than five seconds, or ask for a power of more than 2 ** 20 bits,
   `2 ** 2 ** n` at a written `99`, together with the written values past it
-  ([#101](https://github.com/xywei/lanky/issues/101)).
+  ([#101](https://github.com/xywei/lanky/issues/101)), so that a misreading
+  at one of those is not reached
+  ([#114](https://github.com/xywei/lanky/issues/114)).
 - A claim whose annotations cannot be run at a point keeps an `assumed`
   reading, and a proof of it reads `proved under faithful:name`, with the
   reason in a `DECLINED` line: a variable of a sort no value can be drawn of
