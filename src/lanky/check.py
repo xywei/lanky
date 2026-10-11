@@ -325,6 +325,14 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     the refutation fails the check. The reading's fact itself
     (:attr:`~lanky.ledger.Fact.is_reading`) was established when it was
     made, by running the annotations, and is returned as it is.
+
+    A plugin may hand over a fact its own checker settled when the fact was
+    made: loopty's casts are decided by isl as each schedule step is taken.
+    Such a fact is offered to the oracles as any other, and an oracle that
+    hands it back with the status and the decider it came with, Lean's notes
+    on why it did not prove it say, has not settled it: the walk goes on, as
+    it does for a fact an oracle left ``assumed``, and the fact keeps what
+    its checker gave it, with the notes (:func:`_settles`).
     """
     if fact.is_reading:
         return fact
@@ -354,13 +362,32 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             continue
         if result is None:
             continue
-        if result.status is not Status.ASSUMED:
+        if _settles(oracle, fact, result):
             result = result.with_status(result.status, trust_class=oracle.trust_class())
             fact = _cross_check(result, gaps, handed=fact, verbose=verbose)
             break
         fact = _keep_declines(fact, result)
     fact = _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
     return _rest_on_the_reading(fact)
+
+
+def _settles(oracle: Any, handed: Fact, result: Fact) -> bool:
+    """Whether ``oracle`` settled ``handed`` by answering ``result``.
+
+    An answer that is not ``assumed`` settles a fact the oracle was handed
+    ``assumed``. A fact a plugin's checker settled when it made it (see
+    :func:`establish`) is settled again only by an answer that changes its
+    status, or is the oracle's own: Lean's proof of a cast isl decided, or
+    isl's decision of it again. One that comes back as it was handed, with
+    the reason an oracle did not prove it, is no answer of that oracle's,
+    and its trust class would be a claim about who decided the fact that
+    nobody made.
+    """
+    if result.status is Status.ASSUMED:
+        return False
+    if handed.status is Status.ASSUMED:
+        return True
+    return result.status is not handed.status or result.decided_by == oracle.name
 
 
 def _rest_on_the_reading(fact: Fact) -> Fact:

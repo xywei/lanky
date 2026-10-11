@@ -2071,6 +2071,9 @@ class LeanOracle:
         #: Where Lean's answers about obligations are kept (:class:`ProofCache`);
         #: read from the environment when the first obligation is checked.
         self.proofs: ProofCache | None = None
+        #: The version of the ``lean`` on the ``PATH``, asked once, which keys
+        #: the cache before a session has started (:meth:`_cache_version`).
+        self._on_path: tuple[str] | None = None
 
     @property
     def session(self) -> LeanSession:
@@ -2382,6 +2385,16 @@ class LeanOracle:
         A fact already ``refuted`` whose obligation has no counterexample is
         not offered either, and keeps its status: Lean only ever checks a
         refutation, and never turns one into a proof.
+
+        The :class:`ProofCache` is read first, and no session is started when
+        it answers for every part (#118): a file checked again sends the same
+        declarations, so a warm check reads every answer back, and starting
+        the REPL to ask nothing was most of what a warm check cost. The cache
+        is keyed by the Lean version as well as the source, and the version
+        is the one the session would run (:meth:`_cache_version`), read
+        without starting it; a part with an attempt the cache does not hold
+        sends the whole obligation to the sessions, which read the cache in
+        their turn.
         """
         try:
             obligation = obligation_of(fact.term)
@@ -2415,21 +2428,35 @@ class LeanOracle:
             return fact.with_status(
                 fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
             )
-        sessions = self._part_sessions()
-        if not sessions:
-            return fact.with_status(
-                fact.status, lean_tried=0, lean_reason=self._pool_error()
-            )
         if self.proofs is None:
             self.proofs = ProofCache(default_proof_cache_dir())
-        until = None if budget is None else time.monotonic() + budget
         owner = fact.owner or fact.id
-        if obligation.counterexample is not None:
-            return self._check_counterexample(fact, obligation, owner, until)
-        records = self._check_parts(obligation.parts, owner, until)
+        version = self._cache_version()
+        records: list[dict] | None = None
+        if version is not None:
+            # every answer from the cache, or none: no session is started (#118)
+            if obligation.counterexample is not None:
+                found = self._check_counterexample(fact, obligation, owner, None, version)
+                if found is not None:
+                    return found
+            else:
+                records = self._cached_parts(obligation.parts, owner, version)
+        if records is None:
+            sessions = self._part_sessions()
+            if not sessions:
+                return fact.with_status(
+                    fact.status, lean_tried=0, lean_reason=self._pool_error()
+                )
+            until = None if budget is None else time.monotonic() + budget
+            if obligation.counterexample is not None:
+                checked = self._check_counterexample(fact, obligation, owner, until)
+                assert checked is not None  # a session answers or says why not
+                return checked
+            records = self._check_parts(obligation.parts, owner, until)
+            version = sessions[0].version
         common: dict[str, Any] = {
             "lean_parts": records,
-            "lean_version": sessions[0].version,
+            "lean_version": version,
         }
         if obligation.decider:
             common["lean_decider"] = obligation.decider
@@ -2475,6 +2502,47 @@ class LeanOracle:
             return []
         return self._pool
 
+    def _cache_version(self) -> str | None:
+        """The Lean version the parts' answers are kept under, known without a session.
+
+        The version of the pool's running session, once there is one; before
+        that, the version a session would start with: ``LANKY_LEAN_VERSION``
+        when it pins one, the version an earlier session of this process
+        settled on, or the version of the ``lean`` on the ``PATH``, which is
+        what :func:`candidate_versions` tries first (#118). ``None`` when
+        none of them names a version, and the cache is then read by the
+        sessions alone. An answer kept under a version is one that version of
+        Lean gave, whichever version this process ends up running, so
+        reading it back is sound even where a session would fall back on
+        another toolchain.
+        """
+        if self._pool and self._pool[0].server is not None:
+            return self._pool[0].version
+        pinned = os.environ.get("LANKY_LEAN_VERSION")
+        if pinned:
+            return pinned
+        if _RESOLVED != ():
+            return _RESOLVED  # type: ignore[return-value]
+        if self._on_path is None:
+            self._on_path = (_lean_on_path_version() or "",)
+        return self._on_path[0] or None
+
+    def _cached_parts(self, parts: Any, owner: str, version: str) -> list[dict] | None:
+        """Every part's record read from the cache, or ``None`` if one needs Lean (#118)."""
+        cache = self.proofs
+
+        def kept(source: str) -> tuple[bool, str, bool, bool] | None:
+            found = cache.get(version, source) if cache is not None else None
+            return None if found is None else (found[0], found[1], True, True)
+
+        records = []
+        for part in parts:
+            record = self._check_part(part, owner, None, kept)
+            if record is None:
+                return None
+            records.append(record)
+        return records
+
     def _check_parts(self, parts: Any, owner: str, until: float | None) -> list[dict]:
         """Check every part, in a pool of sessions; one record per part, in order."""
         sessions = self._part_sessions()
@@ -2486,7 +2554,7 @@ class LeanOracle:
                 break
         jobs = min(jobs, len(sessions))
         if jobs <= 1:
-            return [self._check_part(sessions[0], part, owner, until) for part in parts]
+            return [self._checked(sessions[0], part, owner, until) for part in parts]
         import queue
         from concurrent.futures import ThreadPoolExecutor
 
@@ -2497,12 +2565,22 @@ class LeanOracle:
         def check(part: Any) -> dict:
             session = free.get()
             try:
-                return self._check_part(session, part, owner, until)
+                return self._checked(session, part, owner, until)
             finally:
                 free.put(session)
 
         with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="lanky-lean") as pool:
             return list(pool.map(check, parts))
+
+    def _checked(
+        self, session: LeanSession, part: Any, owner: str, until: float | None
+    ) -> dict:
+        """:meth:`_check_part` in ``session``, the cache read first."""
+        record = self._check_part(
+            part, owner, until, lambda source: self._ask(session, source, until)
+        )
+        assert record is not None  # a session answers every attempt, or says why not
+        return record
 
     def _ask(
         self, session: LeanSession, source: str, until: float | None
@@ -2519,8 +2597,8 @@ class LeanOracle:
         return closed, detail, False, answered
 
     def _check_part(
-        self, session: LeanSession, part: Any, owner: str, until: float | None
-    ) -> dict:
+        self, part: Any, owner: str, until: float | None, ask: Any
+    ) -> dict | None:
         """Prove one part: its record, with how it was proved or why it was not.
 
         The record holds the part's ``name`` and ``label``, ``proved``, the
@@ -2528,6 +2606,11 @@ class LeanOracle:
         none did), ``how``, ``seconds`` and ``cached``, and otherwise
         ``reason`` and, when Lean ran out of time rather than answering,
         ``timed_out``.
+
+        ``ask`` answers one declaration's source as :meth:`_ask` does, or
+        gives ``None`` when it cannot, which a reading of the cache alone does
+        for a declaration it does not hold (:meth:`_cached_parts`); the part
+        then has no record, and ``None`` comes back.
         """
         record: dict[str, Any] = {"name": part.name, "label": part.label, "proved": False}
         try:
@@ -2558,7 +2641,10 @@ class LeanOracle:
                 record["reason"] = "the budget ran out before Lean was asked"
                 record["short"] = "ran out of time"
                 break
-            closed, detail, cached, answered = self._ask(session, source, until)
+            answer = ask(source)
+            if answer is None:
+                return None
+            closed, detail, cached, answered = answer
             if closed:
                 record.update(proved=True, how=how, cached=cached)
                 record.pop("reason", None)
@@ -2584,8 +2670,13 @@ class LeanOracle:
         return record
 
     def _check_counterexample(
-        self, fact: Fact, obligation: Any, owner: str, until: float | None
-    ) -> Fact:
+        self,
+        fact: Fact,
+        obligation: Any,
+        owner: str,
+        until: float | None,
+        version: str | None = None,
+    ) -> Fact | None:
         """Prove the refuted part false at the solver's counterexample.
 
         By ``decide``, which evaluates the instantiated statement in the
@@ -2597,6 +2688,11 @@ class LeanOracle:
         statement, a disagreement between the solver and Lean that the
         ledger names (``lean_disagrees``, with what Lean said in
         ``lean_counterexample_detail``).
+
+        With ``version``, the answers are read from the cache alone, as they
+        were kept under that Lean version, and ``None`` comes back when one
+        Lean has to be asked for is not there (#118); without it, the pool's
+        first session is asked, the cache first.
         """
         counter = obligation.counterexample
         where = counter.text or ", ".join(f"{k}={v}" for k, v in counter.point.items())
@@ -2620,11 +2716,26 @@ class LeanOracle:
                 fact.status,
                 lean_counterexample=f"Lean did not check the counterexample: {exc}",
             )
-        session = self._part_sessions()[0]
+        if version is None:
+            session = self._part_sessions()[0]
+            version = session.version
+
+            def ask(source: str) -> tuple[bool, str, bool, bool] | None:
+                return self._ask(session, source, until)
+
+        else:
+
+            def ask(source: str) -> tuple[bool, str, bool, bool] | None:
+                kept = self.proofs.get(version, source) if self.proofs else None
+                return None if kept is None else (kept[0], kept[1], True, True)
+
         last = ""
         heard = False
         for how, source in sources:
-            closed, detail, _cached, answered = self._ask(session, source, until)
+            answer = ask(source)
+            if answer is None:
+                return None
+            closed, detail, _cached, answered = answer
             heard = heard or answered
             if closed:
                 return fact.with_status(
@@ -2634,7 +2745,7 @@ class LeanOracle:
                     ),
                     lean_refuted_by=how,
                     lean_refutation=source,
-                    lean_version=session.version,
+                    lean_version=version,
                 )
             last = detail if answered else f"no answer in time ({detail})"
         if not heard:

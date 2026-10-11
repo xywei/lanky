@@ -32,6 +32,7 @@ from lanky.obligations import (
     negation_source,
     obligation_of,
     part_statement,
+    theorem_name,
 )
 from lanky.oracles.lean import LeanOracle, ProofCache
 from lanky.plugins import registry
@@ -317,6 +318,96 @@ def test_a_long_theorem_is_shown_one_parameter_to_a_line() -> None:
     negation = "theorem Lanky.x_false : ¬(∀ n : Int, n + 1 > n) := by" + " " * 60
     assert _wrapped(negation) == negation
     assert _wrapped("  omega") == "  omega"
+
+
+@pytest.fixture
+def no_session(monkeypatch: pytest.MonkeyPatch, tmp_path) -> tuple[LeanOracle, list]:
+    """An oracle with a proof cache of its own, whose sessions record that they were started.
+
+    Lean is pinned to a version no toolchain has, and a session that is
+    asked to start says it cannot, so nothing here needs Lean: what is
+    tested is whether a check asks for one.
+    """
+    from lanky.oracles.lean import LeanSession
+
+    monkeypatch.setenv("LANKY_LEAN_VERSION", "v0.0.0-test")
+    monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
+    started: list = []
+
+    def start(session: LeanSession) -> bool:
+        started.append(session)
+        session.error = "no Lean in this test"
+        return False
+
+    monkeypatch.setattr(LeanSession, "start", start)
+    oracle = LeanOracle()
+    monkeypatch.setattr(oracle, "availability", lambda: (True, ""))
+    oracle.proofs = ProofCache(str(tmp_path / "proofs"))
+    return oracle, started
+
+
+def _keep(oracle: LeanOracle, part: Part, closed: bool, which: int = 0) -> None:
+    """Keep Lean's answer to the ``which``-th attempt at ``part`` in the oracle's cache."""
+    statement = part_statement(part, theorem_name("kernel", part))
+    _how, tactic = attempts(part, statement)[which]
+    oracle.proofs.put("v0.0.0-test", statement.source(tactic), closed, "" if closed else "no")
+
+
+def test_a_warm_check_reads_every_part_without_starting_lean(no_session) -> None:
+    """#118: every part's answer is in the cache, so no REPL is started.
+
+    The cache is keyed by the version a session would run, which the pin
+    gives without one; the check used to start the REPL first to learn it.
+    """
+    oracle, started = no_session
+    _keep(oracle, IN_BOUNDS, True)
+    _keep(oracle, DISJOINT, True)
+    fact = oracle.establish(fact_of(Obligation(parts=(IN_BOUNDS, DISJOINT), decider="isl")))
+    assert fact.status is Status.PROVED
+    assert [record["cached"] for record in fact.provenance["lean_parts"]] == [True, True]
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+    assert started == []
+
+
+def test_an_attempt_the_cache_does_not_hold_starts_lean(no_session) -> None:
+    """A part whose first attempt failed, and whose next one was never asked, needs Lean."""
+    oracle, started = no_session
+    _keep(oracle, IN_BOUNDS, True)
+    split = Hints(splits=(LogicalOr(((x == 1), (x == 2))),))
+    wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n), split)
+    _keep(oracle, wrong, False)
+    fact = oracle.establish(fact_of(Obligation(parts=(IN_BOUNDS, wrong))))
+    assert started
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_reason"] == "no Lean in this test"
+
+
+def test_a_part_every_attempt_of_which_failed_is_read_back_too(no_session) -> None:
+    """A part Lean found no proof of, every attempt kept, is a warm answer as well."""
+    oracle, started = no_session
+    wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    statement = part_statement(wrong, theorem_name("kernel", wrong))
+    for which in range(len(attempts(wrong, statement))):
+        _keep(oracle, wrong, False, which)
+    fact = oracle.establish(fact_of(Obligation(parts=(wrong,))))
+    assert started == []
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["lean_reason"] == "Lean found no proof"
+
+
+def test_a_counterexample_is_read_back_without_starting_lean(no_session) -> None:
+    oracle, started = no_session
+    part = Part("S0", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    statement = part_statement(part, theorem_name("kernel", part))
+    source = negation_source(part, statement, {"n": 2, "x": 1})
+    oracle.proofs.put("v0.0.0-test", source, True, "")
+    obligation = Obligation(
+        parts=(part,), counterexample=Counterexample("S0", {"n": 2, "x": 1}, "x=1 at n=2")
+    )
+    fact = oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert started == []
+    assert fact.provenance["lean_refuted_by"] == "decide"
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
 
 
 # }}}
