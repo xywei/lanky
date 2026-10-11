@@ -480,7 +480,8 @@ proved. The check is sampled, and that leaves these limits:
   table(i)` at `i = 0`, `table(0)` is compared
   ([#99](https://github.com/xywei/lanky/issues/99)). What follows an overflow,
   which has no value either way, or an operation inside a helper, which the
-  rerun leaves Python's, is still not compared there.
+  rerun leaves Python's, is still not compared there
+  ([#107](https://github.com/xywei/lanky/issues/107)).
 - The rerun runs inside lanky, as the reading does, so a helper that answers
   otherwise when it finds lanky on its caller's stack answers alike in both.
   The check is against misreadings, not against code written to evade it.
@@ -508,7 +509,8 @@ proved. The check is sampled, and that leaves these limits:
   module, a file written or a line printed, happens that often. A helper is
   stopped at a call or a turn of a loop once its draw has run five seconds;
   one step Python takes in C, a builtin's loop or `2 ** 2 ** n` inside a
-  helper, is not, and runs as long as it takes.
+  helper, is not, and runs as long as it takes
+  ([#108](https://github.com/xywei/lanky/issues/108)).
 - `lanky check` and the pytest plugin make the check. A theorem called or
   sampled directly, `gauss(n=4)` or `gauss.report()`, as `python
   examples/gauss.py` does, evaluates its term as before;
