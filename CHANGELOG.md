@@ -8,6 +8,56 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Added
 
+- **Families with several indices.** `Fn[A, B, C]` is a family with two
+  indices, the family of families `Fn[A, Fn[B, C]]`, and any number of
+  indices is curried the same way; a matrix is `Fn[Fin[n], Fin[m], Real]`.
+  It is applied at all of its indices at once, `F[i, j]` or `F(i, j)`, as
+  well as one at a time, `F(i)(j)`, and the three are one entry to every
+  reading: the property tester's tables, the families the check of a
+  reading draws as they are applied, a theorem called as a function, which
+  takes nested lists or an array for such a family, and Lean, which writes
+  `F i j`. `FnType.indices` and `FnType.entries` read a family's index types
+  and what it holds, and `lanky.testing.apply_at` applies a family at
+  several indices in turn. A claim that wrote `F[i, j]` used to be
+  untestable ("could not run").
+- **Exchanging finite sums, in Mathlib mode** (`lanky.sums`,
+  `lanky.oracles.lean.sum_scripts`). An equation between sums, products of
+  sums and quotients of a sum, under any universals, is proved by
+  distributing the products into the sums (`Finset.mul_sum`,
+  `Finset.sum_mul`, `Finset.sum_div`), exchanging the left side's sums one
+  adjacent pair at a time until they are in the right side's order
+  (`Finset.sum_comm`, in a `conv` per exchange), and comparing the summands
+  under all of them (`Finset.sum_congr`, then `ring`). Python finds the
+  order: `lanky.sums.spread` reads a side as `simp` leaves it, and
+  `lanky.sums.orders` the orders of the sums whose domains agree and under
+  which the summands are equal, by sympy where it is installed. Lean checks
+  the script; an order that is wrong costs an attempt. Sum factorization, a
+  tensor-product operator applied as three one-axis passes, and the
+  Kronecker product's mixed product are proved this way for every size.
+- **A claim for every order from an order on.** The induction over families
+  proves `all(c(n) == ... for n in Nat if n >= 1)`: a lower bound on the
+  order in the goal's guard raises the steps tried, the orders below it are
+  base cases `omega` closes from the guard, and the induction hypothesis is
+  taken only where the guard admits it. A step over `ℝ` or `ℂ` shows first
+  that the orders it reaches, `k + 1` to `k + step` cast into the ring, are
+  not zero, which `field_simp` cannot see past `↑k + 1`. The certificate
+  search splits a power whose exponent is a sum, so that `(-b / a) ** (k +
+  2)` and `(-b / a) ** (k + 1)` share a factor, and a residual sympy's
+  `simplify` leaves is evaluated at exact points before the certificate is
+  proposed. `COMBINATION_NORM` has a last arm for such a step: the power
+  split, the denominators cleared, and `ring_nf` after them;
+  `lanky.oracles.lean.combination_norm(statement)` names its lemmas as the
+  statement does.
+- **Two demonstrations for Mathlib mode.** `examples/sum_factorization.py`:
+  grudge's tensor-product operators on hexahedra (inducer/grudge PR #418),
+  the exchange of two sums, sum factorization and the mixed product proved
+  for every size, and numpy's dense `kron(H, kron(G, F))` with the first
+  axis fastest tested. `examples/line_taylor.py`: the line-Taylor expansion
+  pytential's QBX evaluates a layer potential on its own surface with, the
+  coefficients of `log(alpha + tau * beta)` proved for every order under the
+  differential equation the logarithm solves, `line_ode`, cited, and sumpy's
+  own `LineTaylorLocalExpansion` decided against them through order 6. The
+  quickstart has a section on each.
 - **A plugin's claim checked by Lean, part by part, with its solver's hints**
   (`lanky.obligations`). A fact's term may offer Lean an `Obligation` through
   one method, `lean_obligation()`: parts, each a closed lanky term proved on
@@ -52,6 +102,12 @@ All notable changes to lanky are recorded here. The format follows
   whether Lean confirmed the counterexample. Lean's own words (`omega`,
   `decide`, its error messages) appear only under `--show-lean`. `lanky.cli.report_proved`,
   `report_unproved` and `report_lean` print them for a plugin's verb.
+
+### Changed
+
+- A family of families prints as the family with several indices it is:
+  `Fn[Fin(n), Nat, Nat]` where it was `Fn[Fin(n), Fn[Nat, Nat]]`, in a
+  statement and in a reason that names the sort.
 
 ## [0.2.0] - 2026-10-11
 

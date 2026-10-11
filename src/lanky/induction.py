@@ -417,7 +417,7 @@ def _numbers_last(term: Any) -> Any:
 
 
 def _split_powers(sympy: Any, expr: Any) -> Any:
-    """``expr`` with each power whose exponent is a sum split: ``x ** k * x ** 2``, say.
+    """``expr`` with each power whose exponent is a sum split into a product of powers.
 
     See :meth:`_Algebra.side`. Applied again wherever sympy may have put the
     powers back together: after values are put into a lemma, and after

@@ -16,9 +16,12 @@ is opt-in (see :mod:`lanky.mathlib`): with ``LANKY_LEAN_MATHLIB`` naming a Lake
 project, the session imports Mathlib once and elaborates every attempt in that
 environment, the statement is printed in the Mathlib dialect, and the ladder
 goes on, after the core attempts, to Mathlib's tactics (``norm_num``,
-``positivity``, ``ring``, ``field_simp``, ``linarith``, ``nlinarith``) and to
-an induction for a reduction whose bound a natural parameter sets. A fact
-proved there records the Mathlib revision it was proved against. A statement
+``positivity``, ``ring``, ``field_simp``, ``linarith``, ``nlinarith``), to
+an induction for a reduction whose bound a natural parameter sets, to an
+induction over families whose step Python finds (:mod:`lanky.induction`),
+and to an exchange of finite sums whose order Python finds
+(:mod:`lanky.sums`). A fact proved there records the Mathlib revision it was
+proved against. A statement
 that takes a complex logarithm or square root comes with side conditions, that
 each argument stays off the function's branch cut, where Python and Lean read
 it differently (see :mod:`lanky.lean`); they are proved before the statement
@@ -1407,7 +1410,8 @@ def sum_scripts(statement: LeanStatement) -> list[str]:
 #: point differently (``R k (b + 2)`` and ``R k (2 + b)`` are different atoms
 #: to ``ring``); and ``field_simp`` before ``ring`` where the multipliers or
 #: the equations have denominators, on the goal as it is first, whose factored
-#: denominators it knows are not zero, and then normalized.
+#: denominators it knows are not zero, and then normalized. The last arm is
+#: for a power with the order in its exponent (see :func:`combination_norm`).
 COMBINATION_NORM = (
     "(first | ((try push_cast) <;> ring1) | ((try push_cast) <;> ring_nf <;> done) "
     "| ((try push_cast) <;> field_simp <;> ring1) "
@@ -1433,6 +1437,7 @@ def combination_norm(statement: LeanStatement) -> str:
     return COMBINATION_NORM.replace(
         "Int.toNat_natCast", statement.qualified("Int.toNat_natCast")
     )
+
 
 #: What discharges a guard of a hypothesis a certificate applies: the search
 #: proposes a use only where the case's bounds show its guards as linear
@@ -1951,8 +1956,11 @@ def tactic_ladder(
     """Every script the oracle tries, cheapest and most general first.
 
     A statement printed in the Mathlib dialect gets the core ladder first, as
-    it stands but for the closers, and then Mathlib's attempts: the tactics in
-    :data:`MATHLIB_TACTICS` on the whole goal, and :func:`reduction_scripts`.
+    it stands but for the closers, and then Mathlib's attempts: the family
+    induction (:func:`family_induction_scripts`) and the exchange of finite
+    sums (:func:`sum_scripts`), which are written only for a statement of
+    their shape, the tactics in :data:`MATHLIB_TACTICS` on the whole goal, and
+    :func:`reduction_scripts`.
     One that takes a complex logarithm or square root, which is one with side
     conditions (:attr:`lanky.lean.LeanStatement.side_conditions`), gets two
     more whole-goal attempts. ``Complex.exp_log`` holds for an argument that
