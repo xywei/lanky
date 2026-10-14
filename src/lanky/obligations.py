@@ -39,7 +39,12 @@ that fails is named. A part's :class:`Hints` are what ``omega`` cannot find:
   variables the plugin matched given by name, the others found by Lean where
   the theorem's conclusion is the goal, and each premise left a hypothesis
   of the part or arithmetic. Lean checks that the theorem applies, and so
-  that the claim follows from it.
+  that the claim follows from it;
+- *rewrites* with hypotheses that are equations, in the order the plugin
+  found them: what a program's statements store, unfolded into the claim
+  wherever it applies, and a cited identity at the instances the plugin
+  matched. Then the sums over a literal range are written out, and ``ring``
+  compares the two sides (Mathlib only).
 
 A part about real numbers is printed in the Mathlib dialect and checked where
 Mathlib is (:attr:`Part.mathlib`), its cases closed by ``linarith`` where an
@@ -69,12 +74,13 @@ from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
     _affine,
+    dialect,
     domain_guards,
     lean_identifier,
     render_term,
     statement_of,
 )
-from lanky.prelude import FnType, Refined
+from lanky.prelude import FinType, FnType, Refined
 from lanky.terms import Exists, Forall, conjuncts, init_args
 
 __all__ = [
@@ -85,6 +91,7 @@ __all__ = [
     "Obligation",
     "Part",
     "Piece",
+    "Rewrite",
     "attempts",
     "negation_source",
     "obligation_of",
@@ -152,6 +159,36 @@ class Application:
 
 
 @dataclass(frozen=True)
+class Rewrite:
+    """A hypothesis that is an equation, the goal rewritten with it: ``simp only [h3]``.
+
+    ``hypothesis`` is its position among the conjuncts of the part's guard,
+    as an :class:`Instance`'s is, and it has to be a universal whose body is
+    an equation. With no ``arguments``, the goal is rewritten with it from
+    left to right wherever it applies, inside a sum too, each premise (a
+    binder's bounds, the hypothesis's own guard) shown by ``omega`` from the
+    part's hypotheses and the range of every sum the rewrite is under; the
+    rewrites with no arguments that come one after another are made
+    together, until none applies. That is how a plugin unfolds what its
+    statements store, ``v[q, e, k, j, i] == sum(Fr[q, i, a] * w[q, e, k, j,
+    a] for a in Fin[n])``, into a claim about what a program leaves.
+
+    With ``arguments``, lanky terms over the part's own variables, one for
+    each binder of the hypothesis, outermost first, the one instance is
+    rewritten with, ``rw [← h1 n (by omega) (Fr (3 * x + 0)) ...]``, each
+    premise shown by ``omega``. The value of a family may be a family of the
+    part applied to its first arguments, ``Fr(3 * x + 0)``, which is the
+    family of what is left. ``backwards`` rewrites the right side of the
+    instance into its left. That is how a cited theorem, an identity such as
+    sum factorization, is used where the plugin found its one side.
+    """
+
+    hypothesis: int
+    arguments: tuple[Any, ...] = ()
+    backwards: bool = False
+
+
+@dataclass(frozen=True)
 class Hints:
     """What a solver found that ``omega`` does not look for (see the module docstring)."""
 
@@ -159,10 +196,17 @@ class Hints:
     witness: tuple[Piece, ...] = ()
     splits: tuple[Any, ...] = ()
     applications: tuple[Application, ...] = ()
+    rewrites: tuple[Rewrite, ...] = ()
 
     def __bool__(self) -> bool:
         """Whether there is any hint at all."""
-        return bool(self.instances or self.witness or self.splits or self.applications)
+        return bool(
+            self.instances
+            or self.witness
+            or self.splits
+            or self.applications
+            or self.rewrites
+        )
 
 
 @dataclass(frozen=True)
@@ -526,6 +570,131 @@ def _application_line(statement: LeanStatement, part: Part, application: Applica
     return " ".join(["apply", name, *values])
 
 
+#: The longest literal range a sum the rewrites leave is written out over,
+#: term by term: ``∑ d ∈ Finset.Ico 0 3, f d`` is ``f 0 + f 1 + f 2``.
+_WRITTEN_OUT = 8
+
+
+def _literal_ranges(expr: Any, out: set[int]) -> None:
+    """The literal bounds of the sums below ``expr``: ``3`` for a sum over ``Fin[3]``."""
+    from lanky.terms import Sum
+
+    if isinstance(expr, tuple | list):
+        for item in expr:
+            _literal_ranges(item, out)
+        return
+    if isinstance(expr, Sum):
+        for _var, domain in expr.binders:
+            bound = getattr(domain, "bound", None)
+            if (
+                isinstance(domain, FinType)
+                and isinstance(bound, int)
+                and not isinstance(bound, bool)
+                and 0 < bound <= _WRITTEN_OUT
+            ):
+                out.add(bound)
+        _literal_ranges(expr.body, out)
+        if expr.guard is not None:
+            _literal_ranges(expr.guard, out)
+        return
+    if isinstance(expr, Forall | Exists):
+        _literal_ranges(expr.body, out)
+        if expr.guard is not None:
+            _literal_ranges(expr.guard, out)
+        return
+    if isinstance(expr, prim.ExpressionNode):
+        _literal_ranges(init_args(expr), out)
+
+
+def _rewrite_lines(statement: LeanStatement, part: Part, rewrites: Sequence[Rewrite]) -> list[str]:
+    """The script of :class:`Rewrite` hints: the rewrites in order, the sums written out, ring.
+
+    Rewrites with no arguments that come one after another are one ``simp
+    only``, whose discharger shows each premise by ``omega``, from the range
+    of a sum the rewrite is under once ``Finset.mem_Ico`` has read its
+    membership; a rewrite with arguments is a ``rw`` of that instance. Each
+    line is for every goal left, so a rewrite that closes the goal by
+    ``rfl`` leaves the lines after it nothing to do. Then a sum over a
+    literal range, ``Finset.Ico 0 3``, is written out term by term, and
+    ``ring_nf`` compares the two sides; a product whose factors the two
+    sides order differently, under a sum where ``ring_nf`` normalizes each
+    side's summand apart, is put in one order by ``mul_comm`` and
+    ``mul_left_comm`` first.
+
+    Raises:
+        UnsupportedTerm: If a rewrite names no hypothesis, or one that is
+            not a universal over as many variables as it has arguments.
+    """
+    guards = list(conjuncts(part.term.guard)) if isinstance(part.term, Forall) else []
+    names = _hypothesis_names(statement)
+    mathlib = bool(getattr(part, "mathlib", False))
+    if mathlib:
+        member = statement.qualified("Finset.mem_Ico")
+        discharge = f"(first | omega | (simp only [{member}] at *; omega))"
+    else:
+        discharge = "omega"
+    lines: list[str] = []
+    batch: list[str] = []
+    rewritten: list[Any] = []
+
+    def flush() -> None:
+        if batch:
+            lines.append(f"all_goals simp (disch := {discharge}) only [{', '.join(batch)}]")
+            batch.clear()
+
+    for rewrite in rewrites:
+        if not 0 <= rewrite.hypothesis < len(guards):
+            raise UnsupportedTerm(
+                f"the rewrite names hypothesis {rewrite.hypothesis}, and the part has "
+                f"{len(guards)}"
+            )
+        hypothesis = guards[rewrite.hypothesis]
+        rewritten.append(hypothesis)
+        name = names[rewrite.hypothesis]
+        arrow = "← " if rewrite.backwards else ""
+        if not rewrite.arguments:
+            batch.append(f"{arrow}{name}")
+            continue
+        if not isinstance(hypothesis, Forall) or len(hypothesis.binders) != len(
+            rewrite.arguments
+        ):
+            raise UnsupportedTerm(
+                f"hypothesis {rewrite.hypothesis} is not a universal over "
+                f"{len(rewrite.arguments)} variables"
+            )
+        flush()
+        scope = dict(statement.types)
+        pieces: list[str] = []
+        for (var, domain), value in zip(hypothesis.binders, rewrite.arguments, strict=True):
+            pieces.append(render_term(value, statement.types, atomic=True))
+            pieces += ["(by omega)"] * len(domain_guards(var, domain, scope))
+            scope = {**scope, var.name: domain}
+        pieces += ["(by omega)"] * len(conjuncts(hypothesis.guard))
+        lines.append(f"all_goals rw [{arrow}{name} {' '.join(pieces)}]")
+    flush()
+    if not mathlib:
+        return [*lines, "all_goals first | omega | rfl"]
+    ranges: set[int] = set()
+    _literal_ranges([statement.goal_term, *rewritten], ranges)
+    if ranges:
+        ico = statement.qualified("Finset.Ico")
+        shown = [
+            f"show {ico} (0 : ℤ) {bound} = {{{', '.join(map(str, range(bound)))}}} by decide"
+            for bound in sorted(ranges)
+        ]
+        written = ("Finset.sum_insert", "Finset.sum_singleton")
+        lemmas = ", ".join([*shown, *map(statement.qualified, written)])
+        lines.append(f"all_goals try simp (disch := decide) only [{lemmas}]")
+    order = ", ".join(
+        statement.qualified(name) for name in ("mul_comm", "mul_assoc", "mul_left_comm")
+    )
+    lines.append(
+        "all_goals first | (ring_nf; done) "
+        f"| (ring_nf; simp only [{order}]; done) | linarith"
+    )
+    return lines
+
+
 def _disjuncts(prop: Any) -> int:
     """How many disjuncts a proposition has at its top level."""
     if isinstance(prop, prim.LogicalOr):
@@ -657,6 +826,23 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
             continue
         rest = "first | assumption | omega" + (" | linarith" if mathlib else "")
         out.append(("the theorem applied", f"intros\n{line}\nall_goals {rest}"))
+    rewrites = getattr(hints, "rewrites", ())
+    if rewrites:
+        try:
+            script = _rewrite_lines(statement, part, rewrites)
+        except UnsupportedTerm:
+            script = []
+        if script:
+            if isinstance(goal, Forall):
+                from lanky.oracles.lean import _goal_intro
+
+                with dialect(mathlib):
+                    names = _goal_intro(statement)[0]
+                script = [f"intro {' '.join(names)}", *script]
+            how = "the equations rewritten with, in order, then " + (
+                "ring" if mathlib else "omega"
+            )
+            out.append((how, "\n".join(script)))
     lines: list[str] = []
     said: list[str] = []
     instances: list[str] = []

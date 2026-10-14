@@ -8,6 +8,17 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Added
 
+- **Rewrites, a hint for a plugin's part** (`lanky.obligations.Rewrite`,
+  `Hints.rewrites`). A part may ask for its goal to be rewritten with its
+  hypotheses that are equations, in order: with no arguments, wherever one
+  applies, under a sum too (`simp only`, each premise shown by `omega` from
+  the range of the sums it is under); with arguments, at that one instance
+  (`rw`), a family's value perhaps a family of the part applied to its first
+  arguments, `Fr (3 * x + 0)`, and right to left where asked. Then a sum over
+  a literal range is written out term by term and `ring_nf` compares the two
+  sides. loopty states a program's postcondition so: what its calls store,
+  unfolded into the claim, and a cited identity, sum factorization, used at
+  the sections of the arrays where its one side is.
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
   A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
   Fin[d])`, either way round, where `y[i]` is the sum over the cells a map
