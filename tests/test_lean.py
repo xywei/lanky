@@ -468,6 +468,45 @@ def test_a_chained_application_in_bounds_still_prints() -> None:
 
 
 @theorem
+def gathered_through(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], u: Fn[Fin[nv], Int]
+) -> all(u[node[p]] * u[node[p]] >= 0 for p in Fin[nf]):
+    """A family applied at another's value: a gather through a map into its domain."""
+
+
+@theorem
+def _gathered_past_the_end(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv + 1]], u: Fn[Fin[nv], Int]
+) -> all(u[node[p]] * u[node[p]] >= 0 for p in Fin[nf]):
+    """The same through a map whose values reach ``nv``, one point past ``u``'s domain.
+
+    The name is private so that the pytest plugin does not collect a
+    statement about a value ``u`` does not have.
+    """
+
+
+def test_a_gather_through_a_map_into_the_domain_prints_with_the_maps_bound() -> None:
+    """``u[node[p]]`` is in ``u``'s domain because ``node``'s values are, by type.
+
+    ``node[p]`` is not affine, so the bounds of the binders cannot place it;
+    its type does, and the statement takes ``node``'s bound as a hypothesis
+    (:func:`lanky.lean.codomain_bound`), so Lean knows it too. Printed as one
+    proposition, with no such hypothesis, it is declined; through a map whose
+    values reach past the domain it is declined either way.
+    """
+    statement = statement_of(gathered_through.term, "gathered_through")
+    assert [family for family, _ in statement.codomain_bounds] == ["node"]
+    assert "(h2 : ∀ node_arg : Int, 0 ≤ node_arg → node_arg < nf → (node node_arg : Int) < nv)" in (
+        statement.source("sorry")
+    )
+    assert "u (node p : Int)" in statement.goal
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(gathered_through.term)
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        statement_of(_gathered_past_the_end.term, "past_the_end")
+
+
+@theorem
 def _over_a_refined_domain(fam: Fn[Fin[1] & False, Nat]) -> fam(0) == fam(0):
     """A family over a domain a refinement empties, applied at ``0``.
 

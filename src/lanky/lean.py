@@ -1696,16 +1696,20 @@ class _Scope:
     ``lower`` and ``upper`` are affine forms, so the upper bound of an ``i`` in
     ``Fin[n + 1]`` is ``n``, itself in terms of a variable with bounds of its
     own. ``families`` is the parameters whose sort is a family over an index
-    type: those, and only those, have a domain to leave.
+    type: those, and only those, have a domain to leave. ``bounded`` is the
+    statement's own families whose ``Fin`` values its Lean statement bounds by
+    a hypothesis (:func:`codomain_bound`), each with the type it was bound
+    at, so that a binder of the same name inside is not taken for it.
     """
 
     lower: dict[str, dict[str, int]] = field(default_factory=dict)
     upper: dict[str, dict[str, int]] = field(default_factory=dict)
     families: dict[str, FnType] = field(default_factory=dict)
+    bounded: dict[str, Any] = field(default_factory=dict)
 
     def extended(self, binders: Any) -> _Scope:
         """This scope with the binders of one quantifier added."""
-        out = _Scope(dict(self.lower), dict(self.upper), dict(self.families))
+        out = _Scope(dict(self.lower), dict(self.upper), dict(self.families), self.bounded)
         for var, domain in binders:
             out.bind(var.name, domain)
         return out
@@ -1821,6 +1825,40 @@ def _natural_value(argument: Any, scope: _Scope) -> bool:
     return is_natural(current)
 
 
+def _fin_value(argument: Any, domain: FinType, scope: _Scope) -> bool:
+    """Whether ``argument`` applies a family whose values are points of ``domain``.
+
+    ``u[node[f, a]]`` for a ``node: Fn[Fin[nf], Fin[m], Fin[nv]]`` and a ``u:
+    Fn[Fin[nv], Real]``: a gather through a map. ``node[f, a]`` is not affine,
+    so :func:`_fits` cannot read it, but its value is a point of ``Fin[nv]``
+    by its type, and the Lean statement says so too, by the hypothesis it
+    takes after ``node`` (:func:`codomain_bound`). Only a family in
+    ``scope.bounded`` has that hypothesis. The values' bound has to be at most
+    the domain's, and the inner application is checked against its own domain
+    where the walk reaches it.
+    """
+    found = _spine(argument)
+    if found is None:
+        return False
+    name, arguments = found
+    current: Any = scope.families.get(name)
+    if current is None or current is not scope.bounded.get(name):
+        return False
+    for _ in arguments:
+        base = _unrefined(current)
+        if not isinstance(base, FnType):
+            return False
+        current = base.codomain
+    values = _unrefined(current)
+    if not isinstance(values, FinType):
+        return False
+    high, limit = _affine(values.bound), _affine(domain.bound)
+    if high is None or limit is None:
+        return False
+    gap = _resolve(_add(high, _scale(limit, -1)), scope, True)
+    return gap is not None and gap <= 0
+
+
 def _spine(expr: Any) -> tuple[str, tuple[Any, ...]] | None:
     """``(family name, arguments in order)`` for a chain of applications.
 
@@ -1887,7 +1925,10 @@ def _check_chain(
                 "cannot show that the argument is a point of the domain"
             )
         natural_domain = isinstance(domain, Sort) and domain.name == "Nat"
-        if (isinstance(domain, FinType) and not _fits(argument, domain, scope)) or (
+        fits = isinstance(domain, FinType) and (
+            _fits(argument, domain, scope) or _fin_value(argument, domain, scope)
+        )
+        if (isinstance(domain, FinType) and not fits) or (
             natural_domain
             and not (_nonnegative(argument, scope) or _natural_value(argument, scope))
         ):
@@ -2009,7 +2050,7 @@ def _check(expr: Any, scope: _Scope) -> None:
             _check(child, scope)
 
 
-def check_applications(term: Any) -> None:
+def check_applications(term: Any, codomain_bounds: bool = False) -> None:
     """Refuse a statement that applies a family outside the domain it declares.
 
     This is what makes the erasure of ``Fn[Fin[n], B]`` to ``Int → B`` sound
@@ -2026,13 +2067,25 @@ def check_applications(term: Any) -> None:
     mentions (:func:`_check_capture`), which is a different way for the
     printed statement to stop being the one lanky holds.
 
+    ``codomain_bounds`` says the statement is printed with a hypothesis
+    bounding the values of each of its own families into a ``Fin``
+    (:func:`statement_of`): then ``u[node[p]]`` is in ``u``'s domain where
+    ``node``'s values are (:func:`_fin_value`).
+
     Raises:
         UnsupportedTerm: If an application cannot be shown to stay in bounds,
             if the domain of the family it applies is refined, if it applies
             a family more times than its type has arguments, or if a binder
             captures a name its own domain mentions.
     """
-    _check(term, _Scope())
+    scope = _Scope()
+    if codomain_bounds and isinstance(term, Forall):
+        scope.bounded = {
+            var.name: domain.base if isinstance(domain, Refined) else domain
+            for var, domain in term.binders
+            if codomain_bound(var, domain) is not None
+        }
+    _check(term, scope)
 
 
 # }}}
@@ -2285,7 +2338,7 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
     mathlib = _in_mathlib()
     shadowed = _SHADOWED.get()
     _refuse_free_names(term)
-    check_applications(term)
+    check_applications(term, codomain_bounds=True)
     if not isinstance(term, Forall):
         return LeanStatement(
             lean_name, (), (), print_lean(term), term, mathlib=mathlib, shadowed=shadowed
