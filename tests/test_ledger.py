@@ -390,6 +390,34 @@ def test_the_table_says_what_a_fact_is_under_and_what_it_is_worth() -> None:
     assert lines[-1] == "4 facts: 2 assumed, 1 decided, 1 proved"
 
 
+def test_a_plugin_names_a_fact_its_kernel_owns_with_many_by_its_label() -> None:
+    """A schedule's assumption is one of many facts of its kernel: its label names it.
+
+    Its id spells the whole schedule it belongs to, which made the status
+    column of every cast that rests on it as wide as that id.
+    """
+    assumption = make_fact(
+        "assumption:demo.k@4:[c].assume('n % 4 == 0')",
+        owner="k",
+        provenance={"label": "assume('n % 4 == 0')"},
+    )
+    ledger = Ledger(
+        [
+            assumption,
+            make_fact(
+                "k:split",
+                Status.DECIDED,
+                decided_by="isl",
+                owner="k",
+                rests_on=(assumption.id,),
+            ),
+            make_fact("k:other", Status.DECIDED, decided_by="isl", owner="k"),
+        ]
+    )
+    lines = ledger.render().splitlines()
+    assert lines[3].startswith("decided under assume('n % 4 == 0')  assumed")
+
+
 def test_a_ledger_where_nothing_is_weaker_keeps_its_columns() -> None:
     """An assumed fact under an assumed one is worth what it says: no new column."""
     ledger = Ledger([make_fact("post"), make_fact("restated", rests_on=("post",))])

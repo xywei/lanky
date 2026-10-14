@@ -488,16 +488,24 @@ class Ledger:
         """How the table names a fact another one rests on.
 
         By its owner when that names one fact in the ledger, which is the
-        readable case of a theorem or an axiom, and by its id otherwise: a
-        plugin's kernel owns many facts, and an id the ledger does not hold
-        has no owner to show. A claim's ``faithful`` fact (:attr:`Fact.is_reading`)
-        is counted apart from the claim it belongs to, and named
+        readable case of a theorem or an axiom; by the ``label`` in its
+        provenance where a plugin gave one, which a kernel's many facts need,
+        such as loopty's ``assume('n % 4 == 0')`` for the assumption a
+        schedule's casts rest on; and by its id otherwise, which an id the
+        ledger does not hold falls back to too. A claim's ``faithful`` fact
+        (:attr:`Fact.is_reading`) is counted apart from the claim it belongs to,
+        and named
         ``faithful:owner``, so that ``proved under harmonic`` still names the
         axiom ``harmonic`` and not its reading.
         """
         fact = self._facts.get(fact_id)
-        if fact is None or not fact.owner or owners[(fact.is_reading, fact.owner)] != 1:
+        if fact is None:
             return fact_id
+        if not fact.owner or owners[(fact.is_reading, fact.owner)] != 1:
+            # a plugin may name such a fact shortly, ``assume('n % 4 == 0')``
+            provenance = fact.provenance if isinstance(fact.provenance, dict) else {}
+            label = provenance.get("label")
+            return label if isinstance(label, str) and label else fact_id
         return f"{FAITHFUL}:{fact.owner}" if fact.is_reading else fact.owner
 
     # }}}

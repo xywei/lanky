@@ -45,7 +45,9 @@ from lanky.oracles.lean import (
     LeanOracle,
     LeanSession,
     combination_norm,
+    conjunction_scripts,
     family_induction_scripts,
+    fiber_scripts,
     reduction_scripts,
     sum_scripts,
     tactic_ladder,
@@ -348,6 +350,36 @@ def factorized(
     for r in Fin[n]
 ):
     """Sum factorization: a tensor-product operator applied as three one-axis passes."""
+
+
+@theorem
+def scattered(
+    nc: Nat,
+    nv: Nat,
+    d: Nat,
+    cell: Fn[Fin[nc], Fin[d], Fin[nv]],
+    yl: Fn[Fin[nc], Fin[d], Real],
+    y: Fn[Fin[nv], Real],
+    scatter: all(
+        y[i] == sum(yl[c, k] for c in Fin[nc] for k in Fin[d] if cell[c, k] == i)
+        for i in Fin[nv]
+    ),
+) -> sum(y[i] for i in Fin[nv]) == sum(yl[c, k] for c in Fin[nc] for k in Fin[d]):
+    """A scatter-add keeps the total: what the cells add into the nodes is what they hold."""
+
+
+@theorem
+def gathered(nc: Nat, nv: Nat, cell: Fn[Fin[nc], Fin[nv]], x: Fn[Fin[nc], Real]) -> sum(
+    sum(x[c] for c in Fin[nc] if cell[c] == i) for i in Fin[nv]
+) == sum(x[c] for c in Fin[nc]):
+    """The same with one value per cell, the fibers written out."""
+
+
+@theorem
+def three_rows(J: Real, u: Fn[Fin[3], Real]) -> all(
+    J * (u[j] + u[0]) == J * u[j] + J * u[0] for j in Fin[3]
+):
+    """A claim over a concrete ``Fin[3]``: three equations, a conjunction."""
 
 
 @theorem
@@ -904,6 +936,79 @@ def test_finite_sums_are_exchanged_by_a_script_python_writes() -> None:
     assert sum_scripts(statement_of(commutes.term, "commutes", mathlib=True)) == []
 
 
+def test_a_family_into_a_fin_is_bounded_where_lean_reads_it() -> None:
+    """``Fn[..., Fin[nv]]`` prints as ``Int → Int → Nat``, and its bound is a hypothesis.
+
+    Without it, the total of a scatter is a stronger claim in Lean than in
+    Python: a cell sent past the last node would drop its value from the sum.
+    """
+    statement = statement_of(scattered.term, "scattered", mathlib=True)
+    assert statement.codomain_bounds == (("cell", "h3"),)
+    assert dict(statement.hypotheses)["h3"] == (
+        "∀ cell_arg : Int, 0 ≤ cell_arg → cell_arg < nc → ∀ cell_arg1 : Int, "
+        "0 ≤ cell_arg1 → cell_arg1 < d → (cell cell_arg cell_arg1 : Int) < nv"
+    )
+    # it follows the family, once nc, d and nv are parameters
+    assert "(cell : Int → Int → Nat) (h3 : ∀ cell_arg" in statement.source("sorry")
+    # a refinement anywhere in the type is looked through
+    f = Var("f")
+    for refined in (
+        Fn[Fin[n], Fn[Fin[m], Fin[n]] & (m >= 1)],
+        Fn[Fin[n], Fn[Fin[m], Fin[n] & (n >= 1)]],
+        Fn[Fin[n] & (n >= 1), Fin[m]],
+    ):
+        claim = Forall(((n, Nat), (m, Nat), (f, refined)), n >= 0)
+        statement = statement_of(claim, "refined", mathlib=True)
+        assert [family for family, _ in statement.codomain_bounds] == ["f"], refined
+    # a family into a plain sort gets none
+    plain = Forall(((n, Nat), (f, Fn[Fin[n + 1], Nat])), f(0) >= 0)
+    assert statement_of(plain, "plain", mathlib=True).codomain_bounds == ()
+
+
+def test_a_scatter_keeps_its_total_by_a_script_python_writes() -> None:
+    """Rewrite ``y``, turn the filter into an ``if``, move the sum over ``i`` inward, add it up.
+
+    One exchange per argument of the map, each followed by a step under the
+    outer sum on both sides; then ``Finset.sum_ite_eq`` leaves whether the
+    cell is a node, which the family's bound says.
+    """
+    statement = statement_of(scattered.term, "scattered", mathlib=True)
+    (script,) = fiber_scripts(statement)
+    assert script.splitlines() == [
+        "rw [Finset.sum_congr rfl fun x hx => h4 x (Finset.mem_Ico.mp hx).1 "
+        "(Finset.mem_Ico.mp hx).2]",
+        "simp only [Finset.sum_filter]",
+        "rw [Finset.sum_comm]",
+        "refine Finset.sum_congr rfl fun c_ hc_ => ?_",
+        "rw [Finset.sum_comm]",
+        "refine Finset.sum_congr rfl fun k_ hk_ => ?_",
+        "first | rw [Finset.sum_ite_eq] | rw [Finset.sum_ite_eq']",
+        "rw [if_pos (Finset.mem_Ico.mpr ⟨by omega, h3 c_ (Finset.mem_Ico.mp hc_).1 "
+        "(Finset.mem_Ico.mp hc_).2 k_ (Finset.mem_Ico.mp hk_).1 "
+        "(Finset.mem_Ico.mp hk_).2⟩)]",
+    ]
+    assert script in tactic_ladder(statement)
+    # written out, with no hypothesis to rewrite with, and the sides either way
+    (script,) = fiber_scripts(statement_of(gathered.term, "gathered", mathlib=True))
+    assert script.splitlines()[0] == "simp only [Finset.sum_filter]"
+    swapped = Forall(
+        gathered.term.binders, gathered.term.body.right == gathered.term.body.left
+    )
+    (script,) = fiber_scripts(statement_of(swapped, "swapped", mathlib=True))
+    assert script.splitlines()[:2] == ["symm", "simp only [Finset.sum_filter]"]
+    # a sum with no map, or a map with no bound, has no script
+    assert fiber_scripts(statement_of(factorized.term, "factorized", mathlib=True)) == []
+
+
+def test_a_conjunction_is_proved_a_conjunct_at_a_time() -> None:
+    """``all(... for j in Fin[3])`` is three equations, which ``ring`` proves one at a time."""
+    statement = statement_of(three_rows.term, "three_rows", mathlib=True)
+    (script,) = conjunction_scripts(statement)
+    assert script.startswith("(repeat' apply And.intro) <;> (first | ring1")
+    assert script in tactic_ladder(statement)
+    assert conjunction_scripts(statement_of(factorized.term, "f", mathlib=True)) == []
+
+
 def test_no_exchange_is_proposed_where_no_order_makes_the_summands_one(cas) -> None:
     """With the first and third axes' factors swapped, sympy finds no order: there is no script."""
     statement = statement_of(_swapped_factors.term, "_swapped_factors", mathlib=True)
@@ -1397,6 +1502,16 @@ def test_mathlib_proves_gauss_by_induction_on_its_bound(mathlib_oracle: LeanOrac
     ids=lambda claim: claim.__name__,
 )
 def test_mathlib_proves_real_and_complex_claims(mathlib_oracle: LeanOracle, claim) -> None:
+    proved = mathlib_oracle.establish(claim.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+
+
+@pytest.mark.parametrize(
+    "claim", [scattered, gathered, three_rows], ids=lambda claim: claim.__name__
+)
+def test_mathlib_proves_a_scatter_keeps_its_total_and_a_conjunction(
+    mathlib_oracle: LeanOracle, claim
+) -> None:
     proved = mathlib_oracle.establish(claim.fact())
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
 
