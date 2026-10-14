@@ -506,6 +506,26 @@ def test_a_gather_through_a_map_into_the_domain_prints_with_the_maps_bound() -> 
         statement_of(_gathered_past_the_end.term, "past_the_end")
 
 
+def test_a_family_bound_again_inside_is_not_the_one_whose_bound_is_taken() -> None:
+    """``node``'s bound is a hypothesis about the statement's own ``node``.
+
+    A quantifier inside that binds ``node`` again, even at the same type
+    object, binds a family the hypothesis says nothing about, so ``u`` applied
+    at its value is declined (Codex on #141).
+    """
+    nf, nv, node, u, p = Var("nf"), Var("nv"), Var("node"), Var("u"), Var("p")
+    maps = Fn[Fin[nf], Fin[nv]]
+    claim = Forall(
+        ((nf, Nat), (nv, Nat), (node, maps), (u, Fn[Fin[nv], Int])),
+        Forall(((node, maps),), Forall(((p, FinType(nf)),), u(node(p)) * u(node(p)) >= 0)),
+    )
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        statement_of(claim, "shadowed")
+    # the same claim with no binder inside is the gather, and prints
+    plain = Forall(claim.binders, Forall(((p, FinType(nf)),), u(node(p)) * u(node(p)) >= 0))
+    assert "u (node p : Int)" in statement_of(plain, "plain").goal
+
+
 @theorem
 def _over_a_refined_domain(fam: Fn[Fin[1] & False, Nat]) -> fam(0) == fam(0):
     """A family over a domain a refinement empties, applied at ``0``.

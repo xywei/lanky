@@ -1697,19 +1697,22 @@ class _Scope:
     ``Fin[n + 1]`` is ``n``, itself in terms of a variable with bounds of its
     own. ``families`` is the parameters whose sort is a family over an index
     type: those, and only those, have a domain to leave. ``bounded`` is the
-    statement's own families whose ``Fin`` values its Lean statement bounds by
-    a hypothesis (:func:`codomain_bound`), each with the type it was bound
-    at, so that a binder of the same name inside is not taken for it.
+    names of the statement's own families whose ``Fin`` values its Lean
+    statement bounds by a hypothesis (:func:`codomain_bound`); a binder of
+    the same name inside drops its name, since the hypothesis is about the
+    family it shadows.
     """
 
     lower: dict[str, dict[str, int]] = field(default_factory=dict)
     upper: dict[str, dict[str, int]] = field(default_factory=dict)
     families: dict[str, FnType] = field(default_factory=dict)
-    bounded: dict[str, Any] = field(default_factory=dict)
+    bounded: set[str] = field(default_factory=set)
 
     def extended(self, binders: Any) -> _Scope:
         """This scope with the binders of one quantifier added."""
-        out = _Scope(dict(self.lower), dict(self.upper), dict(self.families), self.bounded)
+        out = _Scope(
+            dict(self.lower), dict(self.upper), dict(self.families), set(self.bounded)
+        )
         for var, domain in binders:
             out.bind(var.name, domain)
         return out
@@ -1725,6 +1728,7 @@ class _Scope:
         self.lower.pop(name, None)
         self.upper.pop(name, None)
         self.families.pop(name, None)
+        self.bounded.discard(name)
         if isinstance(base, FnType):
             self.families[name] = base
             return
@@ -1842,7 +1846,7 @@ def _fin_value(argument: Any, domain: FinType, scope: _Scope) -> bool:
         return False
     name, arguments = found
     current: Any = scope.families.get(name)
-    if current is None or current is not scope.bounded.get(name):
+    if current is None or name not in scope.bounded:
         return False
     for _ in arguments:
         base = _unrefined(current)
@@ -2024,12 +2028,7 @@ def _check(expr: Any, scope: _Scope) -> None:
     as a different statement.
     """
     if isinstance(expr, Forall | Exists | Sum):
-        inner = scope
-        for var, domain in expr.binders:
-            _check_capture(var, domain)
-            preceding = inner
-            inner = inner.extended(((var, domain),))
-            _check_domain(domain, preceding, inner)
+        inner = _bound_scope(expr.binders, scope)
         _check(expr.body, inner)
         if expr.guard is not None:
             _check(expr.guard, inner)
@@ -2048,6 +2047,21 @@ def _check(expr: Any, scope: _Scope) -> None:
                 _check(item, scope)
         else:
             _check(child, scope)
+
+
+def _bound_scope(binders: Any, scope: _Scope) -> _Scope:
+    """``scope`` with ``binders`` bound in order, each checked as it is bound.
+
+    A binder is checked for capturing a name its own domain mentions, and its
+    domain's applications under the binders before it.
+    """
+    inner = scope
+    for var, domain in binders:
+        _check_capture(var, domain)
+        preceding = inner
+        inner = inner.extended(((var, domain),))
+        _check_domain(domain, preceding, inner)
+    return inner
 
 
 def check_applications(term: Any, codomain_bounds: bool = False) -> None:
@@ -2078,14 +2092,19 @@ def check_applications(term: Any, codomain_bounds: bool = False) -> None:
             a family more times than its type has arguments, or if a binder
             captures a name its own domain mentions.
     """
-    scope = _Scope()
-    if codomain_bounds and isinstance(term, Forall):
-        scope.bounded = {
-            var.name: domain.base if isinstance(domain, Refined) else domain
-            for var, domain in term.binders
-            if codomain_bound(var, domain) is not None
-        }
-    _check(term, scope)
+    if not (codomain_bounds and isinstance(term, Forall)):
+        _check(term, _Scope())
+        return
+    # the statement's own parameters, then the families among them whose
+    # bound it takes; a binder of the same name inside drops the name again
+    inner = _bound_scope(term.binders, _Scope())
+    last = {var.name: (var, domain) for var, domain in term.binders}
+    inner.bounded = {
+        name for name, (var, domain) in last.items() if codomain_bound(var, domain) is not None
+    }
+    _check(term.body, inner)
+    if term.guard is not None:
+        _check(term.guard, inner)
 
 
 # }}}
