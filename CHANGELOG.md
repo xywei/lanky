@@ -47,6 +47,13 @@ All notable changes to lanky are recorded here. The format follows
   application is in the domain where the values' bound is at most the
   domain's; printed as one proposition, with no such hypothesis, it is
   declined as before, and so is a map whose values reach past the domain.
+- **A family whose type mentions a name bound again inside is declined.**
+  `node: Fn[Fin[1], Fin[n]]` under an inner `n in Fin[m]`, or `u: Fn[Fin[m],
+  Int]` under an inner `m in Fin[5]`: the bounds the printer read the
+  application against were the inner name's, and the family's type means
+  the outer one, so an application past the family's domain could look in
+  bounds. The refusal names the name and asks for the inner binder to be
+  named apart; a name bound twice before the family is declined too.
 - **A fact a plugin names shortly is named so in the status column.** A
   fact that rests on one of a kernel's many facts showed that fact's id,
   `decided under assumption:demo.k@4:[c].assume('n % 4 == 0')` for a cast
