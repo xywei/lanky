@@ -557,6 +557,15 @@ def test_a_size_bound_again_inside_is_not_the_one_a_family_type_means() -> None:
     again = Forall(into, Forall(((n, FinType(m)),), u(node(0)) * u(node(0)) >= 0))
     with pytest.raises(UnsupportedTerm, match="binds n again"):
         statement_of(again, "again")
+    # a family bound after the inner n means that one: a cited theorem's own
+    # parameters inside a claim with the same names
+    off = Var("off")
+    offsets = Fn[Fin[n + 1], Int]
+    cited = Forall(
+        ((n, Nat), (off, offsets)),
+        Forall(((n, Nat), (off, offsets)), off(n) * off(n) >= 0),
+    )
+    assert "off n * off n ≥ 0" in print_lean(cited)
 
 
 @theorem

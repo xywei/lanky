@@ -1701,8 +1701,10 @@ class _Scope:
     statement bounds by a hypothesis (:func:`codomain_bound`); a binder of
     the same name inside drops its name, since the hypothesis is about the
     family it shadows. ``bindings`` counts how often each name has been bound
-    on the way down, so that a family whose type mentions a name bound again
-    inside is not read against the inner one (:func:`_shadowed_in`).
+    on the way down, and ``seen`` holds, for each family, those counts for the
+    names its type mentions when it was bound, so that a family whose type
+    mentions a name bound again after it is not read against the inner one
+    (:func:`_shadowed_in`).
     """
 
     lower: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -1710,6 +1712,7 @@ class _Scope:
     families: dict[str, FnType] = field(default_factory=dict)
     bounded: set[str] = field(default_factory=set)
     bindings: dict[str, int] = field(default_factory=dict)
+    seen: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def extended(self, binders: Any) -> _Scope:
         """This scope with the binders of one quantifier added."""
@@ -1719,6 +1722,7 @@ class _Scope:
             dict(self.families),
             set(self.bounded),
             dict(self.bindings),
+            dict(self.seen),
         )
         for var, domain in binders:
             out.bind(var.name, domain)
@@ -1736,9 +1740,14 @@ class _Scope:
         self.upper.pop(name, None)
         self.families.pop(name, None)
         self.bounded.discard(name)
+        self.seen.pop(name, None)
         self.bindings[name] = self.bindings.get(name, 0) + 1
         if isinstance(base, FnType):
             self.families[name] = base
+            self.seen[name] = {
+                mentioned: self.bindings.get(mentioned, 0)
+                for mentioned in _type_names(base)
+            }
             return
         low, high = _scalar_bounds(domain)
         for bound, table in ((low, self.lower), (high, self.upper)):
@@ -1849,18 +1858,21 @@ def _type_names(sort: Any) -> set[str]:
     return names
 
 
-def _shadowed_in(family: Any, scope: _Scope) -> str | None:
-    """A name ``family``'s type mentions that a binder has bound again; or ``None``.
+def _shadowed_in(family: str, scope: _Scope) -> str | None:
+    """A name the family's type mentions that a binder bound again after it; or ``None``.
 
     ``node: Fn[Fin[1], Fin[n]]`` under an inner ``n in Fin[m]``: the bounds
     in scope are the inner ``n``'s, and ``node``'s type means the outer one,
-    so neither its domain nor its values can be read against them. A name
-    bound twice before the family is declined too, which is conservative.
+    so neither its domain nor its values can be read against them. A family
+    bound after the inner ``n`` means that one, as a cited theorem's own
+    parameters do inside a claim with the same names, and is read as usual;
+    so is a name first bound after the family, which its type can only mean.
     """
-    return next(
-        (name for name in sorted(_type_names(family)) if scope.bindings.get(name, 0) > 1),
-        None,
-    )
+    for name, then in sorted(scope.seen.get(family, {}).items()):
+        now = scope.bindings.get(name, 0)
+        if now != then and not (then == 0 and now == 1):
+            return name
+    return None
 
 
 def _shadowed_refusal(expr: Any, name: str, family: Any, shadowed: str) -> UnsupportedTerm:
@@ -1893,7 +1905,7 @@ def _fin_value(argument: Any, domain: FinType, scope: _Scope) -> bool:
     current: Any = scope.families.get(name)
     if current is None or name not in scope.bounded:
         return False
-    if _shadowed_in(current, scope) is not None:
+    if _shadowed_in(name, scope) is not None:
         return False
     for _ in arguments:
         base = _unrefined(current)
@@ -1959,7 +1971,7 @@ def _check_chain(
             bound again inside, or if the chain applies the family more times
             than its type has arguments.
     """
-    shadowed = _shadowed_in(family, scope)
+    shadowed = _shadowed_in(name, scope)
     if shadowed is not None:
         raise _shadowed_refusal(expr, name, family, shadowed)
     current: Any = family
@@ -1992,7 +2004,7 @@ def _check_chain(
             inner = _spine(argument)
             inner_family = scope.families.get(inner[0]) if inner else None
             if inner_family is not None:
-                inner_shadowed = _shadowed_in(inner_family, scope)
+                inner_shadowed = _shadowed_in(inner[0], scope)
                 if inner_shadowed is not None:
                     raise _shadowed_refusal(argument, inner[0], inner_family, inner_shadowed)
             raise UnsupportedTerm(

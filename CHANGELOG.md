@@ -53,7 +53,9 @@ All notable changes to lanky are recorded here. The format follows
   application against were the inner name's, and the family's type means
   the outer one, so an application past the family's domain could look in
   bounds. The refusal names the name and asks for the inner binder to be
-  named apart; a name bound twice before the family is declined too.
+  named apart. A family bound after the inner name means that one, as a cited
+  theorem's own parameters do inside a claim with the same names, and is
+  read as before.
 - **A fact a plugin names shortly is named so in the status column.** A
   fact that rests on one of a kernel's many facts showed that fact's id,
   `decided under assumption:demo.k@4:[c].assume('n % 4 == 0')` for a cast
