@@ -526,6 +526,39 @@ def test_a_family_bound_again_inside_is_not_the_one_whose_bound_is_taken() -> No
     assert "u (node p : Int)" in statement_of(plain, "plain").goal
 
 
+def test_a_size_bound_again_inside_is_not_the_one_a_family_type_means() -> None:
+    """``node: Fn[Fin[1], Fin[n]]`` under an inner ``n in Fin[m]`` (Codex on #141).
+
+    The bounds in scope are the inner ``n``'s, and ``node``'s values are below
+    the outer one, which may be past ``u``'s domain; read against the inner
+    one, ``u[node[0]]`` looked in bounds. A family's own domain has the same
+    trap, ``u[i]`` for an ``i`` below an inner ``m``, which may be past the
+    outer ``m`` of ``u``'s domain. Both are declined, naming the binder.
+    """
+    n, m, i, node, u = Var("n"), Var("m"), Var("i"), Var("node"), Var("u")
+    gather = Forall(
+        ((n, Nat), (m, Nat), (node, Fn[Fin[1], Fin[n]]), (u, Fn[Fin[m], Int])),
+        Forall(((n, FinType(m)),), u(node(0)) * u(node(0)) >= 0),
+    )
+    with pytest.raises(UnsupportedTerm, match="binds n again"):
+        statement_of(gather, "shadowed_size")
+    own = Forall(
+        ((m, Nat), (u, Fn[Fin[m], Int])),
+        Forall(((m, FinType(5)),), Forall(((i, FinType(m)),), u(i) * u(i) >= 0)),
+    )
+    with pytest.raises(UnsupportedTerm, match="binds m again"):
+        print_lean(own)
+    # a gather into the domain the values are bounded by prints with an inner
+    # binder named apart, and is declined with one that binds n again
+    k = Var("k")
+    into = ((n, Nat), (m, Nat), (node, Fn[Fin[1], Fin[n]]), (u, Fn[Fin[n], Int]))
+    apart = Forall(into, Forall(((k, FinType(m)),), u(node(0)) * u(node(0)) >= 0))
+    assert "u (node 0 : Int)" in statement_of(apart, "apart").goal
+    again = Forall(into, Forall(((n, FinType(m)),), u(node(0)) * u(node(0)) >= 0))
+    with pytest.raises(UnsupportedTerm, match="binds n again"):
+        statement_of(again, "again")
+
+
 @theorem
 def _over_a_refined_domain(fam: Fn[Fin[1] & False, Nat]) -> fam(0) == fam(0):
     """A family over a domain a refinement empties, applied at ``0``.

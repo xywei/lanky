@@ -1700,18 +1700,25 @@ class _Scope:
     names of the statement's own families whose ``Fin`` values its Lean
     statement bounds by a hypothesis (:func:`codomain_bound`); a binder of
     the same name inside drops its name, since the hypothesis is about the
-    family it shadows.
+    family it shadows. ``bindings`` counts how often each name has been bound
+    on the way down, so that a family whose type mentions a name bound again
+    inside is not read against the inner one (:func:`_shadowed_in`).
     """
 
     lower: dict[str, dict[str, int]] = field(default_factory=dict)
     upper: dict[str, dict[str, int]] = field(default_factory=dict)
     families: dict[str, FnType] = field(default_factory=dict)
     bounded: set[str] = field(default_factory=set)
+    bindings: dict[str, int] = field(default_factory=dict)
 
     def extended(self, binders: Any) -> _Scope:
         """This scope with the binders of one quantifier added."""
         out = _Scope(
-            dict(self.lower), dict(self.upper), dict(self.families), set(self.bounded)
+            dict(self.lower),
+            dict(self.upper),
+            dict(self.families),
+            set(self.bounded),
+            dict(self.bindings),
         )
         for var, domain in binders:
             out.bind(var.name, domain)
@@ -1729,6 +1736,7 @@ class _Scope:
         self.upper.pop(name, None)
         self.families.pop(name, None)
         self.bounded.discard(name)
+        self.bindings[name] = self.bindings.get(name, 0) + 1
         if isinstance(base, FnType):
             self.families[name] = base
             return
@@ -1829,6 +1837,43 @@ def _natural_value(argument: Any, scope: _Scope) -> bool:
     return is_natural(current)
 
 
+def _type_names(sort: Any) -> set[str]:
+    """The names the ``Fin`` bounds in a family's type mention, at every level."""
+    names: set[str] = set()
+    current = _unrefined(sort)
+    while isinstance(current, FnType):
+        names |= _type_names(current.domain)
+        current = _unrefined(current.codomain)
+    if isinstance(current, FinType):
+        names |= _names_of(current.bound)
+    return names
+
+
+def _shadowed_in(family: Any, scope: _Scope) -> str | None:
+    """A name ``family``'s type mentions that a binder has bound again; or ``None``.
+
+    ``node: Fn[Fin[1], Fin[n]]`` under an inner ``n in Fin[m]``: the bounds
+    in scope are the inner ``n``'s, and ``node``'s type means the outer one,
+    so neither its domain nor its values can be read against them. A name
+    bound twice before the family is declined too, which is conservative.
+    """
+    return next(
+        (name for name in sorted(_type_names(family)) if scope.bindings.get(name, 0) > 1),
+        None,
+    )
+
+
+def _shadowed_refusal(expr: Any, name: str, family: Any, shadowed: str) -> UnsupportedTerm:
+    """The refusal of an application of a family whose type names a shadowed name."""
+    return UnsupportedTerm(
+        f"{render(expr)} applies {name}, whose type ({family}) mentions "
+        f"{shadowed}, and a binder inside binds {shadowed} again: the bounds "
+        f"lanky reads against are the inner {shadowed}'s, and {name}'s type means "
+        f"the outer one, so lanky cannot place the application; name the inner "
+        "binder apart"
+    )
+
+
 def _fin_value(argument: Any, domain: FinType, scope: _Scope) -> bool:
     """Whether ``argument`` applies a family whose values are points of ``domain``.
 
@@ -1847,6 +1892,8 @@ def _fin_value(argument: Any, domain: FinType, scope: _Scope) -> bool:
     name, arguments = found
     current: Any = scope.families.get(name)
     if current is None or name not in scope.bounded:
+        return False
+    if _shadowed_in(current, scope) is not None:
         return False
     for _ in arguments:
         base = _unrefined(current)
@@ -1902,13 +1949,19 @@ def _check_chain(
     ``f : Fn[Fin[n], Fn[Fin[m], Nat]]`` discharges ``i`` against ``Fin[n]`` and
     ``j`` against ``Fin[m]``; a level whose domain is refined is declined
     outright, because the erasure drops the refinement and affine arithmetic
-    over the binders cannot put it back.
+    over the binders cannot put it back. So is a family whose type mentions
+    a name a binder inside has bound again (:func:`_shadowed_in`): its bounds
+    mean the outer name, and the bounds in scope are the inner one's.
 
     Raises:
         UnsupportedTerm: If a level cannot be shown to stay in bounds, if a
-            level's domain is refined, or if the chain applies the family more
-            times than its type has arguments.
+            level's domain is refined, if the family's type mentions a name
+            bound again inside, or if the chain applies the family more times
+            than its type has arguments.
     """
+    shadowed = _shadowed_in(family, scope)
+    if shadowed is not None:
+        raise _shadowed_refusal(expr, name, family, shadowed)
     current: Any = family
     for argument in arguments:
         base = current.base if isinstance(current, Refined) else current
@@ -1936,6 +1989,12 @@ def _check_chain(
             natural_domain
             and not (_nonnegative(argument, scope) or _natural_value(argument, scope))
         ):
+            inner = _spine(argument)
+            inner_family = scope.families.get(inner[0]) if inner else None
+            if inner_family is not None:
+                inner_shadowed = _shadowed_in(inner_family, scope)
+                if inner_shadowed is not None:
+                    raise _shadowed_refusal(argument, inner[0], inner_family, inner_shadowed)
             raise UnsupportedTerm(
                 f"{render(expr)} applies {name} outside the domain it declares "
                 f"({domain}): lanky cannot show that {render(argument)} is a point "
