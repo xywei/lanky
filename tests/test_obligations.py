@@ -38,7 +38,7 @@ from lanky.obligations import (
 from lanky.oracles.lean import LeanOracle, ProofCache
 from lanky.plugins import registry
 from lanky.prelude import FinType, Fn, Int, Real
-from lanky.terms import Exists, Forall, LogicalAnd, LogicalOr, Var
+from lanky.terms import Abs, Exists, Forall, LogicalAnd, LogicalOr, Var
 
 n, x, y, i, a, r, j = (Var(name) for name in ("n", "x", "y", "i", "a", "r", "j"))
 
@@ -331,6 +331,79 @@ def test_a_theorem_a_hypothesis_is_is_applied_with_what_the_plugin_bound() -> No
     tried = attempts(part, part_statement(part, "applied"))
     assert ("the theorem applied", "intros\napply h0 (p := p) (c := c)\n"
             "all_goals first | assumption | omega | linarith") in tried
+
+
+def test_an_identity_is_rewritten_before_the_theorem_is_applied() -> None:
+    """``rw [h1 (z := ...)]`` makes the goal the theorem's, ``apply h0`` concludes it.
+
+    And where ``apply`` cannot unify the theorem's numerals with the goal's,
+    the goal is rewritten by the theorem too, and ``norm_num`` is left the
+    numerals.
+    """
+    c, z, w, k = Var("c"), Var("z"), Var("w"), Var("k")
+    series = Forall(
+        ((z, Real), (c, Fn[Int, Real])),
+        Forall(((k, Int),), c(k) == z * k, k >= 1),
+        c(1) == z,
+    )
+    identity = Forall(((z, Real), (w, Real)), w * (1 / w) * z == z, ~(w == 0))
+    part = Part(
+        "term_2",
+        "c(2) is what the kernel adds",
+        claim(
+            ((c, Fn[Int, Real]), (x, Real), (y, Real)),
+            [series, identity, ~(y == 0), c(1) == x],
+            c(2) == y * (1 / y) * x * 2,
+        ),
+        Hints(
+            applications=(Application(0, (("z", x), ("c", c))),),
+            rewrites=(Application(1, (("z", x), ("w", y))),),
+        ),
+        mathlib=True,
+    )
+    tried = dict((how, script) for how, script in attempts(part, part_statement(part, "s")))
+    assert tried["rewritten by the identity, the theorem applied"].splitlines() == [
+        "intros",
+        "rw [h1 (z := x) (w := y)]",
+        "apply h0 (z := x) (c := c)",
+        "all_goals first | assumption | omega | linarith",
+    ]
+    assert tried["rewritten by the identity and the theorem"].splitlines() == [
+        "intros",
+        "rw [h1 (z := x) (w := y)]",
+        "rw [h0 (z := x) (c := c)]",
+        "all_goals first | assumption | omega | linarith | (norm_num [Int.toNat]; done)",
+    ]
+
+
+def test_absolute_values_are_given_to_linarith_with_their_bounds() -> None:
+    """``|a - b| <= e (|b| + 1)`` from ``a = q |x|``: ``abs_le`` first, then each bar's bounds."""
+    goal = Abs(y - Abs(x) / 12) <= 1e-6 * (Abs(Abs(x) / 12) + 1)
+    part = Part(
+        "conjunct_0",
+        "y == abs(x) / 12",
+        claim(((x, Real), (y, Real)), [y == Abs(x) / 12], goal),
+        mathlib=True,
+    )
+    tried = dict((how, script) for how, script in attempts(part, part_statement(part, "c")))
+    bounds = (
+        "abs_nonneg (x), le_abs_self (x), neg_abs_le (x), "
+        "abs_nonneg ((|x| : ℝ) / 12), le_abs_self ((|x| : ℝ) / 12), "
+        "neg_abs_le ((|x| : ℝ) / 12), "
+        "abs_nonneg (y - (|x| : ℝ) / 12), le_abs_self (y - (|x| : ℝ) / 12), "
+        "neg_abs_le (y - (|x| : ℝ) / 12)"
+    )
+    taken = tried["linarith, with the absolute values taken apart"].splitlines()
+    assert taken[0] == "rw [abs_le]"
+    assert taken[1].startswith("constructor <;> linarith [")
+    assert set(taken[1].removeprefix("constructor <;> linarith [").removesuffix("]").split(
+        ", "
+    )) == set(bounds.split(", "))
+    # a part with no absolute value of a real gets neither attempt
+    assert [how for how, _ in attempts(REAL_PART, part_statement(REAL_PART, "post"))] == [
+        "omega",
+        "linarith, with the hypotheses taken at 1 point",
+    ]
 
 
 def test_without_mathlib_a_claim_about_reals_is_declined_saying_why(

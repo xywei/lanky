@@ -18,8 +18,9 @@ answers ``map_sum``), so every pymbolic mapper keeps working.
 
 Five node types have no pymbolic counterpart and are added here:
 :class:`Forall`, :class:`Exists`, :class:`Sum` (a reduction over a generator,
-not addition), :class:`Abs` and :class:`Elementary`, an elementary function
-(``exp``, ``log`` or ``sqrt``) applied to one argument.
+not addition), :class:`Abs` and :class:`Elementary`, a function of one argument
+every reader knows applied to it: ``exp``, ``log`` or ``sqrt``, or a part of a
+complex number, ``real``, ``imag`` or ``conj``.
 
 Binders come from generators. ``all(p(r) for r in Fin[n])`` is an ordinary
 generator expression; the builtin ``all`` is replaced by :func:`forall` while an
@@ -89,6 +90,7 @@ __all__ = [
     "binders",
     "code_reads",
     "concrete_sorts",
+    "conj",
     "conjoin",
     "conjuncts",
     "disjoin",
@@ -101,9 +103,12 @@ __all__ = [
     "forall",
     "free_names",
     "free_variables",
+    "imag",
     "init_args",
     "is_totalized",
     "log",
+    "reading_annotation",
+    "real",
     "render",
     "rerunning",
     "sort_free_names",
@@ -1307,14 +1312,25 @@ class Abs(SymbolicMixin, prim.ExpressionNode):
     operand: Any
 
 
-#: The elementary functions a statement can apply, by the name it spells them.
-ELEMENTARY_FUNCTIONS = ("exp", "log", "sqrt")
+#: The elementary functions a statement can apply, by the name it spells them:
+#: ``exp``, ``log`` and ``sqrt``, and the parts of a complex number, its real
+#: part, its imaginary part and its conjugate, by numpy's names.
+ELEMENTARY_FUNCTIONS = ("exp", "log", "sqrt", "real", "imag", "conj")
+
+#: The parts of a complex number among :data:`ELEMENTARY_FUNCTIONS`, each as
+#: Python computes it of a number: of a real number, the number itself, ``0``
+#: and the number.
+_PARTS: dict[str, Callable[[Any], Any]] = {
+    "real": lambda value: value.real,
+    "imag": lambda value: value.imag,
+    "conj": lambda value: value.conjugate(),
+}
 
 
 @_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Elementary(SymbolicMixin, prim.ExpressionNode):
-    """An elementary function applied to one argument: ``exp(x)``, ``log(x)``, ``sqrt(x)``.
+    """A function of one argument: ``exp(x)``, ``log(x)``, ``sqrt(x)``, ``real(z)``, ``conj(z)``.
 
     A node of its own rather than a :class:`Call` of a variable named ``exp``,
     because a call is how a family is applied, and a family is a parameter the
@@ -1326,6 +1342,15 @@ class Elementary(SymbolicMixin, prim.ExpressionNode):
     method is ``map_elementary``. Its argument can be a number: an
     annotation's ``exp(1)`` is ``e`` to every oracle, and not the float
     nearest it (#81).
+
+    The parts of a complex number are nodes of this kind too, by numpy's
+    names: ``real(z)``, ``imag(z)`` and ``conj(z)``, which Python computes as
+    ``z.real``, ``z.imag`` and ``z.conjugate()``, so that of a real number
+    they are the number, ``0`` and the number. The Lean printer writes
+    ``Complex.re z``, ``Complex.im z`` and ``(starRingEnd ℂ) z``, Mathlib's
+    conjugate. ``-beta * conj(alpha) / real(alpha * conj(alpha))`` is
+    ``-beta / alpha`` divided out by the conjugate, one real division, as a
+    kernel computes it.
     """
 
     function: str
@@ -1731,6 +1756,9 @@ def elementary_value(function: str, value: Any) -> Any:
         raise ValueError(f"unknown elementary function {function!r}")
     if isinstance(value, bool) or not isinstance(value, numbers.Complex):
         raise TypeError(f"{function} takes a number, not {value!r}")
+    if function in _PARTS:
+        # a part of a number, which every number has
+        return _PARTS[function](value)
     module = math if isinstance(value, numbers.Real) else cmath
     try:
         return getattr(module, function)(value)
@@ -1801,6 +1829,26 @@ log = _elementary("log")
 #: The square root, ``Real.sqrt`` in Lean, and ``Complex.sqrt`` for a complex
 #: argument, which Lean has to keep off the branch cut (see :mod:`lanky.lean`).
 sqrt = _elementary("sqrt")
+#: The real part, ``numpy.real``: ``Complex.re`` in Lean, and of a real number
+#: the number itself.
+real = _elementary("real")
+#: The imaginary part, ``numpy.imag``: ``Complex.im`` in Lean, and ``0`` of a
+#: real number.
+imag = _elementary("imag")
+#: The complex conjugate, ``numpy.conj``: Mathlib's ``starRingEnd ℂ``, and of a
+#: real number the number itself.
+conj = _elementary("conj")
+
+
+def reading_annotation() -> bool:
+    """Whether an annotation is being read (:func:`evaluate_annotations`) in this context.
+
+    A library whose functions build a node of its own for a term, a kernel's
+    ``loopty.math.conj`` say, asks this to build lanky's instead where the
+    term is a statement's: ``conj(alpha)`` in a theorem's annotation is the
+    conjugate every oracle reads, and not a family named ``conj``.
+    """
+    return bool(_ANNOTATION_CODE.get())
 
 
 #: The builtins that mean something else inside an annotation.

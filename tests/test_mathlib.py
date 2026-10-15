@@ -25,7 +25,7 @@ import pymbolic.primitives as prim
 import pytest
 
 from conftest import claims
-from lanky import exp, log, sqrt, theorem
+from lanky import conj, exp, imag, log, real, sqrt, theorem
 from lanky import mathlib as mathlib_mode
 from lanky.check import goal_guard_fact, hypotheses_fact
 from lanky.intervals import ComplexValue, exp_value
@@ -48,6 +48,7 @@ from lanky.oracles.lean import (
     conjunction_scripts,
     family_induction_scripts,
     fiber_scripts,
+    part_scripts,
     reduction_scripts,
     sum_scripts,
     tactic_ladder,
@@ -69,6 +70,7 @@ from lanky.terms import (
     UndefinedValue,
     Var,
     evaluate,
+    exact_reading,
     render,
     structurally_equal,
 )
@@ -140,6 +142,25 @@ def binomial(x: Real.exact, y: Real.exact) -> (x + y) ** 2 == x**2 + 2 * x * y +
 @theorem
 def divided_back(x: Real, y: Real, hy: y != 0) -> x / y * y == x:
     """True division, undone, away from zero."""
+
+
+@theorem
+def by_the_conjugate(z: Complex, w: Complex, away: z != 0) -> (
+    -w * conj(z) * (1 / real(z * conj(z))) == -w / z
+):
+    """A complex division multiplied out by the conjugate: one real division."""
+
+
+@theorem
+def modulus_squared(z: Complex) -> real(z * conj(z)) == real(z) ** 2 + imag(z) ** 2:
+    """``z`` times its conjugate is the sum of the squares of its parts."""
+
+
+@theorem
+def _conjugate_misread(z: Complex, w: Complex, away: z != 0) -> (
+    w * conj(z) * (1 / real(z * conj(z))) == -w / z
+):
+    """Off by a sign, so nothing proves it."""
 
 
 @theorem
@@ -598,6 +619,55 @@ def test_the_elementary_functions_are_mathlibs() -> None:
     # a node built by hand with a function lanky has no Mathlib name for
     with pytest.raises(UnsupportedTerm, match="does not print"):
         print_lean(Forall(((x, Real),), Elementary("sin", x) <= 1), mathlib=True)
+
+
+def test_the_parts_of_a_complex_number_are_mathlibs() -> None:
+    assert mathlib(real(z * conj(z)) >= 0, z=Complex) == (
+        "Complex.re (z * (starRingEnd ℂ) z) ≥ 0"
+    )
+    assert mathlib(imag(z) == -imag(conj(z)), z=Complex) == (
+        "Complex.im z = (-1) * Complex.im ((starRingEnd ℂ) z)"
+    )
+    # of a real or a natural they are what Python's .real, .imag and
+    # .conjugate() are, with no cast in the way of a tactic
+    assert mathlib(real(x) == x, x=Real) == "x = x"
+    assert mathlib(imag(x) == 0, x=Real) == "(0 : ℝ) = 0"
+    assert mathlib(conj(n) == n, n=Nat) == "n = n"
+    with pytest.raises(UnsupportedTerm, match="Mathlib"):
+        print_lean(modulus_squared.term)
+
+
+def test_the_parts_are_pythons_at_numbers_and_nodes_of_terms() -> None:
+    assert (real(1 + 2j), imag(1 + 2j), conj(1 + 2j)) == (1.0, 2.0, 1 - 2j)
+    assert (real(2.5), imag(3), conj(Fraction(1, 2))) == (2.5, 0, Fraction(1, 2))
+    assert render(real(z) + imag(z) + conj(z)) == "real(z) + imag(z) + conj(z)"
+    assert structurally_equal(conj(z), Elementary("conj", z))
+    assert evaluate(real(z * conj(z)), {"z": 3 + 4j}) == 25.0
+    # the exact reading takes a drawn complex number apart exactly
+    drawn = ComplexValue(Fraction(1, 3), Fraction(-2))
+    with exact_reading():
+        assert evaluate(conj(z), {"z": drawn}) == ComplexValue(Fraction(1, 3), Fraction(2))
+        assert evaluate(imag(z), {"z": drawn}) == Fraction(-2)
+        assert evaluate(real(z * conj(z)), {"z": drawn}) == Fraction(37, 9)
+
+
+def test_an_identity_of_parts_gets_the_scripts_that_take_them_apart() -> None:
+    statement = statement_of(by_the_conjugate.term, "t", mathlib=True)
+    scripts = part_scripts(statement)
+    # the hypothesis z != 0 says the cast of normSq z is not zero, for field_simp
+    assert scripts[0].splitlines()[0] == (
+        "try have hz0 : ((Complex.normSq (z) : ℝ) : ℂ) ≠ 0 := by exact_mod_cast "
+        "(Complex.normSq_pos.mpr (by assumption)).ne'"
+    )
+    assert scripts[1] == (
+        "simp only [Complex.mul_conj, Complex.ofReal_re, Complex.normSq_apply]\nring"
+    )
+    ladder = tactic_ladder(statement)
+    assert all(script in ladder for script in scripts)
+    # before Mathlib's whole-goal tactics, none of which takes a conjugate apart
+    assert ladder.index(scripts[0]) < ladder.index("ring")
+    plain = statement_of(exp_add.term, "t", mathlib=True)
+    assert not any("Complex.mul_conj" in script for script in tactic_ladder(plain))
 
 
 def test_a_complex_logarithm_carries_the_claim_that_it_is_off_the_cut() -> None:
@@ -1514,6 +1584,19 @@ def test_mathlib_proves_a_scatter_keeps_its_total_and_a_conjunction(
 ) -> None:
     proved = mathlib_oracle.establish(claim.fact())
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+
+
+@pytest.mark.parametrize(
+    "claim", [by_the_conjugate, modulus_squared], ids=lambda claim: claim.__name__
+)
+def test_mathlib_proves_an_identity_of_the_parts(mathlib_oracle: LeanOracle, claim) -> None:
+    proved = mathlib_oracle.establish(claim.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+
+
+def test_mathlib_does_not_prove_a_misread_conjugate(mathlib_oracle: LeanOracle) -> None:
+    result = mathlib_oracle.establish(_conjugate_misread.fact())
+    assert result.status is Status.ASSUMED
 
 
 def test_mathlib_mode_still_proves_what_core_lean_proves(mathlib_oracle: LeanOracle) -> None:

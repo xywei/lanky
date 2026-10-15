@@ -118,6 +118,7 @@ from lanky.prelude import FinType, FnType, Nat, Refined
 from lanky.terms import (
     Add,
     Comparison,
+    Elementary,
     Exists,
     Forall,
     Sum,
@@ -139,6 +140,7 @@ __all__ = [
     "family_induction_scripts",
     "induction_scripts",
     "kill_servers",
+    "part_scripts",
     "reduction_scripts",
     "sum_scripts",
     "tactic_ladder",
@@ -2194,6 +2196,8 @@ def tactic_ladder(
             ladder += family_induction_scripts(statement, finder, until)
             ladder += sum_scripts(statement, until)
             ladder += fiber_scripts(statement)
+        if not refuting and _takes_parts(statement):
+            ladder += part_scripts(statement)
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
         ladder += _mathlib_tactics(lemmas, refuting)
         if statement.side_conditions and not refuting:
@@ -2211,6 +2215,77 @@ def tactic_ladder(
         ladder += induction_scripts(statement)
         ladder += reduction_scripts(statement)
     return ladder
+
+
+def _takes_parts(statement: LeanStatement) -> bool:
+    """Whether the statement takes a real part, an imaginary part or a conjugate."""
+
+    def visit(node: Any) -> bool:
+        if isinstance(node, tuple | list):
+            return any(visit(item) for item in node)
+        if isinstance(node, Elementary) and node.function in ("real", "imag", "conj"):
+            return True
+        if isinstance(node, Forall | Exists):
+            return visit(node.body) or (node.guard is not None and visit(node.guard))
+        if isinstance(node, prim.ExpressionNode):
+            return visit(init_args(node))
+        return False
+
+    hypotheses = [term for term in statement.hypothesis_terms if term is not None]
+    return visit(statement.goal_term) or visit(hypotheses)
+
+
+def part_scripts(statement: LeanStatement) -> list[str]:
+    """The attempts at an identity that takes a complex number apart.
+
+    ``-beta * conj(alpha) * (1 / real(alpha * conj(alpha))) == -beta /
+    alpha`` is a complex division multiplied out by the conjugate, as a
+    kernel computes it with one real division. ``alpha * conj(alpha)`` is
+    ``normSq alpha`` cast into ``ℂ`` (``Complex.mul_conj``), whose real part
+    is itself; ``field_simp`` clears the divisions once it knows that cast is
+    not zero, which each hypothesis ``z ≠ 0`` of a complex ``z`` gives
+    (``Complex.normSq_pos``); and the conjugate times ``alpha`` is
+    ``normSq alpha`` again, which leaves ``ring`` a polynomial identity. The
+    second attempt writes ``normSq`` as the sum of the squares of the parts,
+    for an identity of real and imaginary parts. Tried before Mathlib's
+    whole-goal tactics, none of which takes a conjugate apart; a statement
+    that takes no part does not get them.
+    """
+    norm_sq = statement.qualified("Complex.normSq")
+    positive = statement.qualified("Complex.normSq_pos")
+    mul_conj = statement.qualified("Complex.mul_conj")
+    of_real_re = statement.qualified("Complex.ofReal_re")
+    nonzero = []
+    for hypothesis in statement.hypothesis_terms:
+        for part in conjuncts(hypothesis) if hypothesis is not None else ():
+            if not (isinstance(part, Comparison) and part.operator == "!="):
+                continue
+            sides = (part.left, part.right)
+            for side, other in (sides, sides[::-1]):
+                # a term's == builds a proposition: a number is asked as one
+                if isinstance(other, int | float) and not isinstance(other, bool) and other == 0:
+                    try:
+                        if number_type(side, statement.types, mathlib=True) == "ℂ":
+                            nonzero.append(render_term(side, statement.types))
+                    except UnsupportedTerm:
+                        pass
+    lines = [
+        f"try have hz{k} : (({norm_sq} ({z}) : ℝ) : ℂ) ≠ 0 := "
+        f"by exact_mod_cast ({positive}.mpr (by assumption)).ne'"
+        for k, z in enumerate(dict.fromkeys(nonzero))
+    ]
+    lines += [
+        f"simp only [{mul_conj}, {of_real_re}]",
+        "push_cast",
+        "field_simp",
+        f"simp only [← {mul_conj}]",
+        "ring",
+    ]
+    squares = statement.qualified("Complex.normSq_apply")
+    return [
+        "\n".join(lines),
+        f"simp only [{mul_conj}, {of_real_re}, {squares}]\nring",
+    ]
 
 
 def _goal_is_false(statement: LeanStatement) -> bool:

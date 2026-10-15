@@ -8,6 +8,35 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Added
 
+- **The parts of a complex number: `real`, `imag` and `conj`** (`lanky.real`,
+  `lanky.imag`, `lanky.conj`), numpy's names, as nodes of the same kind as
+  `exp`, `log` and `sqrt`. Python computes them as `.real`, `.imag` and
+  `.conjugate()`, so that of a real number they are the number, `0` and the
+  number; the property tester takes a drawn complex number apart exactly;
+  Lean prints `Complex.re z`, `Complex.im z` and `(starRingEnd ℂ) z`,
+  Mathlib's conjugate. In Mathlib mode a statement that takes a part gets two
+  more attempts, before Mathlib's whole-goal tactics: `z * conj(z)` written as
+  `normSq z` cast into `ℂ`, the divisions cleared by `field_simp` with each
+  hypothesis `z != 0` said of `normSq z`, and `ring`; and `normSq` written as
+  the squares of the parts. So `-beta * conj(alpha) * (1 / real(alpha *
+  conj(alpha))) == -beta / alpha`, a complex division multiplied out by the
+  conjugate as a kernel computes it, is proved. `lanky.terms.reading_annotation()`
+  says whether an annotation is being read, for a library whose functions
+  make nodes of their own (loopty's `loopty.math`).
+- **An identity rewritten before a theorem is applied** (`Hints.rewrites`).
+  A part may name a hypothesis that is an identity, a universal whose body
+  is an equation, with the values of its variables: `rw [h1 (alpha := c t -
+  y s) (beta := z t - c t)]` turns the goal's left side of it into its right
+  side, so that a theorem stated of `-beta / alpha` applies to a goal that
+  computes it by the conjugate. Where Mathlib is, a theorem is also applied
+  by rewriting the goal with it and leaving the numerals to `norm_num`,
+  since `apply` does not unify `↑(1 : ℤ)` with `(1 : ℂ)`.
+- **Absolute values given to `linarith` with their bounds.** A part about
+  reals that takes the absolute value of a real gets `linarith` with
+  `abs_nonneg`, `le_abs_self` and `neg_abs_le` of each, and a goal `|a| <= b`
+  is taken apart by `abs_le` first: so a value within an allowance of
+  another, `|a - b| <= e * (|b| + 1)`, is proved from an equation for `a`.
+
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
   A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
   Fin[d])`, either way round, where `y[i]` is the sum over the cells a map
