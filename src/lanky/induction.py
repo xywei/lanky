@@ -370,7 +370,16 @@ class _Algebra:
         if isinstance(expr, prim.Power):
             return sympy.Pow(self.convert(expr.base, scope), self.convert(expr.exponent, scope))
         if isinstance(expr, Elementary):
-            function = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}[expr.function]
+            function = {
+                "exp": sympy.exp,
+                "log": sympy.log,
+                "sqrt": sympy.sqrt,
+                "real": sympy.re,
+                "imag": sympy.im,
+                "conj": sympy.conjugate,
+            }.get(expr.function)
+            if function is None:
+                raise _Unsupported(f"the function {expr.function}")
             return function(self.convert(expr.argument, scope))
         if isinstance(expr, Abs):
             return sympy.Abs(self.convert(expr.operand, scope))
