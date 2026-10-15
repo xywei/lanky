@@ -119,7 +119,7 @@ Mathlib:
 | `examples/l2p.py` | sumpy's L2P for the 2-D Laplace kernel | the compressed Taylor recurrence rebuilds every derivative, applied to the kernel that rebuilds each box's triangle |
 | `examples/hexahedra.py` | grudge PR #418's weak gradient and divergence | the Kronecker operator is three one-axis passes, cited by the programs, whose postconditions Lean proves from it |
 | `examples/advection.py` | grudge #418's weak advection right-hand side | the inverse mass pushed inward, and the lift onto the face nodes the face gather's transpose |
-| `examples/layer_potential.py` | pytential's direct QBX with sumpy's line-Taylor expansion | the line-Taylor coefficients from the recurrence a logarithm's satisfy (that it does is cited), tied to the terms the single layer adds |
+| `examples/layer_potential.py` | pytential's direct QBX with sumpy's line-Taylor expansion | the line-Taylor coefficients, from the recurrence a logarithm's coefficients satisfy (which is cited), tied to the terms the single layer adds |
 | `examples/assembly.py` | PyOP2's P1 mass assembly, from firedrake's tests | the rule exact on quadratics, the element's mass in closed form, as the kernel's postcondition, and the scatter keeping the total |
 
 loopty's README has the demonstrations, their ledgers, and how each compares
