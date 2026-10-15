@@ -662,6 +662,12 @@ def test_an_identity_of_parts_gets_the_scripts_that_take_them_apart() -> None:
     assert scripts[1] == (
         "simp only [Complex.mul_conj, Complex.ofReal_re, Complex.normSq_apply]\nring"
     )
+    # a hypothesis whose side Mathlib alone prints is said of normSq too
+    conjugated = Forall(((z, Complex),), real(z * conj(z)) > 0, conj(z) != 0)
+    first = part_scripts(statement_of(conjugated, "c", mathlib=True))[0]
+    assert first.splitlines()[0].startswith(
+        "try have hz0 : ((Complex.normSq ((starRingEnd ℂ) z) : ℝ) : ℂ) ≠ 0"
+    )
     ladder = tactic_ladder(statement)
     assert all(script in ladder for script in scripts)
     # before Mathlib's whole-goal tactics, none of which takes a conjugate apart

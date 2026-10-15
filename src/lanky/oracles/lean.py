@@ -2266,7 +2266,14 @@ def part_scripts(statement: LeanStatement) -> list[str]:
                 if isinstance(other, int | float) and not isinstance(other, bool) and other == 0:
                     try:
                         if number_type(side, statement.types, mathlib=True) == "ℂ":
-                            nonzero.append(render_term(side, statement.types))
+                            nonzero.append(
+                                render_term(
+                                    side,
+                                    statement.types,
+                                    mathlib=statement.mathlib,
+                                    shadowed=statement.shadowed,
+                                )
+                            )
                     except UnsupportedTerm:
                         pass
     lines = [

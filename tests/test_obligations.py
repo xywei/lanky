@@ -376,6 +376,29 @@ def test_an_identity_is_rewritten_before_the_theorem_is_applied() -> None:
     ]
 
 
+def test_a_value_mathlib_prints_is_given_to_a_rewrite_as_it_prints_it() -> None:
+    """A true division is Mathlib's, and is not dropped from the script (Codex)."""
+    z, w = Var("z"), Var("w")
+    identity = Forall(((z, Real), (w, Real)), w * (1 / w) * z == z, ~(w == 0))
+    part = Part(
+        "halved",
+        "the identity at y / 2",
+        claim(
+            ((x, Real), (y, Real)),
+            [identity, ~(y == 0)],
+            (y / 2) * (1 / (y / 2)) * x == x,
+        ),
+        Hints(
+            applications=(Application(0, (("z", x), ("w", y / 2))),),
+            rewrites=(Application(0, (("z", x), ("w", y / 2))),),
+        ),
+        mathlib=True,
+    )
+    tried = dict(attempts(part, part_statement(part, "h")))
+    script = tried["rewritten by the identity, the theorem applied"].splitlines()
+    assert script[1] == "rw [h0 (z := x) (w := (y : ℝ) / 2)]"
+
+
 def test_absolute_values_are_given_to_linarith_with_their_bounds() -> None:
     """``|a - b| <= e (|b| + 1)`` from ``a = q |x|``: ``abs_le`` first, then each bar's bounds."""
     goal = Abs(y - Abs(x) / 12) <= 1e-6 * (Abs(Abs(x) / 12) + 1)

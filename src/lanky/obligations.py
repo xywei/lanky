@@ -79,7 +79,6 @@ from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
     _affine,
-    dialect,
     domain_guards,
     lean_identifier,
     number_type,
@@ -543,11 +542,22 @@ def _application_line(statement: LeanStatement, part: Part, application: Applica
     binders = {var.name for var, _ in hypothesis.binders}
     name = _hypothesis_names(statement)[application.hypothesis]
     values = [
-        f"({lean_identifier(binder)} := {render_term(value, statement.types)})"
+        f"({lean_identifier(binder)} := {_value(value, statement)})"
         for binder, value in application.values
         if binder in binders
     ]
     return " ".join(["apply", name, *values])
+
+
+def _value(value: Any, statement: LeanStatement) -> str:
+    """A value a script gives a binder, printed in the statement's dialect and names.
+
+    A part about reals is Mathlib's, and a value in it may be too: ``conj(z)``
+    or a true division, which core Lean's printer declines.
+    """
+    return render_term(
+        value, statement.types, mathlib=statement.mathlib, shadowed=statement.shadowed
+    )
 
 
 def _rewrite_line(statement: LeanStatement, part: Part, rewrite: Application) -> str:
@@ -575,7 +585,7 @@ def _rewrite_line(statement: LeanStatement, part: Part, rewrite: Application) ->
     binders = {var.name for var, _ in hypothesis.binders}
     name = _hypothesis_names(statement)[rewrite.hypothesis]
     values = [
-        f"({lean_identifier(binder)} := {render_term(value, statement.types)})"
+        f"({lean_identifier(binder)} := {_value(value, statement)})"
         for binder, value in rewrite.values
         if binder in binders
     ]
@@ -609,11 +619,12 @@ def _absolute_values(statement: LeanStatement) -> list[str]:
     out: list[str] = []
     for operand in found:
         try:
+            if number_type(operand, statement.types, mathlib=True) == "ℂ":
+                continue
             # printed as the statement is, in Mathlib's dialect
-            with dialect(True):
-                if number_type(operand, statement.types, mathlib=True) == "ℂ":
-                    continue
-                text = render_term(operand, statement.types)
+            text = render_term(
+                operand, statement.types, mathlib=True, shadowed=statement.shadowed
+            )
         except UnsupportedTerm:
             continue
         if text not in out:
