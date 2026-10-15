@@ -53,7 +53,7 @@ from lanky.oracles.lean import (
     sum_scripts,
     tactic_ladder,
 )
-from lanky.prelude import Complex, Fin, FinType, Fn, Int, Nat, Real, Refined
+from lanky.prelude import Bool, Complex, Fin, FinType, Fn, Int, Nat, Real, Refined
 from lanky.semantics import (
     DIVISION_BY_ZERO,
     OUTSIDE_THE_DOMAIN,
@@ -635,6 +635,15 @@ def test_the_parts_of_a_complex_number_are_mathlibs() -> None:
     assert mathlib(conj(n) == n, n=Nat) == "n = n"
     with pytest.raises(UnsupportedTerm, match="Mathlib"):
         print_lean(modulus_squared.term)
+    # of a truth value or a family Python has no part, so neither is printed
+    # as 0 or as itself, which Lean would prove (Codex)
+    b, f = Var("b"), Var("f")
+    with pytest.raises(UnsupportedTerm, match="takes a part of b, which is not a number"):
+        mathlib(imag(b) == 0, b=Bool)
+    with pytest.raises(UnsupportedTerm, match="takes a part of b, which is not a number"):
+        mathlib(real(b) == b, b=Bool)
+    with pytest.raises(UnsupportedTerm, match="takes a part of f, which is not a number"):
+        mathlib(imag(f) == 0, f=Fn[Nat, Real])
 
 
 def test_the_parts_are_pythons_at_numbers_and_nodes_of_terms() -> None:

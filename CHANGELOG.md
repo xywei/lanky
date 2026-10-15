@@ -12,7 +12,8 @@ All notable changes to lanky are recorded here. The format follows
   `lanky.imag`, `lanky.conj`), numpy's names, as nodes of the same kind as
   `exp`, `log` and `sqrt`. Python computes them as `.real`, `.imag` and
   `.conjugate()`, so that of a real number they are the number, `0` and the
-  number; the property tester takes a drawn complex number apart exactly;
+  number, and of a truth value or a family Python has none, and Lean is
+  shown none; the property tester takes a drawn complex number apart exactly;
   Lean prints `Complex.re z`, `Complex.im z` and `(starRingEnd ℂ) z`,
   Mathlib's conjugate. In Mathlib mode a statement that takes a part gets two
   more attempts, before Mathlib's whole-goal tactics: `z * conj(z)` written as

@@ -1163,8 +1163,22 @@ def _render_part(expr: Elementary, outer: int, types: _Types) -> str:
     itself and ``0``, which is printed as such: ``Complex.re`` of a real
     ``x`` would be of ``x`` cast to ``ℂ``, which is ``x`` too, with a cast
     in the way of every tactic.
+
+    Of anything else, a truth value or a family not applied, Python has no
+    part (:func:`lanky.terms.elementary_value` raises), so it is declined:
+    ``imag(b)`` printed as ``0`` would let Lean prove what Python cannot
+    evaluate.
     """
     kind = _kind(expr.argument, types)
+    argument = expr.argument
+    family = isinstance(argument, Var | prim.Variable) and isinstance(
+        _unrefined(types.get(argument.name)), FnType
+    )
+    if kind not in _NUMBER_KINDS or family:
+        raise UnsupportedTerm(
+            f"{render(expr)} takes a part of {render(argument)}, which is not a "
+            "number; Python's real, imag and conj take numbers only"
+        )
     if kind != "Complex":
         if expr.function == "imag":
             return f"(0 : {'ℤ' if kind == 'Int' else 'ℝ'})"
