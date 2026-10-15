@@ -34,14 +34,13 @@ $ python examples/gauss.py           # theorems run as property tests
 $ pytest examples/gauss.py           # the same theorems, collected as test items
 $ lanky check examples/gauss.py      # the ledger: every claim and who decided it
 STATUS  EFFECTIVE  BY             WHERE        OWNER          STATEMENT
-------  ---------  -------------  -----------  -------------  ---------------------------------------------------------
+------  ---------  -------------  -----------  -------------  -------------------------------------------------------------------------
 tested  tested     property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
 tested  tested     python         gauss.py:31  gauss          the term computes what the annotations compute
 proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat]
                                                               | h0: off(0) == 0
                                                               | hs: forall r in Fin(n). off(r + 1) == off(r) + cnt(r)
-                                                              |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b.
-                                                                  off(a) <= off(b)
+                                                              |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b. off(a) <= off(b)
 tested  tested     python         gauss.py:39  scan_monotone  the term computes what the annotations compute
 
 4 facts: 1 proved, 3 tested

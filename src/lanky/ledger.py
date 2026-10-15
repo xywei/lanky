@@ -559,11 +559,13 @@ class Ledger:
             cell += " under " + ", ".join(self._label(entry, owners) for entry in support.under)
         return cell
 
-    def render(self, width: int = 72, *, columns: int | None = None) -> str:
+    def render(self, width: int = 100, *, columns: int | None = None) -> str:
         """A fixed-width table: status, decider, location, and statement.
 
         ``width`` bounds the statement column; everything else is sized to its
-        contents, so the table stays readable in a terminal. ``columns`` is
+        contents, so the table stays readable in a terminal. Most of a kernel's
+        facts fit in 100 characters, and a theorem is broken at its parts
+        anyway, so few rows take more than a line. ``columns`` is
         the width of the terminal the table is printed in, when there is one:
         the statement column then takes what the other columns leave of it,
         between :data:`NARROWEST` and :data:`WIDEST` characters, whatever
@@ -683,7 +685,7 @@ def _locations(facts: list[Fact]) -> list[str]:
     return out
 
 
-def statement_lines(fact: Fact, width: int = 72) -> list[str]:
+def statement_lines(fact: Fact, width: int = 100) -> list[str]:
     """A fact's statement as the table prints it: whole, in lines of ``width`` at most.
 
     A statement that fits is one line, its whitespace collapsed. A longer one

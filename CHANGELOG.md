@@ -19,10 +19,12 @@ All notable changes to lanky are recorded here. The format follows
   provenance. Any other statement is broken before an `and` that joins two
   claims, after a label's `:` or a quantifier's `.`, or before a guard's
   `where`, outside brackets where it can be, and indented a step for each
-  bracket it breaks inside. In a terminal the column takes what the other
-  columns leave, between 40 and 100 characters; written to a file or a pipe
-  it is 72, so a transcript does not depend on the window it was made in
-  (`Ledger.render(columns=...)`, `lanky.cli.terminal_columns`).
+  bracket it breaks inside. The column is 100 characters wide where it was
+  72, so that most of a kernel's facts are one line and the table does not
+  double in height; in a terminal it takes what the other columns leave,
+  between 40 and 100, and written to a file or a pipe it is 100, so a
+  transcript does not depend on the window it was made in
+  (`Ledger.render(width=100, columns=...)`, `lanky.cli.terminal_columns`).
 - **`LANKY_LEAN_DISABLE` prints what a machine without Lean prints**, the
   `WITHOUT LEAN` line below included, so a CI job that sets it checks the
   transcripts such a machine shows.

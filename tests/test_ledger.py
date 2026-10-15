@@ -105,16 +105,19 @@ def test_a_statement_too_long_for_its_column_is_wrapped_under_it_not_cut() -> No
         where="l2p.py:240",
         owner="reconstruct",
     )
-    lines = Ledger([short, post]).render().splitlines()
-    at = lines[0].index("STATEMENT")
-    assert lines[2][at:] == "short holds"
-    rows = lines[3:-2]
-    assert rows[0].startswith("decided  isl  l2p.py:240  reconstruct")
-    assert len(rows) == 4
-    assert all(not line[:at].strip() for line in rows[1:])
-    assert " ".join(line[at:].strip() for line in rows) == POSTCONDITION
-    assert max(len(line) - at for line in rows) <= 72
-    assert lines[-1] == "2 facts: 2 decided"
+    for width, count in ((72, 4), (100, 3)):
+        lines = Ledger([short, post]).render(width).splitlines()
+        at = lines[0].index("STATEMENT")
+        assert lines[2][at:] == "short holds"
+        rows = lines[3:-2]
+        assert rows[0].startswith("decided  isl  l2p.py:240  reconstruct")
+        assert len(rows) == count
+        assert all(not line[:at].strip() for line in rows[1:])
+        assert " ".join(line[at:].strip() for line in rows) == POSTCONDITION
+        assert max(len(line) - at for line in rows) <= width
+        assert lines[-1] == "2 facts: 2 decided"
+    # the default is 100 characters
+    assert Ledger([short, post]).render() == Ledger([short, post]).render(100)
 
 
 def test_a_long_statement_breaks_between_claims_and_not_inside_a_guard() -> None:
@@ -201,7 +204,7 @@ def test_in_a_terminal_the_statement_column_takes_what_the_others_leave() -> Non
         rows = ledger.render(columns=columns).splitlines()[2:-2]
         return max(len(line) for line in rows) - others
 
-    assert widest(None) <= 72
+    assert widest(None) <= 100
     assert widest(others + 80) <= 80 < widest(others + 400) <= WIDEST
     assert widest(others + 10) <= NARROWEST
     assert len(ledger.render(columns=others + 400).splitlines()) < len(

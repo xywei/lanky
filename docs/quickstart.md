@@ -111,14 +111,13 @@ theorem in a collected module becomes a test item.
 ```console
 $ uv run lanky check examples/gauss.py
 STATUS  EFFECTIVE  BY             WHERE        OWNER          STATEMENT
-------  ---------  -------------  -----------  -------------  ---------------------------------------------------------
+------  ---------  -------------  -----------  -------------  -------------------------------------------------------------------------
 tested  tested     property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
 tested  tested     python         gauss.py:31  gauss          the term computes what the annotations compute
 proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat]
                                                               | h0: off(0) == 0
                                                               | hs: forall r in Fin(n). off(r + 1) == off(r) + cnt(r)
-                                                              |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b.
-                                                                  off(a) <= off(b)
+                                                              |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b. off(a) <= off(b)
 tested  tested     python         gauss.py:39  scan_monotone  the term computes what the annotations compute
 
 4 facts: 1 proved, 3 tested
@@ -485,11 +484,10 @@ facts or fact ids, and becomes the `rests_on` of the theorem's fact.
 ```console
 $ uv run lanky check examples/nicomachus.py
 STATUS                   EFFECTIVE  BY             WHERE             OWNER       STATEMENT
------------------------  ---------  -------------  ----------------  ----------  -----------------------------------------------------------------
+-----------------------  ---------  -------------  ----------------  ----------  -------------------------------------------------------------------------
 tested                   tested     property-test  nicomachus.py:33  gauss       n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
 tested                   tested     python         nicomachus.py:33  gauss       the term computes what the annotations compute
-assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus  n : Nat
-                                                                                 |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
+assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
 tested                   tested     python         nicomachus.py:38  nicomachus  the term computes what the annotations compute
 tested under nicomachus  assumed    property-test  nicomachus.py:43  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
 tested                   tested     python         nicomachus.py:43  cubes       the term computes what the annotations compute
@@ -623,7 +621,7 @@ that the identity is not one of them.
 ```console
 $ uv run lanky check examples/pytential_skie.py
 STATUS                                                        EFFECTIVE  BY             WHERE                  OWNER                     STATEMENT
-------------------------------------------------------------  ---------  -------------  ---------------------  ------------------------  ------------------------------------------------------------------------
+------------------------------------------------------------  ---------  -------------  ---------------------  ------------------------  -----------------------------------------------------------------------------------------
 assumed (axiom)                                               assumed    -              pytential_skie.py:94   jump_S                    gamma : C2Boundary, s : Side |- trace(S, s) == S
 assumed                                                       assumed    -              pytential_skie.py:94   jump_S                    the term computes what the annotations compute
 assumed (axiom)                                               assumed    -              pytential_skie.py:99   jump_D                    gamma : C2Boundary, s : Side |- trace(D, s) == 1/2*s*I + D
@@ -651,8 +649,7 @@ decided under jump_Sp, compact_Sp                             assumed    layer-r
 decided under jump_D, jump_S                                  assumed    layer-rules    pytential_skie.py:169  helmholtz_combined_field  trace(D - 1j*eta*S, EXTERIOR) ~> 1/2*I + D - 1j*eta*S (jump relations)
 tested                                                        tested     property-test  pytential_skie.py:169  helmholtz_combined_field  coefficient of I: 1/2 != 0
 decided under jump_D, jump_S, compact_D, compact_S            assumed    layer-rules    pytential_skie.py:169  helmholtz_combined_field  1/2*I + D - 1j*eta*S is second kind
-decided under jump_Dp, jump_Sp                                assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   normal_derivative(D - 1j*eta*S, EXTERIOR) ~> 1j/2*eta*I + D' - 1j*eta*S'
-                                                                                                                                           (jump relations)
+decided under jump_Dp, jump_Sp                                assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   normal_derivative(D - 1j*eta*S, EXTERIOR) ~> 1j/2*eta*I + D' - 1j*eta*S' (jump relations)
 decided under jump_Dp, jump_Sp, compact_Sp, hypersingular_Dp  assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   1j/2*eta*I + D' - 1j*eta*S' is not second kind: D' is not c*I + compact
 
 29 facts: 16 assumed, 10 decided, 3 tested
@@ -829,21 +826,17 @@ kernel's harmonicity:
 ```console
 $ uv run lanky check examples/sumpy_recurrence.py
 STATUS                  BY      WHERE                    OWNER              STATEMENT
-----------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------
+----------------------  ------  -----------------------  -----------------  ---------------------------------------------------------------------------------------------------
 assumed (axiom)         -       sumpy_recurrence.py:139  harmonic           x : Real, y : Real
                                                                             | away: x**2 + y**2 > 0
-                                                                            |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) +
-                                                                                (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
+                                                                            |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
 tested                  python  sumpy_recurrence.py:139  harmonic           the term computes what the annotations compute
-tested                  mpmath  sumpy_recurrence.py:801  compressed_taylor  at 20 points: reconstructed(a, b)
-                                                                              == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
+tested                  mpmath  sumpy_recurrence.py:801  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
 decided (heuristic)     cas     sumpy_recurrence.py:801  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                               == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-assumed under harmonic  -       sumpy_recurrence.py:801  compressed_taylor  every order: reconstructed(a, b)
-                                                                              == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
+assumed under harmonic  -       sumpy_recurrence.py:801  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
                                                                               by reconstructed(a + 2, b) == -reconstructed(a, b + 2)
-assumed under harmonic  -       sumpy_recurrence.py:801  compressed_taylor  every order p: reconstructed(a, b)
-                                                                              == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
+assumed under harmonic  -       sumpy_recurrence.py:801  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
                                                                               by reconstructed(a + 2, b) == -reconstructed(a, b + 2) inside it
 
 6 facts: 3 assumed, 1 decided, 2 tested
@@ -939,14 +932,13 @@ builds goes where `LANKY_LEAN_CACHE_DIR` says, as in core mode. Then:
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/gauss.py
 STATUS  EFFECTIVE  BY      WHERE        OWNER          STATEMENT
-------  ---------  ------  -----------  -------------  ---------------------------------------------------------
+------  ---------  ------  -----------  -------------  -------------------------------------------------------------------------
 proved  tested     lean    gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
 tested  tested     python  gauss.py:31  gauss          the term computes what the annotations compute
 proved  tested     lean    gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat]
                                                        | h0: off(0) == 0
                                                        | hs: forall r in Fin(n). off(r + 1) == off(r) + cnt(r)
-                                                       |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b.
-                                                           off(a) <= off(b)
+                                                       |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b. off(a) <= off(b)
 tested  tested     python  gauss.py:39  scan_monotone  the term computes what the annotations compute
 
 4 facts: 2 proved, 2 tested
@@ -1045,21 +1037,17 @@ With the same variable, the sumpy demonstration's last two rows are proved:
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py
 STATUS                 EFFECTIVE            BY      WHERE                    OWNER              STATEMENT
----------------------  -------------------  ------  -----------------------  -----------------  ------------------------------------------------------------------
+---------------------  -------------------  ------  -----------------------  -----------------  ---------------------------------------------------------------------------------------------------
 assumed (axiom)        assumed              -       sumpy_recurrence.py:139  harmonic           x : Real, y : Real
                                                                                                 | away: x**2 + y**2 > 0
-                                                                                                |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) +
-                                                                                                    (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
+                                                                                                |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
 tested                 tested               python  sumpy_recurrence.py:139  harmonic           the term computes what the annotations compute
-tested                 tested               mpmath  sumpy_recurrence.py:801  compressed_taylor  at 20 points: reconstructed(a, b)
-                                                                                                  == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
+tested                 tested               mpmath  sumpy_recurrence.py:801  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
 decided (heuristic)    decided (heuristic)  cas     sumpy_recurrence.py:801  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                                                   == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-proved under harmonic  assumed              lean    sumpy_recurrence.py:801  compressed_taylor  every order: reconstructed(a, b)
-                                                                                                  == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
+proved under harmonic  assumed              lean    sumpy_recurrence.py:801  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
                                                                                                   by reconstructed(a + 2, b) == -reconstructed(a, b + 2)
-proved under harmonic  assumed              lean    sumpy_recurrence.py:801  compressed_taylor  every order p: reconstructed(a, b)
-                                                                                                  == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
+proved under harmonic  assumed              lean    sumpy_recurrence.py:801  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
                                                                                                   by reconstructed(a + 2, b) == -reconstructed(a, b + 2) inside it
 
 6 facts: 1 assumed, 1 decided, 2 proved, 2 tested
@@ -1189,33 +1177,27 @@ checked with Mathlib:
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sum_factorization.py
 STATUS  EFFECTIVE  BY             WHERE                     OWNER              STATEMENT
-------  ---------  -------------  ------------------------  -----------------  -----------------------------------------------------------------------
+------  ---------  -------------  ------------------------  -----------------  --------------------------------------------------------------------------------------------------
 proved  tested     lean           sum_factorization.py:68   exchange           n : Nat, m : Nat, f : Fn[Fin(n), Fin(m), Real]
                                                                                |- sum(sum(f[i, j] for j in Fin(m)) for i in Fin(n))
                                                                                    == sum(sum(f[i, j] for i in Fin(n)) for j in Fin(m))
 tested  tested     python         sum_factorization.py:68   exchange           the term computes what the annotations compute
-proved  tested     lean           sum_factorization.py:89   sum_factorization  n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real],
-                                                                                 H : Fn[Fin(n), Fin(n), Real], u : Fn[Fin(n), Fin(n), Fin(n), Real],
-                                                                                 a : Fin(n), b : Fin(n), c : Fin(n)
-                                                                               |- sum(H[c, r]*G[b, q]*F[a, p]*u[p, q, r] for p in Fin(n), q in Fin(n),
-                                                                                     r in Fin(n))
-                                                                                   == sum(H[c, r]*sum(G[b, q]*sum(F[a, p]*u[p, q, r] for p in Fin(n))
-                                                                                       for q in Fin(n)) for r in Fin(n))
+proved  tested     lean           sum_factorization.py:89   sum_factorization  n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], H : Fn[Fin(n), Fin(n), Real],
+                                                                                 u : Fn[Fin(n), Fin(n), Fin(n), Real], a : Fin(n), b : Fin(n), c : Fin(n)
+                                                                               |- sum(H[c, r]*G[b, q]*F[a, p]*u[p, q, r] for p in Fin(n), q in Fin(n), r in Fin(n))
+                                                                                   == sum(H[c, r]*sum(G[b, q]*sum(F[a, p]*u[p, q, r] for p in Fin(n)) for q in Fin(n))
+                                                                                     for r in Fin(n))
 tested  tested     python         sum_factorization.py:89   sum_factorization  the term computes what the annotations compute
-proved  tested     lean           sum_factorization.py:113  mixed_product      n : Nat, A : Fn[Fin(n), Fin(n), Real], B : Fn[Fin(n), Fin(n), Real],
-                                                                                 C : Fn[Fin(n), Fin(n), Real], D : Fn[Fin(n), Fin(n), Real],
-                                                                                 i : Fin(n), k : Fin(n), p : Fin(n), q : Fin(n)
+proved  tested     lean           sum_factorization.py:113  mixed_product      n : Nat, A : Fn[Fin(n), Fin(n), Real], B : Fn[Fin(n), Fin(n), Real], C : Fn[Fin(n), Fin(n), Real],
+                                                                                 D : Fn[Fin(n), Fin(n), Real], i : Fin(n), k : Fin(n), p : Fin(n), q : Fin(n)
                                                                                |- sum(A[i, j]*B[k, s]*(C[j, p]*D[s, q]) for j in Fin(n), s in Fin(n))
-                                                                                   == sum(A[i, j]*C[j, p] for j in Fin(n))*sum(B[k, s]*D[s, q]
-                                                                                     for s in Fin(n))
+                                                                                   == sum(A[i, j]*C[j, p] for j in Fin(n))*sum(B[k, s]*D[s, q] for s in Fin(n))
 tested  tested     python         sum_factorization.py:113  mixed_product      the term computes what the annotations compute
-tested  tested     property-test  sum_factorization.py:143  flattening         n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real],
-                                                                                 H : Fn[Fin(n), Fin(n), Real], a : Fin(n), b : Fin(n), c : Fin(n),
-                                                                                 p : Fin(n), q : Fin(n), r : Fin(n)
-                                                                               |- H[(a + n*b + n**2*c) // n**2,
-                                                                                     (p + n*q + n**2*r) // n**2]*G[(a + n*b + n**2*c) // n % n,
-                                                                                     (p + n*q + n**2*r) // n % n]*F[(a + n*b + n**2*c) % n,
-                                                                                     (p + n*q + n**2*r) % n] == H[c, r]*G[b, q]*F[a, p]
+tested  tested     property-test  sum_factorization.py:143  flattening         n : Nat, F : Fn[Fin(n), Fin(n), Real], G : Fn[Fin(n), Fin(n), Real], H : Fn[Fin(n), Fin(n), Real],
+                                                                                 a : Fin(n), b : Fin(n), c : Fin(n), p : Fin(n), q : Fin(n), r : Fin(n)
+                                                                               |- H[(a + n*b + n**2*c) // n**2, (p + n*q + n**2*r) // n**2]*G[(a + n*b + n**2*c) // n % n,
+                                                                                     (p + n*q + n**2*r) // n % n]*F[(a + n*b + n**2*c) % n, (p + n*q + n**2*r) % n]
+                                                                                   == H[c, r]*G[b, q]*F[a, p]
 tested  tested     python         sum_factorization.py:143  flattening         the term computes what the annotations compute
 
 8 facts: 3 proved, 5 tested
@@ -1312,7 +1294,7 @@ and with Mathlib:
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py
 STATUS                 EFFECTIVE            BY      WHERE               OWNER          STATEMENT
----------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------
+---------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------------
 assumed (axiom)        assumed              -       line_taylor.py:101  line_ode       alpha : Complex, beta : Complex, tau : Real
                                                                                        | off: alpha + tau*beta != 0
                                                                                        |- (alpha + tau*beta)*(beta / (alpha + beta*tau)) == beta
@@ -1320,8 +1302,7 @@ tested                 tested               python  line_taylor.py:101  line_ode
 proved under line_ode  assumed              lean    line_taylor.py:115  line_taylor    alpha : Complex, beta : Complex, c : Fn[Nat, Complex]
                                                                                        | away: alpha != 0
                                                                                        | first: alpha*c(1) == beta
-                                                                                       | ode: forall n in Nat where n >= 1.
-                                                                                           (n + 1)*alpha*c(n + 1) + n*beta*c(n) == 0
+                                                                                       | ode: forall n in Nat where n >= 1. (n + 1)*alpha*c(n + 1) + n*beta*c(n) == 0
                                                                                        |- forall n in Nat where n >= 1. c(n) == -(-beta / alpha)**n / n
 tested                 tested               python  line_taylor.py:115  line_taylor    the term computes what the annotations compute
 decided (heuristic)    decided (heuristic)  cas     line_taylor.py:277  qbx_expansion  a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j
