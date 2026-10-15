@@ -23,7 +23,61 @@ All notable changes to lanky are recorded here. The format follows
   with them (S1, grudge's DOFArray and #418's `dim_tags`). A part's fallback
   adds its split to these hints, and to a theorem's application, rather than
   putting them aside.
-
+- **Rewrites, a hint for a plugin's part** (`lanky.obligations.Rewrite`,
+  `Hints.rewrites`). A part may ask for its goal to be rewritten with its
+  hypotheses that are equations, in order: with no arguments, wherever one
+  applies, under a sum too (`simp only`, each premise shown by `omega` from
+  the range of the sums it is under); with arguments, at that one instance
+  (`rw`), a family's value perhaps a family of the part applied to its first
+  arguments, `Fr (3 * x + 0)`, and right to left where asked. Then a sum over
+  a literal range is written out term by term and `ring_nf` compares the two
+  sides. loopty states a program's postcondition so: what its calls store,
+  unfolded into the claim, and a cited identity, sum factorization, used at
+  the sections of the arrays where its one side is. `Hints.rewrites` holds
+  both kinds of rewrite, each said by its type: a `Rewrite` is a step of
+  this script, and an `Application` an identity rewritten before a theorem
+  is applied (below).
+- **A literal domain beside a symbolic one in an annotation**
+  (`lanky.terms.literal_binders`, `MixedDomains`). `all(grad[x, e] == ...
+  for x in Fin[3] for e in Fin[ne])` and `sum(... for d in Fin[3] for c in
+  Fin[n])` were refused ("mixing concrete and symbolic domains in one
+  comprehension is not supported"), so a claim over the three components of
+  a gradient had to nest a walk over `Fin[3]` outside it. Now an annotation
+  whose first reading mixes them is read again with each literal domain a
+  binder, `forall x in Fin(3), e in Fin(ne)`, which Lean states as it states
+  `Fin(n)`. An annotation that does not mix reads as before, a sum over
+  `Fin[2]` alone still its two terms; one whose body uses the point as a
+  Python value, an index into a tuple, is refused as before, and the
+  refusal names the mix.
+- **The parts of a complex number: `real`, `imag` and `conj`** (`lanky.real`,
+  `lanky.imag`, `lanky.conj`), numpy's names, as nodes of the same kind as
+  `exp`, `log` and `sqrt`. Python computes them as `.real`, `.imag` and
+  `.conjugate()`, so that of a real number they are the number, `0` and the
+  number, and of a truth value or a family Python has none, and Lean is
+  shown none; the property tester takes a drawn complex number apart exactly;
+  Lean prints `Complex.re z`, `Complex.im z` and `(starRingEnd ℂ) z`,
+  Mathlib's conjugate. In Mathlib mode a statement that takes a part gets two
+  more attempts, before Mathlib's whole-goal tactics: `z * conj(z)` written as
+  `normSq z` cast into `ℂ`, the divisions cleared by `field_simp` with each
+  hypothesis `z != 0` said of `normSq z`, and `ring`; and `normSq` written as
+  the squares of the parts. So `-beta * conj(alpha) * (1 / real(alpha *
+  conj(alpha))) == -beta / alpha`, a complex division multiplied out by the
+  conjugate as a kernel computes it, is proved. `lanky.terms.reading_annotation()`
+  says whether an annotation is being read, for a library whose functions
+  make nodes of their own (loopty's `loopty.math`).
+- **An identity rewritten before a theorem is applied** (`Hints.rewrites`).
+  A part may name a hypothesis that is an identity, a universal whose body
+  is an equation, with the values of its variables: `rw [h1 (alpha := c t -
+  y s) (beta := z t - c t)]` turns the goal's left side of it into its right
+  side, so that a theorem stated of `-beta / alpha` applies to a goal that
+  computes it by the conjugate. Where Mathlib is, a theorem is also applied
+  by rewriting the goal with it and leaving the numerals to `norm_num`,
+  since `apply` does not unify `↑(1 : ℤ)` with `(1 : ℂ)`.
+- **Absolute values given to `linarith` with their bounds.** A part about
+  reals that takes the absolute value of a real gets `linarith` with
+  `abs_nonneg`, `le_abs_self` and `neg_abs_le` of each, and a goal `|a| <= b`
+  is taken apart by `abs_le` first: so a value within an allowance of
+  another, `|a - b| <= e * (|b| + 1)`, is proved from an equation for `a`.
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
   A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
   Fin[d])`, either way round, where `y[i]` is the sum over the cells a map
@@ -37,6 +91,15 @@ All notable changes to lanky are recorded here. The format follows
   bound the map's type gives (below). That is a scatter-add keeping the
   total on every mesh, which the S3 demonstration of loopty states for
   PyOP2's assembly loop.
+- **A scatter as the transpose of a gather, in Mathlib mode.** The same
+  script takes the fibers' sums written out with a weight at `i`,
+  `sum(sum(h[p] for p in Fin[nf] if node[p] == i) * u[i] for i in Fin[nv])
+  == sum(h[p] * u[node[p]] for p in Fin[nf])`, either side of the product:
+  the weight moves into the sums and their `if` (`Finset.sum_mul`,
+  `ite_mul`) before the exchanges, and `Finset.sum_ite_eq` puts it at
+  `node[p]`. That is a face lift as the transpose of the face gather, which
+  the advection demonstration of loopty states for grudge's right-hand side;
+  the total of a scatter is its weight `1`.
 - **A conjunction, a conjunct at a time, in Mathlib mode**
   (`lanky.oracles.lean.conjunction_scripts`). A claim over a concrete
   `Fin[3]`, `all(... for j in Fin[3])`, is the conjunction of its three
@@ -45,6 +108,24 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Fixed
 
+- **A family applied at another's value, `u[node[p]]`, printed.** For a
+  `node: Fn[Fin[nf], Fin[nv]]` and a `u: Fn[Fin[nv], Real]`, `node[p]` is
+  not affine, so the printer could not place it in `u`'s domain and declined
+  the statement ("applies u outside the domain it declares"), though its
+  value is a point of `Fin[nv]` by `node`'s type. A theorem's statement
+  takes `node`'s bound as a hypothesis, so Lean knows it too, and the
+  application is in the domain where the values' bound is at most the
+  domain's; printed as one proposition, with no such hypothesis, it is
+  declined as before, and so is a map whose values reach past the domain.
+- **A family whose type mentions a name bound again inside is declined.**
+  `node: Fn[Fin[1], Fin[n]]` under an inner `n in Fin[m]`, or `u: Fn[Fin[m],
+  Int]` under an inner `m in Fin[5]`: the bounds the printer read the
+  application against were the inner name's, and the family's type means
+  the outer one, so an application past the family's domain could look in
+  bounds. The refusal names the name and asks for the inner binder to be
+  named apart. A family bound after the inner name means that one, as a cited
+  theorem's own parameters do inside a claim with the same names, and is
+  read as before.
 - **A fact a plugin names shortly is named so in the status column.** A
   fact that rests on one of a kernel's many facts showed that fact's id,
   `decided under assumption:demo.k@4:[c].assume('n % 4 == 0')` for a cast

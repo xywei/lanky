@@ -31,6 +31,7 @@ from lanky.obligations import (
     Piece,
     Product,
     Quotient,
+    Rewrite,
     attempts,
     negation_source,
     obligation_of,
@@ -39,8 +40,8 @@ from lanky.obligations import (
 )
 from lanky.oracles.lean import LeanOracle, ProofCache
 from lanky.plugins import registry
-from lanky.prelude import FinType, Fn, Int, Real
-from lanky.terms import Comparison, Exists, Forall, LogicalAnd, LogicalOr, Var
+from lanky.prelude import FinType, Fn, Int, Nat, Real
+from lanky.terms import Abs, Comparison, Exists, Forall, LogicalAnd, LogicalOr, Sum, Var
 
 n, x, y, i, a, r, j = (Var(name) for name in ("n", "x", "y", "i", "a", "r", "j"))
 
@@ -333,6 +334,204 @@ def test_a_theorem_a_hypothesis_is_is_applied_with_what_the_plugin_bound() -> No
     tried = attempts(part, part_statement(part, "applied"))
     assert ("the theorem applied", "intros\napply h0 (p := p) (c := c)\n"
             "all_goals first | assumption | omega | linarith") in tried
+
+
+#: Two one-axis passes over each field ``q`` of ``g``, and the theorem that
+#: they are the dense operator: what a program's statements store, unfolded,
+#: and a cited identity used where its one side is.
+Fa, Fb, g, v2, out, A, B, h2 = (Var(name) for name in ("Fa", "Fb", "g", "v", "out", "A", "B", "h"))
+k, q = Var("k"), Var("q")
+FIELDS = Fn[Int, Fn[Int, Fn[Int, Real]]]
+TWO_PASSES = Forall(
+    ((n, Nat), (A, TABLE), (B, TABLE), (h2, TABLE), (k, FinType(n)), (j, FinType(n))),
+    Sum(((b, FinType(n)), (a, FinType(n))), A[k, b] * B[j, a] * h2[b, a])
+    == Sum(((b, FinType(n)),), A[k, b] * Sum(((a, FinType(n)),), B[j, a] * h2[b, a])),
+)
+ALONG_A = Forall(
+    ((q, Int), (b, Int), (j, Int)),
+    v2[q, b, j] == Sum(((a, FinType(n)),), Fb[q, j, a] * g[q, b, a]),
+    (q >= 0) & (q < 2) & (b >= 0) & (b < n) & (j >= 0) & (j < n),
+)
+ALONG_B = Forall(
+    ((q, Int), (k, Int), (j, Int)),
+    out[q, k, j] == Sum(((b, FinType(n)),), Fa[q, k, b] * v2[q, b, j]),
+    (q >= 0) & (q < 2) & (k >= 0) & (k < n) & (j >= 0) & (j < n),
+)
+DENSE = Part(
+    "post",
+    "out[x, k, j] is the dense operator",
+    claim(
+        (n, (Fa, FIELDS), (Fb, FIELDS), (g, FIELDS), (v2, FIELDS), (out, FIELDS), x, k, j),
+        [TWO_PASSES, ALONG_A, ALONG_B, n >= 0, x >= 0, x < 2, k >= 0, k < n, j >= 0, j < n],
+        out[x, k, j]
+        == Sum(
+            ((b, FinType(n)), (a, FinType(n))), g[x, b, a] * Fa[x, k, b] * Fb[x, j, a]
+        ),
+    ),
+    Hints(
+        rewrites=(
+            Rewrite(2),
+            Rewrite(1),
+            Rewrite(0, (n, Fa[x], Fb[x], g[x], k, j), backwards=True),
+        )
+    ),
+    mathlib=True,
+)
+
+
+def test_equations_are_rewritten_with_in_order_and_ring_compares_the_sides() -> None:
+    """``simp only`` unfolds what the statements store, ``rw`` uses the identity backwards.
+
+    The two unfoldings with no arguments are one ``simp only``, whose
+    discharger shows a premise from the range of the sum it is under; the
+    identity is taken at the sections ``Fa x`` and ``g x``, its premises
+    shown by ``omega``; and ``ring_nf`` compares the two sides, ordering the
+    factors of each summand by ``mul_comm`` where it leaves them apart.
+    """
+    tried = attempts(DENSE, part_statement(DENSE, "post"))
+    how, script = tried[-1]
+    assert how == "the equations rewritten with, in order, then ring"
+    assert script.splitlines() == [
+        "all_goals simp (disch := (first | omega | (simp only [Finset.mem_Ico] at *; omega))) "
+        "only [h2, h1]",
+        "all_goals rw [← h0 n (by omega) (Fa x) (Fb x) (g x) k (by omega) (by omega) j "
+        "(by omega) (by omega)]",
+        "all_goals first | (ring_nf; done) "
+        "| (ring_nf; simp only [mul_comm, mul_assoc, mul_left_comm]; done) | linarith",
+    ]
+
+
+#: ``t[x]`` stores a sum over ``Fin[3]``, which the claim writes out.
+t, d = Var("t"), Var("d")
+WRITTEN_OUT = Part(
+    "post",
+    "t[x] is three terms",
+    claim(
+        ((g, FIELDS), (t, Fn[Int, Real]), x),
+        [Forall(((x, Int),), t[x] == Sum(((d, FinType(3)),), g[x, d, 0]))],
+        t[x] == g[x, 0, 0] + g[x, 1, 0] + g[x, 2, 0],
+    ),
+    Hints(rewrites=(Rewrite(0),)),
+    mathlib=True,
+)
+
+
+def test_a_sum_over_a_literal_range_is_written_out_before_ring() -> None:
+    """The sum a rewrite brings in, over ``Fin[3]``, is three terms ``ring`` compares."""
+    _how, script = attempts(WRITTEN_OUT, part_statement(WRITTEN_OUT, "post"))[-1]
+    assert script.splitlines()[1] == (
+        "all_goals try simp (disch := decide) only [show Finset.Ico (0 : ℤ) 3 = {0, 1, 2} "
+        "by decide, Finset.sum_insert, Finset.sum_singleton]"
+    )
+
+
+def test_a_rewrite_that_names_no_universal_with_arguments_is_not_written() -> None:
+    """An instance needs a universal to take: the attempt is dropped, the others stand."""
+    part = Part(
+        "post",
+        "t[x] is three terms",
+        WRITTEN_OUT.term,
+        Hints(rewrites=(Rewrite(0, (x, x)),)),
+        mathlib=True,
+    )
+    tried = attempts(part, part_statement(part, "post"))
+    assert [how for how, _ in tried] == ["omega"]
+
+
+def test_an_identity_is_rewritten_before_the_theorem_is_applied() -> None:
+    """``rw [h1 (z := ...)]`` makes the goal the theorem's, ``apply h0`` concludes it.
+
+    And where ``apply`` cannot unify the theorem's numerals with the goal's,
+    the goal is rewritten by the theorem too, and ``norm_num`` is left the
+    numerals.
+    """
+    c, z, w, k = Var("c"), Var("z"), Var("w"), Var("k")
+    series = Forall(
+        ((z, Real), (c, Fn[Int, Real])),
+        Forall(((k, Int),), c(k) == z * k, k >= 1),
+        c(1) == z,
+    )
+    identity = Forall(((z, Real), (w, Real)), w * (1 / w) * z == z, ~(w == 0))
+    part = Part(
+        "term_2",
+        "c(2) is what the kernel adds",
+        claim(
+            ((c, Fn[Int, Real]), (x, Real), (y, Real)),
+            [series, identity, ~(y == 0), c(1) == x],
+            c(2) == y * (1 / y) * x * 2,
+        ),
+        Hints(
+            applications=(Application(0, (("z", x), ("c", c))),),
+            rewrites=(Application(1, (("z", x), ("w", y))),),
+        ),
+        mathlib=True,
+    )
+    tried = dict((how, script) for how, script in attempts(part, part_statement(part, "s")))
+    assert tried["rewritten by the identity, the theorem applied"].splitlines() == [
+        "intros",
+        "rw [h1 (z := x) (w := y)]",
+        "apply h0 (z := x) (c := c)",
+        "all_goals first | assumption | omega | linarith",
+    ]
+    assert tried["rewritten by the identity and the theorem"].splitlines() == [
+        "intros",
+        "rw [h1 (z := x) (w := y)]",
+        "rw [h0 (z := x) (c := c)]",
+        "all_goals first | assumption | omega | linarith | (norm_num [Int.toNat]; done)",
+    ]
+
+
+def test_a_value_mathlib_prints_is_given_to_a_rewrite_as_it_prints_it() -> None:
+    """A true division is Mathlib's, and is not dropped from the script (Codex)."""
+    z, w = Var("z"), Var("w")
+    identity = Forall(((z, Real), (w, Real)), w * (1 / w) * z == z, ~(w == 0))
+    part = Part(
+        "halved",
+        "the identity at y / 2",
+        claim(
+            ((x, Real), (y, Real)),
+            [identity, ~(y == 0)],
+            (y / 2) * (1 / (y / 2)) * x == x,
+        ),
+        Hints(
+            applications=(Application(0, (("z", x), ("w", y / 2))),),
+            rewrites=(Application(0, (("z", x), ("w", y / 2))),),
+        ),
+        mathlib=True,
+    )
+    tried = dict(attempts(part, part_statement(part, "h")))
+    script = tried["rewritten by the identity, the theorem applied"].splitlines()
+    assert script[1] == "rw [h0 (z := x) (w := (y : ℝ) / 2)]"
+
+
+def test_absolute_values_are_given_to_linarith_with_their_bounds() -> None:
+    """``|a - b| <= e (|b| + 1)`` from ``a = q |x|``: ``abs_le`` first, then each bar's bounds."""
+    goal = Abs(y - Abs(x) / 12) <= 1e-6 * (Abs(Abs(x) / 12) + 1)
+    part = Part(
+        "conjunct_0",
+        "y == abs(x) / 12",
+        claim(((x, Real), (y, Real)), [y == Abs(x) / 12], goal),
+        mathlib=True,
+    )
+    tried = dict((how, script) for how, script in attempts(part, part_statement(part, "c")))
+    bounds = (
+        "abs_nonneg (x), le_abs_self (x), neg_abs_le (x), "
+        "abs_nonneg ((|x| : ℝ) / 12), le_abs_self ((|x| : ℝ) / 12), "
+        "neg_abs_le ((|x| : ℝ) / 12), "
+        "abs_nonneg (y - (|x| : ℝ) / 12), le_abs_self (y - (|x| : ℝ) / 12), "
+        "neg_abs_le (y - (|x| : ℝ) / 12)"
+    )
+    taken = tried["linarith, with the absolute values taken apart"].splitlines()
+    assert taken[0] == "rw [abs_le]"
+    assert taken[1].startswith("constructor <;> linarith [")
+    assert set(taken[1].removeprefix("constructor <;> linarith [").removesuffix("]").split(
+        ", "
+    )) == set(bounds.split(", "))
+    # a part with no absolute value of a real gets neither attempt
+    assert [how for how, _ in attempts(REAL_PART, part_statement(REAL_PART, "post"))] == [
+        "omega",
+        "linarith, with the hypotheses taken at 1 point",
+    ]
 
 
 def test_without_mathlib_a_claim_about_reals_is_declined_saying_why(

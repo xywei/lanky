@@ -146,7 +146,11 @@ above, apart from one ascription described below, and declines less:
   modulus Python's ``abs`` computes.
 - ``exp``, ``log`` and ``sqrt`` (:class:`lanky.terms.Elementary`) are
   ``Real.exp``, ``Real.log`` and ``Real.sqrt``, and ``Complex.exp``,
-  ``Complex.log`` and ``Complex.sqrt`` for a complex argument. The complex
+  ``Complex.log`` and ``Complex.sqrt`` for a complex argument. The parts of
+  a complex number are ``Complex.re z``, ``Complex.im z`` and ``(starRingEnd
+  ℂ) z``, Mathlib's conjugate, each a function the kernel computes; of a
+  real or an integer argument they are the argument itself, ``0`` and the
+  argument, as Python's are. The complex
   logarithm and square root are principal branches, as ``cmath``'s are, and
   agree with them off the branch cut, the non-positive real axis; on it they
   cannot, and a statement that may reach it is declined (see *the branch
@@ -299,12 +303,15 @@ def _in_mathlib() -> bool:
 #: The root names of core Lean and Mathlib that the printer and the Lean
 #: oracle's tactic scripts write unqualified: the types a variable, a value or
 #: a cast is given, and the namespaces of the functions, constants and lemmas
-#: they apply (``Int.fdiv``, ``Finset.Ico``, ``Complex.I``, ``Real.exp_add``).
+#: they apply (``Int.fdiv``, ``Finset.Ico``, ``Complex.I``, ``Real.exp_add``),
+#: and ``starRingEnd``, which Mathlib's complex conjugate is.
 #: ``True`` and ``False`` are the propositions a Boolean constant prints as.
 #: A variable named like one of them would be what the name means after its
 #: binder, so a statement that has one prints them from the root
 #: (:func:`global_name`).
-ROOT_NAMES = frozenset({"Bool", "Complex", "False", "Finset", "Int", "Nat", "Real", "True"})
+ROOT_NAMES = frozenset(
+    {"Bool", "Complex", "False", "Finset", "Int", "Nat", "Real", "True", "starRingEnd"}
+)
 
 #: The root names a variable of the statement being printed is named like,
 #: which are printed from the root while it is printed (see :func:`global_name`).
@@ -999,7 +1006,14 @@ def _kind(expr: Any, types: _Types) -> str:
     if isinstance(expr, Abs):
         return "Int" if _kind(expr.operand, types) == "Int" else "Real"
     if isinstance(expr, Elementary):
-        return "Complex" if _kind(expr.argument, types) == "Complex" else "Real"
+        argument = _kind(expr.argument, types)
+        if expr.function in _PARTS:
+            # a part of a complex number is real, and of a real number or an
+            # integer the number itself (or 0), of its kind
+            if expr.function == "conj" or argument != "Complex":
+                return argument
+            return "Real"
+        return "Complex" if argument == "Complex" else "Real"
     if isinstance(expr, Sum):
         inner = dict(types)
         for var, domain in expr.binders:
@@ -1085,6 +1099,14 @@ _ELEMENTARY = {
     "sqrt": ("Real.sqrt", "Complex.sqrt"),
 }
 
+#: What each part of a complex number is called in Mathlib: the real part, the
+#: imaginary part and the conjugate, which ``starRingEnd ℂ`` is.
+_PARTS = {
+    "real": "Complex.re",
+    "imag": "Complex.im",
+    "conj": "starRingEnd",
+}
+
 #: The functions with a branch cut on the complex plane, what each is called
 #: where the printer says why a statement is declined, and where its cut is:
 #: a logarithm's takes zero in, where ``cmath.log`` has no value.
@@ -1108,7 +1130,12 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
     entire, and has no cut to disagree about. An
     :class:`~lanky.terms.Elementary` built by hand with any other function is
     declined.
+
+    A part of a complex number is ``Complex.re z``, ``Complex.im z`` or
+    ``(starRingEnd ℂ) z`` (:func:`_render_part`).
     """
+    if expr.function in _PARTS:
+        return _render_part(expr, outer, types)
     if expr.function not in _ELEMENTARY:
         raise UnsupportedTerm(
             f"{render(expr)} applies {expr.function!r}, which lanky does not print"
@@ -1125,6 +1152,41 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
         )
     name = complex_ if is_complex else real
     return _parens(f"{global_name(name)} {_render(expr.argument, _ATOM, types)}", _APP, outer)
+
+
+def _render_part(expr: Elementary, outer: int, types: _Types) -> str:
+    """Print ``real(z)``, ``imag(z)`` or ``conj(z)`` as Mathlib's part of ``z``.
+
+    Of a complex argument, ``Complex.re z``, ``Complex.im z`` and
+    ``(starRingEnd ℂ) z``. Of a real number or an integer they are what
+    Python's ``.real``, ``.imag`` and ``.conjugate()`` are, the argument
+    itself and ``0``, which is printed as such: ``Complex.re`` of a real
+    ``x`` would be of ``x`` cast to ``ℂ``, which is ``x`` too, with a cast
+    in the way of every tactic.
+
+    Of anything else, a truth value or a family not applied, Python has no
+    part (:func:`lanky.terms.elementary_value` raises), so it is declined:
+    ``imag(b)`` printed as ``0`` would let Lean prove what Python cannot
+    evaluate.
+    """
+    kind = _kind(expr.argument, types)
+    argument = expr.argument
+    family = isinstance(argument, Var | prim.Variable) and isinstance(
+        _unrefined(types.get(argument.name)), FnType
+    )
+    if kind not in _NUMBER_KINDS or family:
+        raise UnsupportedTerm(
+            f"{render(expr)} takes a part of {render(argument)}, which is not a "
+            "number; Python's real, imag and conj take numbers only"
+        )
+    if kind != "Complex":
+        if expr.function == "imag":
+            return f"(0 : {'ℤ' if kind == 'Int' else 'ℝ'})"
+        return _render(expr.argument, outer, types)
+    argument = _render(expr.argument, _ATOM, types)
+    if expr.function == "conj":
+        return _parens(f"({global_name('starRingEnd')} ℂ) {argument}", _APP, outer)
+    return _parens(f"{global_name(_PARTS[expr.function])} {argument}", _APP, outer)
 
 
 def _literal_on_the_cut(function: str, argument: Any) -> bool:
@@ -1696,16 +1758,34 @@ class _Scope:
     ``lower`` and ``upper`` are affine forms, so the upper bound of an ``i`` in
     ``Fin[n + 1]`` is ``n``, itself in terms of a variable with bounds of its
     own. ``families`` is the parameters whose sort is a family over an index
-    type: those, and only those, have a domain to leave.
+    type: those, and only those, have a domain to leave. ``bounded`` is the
+    names of the statement's own families whose ``Fin`` values its Lean
+    statement bounds by a hypothesis (:func:`codomain_bound`); a binder of
+    the same name inside drops its name, since the hypothesis is about the
+    family it shadows. ``bindings`` counts how often each name has been bound
+    on the way down, and ``seen`` holds, for each family, those counts for the
+    names its type mentions when it was bound, so that a family whose type
+    mentions a name bound again after it is not read against the inner one
+    (:func:`_shadowed_in`).
     """
 
     lower: dict[str, dict[str, int]] = field(default_factory=dict)
     upper: dict[str, dict[str, int]] = field(default_factory=dict)
     families: dict[str, FnType] = field(default_factory=dict)
+    bounded: set[str] = field(default_factory=set)
+    bindings: dict[str, int] = field(default_factory=dict)
+    seen: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def extended(self, binders: Any) -> _Scope:
         """This scope with the binders of one quantifier added."""
-        out = _Scope(dict(self.lower), dict(self.upper), dict(self.families))
+        out = _Scope(
+            dict(self.lower),
+            dict(self.upper),
+            dict(self.families),
+            set(self.bounded),
+            dict(self.bindings),
+            dict(self.seen),
+        )
         for var, domain in binders:
             out.bind(var.name, domain)
         return out
@@ -1721,8 +1801,15 @@ class _Scope:
         self.lower.pop(name, None)
         self.upper.pop(name, None)
         self.families.pop(name, None)
+        self.bounded.discard(name)
+        self.seen.pop(name, None)
+        self.bindings[name] = self.bindings.get(name, 0) + 1
         if isinstance(base, FnType):
             self.families[name] = base
+            self.seen[name] = {
+                mentioned: self.bindings.get(mentioned, 0)
+                for mentioned in _type_names(base)
+            }
             return
         low, high = _scalar_bounds(domain)
         for bound, table in ((low, self.lower), (high, self.upper)):
@@ -1821,6 +1908,82 @@ def _natural_value(argument: Any, scope: _Scope) -> bool:
     return is_natural(current)
 
 
+def _type_names(sort: Any) -> set[str]:
+    """The names the ``Fin`` bounds in a family's type mention, at every level."""
+    names: set[str] = set()
+    current = _unrefined(sort)
+    while isinstance(current, FnType):
+        names |= _type_names(current.domain)
+        current = _unrefined(current.codomain)
+    if isinstance(current, FinType):
+        names |= _names_of(current.bound)
+    return names
+
+
+def _shadowed_in(family: str, scope: _Scope) -> str | None:
+    """A name the family's type mentions that a binder bound again after it; or ``None``.
+
+    ``node: Fn[Fin[1], Fin[n]]`` under an inner ``n in Fin[m]``: the bounds
+    in scope are the inner ``n``'s, and ``node``'s type means the outer one,
+    so neither its domain nor its values can be read against them. A family
+    bound after the inner ``n`` means that one, as a cited theorem's own
+    parameters do inside a claim with the same names, and is read as usual;
+    so is a name first bound after the family, which its type can only mean.
+    """
+    for name, then in sorted(scope.seen.get(family, {}).items()):
+        now = scope.bindings.get(name, 0)
+        if now != then and not (then == 0 and now == 1):
+            return name
+    return None
+
+
+def _shadowed_refusal(expr: Any, name: str, family: Any, shadowed: str) -> UnsupportedTerm:
+    """The refusal of an application of a family whose type names a shadowed name."""
+    return UnsupportedTerm(
+        f"{render(expr)} applies {name}, whose type ({family}) mentions "
+        f"{shadowed}, and a binder inside binds {shadowed} again: the bounds "
+        f"lanky reads against are the inner {shadowed}'s, and {name}'s type means "
+        f"the outer one, so lanky cannot place the application; name the inner "
+        "binder apart"
+    )
+
+
+def _fin_value(argument: Any, domain: FinType, scope: _Scope) -> bool:
+    """Whether ``argument`` applies a family whose values are points of ``domain``.
+
+    ``u[node[f, a]]`` for a ``node: Fn[Fin[nf], Fin[m], Fin[nv]]`` and a ``u:
+    Fn[Fin[nv], Real]``: a gather through a map. ``node[f, a]`` is not affine,
+    so :func:`_fits` cannot read it, but its value is a point of ``Fin[nv]``
+    by its type, and the Lean statement says so too, by the hypothesis it
+    takes after ``node`` (:func:`codomain_bound`). Only a family in
+    ``scope.bounded`` has that hypothesis. The values' bound has to be at most
+    the domain's, and the inner application is checked against its own domain
+    where the walk reaches it.
+    """
+    found = _spine(argument)
+    if found is None:
+        return False
+    name, arguments = found
+    current: Any = scope.families.get(name)
+    if current is None or name not in scope.bounded:
+        return False
+    if _shadowed_in(name, scope) is not None:
+        return False
+    for _ in arguments:
+        base = _unrefined(current)
+        if not isinstance(base, FnType):
+            return False
+        current = base.codomain
+    values = _unrefined(current)
+    if not isinstance(values, FinType):
+        return False
+    high, limit = _affine(values.bound), _affine(domain.bound)
+    if high is None or limit is None:
+        return False
+    gap = _resolve(_add(high, _scale(limit, -1)), scope, True)
+    return gap is not None and gap <= 0
+
+
 def _spine(expr: Any) -> tuple[str, tuple[Any, ...]] | None:
     """``(family name, arguments in order)`` for a chain of applications.
 
@@ -1860,13 +2023,19 @@ def _check_chain(
     ``f : Fn[Fin[n], Fn[Fin[m], Nat]]`` discharges ``i`` against ``Fin[n]`` and
     ``j`` against ``Fin[m]``; a level whose domain is refined is declined
     outright, because the erasure drops the refinement and affine arithmetic
-    over the binders cannot put it back.
+    over the binders cannot put it back. So is a family whose type mentions
+    a name a binder inside has bound again (:func:`_shadowed_in`): its bounds
+    mean the outer name, and the bounds in scope are the inner one's.
 
     Raises:
         UnsupportedTerm: If a level cannot be shown to stay in bounds, if a
-            level's domain is refined, or if the chain applies the family more
-            times than its type has arguments.
+            level's domain is refined, if the family's type mentions a name
+            bound again inside, or if the chain applies the family more times
+            than its type has arguments.
     """
+    shadowed = _shadowed_in(name, scope)
+    if shadowed is not None:
+        raise _shadowed_refusal(expr, name, family, shadowed)
     current: Any = family
     for argument in arguments:
         base = current.base if isinstance(current, Refined) else current
@@ -1887,10 +2056,19 @@ def _check_chain(
                 "cannot show that the argument is a point of the domain"
             )
         natural_domain = isinstance(domain, Sort) and domain.name == "Nat"
-        if (isinstance(domain, FinType) and not _fits(argument, domain, scope)) or (
+        fits = isinstance(domain, FinType) and (
+            _fits(argument, domain, scope) or _fin_value(argument, domain, scope)
+        )
+        if (isinstance(domain, FinType) and not fits) or (
             natural_domain
             and not (_nonnegative(argument, scope) or _natural_value(argument, scope))
         ):
+            inner = _spine(argument)
+            inner_family = scope.families.get(inner[0]) if inner else None
+            if inner_family is not None:
+                inner_shadowed = _shadowed_in(inner[0], scope)
+                if inner_shadowed is not None:
+                    raise _shadowed_refusal(argument, inner[0], inner_family, inner_shadowed)
             raise UnsupportedTerm(
                 f"{render(expr)} applies {name} outside the domain it declares "
                 f"({domain}): lanky cannot show that {render(argument)} is a point "
@@ -1983,12 +2161,7 @@ def _check(expr: Any, scope: _Scope) -> None:
     as a different statement.
     """
     if isinstance(expr, Forall | Exists | Sum):
-        inner = scope
-        for var, domain in expr.binders:
-            _check_capture(var, domain)
-            preceding = inner
-            inner = inner.extended(((var, domain),))
-            _check_domain(domain, preceding, inner)
+        inner = _bound_scope(expr.binders, scope)
         _check(expr.body, inner)
         if expr.guard is not None:
             _check(expr.guard, inner)
@@ -2009,7 +2182,22 @@ def _check(expr: Any, scope: _Scope) -> None:
             _check(child, scope)
 
 
-def check_applications(term: Any) -> None:
+def _bound_scope(binders: Any, scope: _Scope) -> _Scope:
+    """``scope`` with ``binders`` bound in order, each checked as it is bound.
+
+    A binder is checked for capturing a name its own domain mentions, and its
+    domain's applications under the binders before it.
+    """
+    inner = scope
+    for var, domain in binders:
+        _check_capture(var, domain)
+        preceding = inner
+        inner = inner.extended(((var, domain),))
+        _check_domain(domain, preceding, inner)
+    return inner
+
+
+def check_applications(term: Any, codomain_bounds: bool = False) -> None:
     """Refuse a statement that applies a family outside the domain it declares.
 
     This is what makes the erasure of ``Fn[Fin[n], B]`` to ``Int → B`` sound
@@ -2026,13 +2214,30 @@ def check_applications(term: Any) -> None:
     mentions (:func:`_check_capture`), which is a different way for the
     printed statement to stop being the one lanky holds.
 
+    ``codomain_bounds`` says the statement is printed with a hypothesis
+    bounding the values of each of its own families into a ``Fin``
+    (:func:`statement_of`): then ``u[node[p]]`` is in ``u``'s domain where
+    ``node``'s values are (:func:`_fin_value`).
+
     Raises:
         UnsupportedTerm: If an application cannot be shown to stay in bounds,
             if the domain of the family it applies is refined, if it applies
             a family more times than its type has arguments, or if a binder
             captures a name its own domain mentions.
     """
-    _check(term, _Scope())
+    if not (codomain_bounds and isinstance(term, Forall)):
+        _check(term, _Scope())
+        return
+    # the statement's own parameters, then the families among them whose
+    # bound it takes; a binder of the same name inside drops the name again
+    inner = _bound_scope(term.binders, _Scope())
+    last = {var.name: (var, domain) for var, domain in term.binders}
+    inner.bounded = {
+        name for name, (var, domain) in last.items() if codomain_bound(var, domain) is not None
+    }
+    _check(term.body, inner)
+    if term.guard is not None:
+        _check(term.guard, inner)
 
 
 # }}}
@@ -2285,7 +2490,7 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
     mathlib = _in_mathlib()
     shadowed = _SHADOWED.get()
     _refuse_free_names(term)
-    check_applications(term)
+    check_applications(term, codomain_bounds=True)
     if not isinstance(term, Forall):
         return LeanStatement(
             lean_name, (), (), print_lean(term), term, mathlib=mathlib, shadowed=shadowed

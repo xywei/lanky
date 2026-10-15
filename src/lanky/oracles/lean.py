@@ -118,6 +118,7 @@ from lanky.prelude import FinType, FnType, Nat, Refined
 from lanky.terms import (
     Add,
     Comparison,
+    Elementary,
     Exists,
     Forall,
     Sum,
@@ -139,6 +140,7 @@ __all__ = [
     "family_induction_scripts",
     "induction_scripts",
     "kill_servers",
+    "part_scripts",
     "reduction_scripts",
     "sum_scripts",
     "tactic_ladder",
@@ -1450,6 +1452,31 @@ def _fiber(sum_term: Any, outer: Var) -> tuple[Any, tuple[Var, ...]] | None:
     return mapped, binders
 
 
+def _weighted_fiber(term: Any, outer: Var) -> tuple[Any, tuple[Var, ...]] | None:
+    """A sum over a fiber of a map, times other factors: its map and its binders.
+
+    ``sum(h[p] for p in Fin[nf] if node[p] == i) * u[i]`` with ``outer`` the
+    ``i``: one factor of the product is a sum :func:`_fiber` reads, and the
+    others, the weight, may mention ``i``. ``None`` for any other term.
+    """
+    if not isinstance(term, prim.Product):
+        return None
+    found = [fiber for fiber in (_fiber(child, outer) for child in term.children) if fiber]
+    return found[0] if len(found) == 1 else None
+
+
+#: What moves a weight into the sums over a fiber and through their ``if``,
+#: either side of the product.
+_WEIGHT_INWARD = (
+    "Finset.sum_mul",
+    "Finset.mul_sum",
+    "ite_mul",
+    "mul_ite",
+    "zero_mul",
+    "mul_zero",
+)
+
+
 def fiber_scripts(statement: LeanStatement) -> list[str]:
     """Add up the sums over the fibers of a map: the total of what a scatter adds.
 
@@ -1461,14 +1488,22 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
     ``Fin[nv]``. That is a scatter-add keeping the total: every cell's value
     lands in exactly one ``y[i]``.
 
+    The sums over the fibers, written out, may also carry a weight at ``i``:
+    ``sum(sum(h[p] for p in Fin[nf] if node[p] == i) * u[i] for i in
+    Fin[nv]) == sum(h[p] * u[node[p]] for p in Fin[nf])``. That is the
+    scatter as the transpose of the gather ``u[node[p]]``, and the total is
+    its weight ``1``.
+
     The script is the proof by hand, with the order of the sums read off the
     statement: rewrite ``y[i]`` with its hypothesis under the sum
     (``Finset.sum_congr``), turn the filter into an ``if``
-    (``Finset.sum_filter``), move the sum over ``i`` inside the map's
-    arguments one exchange at a time (``Finset.sum_comm``), each time
+    (``Finset.sum_filter``), and move a weight inside the sums and the ``if``
+    (``Finset.sum_mul``, ``ite_mul``), move the sum over ``i`` inside the
+    map's arguments one exchange at a time (``Finset.sum_comm``), each time
     stepping under the outer sum on both sides, add up the ``if`` over ``i``
-    (``Finset.sum_ite_eq``), which leaves whether ``cell[c, k]`` is a point
-    of ``Fin[nv]``, and show it is from the bound the family's type gives
+    (``Finset.sum_ite_eq``), which puts the weight at ``cell[c, k]`` and
+    leaves whether ``cell[c, k]`` is a point of ``Fin[nv]``, and show it is
+    from the bound the family's type gives
     (:func:`lanky.lean.codomain_bound`). Lean checks every step, so a shape
     read wrongly costs an attempt and never a proof.
     """
@@ -1492,6 +1527,10 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
         outer = outer_side.binders[0][0]
         head = ["symm"] if flip else []
         fiber = _fiber(outer_side.body, outer)
+        weighted = False
+        if fiber is None:
+            fiber = _weighted_fiber(outer_side.body, outer)
+            weighted = fiber is not None
         if fiber is None:
             # y[i], with a hypothesis that says what it is
             applied = _application(outer_side.body)
@@ -1537,7 +1576,9 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
             var.name: (_fresh(f"{var.name}_", used), _fresh(f"h{var.name}_", used))
             for var in binders
         }
-        steps = [*head, f"simp only [{statement.qualified('Finset.sum_filter')}]"]
+        rewrites = ["Finset.sum_filter", *(_WEIGHT_INWARD if weighted else ())]
+        names_used = ", ".join(statement.qualified(name) for name in rewrites)
+        steps = [*head, f"simp only [{names_used}]"]
         for var in binders:
             point, held = names[var.name]
             steps.append(f"rw [{statement.qualified('Finset.sum_comm')}]")
@@ -1554,6 +1595,9 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
         steps.append(
             f"rw [if_pos ({member}.mpr ⟨by omega, {bounds[family]} {arguments}⟩)]"
         )
+        if weighted:
+            # the weight may stand on the other side of the value on the right
+            steps.append("all_goals ring1")
         scripts.append("\n".join(steps))
     return scripts
 
@@ -2194,6 +2238,8 @@ def tactic_ladder(
             ladder += family_induction_scripts(statement, finder, until)
             ladder += sum_scripts(statement, until)
             ladder += fiber_scripts(statement)
+        if not refuting and _takes_parts(statement):
+            ladder += part_scripts(statement)
         lemmas = tuple(map(statement.qualified, _ELEMENTARY_LEMMAS))
         ladder += _mathlib_tactics(lemmas, refuting)
         if statement.side_conditions and not refuting:
@@ -2211,6 +2257,84 @@ def tactic_ladder(
         ladder += induction_scripts(statement)
         ladder += reduction_scripts(statement)
     return ladder
+
+
+def _takes_parts(statement: LeanStatement) -> bool:
+    """Whether the statement takes a real part, an imaginary part or a conjugate."""
+
+    def visit(node: Any) -> bool:
+        if isinstance(node, tuple | list):
+            return any(visit(item) for item in node)
+        if isinstance(node, Elementary) and node.function in ("real", "imag", "conj"):
+            return True
+        if isinstance(node, Forall | Exists):
+            return visit(node.body) or (node.guard is not None and visit(node.guard))
+        if isinstance(node, prim.ExpressionNode):
+            return visit(init_args(node))
+        return False
+
+    hypotheses = [term for term in statement.hypothesis_terms if term is not None]
+    return visit(statement.goal_term) or visit(hypotheses)
+
+
+def part_scripts(statement: LeanStatement) -> list[str]:
+    """The attempts at an identity that takes a complex number apart.
+
+    ``-beta * conj(alpha) * (1 / real(alpha * conj(alpha))) == -beta /
+    alpha`` is a complex division multiplied out by the conjugate, as a
+    kernel computes it with one real division. ``alpha * conj(alpha)`` is
+    ``normSq alpha`` cast into ``ℂ`` (``Complex.mul_conj``), whose real part
+    is itself; ``field_simp`` clears the divisions once it knows that cast is
+    not zero, which each hypothesis ``z ≠ 0`` of a complex ``z`` gives
+    (``Complex.normSq_pos``); and the conjugate times ``alpha`` is
+    ``normSq alpha`` again, which leaves ``ring`` a polynomial identity. The
+    second attempt writes ``normSq`` as the sum of the squares of the parts,
+    for an identity of real and imaginary parts. Tried before Mathlib's
+    whole-goal tactics, none of which takes a conjugate apart; a statement
+    that takes no part does not get them.
+    """
+    norm_sq = statement.qualified("Complex.normSq")
+    positive = statement.qualified("Complex.normSq_pos")
+    mul_conj = statement.qualified("Complex.mul_conj")
+    of_real_re = statement.qualified("Complex.ofReal_re")
+    nonzero = []
+    for hypothesis in statement.hypothesis_terms:
+        for part in conjuncts(hypothesis) if hypothesis is not None else ():
+            if not (isinstance(part, Comparison) and part.operator == "!="):
+                continue
+            sides = (part.left, part.right)
+            for side, other in (sides, sides[::-1]):
+                # a term's == builds a proposition: a number is asked as one
+                if isinstance(other, int | float) and not isinstance(other, bool) and other == 0:
+                    try:
+                        if number_type(side, statement.types, mathlib=True) == "ℂ":
+                            nonzero.append(
+                                render_term(
+                                    side,
+                                    statement.types,
+                                    mathlib=statement.mathlib,
+                                    shadowed=statement.shadowed,
+                                )
+                            )
+                    except UnsupportedTerm:
+                        pass
+    lines = [
+        f"try have hz{k} : (({norm_sq} ({z}) : ℝ) : ℂ) ≠ 0 := "
+        f"by exact_mod_cast ({positive}.mpr (by assumption)).ne'"
+        for k, z in enumerate(dict.fromkeys(nonzero))
+    ]
+    lines += [
+        f"simp only [{mul_conj}, {of_real_re}]",
+        "push_cast",
+        "field_simp",
+        f"simp only [← {mul_conj}]",
+        "ring",
+    ]
+    squares = statement.qualified("Complex.normSq_apply")
+    return [
+        "\n".join(lines),
+        f"simp only [{mul_conj}, {of_real_re}, {squares}]\nring",
+    ]
 
 
 def _goal_is_false(statement: LeanStatement) -> bool:

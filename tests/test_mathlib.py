@@ -25,7 +25,7 @@ import pymbolic.primitives as prim
 import pytest
 
 from conftest import claims
-from lanky import exp, log, sqrt, theorem
+from lanky import conj, exp, imag, log, real, sqrt, theorem
 from lanky import mathlib as mathlib_mode
 from lanky.check import goal_guard_fact, hypotheses_fact
 from lanky.intervals import ComplexValue, exp_value
@@ -48,11 +48,12 @@ from lanky.oracles.lean import (
     conjunction_scripts,
     family_induction_scripts,
     fiber_scripts,
+    part_scripts,
     reduction_scripts,
     sum_scripts,
     tactic_ladder,
 )
-from lanky.prelude import Complex, Fin, FinType, Fn, Int, Nat, Real, Refined
+from lanky.prelude import Bool, Complex, Fin, FinType, Fn, Int, Nat, Real, Refined
 from lanky.semantics import (
     DIVISION_BY_ZERO,
     OUTSIDE_THE_DOMAIN,
@@ -69,6 +70,7 @@ from lanky.terms import (
     UndefinedValue,
     Var,
     evaluate,
+    exact_reading,
     render,
     structurally_equal,
 )
@@ -140,6 +142,25 @@ def binomial(x: Real.exact, y: Real.exact) -> (x + y) ** 2 == x**2 + 2 * x * y +
 @theorem
 def divided_back(x: Real, y: Real, hy: y != 0) -> x / y * y == x:
     """True division, undone, away from zero."""
+
+
+@theorem
+def by_the_conjugate(z: Complex, w: Complex, away: z != 0) -> (
+    -w * conj(z) * (1 / real(z * conj(z))) == -w / z
+):
+    """A complex division multiplied out by the conjugate: one real division."""
+
+
+@theorem
+def modulus_squared(z: Complex) -> real(z * conj(z)) == real(z) ** 2 + imag(z) ** 2:
+    """``z`` times its conjugate is the sum of the squares of its parts."""
+
+
+@theorem
+def _conjugate_misread(z: Complex, w: Complex, away: z != 0) -> (
+    w * conj(z) * (1 / real(z * conj(z))) == -w / z
+):
+    """Off by a sign, so nothing proves it."""
 
 
 @theorem
@@ -376,6 +397,40 @@ def gathered(nc: Nat, nv: Nat, cell: Fn[Fin[nc], Fin[nv]], x: Fn[Fin[nc], Real])
 
 
 @theorem
+def transposed(
+    nf: Nat,
+    m: Nat,
+    nv: Nat,
+    node: Fn[Fin[nf], Fin[m], Fin[nv]],
+    h: Fn[Fin[nf], Fin[m], Real],
+    u: Fn[Fin[nv], Real],
+) -> sum(
+    sum(h[f, a] for f in Fin[nf] for a in Fin[m] if node[f, a] == i) * u[i]
+    for i in Fin[nv]
+) == sum(h[f, a] * u[node[f, a]] for f in Fin[nf] for a in Fin[m]):
+    """A scatter is the transpose of a gather: what it adds into ``i``, weighted by ``u[i]``."""
+
+
+@theorem
+def transposed_weight_first(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], h: Fn[Fin[nf], Real], u: Fn[Fin[nv], Real]
+) -> sum(u[i] * sum(h[p] for p in Fin[nf] if node[p] == i) for i in Fin[nv]) == sum(
+    h[p] * u[node[p]] for p in Fin[nf]
+):
+    """The same with the weight first on the left and last on the right."""
+
+
+@theorem
+def _two_fibers(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], h: Fn[Fin[nf], Real]
+) -> sum(
+    sum(h[p] for p in Fin[nf] if node[p] == i) * sum(h[p] for p in Fin[nf] if node[p] == i)
+    for i in Fin[nv]
+) == sum(h[p] for p in Fin[nf]):
+    """False: the squares of what a scatter adds are not its total."""
+
+
+@theorem
 def three_rows(J: Real, u: Fn[Fin[3], Real]) -> all(
     J * (u[j] + u[0]) == J * u[j] + J * u[0] for j in Fin[3]
 ):
@@ -598,6 +653,70 @@ def test_the_elementary_functions_are_mathlibs() -> None:
     # a node built by hand with a function lanky has no Mathlib name for
     with pytest.raises(UnsupportedTerm, match="does not print"):
         print_lean(Forall(((x, Real),), Elementary("sin", x) <= 1), mathlib=True)
+
+
+def test_the_parts_of_a_complex_number_are_mathlibs() -> None:
+    assert mathlib(real(z * conj(z)) >= 0, z=Complex) == (
+        "Complex.re (z * (starRingEnd ℂ) z) ≥ 0"
+    )
+    assert mathlib(imag(z) == -imag(conj(z)), z=Complex) == (
+        "Complex.im z = (-1) * Complex.im ((starRingEnd ℂ) z)"
+    )
+    # of a real or a natural they are what Python's .real, .imag and
+    # .conjugate() are, with no cast in the way of a tactic
+    assert mathlib(real(x) == x, x=Real) == "x = x"
+    assert mathlib(imag(x) == 0, x=Real) == "(0 : ℝ) = 0"
+    assert mathlib(conj(n) == n, n=Nat) == "n = n"
+    with pytest.raises(UnsupportedTerm, match="Mathlib"):
+        print_lean(modulus_squared.term)
+    # of a truth value or a family Python has no part, so neither is printed
+    # as 0 or as itself, which Lean would prove (Codex)
+    b, f = Var("b"), Var("f")
+    with pytest.raises(UnsupportedTerm, match="takes a part of b, which is not a number"):
+        mathlib(imag(b) == 0, b=Bool)
+    with pytest.raises(UnsupportedTerm, match="takes a part of b, which is not a number"):
+        mathlib(real(b) == b, b=Bool)
+    with pytest.raises(UnsupportedTerm, match="takes a part of f, which is not a number"):
+        mathlib(imag(f) == 0, f=Fn[Nat, Real])
+
+
+def test_the_parts_are_pythons_at_numbers_and_nodes_of_terms() -> None:
+    assert (real(1 + 2j), imag(1 + 2j), conj(1 + 2j)) == (1.0, 2.0, 1 - 2j)
+    assert (real(2.5), imag(3), conj(Fraction(1, 2))) == (2.5, 0, Fraction(1, 2))
+    assert render(real(z) + imag(z) + conj(z)) == "real(z) + imag(z) + conj(z)"
+    assert structurally_equal(conj(z), Elementary("conj", z))
+    assert evaluate(real(z * conj(z)), {"z": 3 + 4j}) == 25.0
+    # the exact reading takes a drawn complex number apart exactly
+    drawn = ComplexValue(Fraction(1, 3), Fraction(-2))
+    with exact_reading():
+        assert evaluate(conj(z), {"z": drawn}) == ComplexValue(Fraction(1, 3), Fraction(2))
+        assert evaluate(imag(z), {"z": drawn}) == Fraction(-2)
+        assert evaluate(real(z * conj(z)), {"z": drawn}) == Fraction(37, 9)
+
+
+def test_an_identity_of_parts_gets_the_scripts_that_take_them_apart() -> None:
+    statement = statement_of(by_the_conjugate.term, "t", mathlib=True)
+    scripts = part_scripts(statement)
+    # the hypothesis z != 0 says the cast of normSq z is not zero, for field_simp
+    assert scripts[0].splitlines()[0] == (
+        "try have hz0 : ((Complex.normSq (z) : ℝ) : ℂ) ≠ 0 := by exact_mod_cast "
+        "(Complex.normSq_pos.mpr (by assumption)).ne'"
+    )
+    assert scripts[1] == (
+        "simp only [Complex.mul_conj, Complex.ofReal_re, Complex.normSq_apply]\nring"
+    )
+    # a hypothesis whose side Mathlib alone prints is said of normSq too
+    conjugated = Forall(((z, Complex),), real(z * conj(z)) > 0, conj(z) != 0)
+    first = part_scripts(statement_of(conjugated, "c", mathlib=True))[0]
+    assert first.splitlines()[0].startswith(
+        "try have hz0 : ((Complex.normSq ((starRingEnd ℂ) z) : ℝ) : ℂ) ≠ 0"
+    )
+    ladder = tactic_ladder(statement)
+    assert all(script in ladder for script in scripts)
+    # before Mathlib's whole-goal tactics, none of which takes a conjugate apart
+    assert ladder.index(scripts[0]) < ladder.index("ring")
+    plain = statement_of(exp_add.term, "t", mathlib=True)
+    assert not any("Complex.mul_conj" in script for script in tactic_ladder(plain))
 
 
 def test_a_complex_logarithm_carries_the_claim_that_it_is_off_the_cut() -> None:
@@ -998,6 +1117,37 @@ def test_a_scatter_keeps_its_total_by_a_script_python_writes() -> None:
     assert script.splitlines()[:2] == ["symm", "simp only [Finset.sum_filter]"]
     # a sum with no map, or a map with no bound, has no script
     assert fiber_scripts(statement_of(factorized.term, "factorized", mathlib=True)) == []
+
+
+def test_a_scatter_is_the_transpose_of_a_gather_by_the_same_script() -> None:
+    """A weight at ``i`` moves into the fibers' sums and their ``if`` before the exchanges.
+
+    ``Finset.sum_ite_eq`` then puts it at the cell's node, ``u[node[f, a]]``,
+    which is the gather on the right; ``ring1`` closes a weight written on the
+    other side of the value.
+    """
+    statement = statement_of(transposed.term, "transposed", mathlib=True)
+    (script,) = fiber_scripts(statement)
+    lines = script.splitlines()
+    assert lines[0] == (
+        "simp only [Finset.sum_filter, Finset.sum_mul, Finset.mul_sum, ite_mul, "
+        "mul_ite, zero_mul, mul_zero]"
+    )
+    assert lines[1:5] == [
+        "rw [Finset.sum_comm]",
+        "refine Finset.sum_congr rfl fun f_ hf_ => ?_",
+        "rw [Finset.sum_comm]",
+        "refine Finset.sum_congr rfl fun a_ ha_ => ?_",
+    ]
+    assert lines[-1] == "all_goals ring1"
+    assert script in tactic_ladder(statement)
+    first = statement_of(transposed_weight_first.term, "first", mathlib=True)
+    (script,) = fiber_scripts(first)
+    assert script.splitlines()[0].startswith("simp only [Finset.sum_filter, Finset.sum_mul")
+    # a weight on a sum that is not over a fiber has no script
+    assert fiber_scripts(statement_of(factorized.term, "factorized", mathlib=True)) == []
+    # nor does a product of two fibers' sums, which is no scatter
+    assert fiber_scripts(statement_of(_two_fibers.term, "_two_fibers", mathlib=True)) == []
 
 
 def test_a_conjunction_is_proved_a_conjunct_at_a_time() -> None:
@@ -1507,13 +1657,47 @@ def test_mathlib_proves_real_and_complex_claims(mathlib_oracle: LeanOracle, clai
 
 
 @pytest.mark.parametrize(
-    "claim", [scattered, gathered, three_rows], ids=lambda claim: claim.__name__
+    "claim",
+    [scattered, gathered, transposed, transposed_weight_first, three_rows],
+    ids=lambda claim: claim.__name__,
 )
 def test_mathlib_proves_a_scatter_keeps_its_total_and_a_conjunction(
     mathlib_oracle: LeanOracle, claim
 ) -> None:
     proved = mathlib_oracle.establish(claim.fact())
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+
+
+def test_mathlib_proves_a_claim_by_rewriting_with_its_equations(
+    mathlib_oracle: LeanOracle,
+) -> None:
+    """What statements store, unfolded; an identity used backwards; the sums written out.
+
+    The two parts of ``test_obligations.py``: two one-axis passes are the
+    dense operator by the two-axis sum factorization taken at a field's
+    sections, and a sum over ``Fin[3]`` is its three terms.
+    """
+    from lanky.obligations import Obligation
+    from test_obligations import DENSE, WRITTEN_OUT, fact_of
+
+    for part in (DENSE, WRITTEN_OUT):
+        fact = mathlib_oracle.establish(fact_of(Obligation(parts=(part,), decider="theorem")))
+        assert fact.status is Status.PROVED, fact.provenance.get("lean_parts")
+        (record,) = fact.provenance["lean_parts"]
+        assert record["how"] == "the equations rewritten with, in order, then ring"
+
+
+@pytest.mark.parametrize(
+    "claim", [by_the_conjugate, modulus_squared], ids=lambda claim: claim.__name__
+)
+def test_mathlib_proves_an_identity_of_the_parts(mathlib_oracle: LeanOracle, claim) -> None:
+    proved = mathlib_oracle.establish(claim.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+
+
+def test_mathlib_does_not_prove_a_misread_conjugate(mathlib_oracle: LeanOracle) -> None:
+    result = mathlib_oracle.establish(_conjugate_misread.fact())
+    assert result.status is Status.ASSUMED
 
 
 def test_mathlib_mode_still_proves_what_core_lean_proves(mathlib_oracle: LeanOracle) -> None:
