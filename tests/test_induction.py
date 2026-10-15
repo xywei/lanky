@@ -352,6 +352,32 @@ def test_a_lemmas_binder_is_never_taken_for_a_name_of_the_case(searching) -> Non
     assert render(use.arguments[0]) == "n__0"
 
 
+def test_what_a_claim_for_every_order_lacks_is_said_piece_by_piece(monkeypatch) -> None:
+    """``missing`` names what this machine lacks for Lean to prove ``laplace``, in install order.
+
+    Without Lean, Lean and Mathlib, since core Lean cannot state it; with
+    Lean and no Mathlib project, Mathlib; with both and no sympy, sympy,
+    which finds the induction's steps; with all three, or once it is
+    proved, nothing.
+    """
+    import lanky.mathlib
+    import lanky.oracles.lean as lean_module
+
+    oracle = LeanOracle()
+    fact = laplace.fact()
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    assert oracle.missing(fact) == ("lean", "mathlib")
+    monkeypatch.setattr(LeanOracle, "availability", lambda self: (True, ""))
+    assert oracle.missing(fact) == ("mathlib",)
+    monkeypatch.setattr(lanky.mathlib, "project_directory", lambda: "/mathlib")
+    monkeypatch.setattr(lean_module, "_sympy_imports", lambda: False)
+    assert oracle.missing(fact) == ("cas",)
+    monkeypatch.setattr(lean_module, "_sympy_imports", lambda: True)
+    assert oracle.missing(fact) == ()
+    monkeypatch.setattr(lean_module, "_sympy_imports", lambda: False)
+    assert oracle.missing(fact.with_status(Status.PROVED, "lean")) == ()
+
+
 def test_without_sympy_the_search_finds_nothing(monkeypatch) -> None:
     import lanky.induction
 

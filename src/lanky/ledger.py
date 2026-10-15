@@ -762,6 +762,9 @@ WIDEST = 100
 #: The words a long statement is broken before, so that a line starts with them.
 _CONNECTIVES = frozenset({"and", "or"})
 
+#: The comparisons a long statement may be broken before, outside a guard.
+_COMPARISONS = frozenset({"==", "!=", "<", "<=", ">", ">="})
+
 
 def wrap(text: str, width: int, indent: str = "  ") -> list[str]:
     """``text`` in lines of ``width`` characters at most, the lines after the first indented.
@@ -839,13 +842,14 @@ def _break_at(
     ``depths`` is how many brackets each character of ``text`` is inside,
     and ``guarded`` whether it is in a guard (:func:`_structure`).
     Of the spaces that leave a line that fits, those outside the most
-    brackets are taken, among those that leave the line at least a third
-    full, and of those the ones that leave a sixth of a line or more to
-    follow where there are any, so that a break does not leave a stub of a
-    line at either end; then the strongest seam among them (:func:`_seam`),
-    and of those the last. Where no space leaves a
-    line that fits, the first space is taken, and the line is a word longer
-    than the room.
+    brackets are taken, so that ``r]*sum(...`` does not start a line where
+    ``== sum(...`` could. Among them, those that leave the line at least a
+    third full and a sixth of a line or more to follow, so that a break
+    leaves no stub of a line at either end; failing that, a third full;
+    failing that, a sixth, before a space inside one more bracket is
+    taken. Then the strongest seam among them (:func:`_seam`), and of those
+    the last. Where no space leaves a line that fits, the first space is
+    taken, and the line is a word longer than the room.
     """
     end = len(text)
     spaces = [
@@ -856,9 +860,9 @@ def _break_at(
     fitting = [(p, depth) for p, depth in spaces if p - start <= room]
     if not fitting:
         return spaces[0][0] if spaces else None
-    floor = room // 3
+    tiers = ((room // 3, room // 6), (room // 3, 0), (room // 6, 0))
     for level in sorted({depth for _, depth in fitting}):
-        for widow in (room // 6, 0):
+        for floor, widow in tiers:
             candidates = [
                 p
                 for p, depth in fitting
@@ -877,8 +881,9 @@ def _seam(text: str, position: int, guarded: bool = False) -> int:
     0 before ``and`` or ``or`` that join two claims, so that the line after
     starts with it, and after a word that ends in ``:`` (a label: ``|
     pde:``, ``by lemma, ...:``) or in ``.`` (the binders of a ``forall``);
-    1 before a guard's ``where``, and after a ``,``, between two items of a
-    list; 2 anywhere else, the ``:`` of ``n : Nat`` and an ``and`` inside a
+    1 before a guard's ``where``, a comparison's ``==`` or a generator's
+    ``for``, and after a ``,``, between two items of a list; 2 anywhere
+    else, the ``:`` of ``n : Nat``, and an ``and`` or a comparison inside a
     guard (``guarded``) included.
     """
     before = text[:position].rsplit(" ", 1)[-1]
@@ -887,4 +892,6 @@ def _seam(text: str, position: int, guarded: bool = False) -> int:
         return 2 if guarded else 0
     if len(before) > 1 and before.endswith((":", ".")):
         return 0
-    return 1 if after == "where" or before.endswith(",") else 2
+    if after in _COMPARISONS:
+        return 2 if guarded else 1
+    return 1 if after in ("where", "for") or before.endswith(",") else 2

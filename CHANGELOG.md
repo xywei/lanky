@@ -6,6 +6,59 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`lanky check` prints every statement whole** (#142). A statement too
+  long for its column was cut at 72 characters, so a theorem showed its
+  variables and never its conclusion, and a postcondition, a theorem applied
+  to a kernel or a comparison with upstream lost its end. A statement that
+  fits is still one line; a longer one goes on under the statement column,
+  broken at spaces. A theorem is printed a part to a line: its variables,
+  each hypothesis under the name of its parameter (`| pde: ...`), and the
+  goal after `|-`, from the `sequent` its fact now carries in its
+  provenance. Any other statement is broken before an `and` that joins two
+  claims, after a label's `:` or a quantifier's `.`, or before a guard's
+  `where`, outside brackets where it can be, and indented a step for each
+  bracket it breaks inside. In a terminal the column takes what the other
+  columns leave, between 40 and 100 characters; written to a file or a pipe
+  it is 72, so a transcript does not depend on the window it was made in
+  (`Ledger.render(columns=...)`, `lanky.cli.terminal_columns`).
+- **`LANKY_LEAN_DISABLE` prints what a machine without Lean prints**, the
+  `WITHOUT LEAN` line below included, so a CI job that sets it checks the
+  transcripts such a machine shows.
+
+### Added
+
+- **What a row lacks to be proved, said under the table.** Without Lean a
+  theorem read `assumed` or `tested` and a fact isl decided `decided`, and
+  nothing said that Lean would prove them, or what to install. `lanky
+  check` now prints a line for each piece the machine lacks, with the rows
+  Lean would prove with it and the command that installs it:
+
+  ```text
+  WITHOUT LEAN: compressed_taylor, on_every_triangle and 40 more rows are not proved. To have Lean prove what it can: pip install "lanky[lean]", and Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1).
+  WITHOUT MATHLIB: compressed_taylor, on_every_triangle and 3 more rows are not proved, since only Lean with Mathlib can state them. To have Lean prove them: python -m lanky.mathlib ~/mathlib (about 7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.
+  ```
+
+  and a `WITHOUT SYMPY` line, with the `cas` extra, for an induction over
+  families where Lean has Mathlib and sympy is missing, which used to leave
+  the claim `assumed` with no word why. A plugin's claim is counted where its
+  obligation has parts for Lean, and under Mathlib where a part is about real
+  numbers, both read without Lean; one its plugin states for its solver
+  only, and a claim whose reading is refuted, are not. A Lean that is
+  installed and does not start is named by its reason rather than a command
+  (`LeanOracle.missing`, `LeanOracle.remedy`, and `lanky.cli.report_missing`,
+  which a plugin's verb that prints a ledger can call too).
+
+### Fixed
+
+- **A generator's binder names are read once per code object** (#125).
+  `sum(... for p in Fin[n])` disassembled its generator at every call to
+  name its binders, and a kernel run natively sums once per instance: that
+  was about 15 of the 45 seconds `lanky check` took over loopty's
+  hexahedra demonstration. The rest was loopty's interpreter, which loopty
+  makes faster on its side.
+
 ### Added
 
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).

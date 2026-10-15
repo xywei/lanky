@@ -389,6 +389,85 @@ def test_the_lean_line_counts_the_claims_about_reals_apart(capsys) -> None:
     assert capsys.readouterr().out == ""
 
 
+#: What ``lanky check`` says under the table of a machine without Lean.
+WITHOUT_LEAN = (
+    "WITHOUT LEAN: {rows} not proved. To have Lean prove what it can: pip install "
+    '"lanky[lean]", and Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1).'
+)
+
+
+def _named(fact: Fact, fact_id: str) -> Fact:
+    """``fact`` under another id, so that one ledger can hold several."""
+    import dataclasses
+
+    return dataclasses.replace(fact, id=fact_id)
+
+
+def test_without_lean_the_ledger_says_which_rows_lean_would_prove_and_how(
+    monkeypatch, capsys
+) -> None:
+    """One line for each piece missing, the rows it would prove and the command.
+
+    ``LANKY_LEAN_DISABLE`` reads as a machine without Lean. A plugin's claim
+    with parts for Lean is counted, and with a part about real numbers it is
+    counted under Mathlib too; one stated for its solver only, a refuted one
+    and one whose reading is refuted, which no oracle is asked about, are not.
+    """
+    from lanky.cli import report_missing
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    decided = Status.DECIDED
+    ledger = Ledger(
+        [
+            _named(fact_of(Obligation(parts=(IN_BOUNDS,)), decided), "a"),
+            _named(fact_of(Obligation(parts=(DISJOINT,)), decided), "b"),
+            _named(fact_of(Obligation(parts=(REAL_PART,)), decided), "c"),
+            _named(fact_of(Obligation(declined="isl only"), decided), "d"),
+            _named(fact_of(Obligation(parts=(IN_BOUNDS,)), Status.REFUTED), "e"),
+            _named(fact_of(Obligation(parts=(IN_BOUNDS,)), decided), "f").with_status(
+                decided, "isl", unfaithful="the term says something else"
+            ),
+        ]
+    )
+    report_missing(ledger)
+    assert capsys.readouterr().out == "\n" + "\n".join(
+        [
+            WITHOUT_LEAN.format(rows="3 rows are"),
+            "WITHOUT MATHLIB: one row is not proved, since only Lean with Mathlib can "
+            "state it. To have Lean prove it: python -m lanky.mathlib ~/mathlib (about "
+            "7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.",
+            "",
+        ]
+    )
+    # nothing lacking, nothing said
+    report_missing(Ledger([_named(fact_of(Obligation(declined="isl only"), decided), "d")]))
+    assert capsys.readouterr().out == ""
+
+
+def test_a_lean_installed_and_not_working_is_named_by_its_reason(monkeypatch, capsys) -> None:
+    """With the extra and the toolchain there, there is no command to give: the line says why."""
+    import lanky.oracles.lean as lean_module
+    from lanky.cli import report_missing
+
+    monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
+    monkeypatch.setattr(
+        LeanOracle, "availability", lambda self: (False, "the REPL could not be built")
+    )
+    monkeypatch.setattr(lean_module, "_lean_interact_installed", lambda: True)
+    monkeypatch.setattr(lean_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    report_missing(Ledger([fact_of(Obligation(parts=(IN_BOUNDS,)), Status.DECIDED)]))
+    assert capsys.readouterr().out == (
+        "\nWITHOUT LEAN (the REPL could not be built): one row is not proved.\n"
+    )
+    # with the toolchain missing, the command is the toolchain's alone
+    monkeypatch.setattr(lean_module.shutil, "which", lambda name: None)
+    report_missing(Ledger([fact_of(Obligation(parts=(IN_BOUNDS,)), Status.DECIDED)]))
+    assert capsys.readouterr().out == (
+        "\nWITHOUT LEAN: one row is not proved. To have Lean prove what it can: "
+        "Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1).\n"
+    )
+
+
 def test_the_negation_instantiates_every_binder_at_the_point() -> None:
     part = Part("S0", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
     statement = part_statement(part, "kernel_S0")

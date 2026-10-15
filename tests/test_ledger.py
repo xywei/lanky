@@ -78,6 +78,137 @@ def test_render_is_a_fixed_width_table() -> None:
     assert Ledger().render() == "ledger is empty"
 
 
+#: A kernel's postcondition, as lanky check printed it cut at 72 characters
+#: before #142: two claims, each with a guard.
+POSTCONDITION = (
+    "(forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10. "
+    "R[i, a, b] == C[i, a, b]) and (forall i in Fin(nb), a in Nat, b in Nat "
+    "where a + b + 2 <= 10. R[i, a + 2, b] == -R[i, a, b + 2])"
+)
+
+
+def test_a_statement_too_long_for_its_column_is_wrapped_under_it_not_cut() -> None:
+    """#142: the table prints every statement whole.
+
+    One that fits is one line, as it always was. A longer one goes on under
+    the statement column, broken at spaces only, so its lines read back the
+    statement; the row's other cells are on its first line, and the lines
+    after it are blank up to the statement column.
+    """
+    short = make_fact("short", Status.DECIDED, decided_by="isl")
+    post = Fact(
+        id="post",
+        kind="postcondition",
+        statement=POSTCONDITION,
+        status=Status.DECIDED,
+        decided_by="isl",
+        where="l2p.py:240",
+        owner="reconstruct",
+    )
+    lines = Ledger([short, post]).render().splitlines()
+    at = lines[0].index("STATEMENT")
+    assert lines[2][at:] == "short holds"
+    rows = lines[3:-2]
+    assert rows[0].startswith("decided  isl  l2p.py:240  reconstruct")
+    assert len(rows) == 4
+    assert all(not line[:at].strip() for line in rows[1:])
+    assert " ".join(line[at:].strip() for line in rows) == POSTCONDITION
+    assert max(len(line) - at for line in rows) <= 72
+    assert lines[-1] == "2 facts: 2 decided"
+
+
+def test_a_long_statement_breaks_between_claims_and_not_inside_a_guard() -> None:
+    """The ``and`` that joins two claims starts a line; a guard's own ``and`` does not.
+
+    A break inside brackets is indented a step for each bracket, so that
+    the second line of a claim reads as that claim's; a guard too long for
+    a line is broken before its ``where``, so the guard stays whole.
+    """
+    from lanky.ledger import wrap
+
+    assert wrap(POSTCONDITION, 72) == [
+        "(forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10.",
+        "    R[i, a, b] == C[i, a, b])",
+        "  and (forall i in Fin(nb), a in Nat, b in Nat where a + b + 2 <= 10.",
+        "    R[i, a + 2, b] == -R[i, a, b + 2])",
+    ]
+    hypothesis = (
+        "| stored: forall i in Fin(n), a in Nat, b in Nat where a < 2 and a + b <= p. "
+        "c[i, a, b] == D[i, a, b]"
+    )
+    assert wrap(hypothesis, 72, indent="    ") == [
+        "| stored: forall i in Fin(n), a in Nat, b in Nat",
+        "    where a < 2 and a + b <= p. c[i, a, b] == D[i, a, b]",
+    ]
+    # a word longer than the line is kept whole, on a line of its own
+    assert wrap("a " + "b" * 20 + " c", 10) == ["a", "  " + "b" * 20, "  c"]
+
+
+def test_a_theorem_too_long_for_one_line_is_printed_a_part_to_a_line() -> None:
+    """Its variables, each hypothesis under its parameter's name, then ``|-`` and the goal.
+
+    On one line the hypotheses are joined by ``, ``, as the binders of a
+    ``forall`` are, and where one ends cannot be told. The parts come from
+    the ``sequent`` the theorem's fact carries; one that fits is one line.
+    """
+    from lanky.ledger import statement_lines
+
+    sequent = {
+        "variables": "D : Fn[Nat, Nat, Real], R : Fn[Nat, Nat, Real]",
+        "hypotheses": [
+            ["pde", "forall a in Nat, b in Nat. D[a + 2, b] + D[a, b + 2] == 0"],
+            ["stored", "forall a in Nat, b in Nat where a < 2. R[a, b] == D[a, b]"],
+        ],
+        "goal": "forall a in Nat, b in Nat. R[a, b] == D[a, b]",
+    }
+    fact = Fact(
+        id="compressed_taylor",
+        kind="theorem",
+        statement=(
+            f"{sequent['variables']} | "
+            + ", ".join(text for _, text in sequent["hypotheses"])
+            + f" |- {sequent['goal']}"
+        ),
+        owner="compressed_taylor",
+        provenance={"sequent": sequent},
+    )
+    assert statement_lines(fact) == [
+        "D : Fn[Nat, Nat, Real], R : Fn[Nat, Nat, Real]",
+        "| pde: forall a in Nat, b in Nat. D[a + 2, b] + D[a, b + 2] == 0",
+        "| stored: forall a in Nat, b in Nat where a < 2. R[a, b] == D[a, b]",
+        "|- forall a in Nat, b in Nat. R[a, b] == D[a, b]",
+    ]
+    assert statement_lines(fact, width=400) == [fact.statement]
+
+
+def test_in_a_terminal_the_statement_column_takes_what_the_others_leave() -> None:
+    """``columns`` sizes the statement column to the terminal, within 40 and 100 characters."""
+    from lanky.ledger import NARROWEST, WIDEST
+
+    post = Fact(
+        id="post",
+        kind="postcondition",
+        statement=POSTCONDITION,
+        status=Status.DECIDED,
+        decided_by="isl",
+        where="l2p.py:240",
+        owner="reconstruct",
+    )
+    ledger = Ledger([post])
+    others = len("decided  isl  l2p.py:240  reconstruct  ")
+
+    def widest(columns: int | None) -> int:
+        rows = ledger.render(columns=columns).splitlines()[2:-2]
+        return max(len(line) for line in rows) - others
+
+    assert widest(None) <= 72
+    assert widest(others + 80) <= 80 < widest(others + 400) <= WIDEST
+    assert widest(others + 10) <= NARROWEST
+    assert len(ledger.render(columns=others + 400).splitlines()) < len(
+        ledger.render(columns=others + 10).splitlines()
+    )
+
+
 def test_a_vacuous_fact_is_marked_beside_its_status() -> None:
     """``proved`` is true of a vacuous fact, and the table says what else is.
 

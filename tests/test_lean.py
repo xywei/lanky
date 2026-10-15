@@ -2081,9 +2081,10 @@ def _read_as_tested(line: str) -> str:
     draws tested (#91), so it is worth ``tested`` and the table has an
     ``EFFECTIVE`` column after the status. Without Lean nothing is worth less
     than its own status, and the column is not there; it is the eleven
-    characters after the status column's eight, in every row of the table.
+    characters after the status column's eight, in every row of the table,
+    and as many spaces fewer in front of a statement's lines after its first.
     """
-    if line[8:19] in _EFFECTIVE_CELLS:
+    if line[8:19] in _EFFECTIVE_CELLS or line.startswith(" " * 19):
         line = line[:8] + line[19:]
     return line.replace(f"proved  {'lean':13}", f"tested  {'property-test':13}").replace(
         "4 facts: 1 proved, 3 tested", "4 facts: 4 tested"
@@ -2120,13 +2121,19 @@ def test_without_lean_the_documented_ledger_reads_tested(monkeypatch, capsys) ->
     That is the README's other claim about the table: the status column changes,
     and the ``EFFECTIVE`` column, which says that the proof is worth the
     ``tested`` reading it rests on, is not needed, and nothing else changes,
-    the exit code included. The other columns keep their widths, because the
-    property tester decided the other row already. Both documents are held to
+    the exit code included, but for a ``WITHOUT LEAN`` line under the table,
+    which names the two claims and the command that installs Lean. The other
+    columns keep their widths, because the property tester decided the other
+    row already. Both documents are held to
     it, so the README's rows are checked here too and not only where Lean is
     installed.
     """
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     printed = _check_gauss(capsys)
+    # and the line that says what Lean would prove, which the quickstart shows
+    (without,) = [line for line in printed if line.startswith("WITHOUT LEAN:")]
+    assert _block_from("docs/quickstart.md", "WITHOUT LEAN:") == [without]
+    printed.remove(without)
     quickstart = _printed_after("docs/quickstart.md", CHECK_GAUSS)
     assert printed == [_read_as_tested(line) for line in quickstart]
     readme = _printed_after("README.md", "lanky check examples/gauss.py")
@@ -3040,8 +3047,8 @@ def test_the_documented_ledger_is_the_one_check_prints(lean_oracle: LeanOracle, 
 
     Both were copied from a terminal with Lean installed, and the row they are
     there to show is ``scan_monotone`` reading ``proved lean``, so a machine
-    with Lean is the one place they can be checked. The quickstart has the
-    whole table; the README's is abridged to fit the page.
+    with Lean is the one place they can be checked. Both have the whole
+    table, ``scan_monotone``'s statement on the lines under its row.
     """
     printed = _check_gauss(capsys)
     assert _printed_after("docs/quickstart.md", CHECK_GAUSS) == printed
