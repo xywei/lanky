@@ -1668,6 +1668,25 @@ def test_mathlib_proves_a_scatter_keeps_its_total_and_a_conjunction(
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
 
 
+def test_mathlib_proves_a_claim_by_rewriting_with_its_equations(
+    mathlib_oracle: LeanOracle,
+) -> None:
+    """What statements store, unfolded; an identity used backwards; the sums written out.
+
+    The two parts of ``test_obligations.py``: two one-axis passes are the
+    dense operator by the two-axis sum factorization taken at a field's
+    sections, and a sum over ``Fin[3]`` is its three terms.
+    """
+    from lanky.obligations import Obligation
+    from test_obligations import DENSE, WRITTEN_OUT, fact_of
+
+    for part in (DENSE, WRITTEN_OUT):
+        fact = mathlib_oracle.establish(fact_of(Obligation(parts=(part,), decider="theorem")))
+        assert fact.status is Status.PROVED, fact.provenance.get("lean_parts")
+        (record,) = fact.provenance["lean_parts"]
+        assert record["how"] == "the equations rewritten with, in order, then ring"
+
+
 @pytest.mark.parametrize(
     "claim", [by_the_conjugate, modulus_squared], ids=lambda claim: claim.__name__
 )

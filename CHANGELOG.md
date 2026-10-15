@@ -8,6 +8,32 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Added
 
+- **Rewrites, a hint for a plugin's part** (`lanky.obligations.Rewrite`,
+  `Hints.rewrites`). A part may ask for its goal to be rewritten with its
+  hypotheses that are equations, in order: with no arguments, wherever one
+  applies, under a sum too (`simp only`, each premise shown by `omega` from
+  the range of the sums it is under); with arguments, at that one instance
+  (`rw`), a family's value perhaps a family of the part applied to its first
+  arguments, `Fr (3 * x + 0)`, and right to left where asked. Then a sum over
+  a literal range is written out term by term and `ring_nf` compares the two
+  sides. loopty states a program's postcondition so: what its calls store,
+  unfolded into the claim, and a cited identity, sum factorization, used at
+  the sections of the arrays where its one side is. `Hints.rewrites` holds
+  both kinds of rewrite, each said by its type: a `Rewrite` is a step of
+  this script, and an `Application` an identity rewritten before a theorem
+  is applied (below).
+- **A literal domain beside a symbolic one in an annotation**
+  (`lanky.terms.literal_binders`, `MixedDomains`). `all(grad[x, e] == ...
+  for x in Fin[3] for e in Fin[ne])` and `sum(... for d in Fin[3] for c in
+  Fin[n])` were refused ("mixing concrete and symbolic domains in one
+  comprehension is not supported"), so a claim over the three components of
+  a gradient had to nest a walk over `Fin[3]` outside it. Now an annotation
+  whose first reading mixes them is read again with each literal domain a
+  binder, `forall x in Fin(3), e in Fin(ne)`, which Lean states as it states
+  `Fin(n)`. An annotation that does not mix reads as before, a sum over
+  `Fin[2]` alone still its two terms; one whose body uses the point as a
+  Python value, an index into a tuple, is refused as before, and the
+  refusal names the mix.
 - **The parts of a complex number: `real`, `imag` and `conj`** (`lanky.real`,
   `lanky.imag`, `lanky.conj`), numpy's names, as nodes of the same kind as
   `exp`, `log` and `sqrt`. Python computes them as `.real`, `.imag` and
@@ -37,7 +63,6 @@ All notable changes to lanky are recorded here. The format follows
   `abs_nonneg`, `le_abs_self` and `neg_abs_le` of each, and a goal `|a| <= b`
   is taken apart by `abs_le` first: so a value within an allowance of
   another, `|a - b| <= e * (|b| + 1)`, is proved from an equation for `a`.
-
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
   A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
   Fin[d])`, either way round, where `y[i]` is the sum over the cells a map
