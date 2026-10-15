@@ -2134,7 +2134,8 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
 
     out = tmp_path / "out.json"
     assert cli.main(["check", path, "--json", str(out)]) == 0
-    lines = capsys.readouterr().out.splitlines()
+    # a statement too long for its column goes on under it, on lines of its own
+    lines = [line for line in capsys.readouterr().out.splitlines() if not line.startswith(" ")]
     assert lines[0].split()[:3] == ["STATUS", "EFFECTIVE", "BY"]
     assert lines[2].startswith("tested                   tested     property-test")
     assert lines[3].startswith("tested                   tested     python")

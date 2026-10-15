@@ -403,6 +403,15 @@ class Theorem:
         return f"{head} |- {goal}" if head else goal
 
     @property
+    def sequent(self) -> dict[str, Any]:
+        """The parts of :attr:`statement`, as text: variables, named hypotheses, goal."""
+        return {
+            "variables": ", ".join(f"{name} : {sort}" for name, sort in self.variables),
+            "hypotheses": [[name, render(prop)] for name, prop in self.hypotheses],
+            "goal": render(self.goal),
+        }
+
+    @property
     def term(self) -> Any:
         """The statement as one closed term: the goal under its binders and guard.
 
@@ -539,8 +548,17 @@ class Theorem:
         of the claim on it, and when it is refuted, why, as ``unfaithful``, so
         that no oracle is asked about a term that says something else than
         the claim. Without it the fact is the claim alone, as it always was.
+
+        The provenance carries the statement's parts as ``sequent``: the
+        variables, each hypothesis with the name of its parameter, and the
+        goal, as text, so that the ledger can print a statement too long for
+        one line a part to a line (see :func:`lanky.ledger.statement_lines`).
         """
-        provenance: dict[str, Any] = {"path": self.path, "line": self.line}
+        provenance: dict[str, Any] = {
+            "path": self.path,
+            "line": self.line,
+            "sequent": self.sequent,
+        }
         if reading is not None:
             provenance["faithful"] = reading.id
             if reading.status is Status.REFUTED:

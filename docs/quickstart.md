@@ -111,13 +111,19 @@ theorem in a collected module becomes a test item.
 ```console
 $ uv run lanky check examples/gauss.py
 STATUS  EFFECTIVE  BY             WHERE        OWNER          STATEMENT
-------  ---------  -------------  -----------  -------------  ------------------------------------------------------------------------
+------  ---------  -------------  -----------  -------------  ---------------------------------------------------------
 tested  tested     property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
 tested  tested     python         gauss.py:31  gauss          the term computes what the annotations compute
-proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0) ==...
+proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat]
+                                                              | h0: off(0) == 0
+                                                              | hs: forall r in Fin(n). off(r + 1) == off(r) + cnt(r)
+                                                              |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b.
+                                                                  off(a) <= off(b)
 tested  tested     python         gauss.py:39  scan_monotone  the term computes what the annotations compute
 
 4 facts: 1 proved, 3 tested
+
+WITHOUT MATHLIB: gauss is not proved, since only Lean with Mathlib can state it. To have Lean prove it: python -m lanky.mathlib ~/mathlib (about 7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.
 ```
 
 This is the command the project exists for. It imported the file, read the
@@ -165,6 +171,27 @@ read `tested property-test`, the `EFFECTIVE` column is not printed, since
 nothing is then worth less than its own status, and the exit code is 0 either
 way. Nothing about the code changes; only the strength of the evidence does,
 and the table says which.
+
+What a row lacks to be proved here is said under the table, a line for each
+piece that is missing, with the rows that need it and the command that
+installs it. Core Lean cannot state Gauss's sum, so the `WITHOUT MATHLIB`
+line above names `gauss`. On a machine with neither the extra nor Lean, the
+check also prints
+
+```text
+WITHOUT LEAN (lean is not on PATH): gauss and scan_monotone are not proved. To have Lean prove what it can: pip install "lanky[lean]", and Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1).
+```
+
+and where Mathlib is set up but sympy is not, an induction over families,
+whose steps sympy finds, gets a `WITHOUT SYMPY` line that names the `cas`
+extra. `LANKY_LEAN_DISABLE=1` says that Lean is not wanted, and there are no
+such lines.
+
+A statement too long for its column is printed whole, on the lines under its
+row: a theorem a part to a line, its variables, each hypothesis under the
+name of its parameter, and `|-` before the goal, as `scan_monotone`'s is
+above; any other statement wrapped outside the brackets where it can be, and
+indented under a bracket where it cannot.
 
 `--verbose` prints the oracles and their availability first:
 
@@ -458,22 +485,26 @@ facts or fact ids, and becomes the `rests_on` of the theorem's fact.
 ```console
 $ uv run lanky check examples/nicomachus.py
 STATUS                   EFFECTIVE  BY             WHERE             OWNER       STATEMENT
------------------------  ---------  -------------  ----------------  ----------  ------------------------------------------------------------------------
+-----------------------  ---------  -------------  ----------------  ----------  -----------------------------------------------------------------
 tested                   tested     property-test  nicomachus.py:33  gauss       n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
 tested                   tested     python         nicomachus.py:33  gauss       the term computes what the annotations compute
-assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1)...
+assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus  n : Nat
+                                                                                 |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
 tested                   tested     python         nicomachus.py:38  nicomachus  the term computes what the annotations compute
 tested under nicomachus  assumed    property-test  nicomachus.py:43  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
 tested                   tested     python         nicomachus.py:43  cubes       the term computes what the annotations compute
 
 6 facts: 1 assumed, 5 tested
 
+WITHOUT MATHLIB: gauss and cubes are not proved, since only Lean with Mathlib can state them. To have Lean prove them: python -m lanky.mathlib ~/mathlib (about 7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.
+
 CITED nicomachus at nicomachus.py:38: Nicomachus of Gerasa, Introduction to Arithmetic
 ```
 
 The same with Lean and without it, since every statement has a sum in it
-(Mathlib mode, below, proves `gauss` and `cubes`). Four things in that output
-are new.
+(Mathlib mode, below, proves `gauss` and `cubes`), but for the `WITHOUT
+MATHLIB` line, which core Lean prints and a machine without Lean does not.
+Four things in that output are new.
 
 - `assumed (axiom)`. The axiom is taken on its citation, which the `CITED`
   line under the table shows and `--json` carries as `cite` in its provenance,
@@ -620,7 +651,8 @@ decided under jump_Sp, compact_Sp                             assumed    layer-r
 decided under jump_D, jump_S                                  assumed    layer-rules    pytential_skie.py:169  helmholtz_combined_field  trace(D - 1j*eta*S, EXTERIOR) ~> 1/2*I + D - 1j*eta*S (jump relations)
 tested                                                        tested     property-test  pytential_skie.py:169  helmholtz_combined_field  coefficient of I: 1/2 != 0
 decided under jump_D, jump_S, compact_D, compact_S            assumed    layer-rules    pytential_skie.py:169  helmholtz_combined_field  1/2*I + D - 1j*eta*S is second kind
-decided under jump_Dp, jump_Sp                                assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   normal_derivative(D - 1j*eta*S, EXTERIOR) ~> 1j/2*eta*I + D' - 1j*eta...
+decided under jump_Dp, jump_Sp                                assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   normal_derivative(D - 1j*eta*S, EXTERIOR) ~> 1j/2*eta*I + D' - 1j*eta*S'
+                                                                                                                                           (jump relations)
 decided under jump_Dp, jump_Sp, compact_Sp, hypersingular_Dp  assumed    layer-rules    pytential_skie.py:175  helmholtz_burton_miller   1j/2*eta*I + D' - 1j*eta*S' is not second kind: D' is not c*I + compact
 
 29 facts: 16 assumed, 10 decided, 3 tested

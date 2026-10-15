@@ -296,7 +296,7 @@ def test_an_axiom_whose_hypotheses_no_draw_satisfied_is_warned_about(
     satisfiable = VACUOUS_AXIOM.replace("(n > 2) & (n < 1)) -> n == n + 1", "n > 2) -> n > 1")
     path = _write(tmp_path, satisfiable)
     (fact,) = claims(check_path(path))
-    assert set(fact.provenance) == {"path", "line", "cite", "faithful"}
+    assert set(fact.provenance) == {"path", "line", "sequent", "cite", "faithful"}
 
 
 def test_a_goal_no_oracle_can_state_does_not_hide_vacuous_hypotheses(

@@ -137,6 +137,7 @@ __all__ = [
     "default_cache_dir",
     "default_proof_cache_dir",
     "family_induction_scripts",
+    "induction_over_families",
     "induction_scripts",
     "kill_servers",
     "reduction_scripts",
@@ -303,6 +304,15 @@ MATHLIB_IMPORT_TIMEOUT = float(os.environ.get("LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT
 
 
 # {{{ choosing a Lean version
+
+
+def _sympy_imports() -> bool:
+    """Whether sympy, which the induction over families finds its steps with, is installed."""
+    try:
+        spec = find_spec("sympy")
+    except (ImportError, ValueError):  # pragma: no cover - a broken installation
+        return False
+    return spec is not None and spec.origin is not None
 
 
 def _lean_interact_installed() -> bool:
@@ -1793,6 +1803,28 @@ def _bounds_of(domain: Any) -> tuple[Any, Any] | None:
     return None
 
 
+def induction_over_families(statement: LeanStatement) -> bool:
+    """Whether a statement has the shape :func:`family_induction_scripts` writes scripts for.
+
+    Mathlib mode, a goal that is a universal of an equation, a family among
+    the statement's variables, and no variable of the goal named like one of
+    the statement's: a goal variable named like a parameter hides it after
+    ``intro``, where the hypotheses still mean the parameter, and the search
+    would confuse the two. Whether the search finds the steps is another
+    question, which needs sympy (:mod:`lanky.induction`).
+    """
+    if not statement.mathlib:
+        return False
+    goal = statement.goal_term
+    if not isinstance(goal, Forall) or not (
+        isinstance(goal.body, prim.Comparison) and goal.body.operator == "=="
+    ):
+        return False
+    if not _family_names(statement):
+        return False
+    return not {var.name for var, _ in goal.binders} & set(statement.types)
+
+
 def family_induction_scripts(
     statement: LeanStatement, finder: Finder | None = None, until: float | None = None
 ) -> list[str]:
@@ -1828,20 +1860,10 @@ def family_induction_scripts(
     (:func:`lanky.deadline.deadline`) where one can be set, and the scripts
     written before then are kept.
     """
-    if not statement.mathlib:
+    if not induction_over_families(statement):
         return []
     goal = statement.goal_term
-    if not isinstance(goal, Forall) or not (
-        isinstance(goal.body, prim.Comparison) and goal.body.operator == "=="
-    ):
-        return []
     families = _family_names(statement)
-    if not families:
-        return []
-    # a goal variable named like a parameter hides it after intro, where the
-    # hypotheses still mean the parameter, and the search would confuse the two
-    if {var.name for var, _ in goal.binders} & set(statement.types):
-        return []
     terms = statement.hypothesis_terms or (None,) * len(statement.hypotheses)
     lemmas = [
         lemma
@@ -2566,6 +2588,97 @@ class LeanOracle:
         except (UnsupportedTerm, AttributeError, TypeError, ValueError):
             return False
         return True
+
+    def missing(self, fact: Fact, /) -> tuple[str, ...]:
+        """What this machine lacks for Lean to be asked to prove ``fact``; ``()`` for nothing.
+
+        ``lanky check`` says it under the table, with the command that
+        installs each (:func:`lanky.cli.report_missing`), so that a row
+        left ``assumed`` or ``decided`` where Lean would have proved it does
+        not read as a claim nothing can prove. The pieces come in the order
+        they are installed:
+
+        ``"lean"``
+            Lean cannot be driven from here (:meth:`availability`), and
+            ``fact`` is one it would be asked about: a statement the printer
+            states in either dialect, or a plugin's claim
+            (:mod:`lanky.obligations`).
+        ``"mathlib"``
+            ``fact`` is a statement only Lean with Mathlib can state, and no
+            Mathlib project is set (``LANKY_LEAN_MATHLIB``): the printer
+            declines it in core Lean and states it with Mathlib, or, for a
+            plugin's claim, Lean said so when it was asked
+            (``lean_needs_mathlib``).
+        ``"cas"``
+            Lean has Mathlib and did not prove ``fact``, an induction over
+            families (:func:`induction_over_families`), and sympy, which finds
+            the steps Lean checks (:mod:`lanky.induction`), does not import.
+
+        A fact proved, certified or refuted lacks nothing, and so do a
+        claim's reading, an axiom and a fact with no term, which Lean is not
+        asked about. Without Lean, whether a plugin's claim needs Mathlib is
+        not known: the plugin states it only when Lean is asked. And nothing
+        is lacking where ``LANKY_LEAN_DISABLE`` is set, which says that Lean
+        is not wanted, as in a CI job that checks what a machine without Lean
+        prints.
+        """
+        settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
+        if fact.status in settled or fact.is_reading or fact.is_axiom or fact.term is None:
+            return ()
+        if os.environ.get("LANKY_LEAN_DISABLE"):
+            return ()
+        available, _ = self.availability()
+        if callable(getattr(fact.term, "lean_obligation", None)):
+            if not available:
+                return ("lean",)
+            return ("mathlib",) if fact.provenance.get("lean_needs_mathlib") else ()
+        owner = fact.owner or fact.id
+        stated: dict[bool, LeanStatement] = {}
+        for mathlib in (False, True):
+            try:
+                stated[mathlib] = statement_of(fact.term, owner, mathlib=mathlib)
+            except (UnsupportedTerm, AttributeError, TypeError, ValueError):
+                continue
+        if not stated:
+            return ()
+        needs: list[str] = []
+        if not available:
+            needs.append("lean")
+        with_mathlib = mathlib_mode.project_directory() is not None
+        if False not in stated and not with_mathlib:
+            needs.append("mathlib")
+        if (
+            available
+            and with_mathlib
+            and True in stated
+            and induction_over_families(stated[True])
+            and not _sympy_imports()
+        ):
+            needs.append("cas")
+        return tuple(needs)
+
+    def remedy(self, piece: str, /) -> str:
+        """The command that installs a piece :meth:`missing` names; empty when there is none.
+
+        ``"lean"`` is the extra and the toolchain, whichever of the two is
+        not there; a Lean that is installed and could not be started has no
+        command, and its reason, which :meth:`availability` gives, says why.
+        """
+        if piece == "lean":
+            steps = []
+            if not _lean_interact_installed():
+                steps.append('pip install "lanky[lean]"')
+            if shutil.which("lean") is None:
+                steps.append("Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1)")
+            return ", and ".join(steps)
+        if piece == "mathlib":
+            return (
+                "python -m lanky.mathlib ~/mathlib (about 7 GB), then "
+                "export LANKY_LEAN_MATHLIB=~/mathlib"
+            )
+        if piece == "cas":
+            return 'pip install "lanky[cas]"'
+        return ""
 
     def _mathlib(self) -> bool:
         """Whether the session in effect has Mathlib."""

@@ -363,6 +363,8 @@ def test_the_lean_line_counts_the_claims_about_reals_apart(capsys) -> None:
     """Core Lean has no reals: such a claim is not unstated, it waits for Mathlib.
 
     The line says where Lean checks it, rather than that it is not stated.
+    Where no fact a solver decided is about anything else, there is no such
+    line, and the ``WITHOUT MATHLIB`` line under it says it all.
     """
     from lanky.cli import report_proved
 
@@ -381,11 +383,10 @@ def test_the_lean_line_counts_the_claims_about_reals_apart(capsys) -> None:
         "Lean checks where Mathlib is (LANKY_LEAN_MATHLIB). "
     ) in out
     assert "not stated for Lean yet" not in out
+    # with no fact a solver decided, the WITHOUT MATHLIB line is the one that
+    # names them, with the command (report_missing)
     report_proved(Ledger([post]))
-    assert capsys.readouterr().out == (
-        "\nLEAN checks one claim about real numbers where Mathlib is "
-        "(LANKY_LEAN_MATHLIB); core Lean has no real numbers.\n"
-    )
+    assert capsys.readouterr().out == ""
 
 
 def test_the_negation_instantiates_every_binder_at_the_point() -> None:
