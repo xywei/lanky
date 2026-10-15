@@ -17,6 +17,7 @@ from lanky.terms import (
     Exists,
     Forall,
     LankyEvaluationMapper,
+    MixedDomains,
     OpenPoint,
     Polarity,
     Power,
@@ -210,6 +211,65 @@ def test_any_and_abs_are_replaced_too() -> None:
 
 def _any_and_abs(n: Nat) -> any(abs(i - n) == 1 for i in Fin[n]):
     """A signature using the two remaining replaced builtins."""
+
+
+def _mixed(
+    n: Nat, g: Fn[Fin[3], Fin[n], Real], t: Fn[Fin[3], Fin[n], Real]
+) -> all(t(x, i) == sum(g(d, c) for d in Fin[3] for c in Fin[n]) for x in Fin[3] for i in Fin[n]):
+    """A literal domain beside a symbolic one, in a universal and in a sum."""
+
+
+def test_a_literal_domain_beside_a_symbolic_one_is_a_binder_in_an_annotation() -> None:
+    """``for x in Fin[3] for i in Fin[n]`` is read as two binders, not refused.
+
+    The comprehension walked ``Fin[3]`` and bound a generic point of
+    ``Fin[n]`` at each of its points, which has no reading; the annotation
+    is read again with ``Fin[3]`` a binder over ``Fin(3)``.
+    """
+    goal = evaluate_annotations(_mixed)["return"]
+    assert isinstance(goal, Forall)
+    assert [(var.name, str(sort)) for var, sort in goal.binders] == [
+        ("x", "Fin(3)"),
+        ("i", "Fin(n)"),
+    ]
+    total = goal.body.right
+    assert isinstance(total, Sum)
+    assert [(var.name, str(sort)) for var, sort in total.binders] == [
+        ("d", "Fin(3)"),
+        ("c", "Fin(n)"),
+    ]
+    # sum over d < 3 and c < 2 of d + c is 9, wherever t is read
+    values = {"n": 2, "g": lambda d, c: d + c, "t": lambda x, i: 9}
+    assert evaluate(goal, values) is True
+    values["t"] = lambda x, i: 9 + x
+    assert evaluate(goal, values) is False
+
+
+def _walked(c: Fn[Fin[2], Real]) -> sum(c(t) for t in Fin[2]) == c(0) + c(1):
+    """A literal domain alone: walked, as it always was."""
+
+
+def _indexed(n: Nat, f: Fn[Fin[n], Real]) -> all(
+    f(i) >= (1, 2, 3)[x] for x in Fin[3] for i in Fin[n]
+):
+    """A literal domain whose point indexes a tuple: it has to be walked."""
+
+
+def test_a_literal_domain_alone_is_walked_and_a_point_python_needs_is_refused() -> None:
+    """Only an annotation that mixes is read again, and only where it can be.
+
+    A literal domain on its own is walked point by point, so a sum over it is
+    its terms. A mixed one whose point the body uses as a Python value, an
+    index into a tuple, cannot be a binder, and is refused, naming the mix.
+    The refusal outside an annotation is the same error.
+    """
+    goal = evaluate_annotations(_walked)["return"]
+    assert render(goal) == "0 + c(0) + c(1) == c(0) + c(1)"
+    with pytest.raises(MixedDomains, match="beside one with a symbolic"):
+        evaluate_annotations(_indexed)
+    n = Var("n")
+    with pytest.raises(MixedDomains, match="nest the walk over the literal domain"):
+        forall(i >= x for x in Fin[3] for i in Fin[n])
 
 
 def test_a_quantifier_over_a_sort_is_sampled_not_enumerated() -> None:

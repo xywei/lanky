@@ -19,6 +19,18 @@ All notable changes to lanky are recorded here. The format follows
   sides. loopty states a program's postcondition so: what its calls store,
   unfolded into the claim, and a cited identity, sum factorization, used at
   the sections of the arrays where its one side is.
+- **A literal domain beside a symbolic one in an annotation**
+  (`lanky.terms.literal_binders`, `MixedDomains`). `all(grad[x, e] == ...
+  for x in Fin[3] for e in Fin[ne])` and `sum(... for d in Fin[3] for c in
+  Fin[n])` were refused ("mixing concrete and symbolic domains in one
+  comprehension is not supported"), so a claim over the three components of
+  a gradient had to nest a walk over `Fin[3]` outside it. Now an annotation
+  whose first reading mixes them is read again with each literal domain a
+  binder, `forall x in Fin(3), e in Fin(ne)`, which Lean states as it states
+  `Fin(n)`. An annotation that does not mix reads as before, a sum over
+  `Fin[2]` alone still its two terms; one whose body uses the point as a
+  Python value, an index into a tuple, is refused as before, and the
+  refusal names the mix.
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
   A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
   Fin[d])`, either way round, where `y[i]` is the sum over the cells a map

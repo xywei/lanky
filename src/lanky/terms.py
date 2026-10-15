@@ -76,6 +76,7 @@ __all__ = [
     "LogicalAnd",
     "LogicalNot",
     "LogicalOr",
+    "MixedDomains",
     "OpenPoint",
     "Polarity",
     "Scope",
@@ -103,6 +104,7 @@ __all__ = [
     "free_variables",
     "init_args",
     "is_totalized",
+    "literal_binders",
     "log",
     "render",
     "rerunning",
@@ -123,6 +125,16 @@ class SymbolicBoolError(TypeError):
     is evaluated at concrete values (:func:`evaluate`). The one place where
     Python may ask is the ``if`` clause of a generator expression being traced
     for binders, where the question is answered by recording a guard.
+    """
+
+
+class MixedDomains(ValueError):
+    """Raised when one comprehension walks a literal domain and binds a symbolic one.
+
+    ``all(... for x in Fin[3] for e in Fin[ne])``: the literal domain is walked
+    point by point, and the symbolic one binds a generic point at each of
+    them. :func:`evaluate_annotations` reads such an annotation again with
+    every literal domain a binder (:func:`literal_binders`).
     """
 
 
@@ -1472,6 +1484,35 @@ def rerunning() -> bool:
     return _SORT_POINTS.get() is not None
 
 
+#: Whether a domain with a literal bound binds a generic point, as one with a
+#: symbolic bound does (see :func:`literal_binders`).
+_LITERAL_BINDERS: ContextVar[bool] = ContextVar("lanky_literal_binders", default=False)
+
+
+def literal_binders() -> bool:
+    """Whether ``Fin[3]`` is a binder over ``Fin(3)`` here, and not walked.
+
+    It is while :func:`evaluate_annotations` reads an annotation again whose
+    first reading mixed a literal domain with a symbolic one in one
+    comprehension (:class:`MixedDomains`): ``all(grad[x, e] == ... for x in
+    Fin[3] for e in Fin[ne])`` is then a universal over ``x in Fin(3), e in
+    Fin(ne)``, and ``sum(... for d in Fin[3] for c in Fin[n])`` a sum over
+    both. Everywhere else a literal domain is walked, so that ``sum(c[t] for
+    t in Fin[2])`` is ``c[0] + c[1]`` and runs under plain ``python``.
+    """
+    return _LITERAL_BINDERS.get()
+
+
+@contextmanager
+def _binding_literals() -> Iterator[None]:
+    """Make every literal domain a binder while the block runs (:func:`literal_binders`)."""
+    token = _LITERAL_BINDERS.set(True)
+    try:
+        yield
+    finally:
+        _LITERAL_BINDERS.reset(token)
+
+
 class _Driven:
     """The outcome of running a generator once under binder tracing."""
 
@@ -1495,10 +1536,12 @@ class _Driven:
                 f"(the guard captured was {render(self.guard)!r})"
             )
         if len(self.values) != 1:
-            raise ValueError(
+            raise MixedDomains(
                 "a generator over a symbolic index type must yield exactly one "
-                f"generic point, got {len(self.values)}; mixing concrete and "
-                "symbolic domains in one comprehension is not supported"
+                f"generic point, got {len(self.values)}: the comprehension walks a "
+                "domain with a literal bound, Fin[3], beside one with a symbolic "
+                "bound, Fin[n]. In an annotation each is a binder; elsewhere, nest "
+                "the walk over the literal domain outside the comprehension"
             )
         return self.values[0]
 
@@ -2001,6 +2044,13 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
     dict or a set lookup keyed by one is refused rather than answered as if
     the key were absent (see :func:`_refuse_hashing`).
 
+    A comprehension that walks a domain with a literal bound beside one with
+    a symbolic bound, ``all(grad[x, e] == ... for x in Fin[3] for e in
+    Fin[ne])``, cannot be read point by point (:class:`MixedDomains`), so the
+    annotation is read again with every literal domain a binder
+    (:func:`literal_binders`): a universal over ``x in Fin(3), e in
+    Fin(ne)``. An annotation without one reads as it always has.
+
     Raises:
         TypeError: If an annotation reads ``all``, ``any``, ``sum`` or ``abs``,
             which is not a parameter's name, and the function's module binds
@@ -2029,7 +2079,17 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
         code = compile(annotation.lstrip(" \t"), "<string>", "eval")
         _refuse_a_shadowed_override(fn, name, code, namespace, own)
         with _reading(code):
-            out[name] = eval(code, scope, None)
+            try:
+                out[name] = eval(code, scope, None)
+            except MixedDomains as mixed:
+                # Fin[3] walked beside Fin[n] bound: read it again with every
+                # literal domain a binder, which is what it says; a reading
+                # that cannot be made so is refused as the first was
+                with _binding_literals():
+                    try:
+                        out[name] = eval(code, scope, None)
+                    except Exception:  # noqa: BLE001 - the first refusal is the one to name
+                        raise mixed from None
     return out
 
 
