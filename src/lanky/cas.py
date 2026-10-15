@@ -191,7 +191,14 @@ def _number(value: Any, sympy: Any = None) -> Any:
     raise Untranslatable(f"{value!r} is not a number")
 
 
-_ELEMENTARY_NAMES = {"exp": "exp", "log": "log", "sqrt": "sqrt"}
+_ELEMENTARY_NAMES = {
+    "exp": "exp",
+    "log": "log",
+    "sqrt": "sqrt",
+    "real": "re",
+    "imag": "im",
+    "conj": "conjugate",
+}
 
 #: The functions whose real argument has to be seen not to be negative, by
 #: what a message calls their value.
@@ -465,6 +472,9 @@ def _from_sympy(sympy: Any, expr: Any, variables: Mapping[str, Any]) -> Any:
         return Elementary("exp", _from_sympy(sympy, expr.args[0], variables))
     if isinstance(expr, sympy.log) and len(expr.args) == 1:
         return Elementary("log", _from_sympy(sympy, expr.args[0], variables))
+    for function, name in (("real", "re"), ("imag", "im"), ("conj", "conjugate")):
+        if isinstance(expr, getattr(sympy, name)):
+            return Elementary(function, _from_sympy(sympy, expr.args[0], variables))
     if isinstance(expr, sympy.Abs):
         return Abs(_from_sympy(sympy, expr.args[0], variables))
     relation = _RELATIONS.get(type(expr).__name__)

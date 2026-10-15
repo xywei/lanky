@@ -40,15 +40,28 @@ that fails is named. A part's :class:`Hints` are what ``omega`` cannot find:
   the theorem's conclusion is the goal, and each premise left a hypothesis
   of the part or arithmetic. Lean checks that the theorem applies, and so
   that the claim follows from it;
-- *rewrites* with hypotheses that are equations, in the order the plugin
-  found them: what a program's statements store, unfolded into the claim
-  wherever it applies, and a cited identity at the instances the plugin
-  matched. Then the sums over a literal range are written out, and ``ring``
-  compares the two sides (Mathlib only).
+- *rewrites* with hypotheses that are equations, of two kinds, each
+  :class:`Hints` entry saying by its type how it is used:
+
+  - an :class:`Application` names an identity, a theorem whose conclusion is
+    an equation, and the values of its variables: ``rw`` by it, before the
+    applications, turns the goal's left side of it into its right side, so
+    that a theorem stated of ``-beta / alpha`` applies to a goal that
+    computes it another way. Its premises are left as goals, closed as an
+    application's are;
+  - a :class:`Rewrite` is one step of a script, in the order the plugin
+    found them: what a program's statements store, unfolded into the claim
+    wherever it applies, and a cited identity at the instances the plugin
+    matched. Then the sums over a literal range are written out, and
+    ``ring`` compares the two sides (Mathlib only).
 
 A part about real numbers is printed in the Mathlib dialect and checked where
 Mathlib is (:attr:`Part.mathlib`), its cases closed by ``linarith`` where an
-integer part's are by ``omega``.
+integer part's are by ``omega``. One that reads an absolute value of a real
+gets ``linarith`` with the bounds of each, ``0 ≤ |t|`` and ``-|t| ≤ t ≤
+|t|``, which it does not know; a goal ``|a| ≤ b`` is taken apart into ``-b ≤
+a`` and ``a ≤ b`` first, which is how a value within an allowance of another
+is shown.
 
 A claim the solver refuted comes with a :class:`Counterexample`: the part it
 breaks and a value for every variable of that part. Lean proves the negation
@@ -77,6 +90,7 @@ from lanky.lean import (
     dialect,
     domain_guards,
     lean_identifier,
+    number_type,
     render_term,
     statement_of,
 )
@@ -190,13 +204,20 @@ class Rewrite:
 
 @dataclass(frozen=True)
 class Hints:
-    """What a solver found that ``omega`` does not look for (see the module docstring)."""
+    """What a solver found that ``omega`` does not look for (see the module docstring).
+
+    ``rewrites`` are equations among the part's hypotheses, of two kinds. An
+    :class:`Application` names an identity and the values of its variables,
+    rewritten in the goal before ``applications`` are applied. A
+    :class:`Rewrite` is a step of the script that unfolds a goal with its
+    equations, in order, and compares the two sides by ``ring``.
+    """
 
     instances: tuple[Instance, ...] = ()
     witness: tuple[Piece, ...] = ()
     splits: tuple[Any, ...] = ()
     applications: tuple[Application, ...] = ()
-    rewrites: tuple[Rewrite, ...] = ()
+    rewrites: tuple[Rewrite | Application, ...] = ()
 
     def __bool__(self) -> bool:
         """Whether there is any hint at all."""
@@ -563,7 +584,7 @@ def _application_line(statement: LeanStatement, part: Part, application: Applica
     binders = {var.name for var, _ in hypothesis.binders}
     name = _hypothesis_names(statement)[application.hypothesis]
     values = [
-        f"({lean_identifier(binder)} := {render_term(value, statement.types)})"
+        f"({lean_identifier(binder)} := {_value(value, statement)})"
         for binder, value in application.values
         if binder in binders
     ]
@@ -693,6 +714,126 @@ def _rewrite_lines(statement: LeanStatement, part: Part, rewrites: Sequence[Rewr
         f"| (ring_nf; simp only [{order}]; done) | linarith"
     )
     return lines
+def _value(value: Any, statement: LeanStatement) -> str:
+    """A value a script gives a binder, printed in the statement's dialect and names.
+
+    A part about reals is Mathlib's, and a value in it may be too: ``conj(z)``
+    or a true division, which core Lean's printer declines.
+    """
+    return render_term(
+        value, statement.types, mathlib=statement.mathlib, shadowed=statement.shadowed
+    )
+
+
+def _rewrite_line(statement: LeanStatement, part: Part, rewrite: Application) -> str:
+    """``rw [h3 (alpha := c t - y s) (beta := z t - c t)]``: an identity, rewritten.
+
+    The hypothesis is a universal whose body is an equation; its premises,
+    a guard such as ``alpha ≠ 0``, are left as goals after the rewritten one.
+
+    Raises:
+        UnsupportedTerm: If it names no universal hypothesis that is an equation.
+    """
+    guards = list(conjuncts(part.term.guard)) if isinstance(part.term, Forall) else []
+    if not 0 <= rewrite.hypothesis < len(guards):
+        raise UnsupportedTerm(
+            f"the rewrite names hypothesis {rewrite.hypothesis}, and the part has "
+            f"{len(guards)}"
+        )
+    hypothesis = guards[rewrite.hypothesis]
+    if not (
+        isinstance(hypothesis, Forall)
+        and isinstance(hypothesis.body, prim.Comparison)
+        and hypothesis.body.operator == "=="
+    ):
+        raise UnsupportedTerm(f"hypothesis {rewrite.hypothesis} is no identity to rewrite by")
+    binders = {var.name for var, _ in hypothesis.binders}
+    name = _hypothesis_names(statement)[rewrite.hypothesis]
+    values = [
+        f"({lean_identifier(binder)} := {_value(value, statement)})"
+        for binder, value in rewrite.values
+        if binder in binders
+    ]
+    return f"rw [{' '.join([name, *values])}]"
+
+
+def _absolute_values(statement: LeanStatement) -> list[str]:
+    """Each real ``t`` the statement takes the absolute value of, as Lean source, once.
+
+    The operands of ``|t|`` in the goal and the hypotheses, innermost first,
+    each printed as the statement prints it. A complex one's modulus is a
+    norm, whose bounds are another lemma's, and is left out, as is one under
+    a binder of the goal or a hypothesis, which names what the script cannot.
+    """
+    found: list[Any] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, tuple | list):
+            for item in node:
+                visit(item)
+            return
+        if isinstance(node, Forall | Exists) or not isinstance(node, prim.ExpressionNode):
+            # under a binder, an operand names what the script cannot
+            return
+        visit(init_args(node))
+        if type(node).__name__ == "Abs":
+            found.append(node.operand)
+
+    visit(statement.goal_term)
+    visit([term for term in statement.hypothesis_terms if term is not None])
+    out: list[str] = []
+    for operand in found:
+        try:
+            if number_type(operand, statement.types, mathlib=True) == "ℂ":
+                continue
+            # printed as the statement is, in Mathlib's dialect
+            text = render_term(
+                operand, statement.types, mathlib=True, shadowed=statement.shadowed
+            )
+        except UnsupportedTerm:
+            continue
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def _absolute_value_attempts(statement: LeanStatement, intro: str) -> list[tuple[str, str]]:
+    """``linarith`` with the bounds of every absolute value of a real, and ``abs_le`` first.
+
+    ``linarith`` takes ``|t|`` for an atom and knows nothing of it: given
+    ``0 ≤ |t|``, ``t ≤ |t|`` and ``-|t| ≤ t``, it reasons about a value
+    within an allowance of another, ``|a - b| ≤ e * (|b| + 1)``, once the
+    goal's own bars are taken apart (``abs_le``) into ``-e * (|b| + 1) ≤ a -
+    b`` and ``a - b ≤ e * (|b| + 1)``. A statement with no absolute value of
+    a real gets neither attempt.
+    """
+    operands = _absolute_values(statement)
+    if not operands:
+        return []
+    nonneg = statement.qualified("abs_nonneg")
+    above = statement.qualified("le_abs_self")
+    below = statement.qualified("neg_abs_le")
+    bounds = ", ".join(
+        f"{lemma} ({operand})" for operand in operands for lemma in (nonneg, above, below)
+    )
+    out = []
+    goal = statement.goal_term
+    while isinstance(goal, Forall):
+        goal = goal.body
+    if (
+        isinstance(goal, prim.Comparison)
+        and goal.operator == "<="
+        and type(goal.left).__name__ == "Abs"
+    ):
+        out.append(
+            (
+                "linarith, with the absolute values taken apart",
+                f"{intro}rw [{statement.qualified('abs_le')}]\n"
+                f"constructor <;> linarith [{bounds}]",
+            )
+        )
+    out.append(("linarith, with the bounds of the absolute values", f"{intro}linarith [{bounds}]"))
+    return out
 
 
 def _disjuncts(prop: Any) -> int:
@@ -816,20 +957,47 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         hints_witness_only(part) and isinstance(goal, prim.LogicalOr)
     ):
         out.append(("omega", f"{intro}omega"))
+    if mathlib:
+        out += _absolute_value_attempts(statement, intro)
     hints = part.hints
     if not hints:
         return out
+    rewrites: list[str] = []
+    for rewrite in getattr(hints, "rewrites", ()):
+        if not isinstance(rewrite, Application):
+            # a step of the unfolding script below, not an identity
+            continue
+        try:
+            rewrites.append(_rewrite_line(statement, part, rewrite))
+        except UnsupportedTerm:
+            continue
     for application in getattr(hints, "applications", ()):
         try:
             line = _application_line(statement, part, application)
         except UnsupportedTerm:
             continue
         rest = "first | assumption | omega" + (" | linarith" if mathlib else "")
-        out.append(("the theorem applied", f"intros\n{line}\nall_goals {rest}"))
-    rewrites = getattr(hints, "rewrites", ())
-    if rewrites:
+        if rewrites:
+            # the identities first, which make the goal what the theorem concludes
+            identities = "identity" if len(rewrites) == 1 else "identities"
+            script = "\n".join(["intros", *rewrites, line, f"all_goals {rest}"])
+            out.append((f"rewritten by the {identities}, the theorem applied", script))
+        else:
+            out.append(("the theorem applied", f"intros\n{line}\nall_goals {rest}"))
+        if mathlib:
+            # ``apply`` unifies the conclusion's numerals with the goal's, and
+            # ``↑(1 : ℤ)`` is not ``(1 : ℂ)`` to it: rewrite the goal by the
+            # theorem instead, and leave the numerals to norm_num
+            by_theorem = "rw [" + line.removeprefix("apply ") + "]"
+            to_nat = statement.qualified("Int.toNat")
+            closers = f"{rest} | (norm_num [{to_nat}]; done)"
+            script = "\n".join(["intros", *rewrites, by_theorem, f"all_goals {closers}"])
+            what = "the theorem" if not rewrites else f"the {identities} and the theorem"
+            out.append((f"rewritten by {what}", script))
+    steps = [step for step in getattr(hints, "rewrites", ()) if isinstance(step, Rewrite)]
+    if steps:
         try:
-            script = _rewrite_lines(statement, part, rewrites)
+            script = _rewrite_lines(statement, part, steps)
         except UnsupportedTerm:
             script = []
         if script:

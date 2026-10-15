@@ -295,7 +295,14 @@ def _to_sympy(sympy: Any, expr: Any, functions: dict[str, Any]) -> Any:
             _to_sympy(sympy, expr.base, functions), _to_sympy(sympy, expr.exponent, functions)
         )
     if isinstance(expr, Elementary):
-        function = {"exp": sympy.exp, "log": sympy.log, "sqrt": sympy.sqrt}.get(expr.function)
+        function = {
+            "exp": sympy.exp,
+            "log": sympy.log,
+            "sqrt": sympy.sqrt,
+            "real": sympy.re,
+            "imag": sympy.im,
+            "conj": sympy.conjugate,
+        }.get(expr.function)
         if function is None:
             raise _Unreadable(f"the function {expr.function}")
         return function(_to_sympy(sympy, expr.argument, functions))
