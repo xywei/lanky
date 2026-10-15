@@ -55,6 +55,30 @@ that fails is named. A part's :class:`Hints` are what ``omega`` cannot find:
     matched. Then the sums over a literal range are written out, and
     ``ring`` compares the two sides (Mathlib only).
 
+Where unknowns multiply, a size times an index in a layout's address ``n * j
++ i``, ``omega`` reads each product as an atom of its own and knows nothing of
+it. Three more hints take it the rest of the way, and the plugin finds them
+from the shape of its claim, as ``nlinarith`` would search for them:
+
+- *products*, ``0 ≤ a * b`` from ``0 ≤ a`` and ``0 ≤ b``, each factor shown by
+  ``omega`` (``Int.mul_nonneg``): ``0 ≤ n * (n - 1 - j)`` bounds ``n * j`` by
+  ``n * n - n``. A product marked ``in_cases`` is taken after the splits, in
+  each case where its factors are not negative, and left out of the others;
+- *quotients*, what Lean knows of ``a // m`` and ``a % m`` for a divisor that
+  is not a number, which ``omega`` reads only by a number: the remainder and
+  the quotient times the divisor add up to ``a``, the remainder is in ``0 ≤
+  r < m`` and the quotient is not negative, each in the cases of the splits
+  where its premise holds;
+- *ring*, that the arithmetic is to be multiplied out before ``omega`` reads
+  it: every product of sums is expanded and every product of atoms put in one
+  order, so that ``n ^ 2 * k`` and ``k * (n * n)`` are one atom. A
+  polynomial identity, ``n ^ 3 * e + n * j = ((e * n) * n + j) * n``, needs
+  this and nothing else.
+
+Each is a step of the argument, not a suggestion: where one of them is given,
+the script is the one the plugin asked for, and a product or a quotient that
+cannot be written fails it rather than being dropped.
+
 A part about real numbers is printed in the Mathlib dialect and checked where
 Mathlib is (:attr:`Part.mathlib`), its cases closed by ``linarith`` where an
 integer part's are by ``omega``. One that reads an absolute value of a real
@@ -105,6 +129,8 @@ __all__ = [
     "Obligation",
     "Part",
     "Piece",
+    "Product",
+    "Quotient",
     "Rewrite",
     "attempts",
     "negation_source",
@@ -173,6 +199,40 @@ class Application:
 
 
 @dataclass(frozen=True)
+class Product:
+    """``0 ≤ left * right``, from ``0 ≤ left`` and ``0 ≤ right``: a step ``omega`` cannot take.
+
+    ``left`` and ``right`` are lanky terms over the part's variables, and
+    ``omega`` shows each factor not negative from the hypotheses and the
+    hints before it: a factor that is another product's, written the same
+    way, is that product's atom. One taken before the splits has to hold
+    everywhere, and fails the script where it does not; one ``in_cases`` is
+    taken after them, in each case where its factors are not negative, and
+    left out of the others: ``0 ≤ n * (j' - j - 1)`` where ``j < j'``.
+    """
+
+    left: Any
+    right: Any
+    in_cases: bool = False
+
+
+@dataclass(frozen=True)
+class Quotient:
+    """What Lean knows of ``dividend // divisor`` and ``dividend % divisor``.
+
+    For a divisor that is not a number, which ``omega`` cannot divide by:
+    that the remainder and the quotient times the divisor add up to the
+    dividend, that the remainder is in ``0 ≤ r < divisor`` and that the
+    quotient is not negative. They are taken after the splits, each in the
+    cases where its premise holds (a positive divisor, a dividend that is not
+    negative), so a split ``m ≤ 0 ∨ 0 < m`` keeps a divisor that can be zero.
+    """
+
+    dividend: Any
+    divisor: Any
+
+
+@dataclass(frozen=True)
 class Rewrite:
     """A hypothesis that is an equation, the goal rewritten with it: ``simp only [h3]``.
 
@@ -217,6 +277,9 @@ class Hints:
     witness: tuple[Piece, ...] = ()
     splits: tuple[Any, ...] = ()
     applications: tuple[Application, ...] = ()
+    products: tuple[Product, ...] = ()
+    quotients: tuple[Quotient, ...] = ()
+    ring: bool = False
     rewrites: tuple[Rewrite | Application, ...] = ()
 
     def __bool__(self) -> bool:
@@ -226,8 +289,16 @@ class Hints:
             or self.witness
             or self.splits
             or self.applications
+            or self.products
+            or self.quotients
+            or self.ring
             or self.rewrites
         )
+
+    @property
+    def multiplies(self) -> bool:
+        """Whether the part's arithmetic multiplies unknowns, and is multiplied out."""
+        return bool(self.products or self.quotients or self.ring)
 
 
 @dataclass(frozen=True)
@@ -929,6 +1000,148 @@ def hints_witness_only(part: Part) -> bool:
     return bool(part.hints.witness) and part.hints.witness[0].disjunct is not None
 
 
+#: The lemmas that multiply out integer arithmetic: powers by a number as
+#: products, products of sums expanded, and every product of atoms put in one
+#: order by commutativity and associativity, which ``simp`` rewrites with as an
+#: ordered rewriting and so does not loop. A conjunct ``simp`` closes is
+#: ``True``, which ``omega`` does not read, and goes.
+_RING_LEMMAS = (
+    "Int.pow_succ",
+    "Int.pow_zero",
+    "Int.one_mul",
+    "Int.mul_one",
+    "Int.zero_mul",
+    "Int.mul_zero",
+    "Int.mul_add",
+    "Int.add_mul",
+    "Int.mul_sub",
+    "Int.sub_mul",
+    "Int.neg_mul",
+    "Int.mul_neg",
+    "Int.mul_assoc",
+    "Int.mul_comm",
+    "Int.mul_left_comm",
+    "true_and",
+    "and_true",
+)
+
+
+def _counted(count: int, one: str, many: str) -> str:
+    """``a product``, ``3 products``: a count of hints in words."""
+    return one if count == 1 else f"{count} {many}"
+
+
+def _product_line(statement: LeanStatement, product: Product, index: int) -> str:
+    """``have hp0 : 0 ≤ n * (n - 1 - j) := Int.mul_nonneg (by omega) (by omega)``.
+
+    Raises:
+        UnsupportedTerm: If a factor leaves the printer's fragment.
+    """
+    text = render_term(prim.Product((product.left, product.right)), statement.types)
+    lemma = statement.qualified("Int.mul_nonneg")
+    return f"have hp{index} : 0 ≤ {text} := {lemma} (by omega) (by omega)"
+
+
+def _quotient_lines(statement: LeanStatement, quotient: Quotient, index: int) -> list[str]:
+    """What Lean knows of ``a // m`` and ``a % m``, as the statement prints them.
+
+    A divisor that is not a positive number prints as ``Int.fdiv a m`` and
+    ``Int.fmod a m`` (:func:`lanky.lean.render_term`), so the facts are
+    those of ``Int.fdiv`` and ``Int.fmod``: ``Int.fmod a m + Int.fdiv a m * m
+    = a``, the remainder in ``0 ≤ r < m`` where ``0 < m``, and the quotient
+    not negative where neither is ``a`` nor ``m``. A positive number is a
+    divisor ``omega`` divides by itself, and has none.
+
+    Raises:
+        UnsupportedTerm: If either operand leaves the printer's fragment.
+    """
+    divisor = quotient.divisor
+    if isinstance(divisor, int) and not isinstance(divisor, bool) and divisor > 0:
+        return []
+    a = render_term(quotient.dividend, statement.types, atomic=True)
+    m = render_term(divisor, statement.types, atomic=True)
+    q = statement.qualified
+    return [
+        f"have hq{index} := {q('Int.fmod_add_fdiv_mul')} {a} {m}",
+        f"have hq{index}_r := {q('Int.fmod_nonneg_of_pos')} {a} (show 0 < {m} by omega)",
+        f"have hq{index}_s := {q('Int.fmod_lt_of_pos')} {a} (show 0 < {m} by omega)",
+        f"have hq{index}_q := {q('Int.fdiv_nonneg')} (show 0 ≤ {a} by omega) "
+        f"(show 0 ≤ {m} by omega)",
+    ]
+
+
+def _multiplied_attempt(
+    statement: LeanStatement,
+    hints: Hints,
+    lines: Sequence[str],
+    said: Sequence[str],
+    split_lines: Sequence[str],
+) -> tuple[str, str] | None:
+    """The script for a part whose arithmetic multiplies unknowns (see the module).
+
+    The instances first (``lines``), then the products that hold everywhere,
+    then the splits; in each case, every fact about a quotient and every
+    product ``in_cases`` whose premises ``omega`` shows there, each tried and
+    left out where it does not hold; then the witness, given whole, of a goal
+    that is an existential; and last the arithmetic multiplied out
+    (:data:`_RING_LEMMAS`) in every hypothesis and the goal, and ``omega`` on
+    what is left in each case. ``None`` when a product, a quotient or the
+    witness cannot be written for this statement: unlike an instance, each is
+    a step of the argument, and the attempt without it would fail.
+    """
+    goal = statement.goal_term
+    out = list(lines)
+    words = list(said)
+    try:
+        everywhere = [p for p in hints.products if not p.in_cases]
+        in_cases = [p for p in hints.products if p.in_cases]
+        for index, product in enumerate(everywhere):
+            out.append(_product_line(statement, product, index))
+        out += split_lines
+        each = "all_goals " if split_lines else ""
+        for index, quotient in enumerate(hints.quotients):
+            out += [f"{each}try {line}" for line in _quotient_lines(statement, quotient, index)]
+        for index, product in enumerate(in_cases, start=len(everywhere)):
+            out.append(f"{each}try {_product_line(statement, product, index)}")
+        witness = ""
+        if hints.witness:
+            if (
+                len(hints.witness) != 1
+                or hints.witness[0].condition is not None
+                or hints.witness[0].disjunct is not None
+                or not isinstance(goal, Exists)
+                or len(goal.binders) != len(hints.witness[0].values)
+            ):
+                return None
+            scope = dict(statement.types)
+            for var, domain in goal.binders:
+                if domain_guards(var, domain, scope):
+                    # a binder with conditions of its own between the next
+                    return None
+                scope = {**scope, var.name: domain}
+            values = ", ".join(
+                render_term(value, statement.types) for value in hints.witness[0].values
+            )
+            witness = f"refine ⟨{values}, ?_⟩"
+    except UnsupportedTerm:
+        return None
+    if hints.products:
+        words.append(_counted(len(hints.products), "a product", "products"))
+    if hints.quotients:
+        words.append(_counted(len(hints.quotients), "a quotient", "quotients"))
+    if split_lines:
+        words.append("a case split")
+    if witness:
+        out.append(f"{each}{witness}")
+        words.append("the witness")
+    ring = ", ".join(statement.qualified(lemma) for lemma in _RING_LEMMAS)
+    out.append(f"{each or 'all_goals '}(try simp only [{ring}] at *)")
+    out.append("all_goals omega")
+    words.append("the arithmetic multiplied out")
+    listed = words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+    return f"omega, with {listed}", "\n".join(out)
+
+
 def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
     """The scripts tried on one part, as ``(how, tactic)``, ``omega`` alone first.
 
@@ -1051,6 +1264,15 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
             split_lines += ["  " + line for line in lines_of_split]
         else:
             split_lines += lines_of_split
+    if getattr(hints, "multiplies", False) and not mathlib:
+        # where unknowns multiply, the hints above are tried with the
+        # products and quotients, and the arithmetic multiplied out
+        found = _multiplied_attempt(statement, hints, lines, said, split_lines)
+        if found is not None:
+            out.append((found[0], intro + found[1]))
+            return out
+        # a witness in pieces, which that script does not give: the script
+        # below, as a part with no products has it (Codex)
     if split_lines:
         lines += split_lines
         said.append("a case split")
