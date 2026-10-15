@@ -2,9 +2,17 @@
 
 Python for math you can check.
 
-A lanky file is ordinary Python. The claims live in the annotations, the bodies
-run, and one command tells you which claims are proved, which are decided, which
-are only tested, and which nobody could establish.
+A lanky file is ordinary Python. A claim is a function whose annotations are
+its statement, in the Python an engineer already writes: sorts for the
+variables, comparisons for the hypotheses, `all(... for i in Fin[n])` for a
+quantifier. The bodies run. One command, `lanky check`, prints a ledger: every
+claim, how strongly it is known (tested, decided or proved), who settled it,
+and what it rests on.
+
+Lean is underneath, and you write none of it. lanky reads each claim into a
+term, prints the term as a Lean theorem, finds a proof, by `omega`, by an
+induction whose steps sympy finds, or by a script over Mathlib's finite sums,
+and has Lean check it. `--show-lean` prints the Lean for whoever asks.
 
 ```python
 from lanky import theorem
@@ -27,7 +35,7 @@ propositions are the hypotheses, and the return annotation is the goal. There is
 no new syntax and no parser: lanky evaluates the annotations, and `==` inside one
 builds a proposition instead of answering a bool.
 
-Three commands, all of them working today:
+Three commands:
 
 ```console
 $ python examples/gauss.py           # theorems run as property tests
@@ -68,6 +76,98 @@ is worth less than its status, what it is worth. A `WITHOUT LEAN` line under
 the table then names the claims Lean would prove, and the command that
 installs it.
 
+**Facts rest on facts.** A fact can rest on others, and the ledger shows it
+worth no more than they are. `scan_monotone`'s proof rests on its reading,
+and is worth `tested`. In `examples/sumpy_recurrence.py`, sumpy's compressed
+Taylor recurrence for the 2-D Laplace kernel is proved by Lean for every
+order under the kernel's harmonicity, an axiom the file cites, so it reads
+`proved under harmonic` and is worth `assumed` until someone proves the
+axiom. And a plugin's facts rest on lanky's: in loopty's flagship, the row
+that applies the same theorem to a kernel rests on the theorem's proof and on
+the kernel's postcondition, which isl decided from what the kernel stores and
+Lean proved again (two rows of its ledger, with Lean and Mathlib):
+
+```text
+$ lanky check examples/l2p.py
+...
+proved   proved     lean         l2p.py:249  reconstruct        (forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10. R[i, a, b] == C[i, a, b])
+                                                                  and (forall i in Fin(nb), a in Nat, b in Nat where a + b + 2 <= 10.
+                                                                    R[i, a + 2, b] == -R[i, a, b + 2])
+proved   tested     lean         l2p.py:249  reconstruct        by on_every_triangle, for every D with pde and stored:
+                                                                  forall i in Fin(nb), a in Nat, b in Nat where a + b <= 10. R[i, a, b] == D[i, a, b]
+...
+```
+
+The first row is `reconstruct`'s postcondition, the copies and the
+recurrence, two of the theorem's hypotheses. The second is the theorem's
+conclusion about the kernel's array, for every table `D` the other two hold
+of, and is worth `tested` because the theorem is.
+
+## Kernels: loopty
+
+lanky knows nothing about arrays or loops. [loopty](https://github.com/xywei/loopty)
+plugs in a theory of loop kernels, an isl oracle, a loopy executor and a
+`run` verb, so that a kernel written as a typed Python function, and every
+transform of it, becomes facts in the same ledger: isl decides each one,
+Lean proves it again from loopty's own description of the kernel, and a
+kernel cites the theorem it computes. Its five demonstrations, each written
+after a kernel of a scientific code, and what lanky proves in each with
+Mathlib:
+
+| loopty demo | written after | the theorem, proved for every order or size |
+|---|---|---|
+| `examples/l2p.py` | sumpy's L2P for the 2-D Laplace kernel | the compressed Taylor recurrence rebuilds every derivative, applied to the kernel that rebuilds each box's triangle |
+| `examples/hexahedra.py` | grudge PR #418's weak gradient and divergence | the Kronecker operator is three one-axis passes, cited by the programs, whose postconditions Lean proves from it |
+| `examples/advection.py` | grudge #418's weak advection right-hand side | the inverse mass pushed inward, and the lift onto the face nodes the face gather's transpose |
+| `examples/layer_potential.py` | pytential's direct QBX with sumpy's line-Taylor expansion | the line-Taylor coefficients, from the recurrence a logarithm's coefficients satisfy (which is cited), tied to the terms the single layer adds |
+| `examples/assembly.py` | PyOP2's P1 mass assembly, from firedrake's tests | the rule exact on quadratics, the element's mass in closed form, as the kernel's postcondition, and the scatter keeping the total |
+
+loopty's README has the demonstrations, their ledgers, and how each compares
+with the code it was written after.
+
+## Run it
+
+lanky's own examples run on the 0.2.0 release on PyPI too; loopty's
+demonstrations need lanky's `main`, which a clone gives. On Python 3.12 or
+later:
+
+```sh
+git clone https://github.com/xywei/lanky.git && cd lanky
+pip install -e ".[lean,cas]"
+lanky check examples/gauss.py
+```
+
+That much runs without Lean, and the ledger says what is missing, with the
+command for each piece. Lean comes from
+[elan](https://github.com/leanprover/elan#installation), at the version the
+Lean REPL supports, and Mathlib, for claims about real numbers and finite
+sums, is one command that fetches its compiled files:
+
+```sh
+elan default leanprover/lean4:v4.29.1
+python -m lanky.mathlib ~/mathlib    # about 7 GB
+export LANKY_LEAN_MATHLIB=~/mathlib
+```
+
+The first check with Lean builds Lean's REPL, which takes about a minute and
+the network; a check after it reads Lean's answers from a cache and starts no
+Lean. [Install](#install) has the rest.
+
+## Where the limits are
+
+- **A proof is a proof of the term lanky read.** The reading is checked by
+  running the annotations at drawn points, not proved, so a proof is worth
+  `tested`; [Known limits](#known-limits) says what that check can miss.
+- **Some steps stay trusted**: the printer from lanky's terms to Lean, which
+  is tested and not proved, and the Lean kernel.
+- **The provers are strategies, not search.** Core Lean's ladder and
+  `omega`, an induction whose steps are a linear combination, an exchange of
+  finite sums, the total of a scatter. A claim that needs a lemma by name
+  falls through to the tester, and its row says so.
+- **Claims about real numbers need Mathlib**, about 7 GB on disk; without it
+  they read `tested` or `assumed`. The Lean REPL runs a Lean release up to
+  v4.32.0; CI uses v4.29.1.
+
 ## What nothing else does
 
 - **One ledger for evidence of every strength.** A random-draw pass, an isl
@@ -83,21 +183,10 @@ installs it.
 - **A refutation is a witness, not a verdict.** `REFUTED` carries the
   counterexample, the offending point, or the pair of statement instances that
   makes an ordering wrong. So does the exception a caller sees.
-- **A thin host with real plugins.** lanky knows nothing about arrays or loops.
-  Its sister project [loopty](https://github.com/xywei/loopty) plugs in a theory
-  of loop kernels, an isl oracle, a loopy executor and a `run` verb, and then
-  `lanky check` decides in-bounds and disjointness obligations for a sparse
-  matrix-vector product, and an illegal loop tiling is refused with
-
-  ```text
-  tile(t,i,8,8) illegal: instance S0[t=0, i=8] writes u[1, 8] read by
-  S0[t=1, i=7] scheduled earlier
-  ```
-
-  (one line in the terminal, wrapped here)
-
-  lanky never imports loopty. It finds it through entry points and asks it what
-  it can do. `examples/pytential_skie.py` is a second consumer in miniature: a
+- **A thin host with real plugins.** lanky knows nothing about arrays or loops,
+  and never imports [loopty](https://github.com/xywei/loopty) (above): it
+  finds it through entry points and asks it what it can do.
+  `examples/pytential_skie.py` is a second consumer in miniature: a
   rule engine decides, under eight cited axioms, which of five integral
   representations give a boundary equation of the second kind. And
   `examples/sumpy_recurrence.py` is a third: sumpy's compressed Taylor
@@ -615,7 +704,8 @@ The open issues you are most likely to meet:
 pip install lanky
 ```
 
-lanky needs Python 3.12 or later. In a uv project, `uv add lanky`, and the
+That is the 0.2.0 release; loopty's demonstrations need `main`
+([Run it](#run-it)). lanky needs Python 3.12 or later. In a uv project, `uv add lanky`, and the
 same for the extras below. The examples and the quickstart are in the
 repository and not in the package; clone it to follow them.
 

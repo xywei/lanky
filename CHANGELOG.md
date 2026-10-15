@@ -129,6 +129,13 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Changed
 
+- **The README opens with a front page**: lanky's story first, a claim
+  written as Python and proved by Lean, the ledger, and facts that rest on
+  facts, with two rows from loopty's flagship where a kernel cites a
+  theorem; then loopty's five demonstrations in a table, how to run them
+  from `main`, with Lean and Mathlib, and where the limits are. The
+  paragraph about loopty under "What nothing else does", whose refusal was
+  quoted in an older wording, now points to that section.
 - **`lanky check` prints every statement whole** (#142). A statement too
   long for its column was cut at 72 characters, so a theorem showed its
   variables and never its conclusion, and a postcondition, a theorem applied
