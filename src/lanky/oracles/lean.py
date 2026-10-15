@@ -1846,25 +1846,67 @@ def _bounds_of(domain: Any) -> tuple[Any, Any] | None:
 
 
 def induction_over_families(statement: LeanStatement) -> bool:
-    """Whether a statement has the shape :func:`family_induction_scripts` writes scripts for.
+    """Whether :func:`family_induction_scripts` searches for a statement's steps.
+
+    It does where the statement is a claim about every order it can induce
+    on (:func:`_family_plan`). Whether the search finds the steps is another
+    question, which needs sympy (:mod:`lanky.induction`): a statement this
+    is false of gets no script with sympy or without it.
+    """
+    return _family_plan(statement) is not None
+
+
+def _family_plan(statement: LeanStatement) -> tuple[_FamilyGoal, list[Var]] | None:
+    """What a family induction shares, and the orders it may be on; ``None`` for none.
 
     Mathlib mode, a goal that is a universal of an equation, a family among
     the statement's variables, and no variable of the goal named like one of
     the statement's: a goal variable named like a parameter hides it after
     ``intro``, where the hypotheses still mean the parameter, and the search
-    would confuse the two. Whether the search finds the steps is another
-    question, which needs sympy (:mod:`lanky.induction`).
+    would confuse the two. Then a hypothesis that is an equation under
+    universals, for the certificates to combine, and an order to induce on:
+    a natural variable of the goal, introduced with the guard that makes it
+    one right after it. None of this needs sympy; only the search for each
+    case's certificate does.
     """
     if not statement.mathlib:
-        return False
+        return None
     goal = statement.goal_term
     if not isinstance(goal, Forall) or not (
         isinstance(goal.body, prim.Comparison) and goal.body.operator == "=="
     ):
-        return False
-    if not _family_names(statement):
-        return False
-    return not {var.name for var, _ in goal.binders} & set(statement.types)
+        return None
+    families = _family_names(statement)
+    if not families:
+        return None
+    if {var.name for var, _ in goal.binders} & set(statement.types):
+        return None
+    terms = statement.hypothesis_terms or (None,) * len(statement.hypotheses)
+    lemmas = [
+        lemma
+        for (name, _), term in zip(statement.hypotheses, terms, strict=False)
+        if term is not None
+        for lemma in (lemma_of(name, term),)
+        if lemma is not None
+    ]
+    if not lemmas:
+        return None
+    with dialect(statement.mathlib):
+        names, variables, _, naturals, introduced = _goal_intro(statement)
+    shared = _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced)
+    orders = [
+        target
+        for target in variables
+        if target.name in naturals and _introduced_as_natural(shared, target)
+    ]
+    return (shared, orders) if orders else None
+
+
+def _introduced_as_natural(shared: _FamilyGoal, target: Var) -> bool:
+    """Whether ``intro`` names the guard that makes ``target`` a natural right after it."""
+    position = shared.names.index(shared.introduced[target.name])
+    following = shared.names[position + 1 : position + 2]
+    return following == [shared.naturals[target.name]]
 
 
 def family_induction_scripts(
@@ -1902,28 +1944,13 @@ def family_induction_scripts(
     (:func:`lanky.deadline.deadline`) where one can be set, and the scripts
     written before then are kept.
     """
-    if not induction_over_families(statement):
+    plan = _family_plan(statement)
+    if plan is None:
         return []
-    goal = statement.goal_term
-    families = _family_names(statement)
-    terms = statement.hypothesis_terms or (None,) * len(statement.hypotheses)
-    lemmas = [
-        lemma
-        for (name, _), term in zip(statement.hypotheses, terms, strict=False)
-        if term is not None
-        for lemma in (lemma_of(name, term),)
-        if lemma is not None
-    ]
-    if not lemmas:
-        return []
-    with dialect(statement.mathlib):
-        names, variables, _, naturals, introduced = _goal_intro(statement)
-    shared = _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced)
+    shared, orders = plan
     scripts: list[str] = []
-    for target in variables:
-        if target.name not in naturals:
-            continue
-        for step in _steps(target, goal, lemmas):
+    for target in orders:
+        for step in _steps(target, shared.goal, shared.lemmas):
             left = None if until is None else until - time.monotonic()
             if left is not None and left <= 0:
                 return scripts
@@ -2705,8 +2732,8 @@ class LeanOracle:
             available
             and with_mathlib
             and True in stated
-            and induction_over_families(stated[True])
             and not _sympy_imports()
+            and induction_over_families(stated[True])
         ):
             needs.append("cas")
         return tuple(needs)
