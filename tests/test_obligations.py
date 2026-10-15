@@ -29,6 +29,8 @@ from lanky.obligations import (
     Obligation,
     Part,
     Piece,
+    Product,
+    Quotient,
     attempts,
     negation_source,
     obligation_of,
@@ -38,7 +40,7 @@ from lanky.obligations import (
 from lanky.oracles.lean import LeanOracle, ProofCache
 from lanky.plugins import registry
 from lanky.prelude import FinType, Fn, Int, Real
-from lanky.terms import Exists, Forall, LogicalAnd, LogicalOr, Var
+from lanky.terms import Comparison, Exists, Forall, LogicalAnd, LogicalOr, Var
 
 n, x, y, i, a, r, j = (Var(name) for name in ("n", "x", "y", "i", "a", "r", "j"))
 
@@ -781,6 +783,140 @@ def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
 
 # }}}
 
+# {{{ where unknowns multiply: a layout at every size
+
+#: A layout of ``Fin[n] x Fin[m]``, row ``j`` after row ``j - 1``: ``i + n * j``,
+#: at every ``n`` and ``m``, with a second cell ``(i2, j2)`` and an address ``c``.
+m, i2, j2, c = (Var(name) for name in ("m", "i2", "j2", "c"))
+ROW = i + n * j
+ROW2 = i2 + n * j2
+CELL = [n >= 0, m >= 0, i >= 0, i < n, j >= 0, j < m]
+CELL2 = [i2 >= 0, i2 < n, j2 >= 0, j2 < m]
+
+#: Every cell's address is in ``Fin[m * n]``: ``n * j`` is at most ``n * (m - 1)``.
+ROW_IN_BOUNDS = Part(
+    "in_bounds",
+    "the address of a cell",
+    claim((n, m, i, j), CELL, (ROW >= 0) & (ROW < m * n)),
+    Hints(products=(Product(n, j), Product(n, m - 1 - j))),
+)
+
+#: Two cells at one address are one cell: in the case ``j < j2``, ``n * j2`` is
+#: at least ``n * j + n``, which no ``i`` makes up for.
+ROW_ONE_FOR_ONE = Part(
+    "one_for_one",
+    "two cells at one address",
+    claim(
+        (n, m, i, j, i2, j2),
+        [*CELL, *CELL2, Comparison(ROW, "==", ROW2)],
+        (i == i2) & (j == j2),
+    ),
+    Hints(
+        products=(
+            Product(n, j),
+            Product(n, m - 1 - j),
+            Product(n, j2),
+            Product(n, m - 1 - j2),
+            Product(n, j2 - j - 1, in_cases=True),
+            Product(n, j - j2 - 1, in_cases=True),
+            Product(n, j - j2, in_cases=True),
+            Product(n, j2 - j, in_cases=True),
+        ),
+        splits=(LogicalOr(((j < j2), (j == j2), (j2 < j))),),
+    ),
+)
+
+#: Every address has its cell, its digits ``c % n`` and ``c // n``.
+cx, cy = Var("i_cell"), Var("j_cell")
+ROW_ONTO = Part(
+    "onto",
+    "a cell at every address",
+    claim(
+        (n, m, c),
+        [n >= 0, m >= 0, c >= 0, c < m * n],
+        Exists(
+            ((cx, Int), (cy, Int)),
+            (cx >= 0) & (cx < n) & (cy >= 0) & (cy < m) & Comparison(cx + n * cy, "==", c),
+        ),
+    ),
+    Hints(
+        quotients=(Quotient(c, n),),
+        splits=(LogicalOr(((n <= 0), (n > 0))), LogicalOr(((c // n < m), (m <= c // n)))),
+        products=(Product(0 - n, m, in_cases=True), Product(n, c // n - m, in_cases=True)),
+        witness=(Piece((c % n, c // n)),),
+    ),
+)
+
+#: Two ways of writing one layout: a polynomial identity, multiplied out.
+ROW_SAME = Part(
+    "same",
+    "a cell of both",
+    claim((n, m, i, j), CELL, Comparison(n**2 * j + n * i, "==", n * (n * j + i))),
+    Hints(ring=True),
+)
+
+
+def test_products_are_taken_and_the_arithmetic_multiplied_out() -> None:
+    [first, (how, script)] = attempts(
+        ROW_IN_BOUNDS, part_statement(ROW_IN_BOUNDS, "row")
+    )
+    assert first == ("omega", "omega")
+    assert how == "omega, with 2 products and the arithmetic multiplied out"
+    lines = script.splitlines()
+    assert lines[:2] == [
+        "have hp0 : 0 ≤ n * j := Int.mul_nonneg (by omega) (by omega)",
+        "have hp1 : 0 ≤ n * (m - 1 - j) := Int.mul_nonneg (by omega) (by omega)",
+    ]
+    assert lines[2].startswith("all_goals (try simp only [Int.pow_succ, ")
+    assert lines[2].endswith("] at *)")
+    assert lines[3] == "all_goals omega"
+
+
+def test_a_product_in_cases_is_tried_in_each_case_after_the_splits() -> None:
+    [_, (how, script)] = attempts(
+        ROW_ONE_FOR_ONE, part_statement(ROW_ONE_FOR_ONE, "row")
+    )
+    assert how == (
+        "omega, with 8 products, a case split and the arithmetic multiplied out"
+    )
+    lines = script.splitlines()
+    split = lines.index("rcases hs0 with hs0 | hs0 | hs0")
+    # the products that hold everywhere before the split, the others after it
+    assert all(line.startswith("have hp") for line in lines[: split - 1])
+    assert lines[split + 1] == (
+        "all_goals try have hp4 : 0 ≤ n * (j2 - j - 1) := "
+        "Int.mul_nonneg (by omega) (by omega)"
+    )
+
+
+def test_a_quotient_by_a_size_is_what_lean_knows_of_fdiv_and_fmod() -> None:
+    [(how, script)] = attempts(ROW_ONTO, part_statement(ROW_ONTO, "row"))
+    assert how == (
+        "omega, with 2 products, a quotient, a case split, the witness and the "
+        "arithmetic multiplied out"
+    )
+    lines = script.splitlines()
+    assert "all_goals try have hq0 := Int.fmod_add_fdiv_mul c n" in lines
+    assert (
+        "all_goals try have hq0_r := Int.fmod_nonneg_of_pos c (show 0 < n by omega)"
+        in lines
+    )
+    assert "all_goals refine ⟨Int.fmod c n, Int.fdiv c n, ?_⟩" in lines
+    # a divisor omega divides by itself needs nothing
+    assert attempts(
+        Part("x", "x", ROW_ONTO.term, Hints(quotients=(Quotient(c, 4),), ring=True)),
+        part_statement(ROW_ONTO, "row"),
+    )[0][1].count("hq") == 0
+
+
+def test_a_polynomial_identity_needs_only_the_arithmetic_multiplied_out() -> None:
+    [_, (how, script)] = attempts(ROW_SAME, part_statement(ROW_SAME, "row"))
+    assert how == "omega, with the arithmetic multiplied out"
+    assert script.splitlines()[-1] == "all_goals omega"
+
+
+# }}}
+
 
 # {{{ with Lean
 
@@ -1225,6 +1361,30 @@ def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
     CheckVerb._report(Ledger([proved, unproved]), show_lean="S1")
     shown = capsys.readouterr().out.split("\nLEAN kernel ", 1)[1]
     assert shown.startswith("at kernel.py:2")
+
+
+def test_a_layout_at_every_size_is_proved_with_its_products(lean: LeanOracle) -> None:
+    # without the products, omega knows nothing of n * j
+    bare = Part("in_bounds", "the address of a cell", ROW_IN_BOUNDS.term)
+    assert lean.establish(fact_of(Obligation(parts=(bare,)))).status is Status.ASSUMED
+    parts = (ROW_IN_BOUNDS, ROW_ONE_FOR_ONE, ROW_ONTO, ROW_SAME)
+    fact = lean.establish(fact_of(Obligation(parts=parts, decider="isl")))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+    hows = [record["how"] for record in fact.provenance["lean_parts"]]
+    assert hows[0] == "omega, with 2 products and the arithmetic multiplied out"
+    # omega alone does not multiply out
+    assert hows[3] == "omega, with the arithmetic multiplied out"
+
+
+def test_a_wrong_product_fails_the_part(lean: LeanOracle) -> None:
+    # 0 ≤ n * (j - 1) does not hold at j = 0, and Lean says so
+    wrong = Part(
+        "in_bounds",
+        "the address of a cell",
+        ROW_IN_BOUNDS.term,
+        Hints(products=(Product(n, j - 1), Product(n, m - 1 - j))),
+    )
+    assert lean.establish(fact_of(Obligation(parts=(wrong,)))).status is Status.ASSUMED
 
 
 # }}}
