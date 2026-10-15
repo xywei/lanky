@@ -44,6 +44,15 @@ All notable changes to lanky are recorded here. The format follows
   bound the map's type gives (below). That is a scatter-add keeping the
   total on every mesh, which the S3 demonstration of loopty states for
   PyOP2's assembly loop.
+- **A scatter as the transpose of a gather, in Mathlib mode.** The same
+  script takes the fibers' sums written out with a weight at `i`,
+  `sum(sum(h[p] for p in Fin[nf] if node[p] == i) * u[i] for i in Fin[nv])
+  == sum(h[p] * u[node[p]] for p in Fin[nf])`, either side of the product:
+  the weight moves into the sums and their `if` (`Finset.sum_mul`,
+  `ite_mul`) before the exchanges, and `Finset.sum_ite_eq` puts it at
+  `node[p]`. That is a face lift as the transpose of the face gather, which
+  the advection demonstration of loopty states for grudge's right-hand side;
+  the total of a scatter is its weight `1`.
 - **A conjunction, a conjunct at a time, in Mathlib mode**
   (`lanky.oracles.lean.conjunction_scripts`). A claim over a concrete
   `Fin[3]`, `all(... for j in Fin[3])`, is the conjunction of its three
@@ -52,6 +61,24 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Fixed
 
+- **A family applied at another's value, `u[node[p]]`, printed.** For a
+  `node: Fn[Fin[nf], Fin[nv]]` and a `u: Fn[Fin[nv], Real]`, `node[p]` is
+  not affine, so the printer could not place it in `u`'s domain and declined
+  the statement ("applies u outside the domain it declares"), though its
+  value is a point of `Fin[nv]` by `node`'s type. A theorem's statement
+  takes `node`'s bound as a hypothesis, so Lean knows it too, and the
+  application is in the domain where the values' bound is at most the
+  domain's; printed as one proposition, with no such hypothesis, it is
+  declined as before, and so is a map whose values reach past the domain.
+- **A family whose type mentions a name bound again inside is declined.**
+  `node: Fn[Fin[1], Fin[n]]` under an inner `n in Fin[m]`, or `u: Fn[Fin[m],
+  Int]` under an inner `m in Fin[5]`: the bounds the printer read the
+  application against were the inner name's, and the family's type means
+  the outer one, so an application past the family's domain could look in
+  bounds. The refusal names the name and asks for the inner binder to be
+  named apart. A family bound after the inner name means that one, as a cited
+  theorem's own parameters do inside a claim with the same names, and is
+  read as before.
 - **A fact a plugin names shortly is named so in the status column.** A
   fact that rests on one of a kernel's many facts showed that fact's id,
   `decided under assumption:demo.k@4:[c].assume('n % 4 == 0')` for a cast
