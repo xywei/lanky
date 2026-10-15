@@ -2336,8 +2336,9 @@ def _fallback_attempts(part: Any, statement: LeanStatement) -> list[tuple[str, s
     """The scripts a part's ``fallback`` hints make, with its own, ``omega`` alone left out.
 
     The fallback's hints are added to the part's, not put in their place: a
-    part may need an instance of a hypothesis, which its hints give, and a
-    case split, which only its fallback does, in one script.
+    part may need an instance of a hypothesis, or the products of unknowns
+    its plugin found, which its hints give, and a case split, which only its
+    fallback does, in one script.
     """
     from dataclasses import replace as replaced
 
@@ -2354,6 +2355,10 @@ def _fallback_attempts(part: Any, statement: LeanStatement) -> list[tuple[str, s
         instances=(*own.instances, *more.instances),
         witness=more.witness or own.witness,
         splits=(*own.splits, *more.splits),
+        applications=(*own.applications, *more.applications),
+        products=(*own.products, *more.products),
+        quotients=(*own.quotients, *more.quotients),
+        ring=own.ring or more.ring,
     )
     return [
         (how, tactic)

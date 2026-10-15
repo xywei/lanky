@@ -1376,6 +1376,28 @@ def test_a_layout_at_every_size_is_proved_with_its_products(lean: LeanOracle) ->
     assert hows[3] == "omega, with the arithmetic multiplied out"
 
 
+def test_a_fallbacks_split_keeps_the_products_a_part_has(lean: LeanOracle) -> None:
+    # Codex: the fallback's hints took the place of the products and the
+    # multiplying out. One for one needs the split, which here only the
+    # fallback gives, and the products, which only the part has.
+    from dataclasses import replace
+
+    (split,) = ROW_ONE_FOR_ONE.hints.splits
+    unsplit = replace(ROW_ONE_FOR_ONE.hints, splits=())
+    part = Part(
+        "one_for_one",
+        "two cells at one address",
+        ROW_ONE_FOR_ONE.term,
+        unsplit,
+        fallback=lambda: Hints(splits=(split,)),
+    )
+    fact = lean.establish(fact_of(Obligation(parts=(part,))))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+    assert fact.provenance["lean_parts"][0]["how"] == (
+        "omega, with 8 products, a case split and the arithmetic multiplied out"
+    )
+
+
 def test_a_wrong_product_fails_the_part(lean: LeanOracle) -> None:
     # 0 ≤ n * (j - 1) does not hold at j = 0, and Lean says so
     wrong = Part(

@@ -20,7 +20,9 @@ All notable changes to lanky are recorded here. The format follows
   so that `n ^ 2 * k` and `k * (n * n)` are one atom, before `omega` runs.
   The script says so, `omega, with 2 products and the arithmetic multiplied
   out`. All in core Lean, no Mathlib. loopty states a layout at every order
-  with them (S1, grudge's DOFArray and #418's `dim_tags`).
+  with them (S1, grudge's DOFArray and #418's `dim_tags`). A part's fallback
+  adds its split to these hints, and to a theorem's application, rather than
+  putting them aside.
 
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
   A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
