@@ -18,8 +18,9 @@ answers ``map_sum``), so every pymbolic mapper keeps working.
 
 Five node types have no pymbolic counterpart and are added here:
 :class:`Forall`, :class:`Exists`, :class:`Sum` (a reduction over a generator,
-not addition), :class:`Abs` and :class:`Elementary`, an elementary function
-(``exp``, ``log`` or ``sqrt``) applied to one argument.
+not addition), :class:`Abs` and :class:`Elementary`, a function of one argument
+every reader knows applied to it: ``exp``, ``log`` or ``sqrt``, or a part of a
+complex number, ``real``, ``imag`` or ``conj``.
 
 Binders come from generators. ``all(p(r) for r in Fin[n])`` is an ordinary
 generator expression; the builtin ``all`` is replaced by :func:`forall` while an
@@ -76,6 +77,7 @@ __all__ = [
     "LogicalAnd",
     "LogicalNot",
     "LogicalOr",
+    "MixedDomains",
     "OpenPoint",
     "Polarity",
     "Scope",
@@ -89,6 +91,7 @@ __all__ = [
     "binders",
     "code_reads",
     "concrete_sorts",
+    "conj",
     "conjoin",
     "conjuncts",
     "disjoin",
@@ -101,9 +104,13 @@ __all__ = [
     "forall",
     "free_names",
     "free_variables",
+    "imag",
     "init_args",
     "is_totalized",
+    "literal_binders",
     "log",
+    "reading_annotation",
+    "real",
     "render",
     "rerunning",
     "sort_free_names",
@@ -123,6 +130,16 @@ class SymbolicBoolError(TypeError):
     is evaluated at concrete values (:func:`evaluate`). The one place where
     Python may ask is the ``if`` clause of a generator expression being traced
     for binders, where the question is answered by recording a guard.
+    """
+
+
+class MixedDomains(ValueError):
+    """Raised when one comprehension walks a literal domain and binds a symbolic one.
+
+    ``all(... for x in Fin[3] for e in Fin[ne])``: the literal domain is walked
+    point by point, and the symbolic one binds a generic point at each of
+    them. :func:`evaluate_annotations` reads such an annotation again with
+    every literal domain a binder (:func:`literal_binders`).
     """
 
 
@@ -1307,14 +1324,25 @@ class Abs(SymbolicMixin, prim.ExpressionNode):
     operand: Any
 
 
-#: The elementary functions a statement can apply, by the name it spells them.
-ELEMENTARY_FUNCTIONS = ("exp", "log", "sqrt")
+#: The elementary functions a statement can apply, by the name it spells them:
+#: ``exp``, ``log`` and ``sqrt``, and the parts of a complex number, its real
+#: part, its imaginary part and its conjugate, by numpy's names.
+ELEMENTARY_FUNCTIONS = ("exp", "log", "sqrt", "real", "imag", "conj")
+
+#: The parts of a complex number among :data:`ELEMENTARY_FUNCTIONS`, each as
+#: Python computes it of a number: of a real number, the number itself, ``0``
+#: and the number.
+_PARTS: dict[str, Callable[[Any], Any]] = {
+    "real": lambda value: value.real,
+    "imag": lambda value: value.imag,
+    "conj": lambda value: value.conjugate(),
+}
 
 
 @_hashed_unless_annotation
 @expr_dataclass(eq=False)
 class Elementary(SymbolicMixin, prim.ExpressionNode):
-    """An elementary function applied to one argument: ``exp(x)``, ``log(x)``, ``sqrt(x)``.
+    """A function of one argument: ``exp(x)``, ``log(x)``, ``sqrt(x)``, ``real(z)``, ``conj(z)``.
 
     A node of its own rather than a :class:`Call` of a variable named ``exp``,
     because a call is how a family is applied, and a family is a parameter the
@@ -1326,6 +1354,15 @@ class Elementary(SymbolicMixin, prim.ExpressionNode):
     method is ``map_elementary``. Its argument can be a number: an
     annotation's ``exp(1)`` is ``e`` to every oracle, and not the float
     nearest it (#81).
+
+    The parts of a complex number are nodes of this kind too, by numpy's
+    names: ``real(z)``, ``imag(z)`` and ``conj(z)``, which Python computes as
+    ``z.real``, ``z.imag`` and ``z.conjugate()``, so that of a real number
+    they are the number, ``0`` and the number. The Lean printer writes
+    ``Complex.re z``, ``Complex.im z`` and ``(starRingEnd ℂ) z``, Mathlib's
+    conjugate. ``-beta * conj(alpha) / real(alpha * conj(alpha))`` is
+    ``-beta / alpha`` divided out by the conjugate, one real division, as a
+    kernel computes it.
     """
 
     function: str
@@ -1472,6 +1509,35 @@ def rerunning() -> bool:
     return _SORT_POINTS.get() is not None
 
 
+#: Whether a domain with a literal bound binds a generic point, as one with a
+#: symbolic bound does (see :func:`literal_binders`).
+_LITERAL_BINDERS: ContextVar[bool] = ContextVar("lanky_literal_binders", default=False)
+
+
+def literal_binders() -> bool:
+    """Whether ``Fin[3]`` is a binder over ``Fin(3)`` here, and not walked.
+
+    It is while :func:`evaluate_annotations` reads an annotation again whose
+    first reading mixed a literal domain with a symbolic one in one
+    comprehension (:class:`MixedDomains`): ``all(grad[x, e] == ... for x in
+    Fin[3] for e in Fin[ne])`` is then a universal over ``x in Fin(3), e in
+    Fin(ne)``, and ``sum(... for d in Fin[3] for c in Fin[n])`` a sum over
+    both. Everywhere else a literal domain is walked, so that ``sum(c[t] for
+    t in Fin[2])`` is ``c[0] + c[1]`` and runs under plain ``python``.
+    """
+    return _LITERAL_BINDERS.get()
+
+
+@contextmanager
+def _binding_literals() -> Iterator[None]:
+    """Make every literal domain a binder while the block runs (:func:`literal_binders`)."""
+    token = _LITERAL_BINDERS.set(True)
+    try:
+        yield
+    finally:
+        _LITERAL_BINDERS.reset(token)
+
+
 class _Driven:
     """The outcome of running a generator once under binder tracing."""
 
@@ -1495,10 +1561,12 @@ class _Driven:
                 f"(the guard captured was {render(self.guard)!r})"
             )
         if len(self.values) != 1:
-            raise ValueError(
+            raise MixedDomains(
                 "a generator over a symbolic index type must yield exactly one "
-                f"generic point, got {len(self.values)}; mixing concrete and "
-                "symbolic domains in one comprehension is not supported"
+                f"generic point, got {len(self.values)}: the comprehension walks a "
+                "domain with a literal bound, Fin[3], beside one with a symbolic "
+                "bound, Fin[n]. In an annotation each is a binder; elsewhere, nest "
+                "the walk over the literal domain outside the comprehension"
             )
         return self.values[0]
 
@@ -1743,6 +1811,9 @@ def elementary_value(function: str, value: Any) -> Any:
         raise ValueError(f"unknown elementary function {function!r}")
     if isinstance(value, bool) or not isinstance(value, numbers.Complex):
         raise TypeError(f"{function} takes a number, not {value!r}")
+    if function in _PARTS:
+        # a part of a number, which every number has
+        return _PARTS[function](value)
     module = math if isinstance(value, numbers.Real) else cmath
     try:
         return getattr(module, function)(value)
@@ -1813,6 +1884,26 @@ log = _elementary("log")
 #: The square root, ``Real.sqrt`` in Lean, and ``Complex.sqrt`` for a complex
 #: argument, which Lean has to keep off the branch cut (see :mod:`lanky.lean`).
 sqrt = _elementary("sqrt")
+#: The real part, ``numpy.real``: ``Complex.re`` in Lean, and of a real number
+#: the number itself.
+real = _elementary("real")
+#: The imaginary part, ``numpy.imag``: ``Complex.im`` in Lean, and ``0`` of a
+#: real number.
+imag = _elementary("imag")
+#: The complex conjugate, ``numpy.conj``: Mathlib's ``starRingEnd ℂ``, and of a
+#: real number the number itself.
+conj = _elementary("conj")
+
+
+def reading_annotation() -> bool:
+    """Whether an annotation is being read (:func:`evaluate_annotations`) in this context.
+
+    A library whose functions build a node of its own for a term, a kernel's
+    ``loopty.math.conj`` say, asks this to build lanky's instead where the
+    term is a statement's: ``conj(alpha)`` in a theorem's annotation is the
+    conjugate every oracle reads, and not a family named ``conj``.
+    """
+    return bool(_ANNOTATION_CODE.get())
 
 
 #: The builtins that mean something else inside an annotation.
@@ -2013,6 +2104,13 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
     dict or a set lookup keyed by one is refused rather than answered as if
     the key were absent (see :func:`_refuse_hashing`).
 
+    A comprehension that walks a domain with a literal bound beside one with
+    a symbolic bound, ``all(grad[x, e] == ... for x in Fin[3] for e in
+    Fin[ne])``, cannot be read point by point (:class:`MixedDomains`), so the
+    annotation is read again with every literal domain a binder
+    (:func:`literal_binders`): a universal over ``x in Fin(3), e in
+    Fin(ne)``. An annotation without one reads as it always has.
+
     Raises:
         TypeError: If an annotation reads ``all``, ``any``, ``sum`` or ``abs``,
             which is not a parameter's name, and the function's module binds
@@ -2041,7 +2139,17 @@ def evaluate_annotations(fn: Any, values: dict[str, Any] | None = None) -> dict[
         code = compile(annotation.lstrip(" \t"), "<string>", "eval")
         _refuse_a_shadowed_override(fn, name, code, namespace, own)
         with _reading(code):
-            out[name] = eval(code, scope, None)
+            try:
+                out[name] = eval(code, scope, None)
+            except MixedDomains as mixed:
+                # Fin[3] walked beside Fin[n] bound: read it again with every
+                # literal domain a binder, which is what it says; a reading
+                # that cannot be made so is refused as the first was
+                with _binding_literals():
+                    try:
+                        out[name] = eval(code, scope, None)
+                    except Exception:  # noqa: BLE001 - the first refusal is the one to name
+                        raise mixed from None
     return out
 
 

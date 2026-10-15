@@ -34,6 +34,7 @@ from lanky.terms import (
     conjoin,
     current_trace,
     evaluate,
+    literal_binders,
     render,
     rerunning,
     sort_points,
@@ -182,9 +183,14 @@ class FinType(LankyType):
         (:func:`lanky.terms.concrete_sorts`), a bound that is a number but not
         an ``int``, a ``Fraction`` or a numpy integer, is walked as
         :meth:`points` walks it, to its integer part, which is how the
-        evaluator reads the same domain.
+        evaluator reads the same domain. While an annotation that mixes a
+        literal domain with a symbolic one is read
+        (:func:`lanky.terms.literal_binders`), a literal domain binds a
+        generic point too.
         """
         if self.is_concrete:
+            if literal_binders():
+                return _GenericPoint(self)
             return iter(range(self.bound))
         if rerunning() and not isinstance(self.bound, prim.ExpressionNode):
             return iter(range(int(self.bound)))

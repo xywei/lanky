@@ -1072,7 +1072,7 @@ def _principal_power(base: Fraction | Interval, exponent: Fraction | Interval) -
 
 
 def elementary(function: str, value: Any) -> Any:
-    """``exp``, ``log`` or ``sqrt`` of a number, in the exact reading.
+    """``exp``, ``log`` or ``sqrt`` of a number, or one of its parts, in the exact reading.
 
     A real argument (an integer, a fraction, a float as the rational it holds,
     or an enclosure) gives :func:`exp_value`, :func:`log_value` or
@@ -1082,6 +1082,10 @@ def elementary(function: str, value: Any) -> Any:
     of the last two Python picks a side by the sign of a zero, which an exact
     number does not have, and the draw decides nothing.
 
+    ``real``, ``imag`` and ``conj`` are a complex number's parts, read off its
+    two: of a real number, the number, ``0`` and the number, as Python's
+    ``.real``, ``.imag`` and ``.conjugate()`` are.
+
     Raises:
         UndefinedValue: If Python's function has no value there: the logarithm
             of a number that is not positive, or of a complex zero, or the
@@ -1089,12 +1093,26 @@ def elementary(function: str, value: Any) -> Any:
         Undecided: Where the exact reading has no enclosure (see the module
             docstring).
         TypeError: If ``value`` is not a number, a ``bool`` included.
-        ValueError: If ``function`` is not one of the three.
+        ValueError: If ``function`` is not one of the six.
     """
-    if function not in ("exp", "log", "sqrt"):
+    if function not in ("exp", "log", "sqrt", "real", "imag", "conj"):
         raise ValueError(f"unknown elementary function {function!r}")
     if isinstance(value, bool) or not isinstance(value, numbers.Complex | Interval | ComplexValue):
         raise TypeError(f"{function} takes a number, not {value!r}")
+    if function in ("real", "imag", "conj"):
+        parts = _complex_operand(value)
+        if parts is None:
+            raise TypeError(f"{value!r} is not a number")
+        real_part, imag_part = parts
+        if isinstance(value, ComplexValue | complex):
+            if function == "real":
+                return real_part
+            if function == "imag":
+                return imag_part
+            return ComplexValue(real_part, -imag_part)
+        # a real number is its own real part and conjugate, and its imaginary
+        # part is zero
+        return Fraction(0) if function == "imag" else real_part
     if isinstance(value, ComplexValue | complex):
         parts = _complex_operand(value)
         if parts is None:

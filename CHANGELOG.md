@@ -6,29 +6,6 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
-### Changed
-
-- **`lanky check` prints every statement whole** (#142). A statement too
-  long for its column was cut at 72 characters, so a theorem showed its
-  variables and never its conclusion, and a postcondition, a theorem applied
-  to a kernel or a comparison with upstream lost its end. A statement that
-  fits is still one line; a longer one goes on under the statement column,
-  broken at spaces. A theorem is printed a part to a line: its variables,
-  each hypothesis under the name of its parameter (`| pde: ...`), and the
-  goal after `|-`, from the `sequent` its fact now carries in its
-  provenance. Any other statement is broken before an `and` that joins two
-  claims, after a label's `:` or a quantifier's `.`, or before a guard's
-  `where`, outside brackets where it can be, and indented a step for each
-  bracket it breaks inside. The column is 100 characters wide where it was
-  72, so that most of a kernel's facts are one line and the table does not
-  double in height; in a terminal it takes what the other columns leave,
-  between 40 and 100, and written to a file or a pipe it is 100, so a
-  transcript does not depend on the window it was made in
-  (`Ledger.render(width=100, columns=...)`, `lanky.cli.terminal_columns`).
-- **`LANKY_LEAN_DISABLE` prints what a machine without Lean prints**, the
-  `WITHOUT LEAN` line below included, so a CI job that sets it checks the
-  transcripts such a machine shows.
-
 ### Added
 
 - **What a row lacks to be proved, said under the table.** Without Lean a
@@ -52,17 +29,76 @@ All notable changes to lanky are recorded here. The format follows
   (`LeanOracle.missing`, `LeanOracle.remedy`, and `lanky.cli.report_missing`,
   which a plugin's verb that prints a ledger can call too).
 
-### Fixed
-
-- **A generator's binder names are read once per code object** (#125).
-  `sum(... for p in Fin[n])` disassembled its generator at every call to
-  name its binders, and a kernel run natively sums once per instance: that
-  was about 15 of the 45 seconds `lanky check` took over loopty's
-  hexahedra demonstration. The rest was loopty's interpreter, which loopty
-  makes faster on its side.
-
-### Added
-
+- **Hints for arithmetic where unknowns multiply** (`lanky.obligations`:
+  `Product`, `Quotient`, `Hints.ring`). `omega` reads `n * j` as an atom it
+  knows nothing of, so a layout's address at every size, `i + n * j`, was
+  out of its reach. A plugin now gives the steps it lacks: `0 ≤ a * b` from
+  `0 ≤ a` and `0 ≤ b` (`Int.mul_nonneg`), before a case split or in each
+  case where its factors are not negative (`in_cases`); what Lean knows of
+  `c // n` and `c % n` for a divisor that is no number (`Int.fmod_add_fdiv_mul`
+  and the remainder's bounds), in the cases where the divisor is positive;
+  and the arithmetic multiplied out by `simp` with the ring lemmas of `Int`,
+  so that `n ^ 2 * k` and `k * (n * n)` are one atom, before `omega` runs.
+  The script says so, `omega, with 2 products and the arithmetic multiplied
+  out`. All in core Lean, no Mathlib. loopty states a layout at every order
+  with them (S1, grudge's DOFArray and #418's `dim_tags`). A part's fallback
+  adds its split to these hints, and to a theorem's application, rather than
+  putting them aside.
+- **Rewrites, a hint for a plugin's part** (`lanky.obligations.Rewrite`,
+  `Hints.rewrites`). A part may ask for its goal to be rewritten with its
+  hypotheses that are equations, in order: with no arguments, wherever one
+  applies, under a sum too (`simp only`, each premise shown by `omega` from
+  the range of the sums it is under); with arguments, at that one instance
+  (`rw`), a family's value perhaps a family of the part applied to its first
+  arguments, `Fr (3 * x + 0)`, and right to left where asked. Then a sum over
+  a literal range is written out term by term and `ring_nf` compares the two
+  sides. loopty states a program's postcondition so: what its calls store,
+  unfolded into the claim, and a cited identity, sum factorization, used at
+  the sections of the arrays where its one side is. `Hints.rewrites` holds
+  both kinds of rewrite, each said by its type: a `Rewrite` is a step of
+  this script, and an `Application` an identity rewritten before a theorem
+  is applied (below).
+- **A literal domain beside a symbolic one in an annotation**
+  (`lanky.terms.literal_binders`, `MixedDomains`). `all(grad[x, e] == ...
+  for x in Fin[3] for e in Fin[ne])` and `sum(... for d in Fin[3] for c in
+  Fin[n])` were refused ("mixing concrete and symbolic domains in one
+  comprehension is not supported"), so a claim over the three components of
+  a gradient had to nest a walk over `Fin[3]` outside it. Now an annotation
+  whose first reading mixes them is read again with each literal domain a
+  binder, `forall x in Fin(3), e in Fin(ne)`, which Lean states as it states
+  `Fin(n)`. An annotation that does not mix reads as before, a sum over
+  `Fin[2]` alone still its two terms; one whose body uses the point as a
+  Python value, an index into a tuple, is refused as before, and the
+  refusal names the mix.
+- **The parts of a complex number: `real`, `imag` and `conj`** (`lanky.real`,
+  `lanky.imag`, `lanky.conj`), numpy's names, as nodes of the same kind as
+  `exp`, `log` and `sqrt`. Python computes them as `.real`, `.imag` and
+  `.conjugate()`, so that of a real number they are the number, `0` and the
+  number, and of a truth value or a family Python has none, and Lean is
+  shown none; the property tester takes a drawn complex number apart exactly;
+  Lean prints `Complex.re z`, `Complex.im z` and `(starRingEnd ℂ) z`,
+  Mathlib's conjugate. In Mathlib mode a statement that takes a part gets two
+  more attempts, before Mathlib's whole-goal tactics: `z * conj(z)` written as
+  `normSq z` cast into `ℂ`, the divisions cleared by `field_simp` with each
+  hypothesis `z != 0` said of `normSq z`, and `ring`; and `normSq` written as
+  the squares of the parts. So `-beta * conj(alpha) * (1 / real(alpha *
+  conj(alpha))) == -beta / alpha`, a complex division multiplied out by the
+  conjugate as a kernel computes it, is proved. `lanky.terms.reading_annotation()`
+  says whether an annotation is being read, for a library whose functions
+  make nodes of their own (loopty's `loopty.math`).
+- **An identity rewritten before a theorem is applied** (`Hints.rewrites`).
+  A part may name a hypothesis that is an identity, a universal whose body
+  is an equation, with the values of its variables: `rw [h1 (alpha := c t -
+  y s) (beta := z t - c t)]` turns the goal's left side of it into its right
+  side, so that a theorem stated of `-beta / alpha` applies to a goal that
+  computes it by the conjugate. Where Mathlib is, a theorem is also applied
+  by rewriting the goal with it and leaving the numerals to `norm_num`,
+  since `apply` does not unify `↑(1 : ℤ)` with `(1 : ℂ)`.
+- **Absolute values given to `linarith` with their bounds.** A part about
+  reals that takes the absolute value of a real gets `linarith` with
+  `abs_nonneg`, `le_abs_self` and `neg_abs_le` of each, and a goal `|a| <= b`
+  is taken apart by `abs_le` first: so a value within an allowance of
+  another, `|a - b| <= e * (|b| + 1)`, is proved from an equation for `a`.
 - **The total of a scatter, in Mathlib mode** (`lanky.oracles.lean.fiber_scripts`).
   A goal `sum(y[i] for i in Fin[nv]) == sum(g for c in Fin[nc] for k in
   Fin[d])`, either way round, where `y[i]` is the sum over the cells a map
@@ -91,7 +127,65 @@ All notable changes to lanky are recorded here. The format follows
   instances, which `ring` proves one at a time and not at once; the ladder
   now splits it with `And.intro` and closes each conjunct.
 
+### Changed
+
+- **`lanky check` prints every statement whole** (#142). A statement too
+  long for its column was cut at 72 characters, so a theorem showed its
+  variables and never its conclusion, and a postcondition, a theorem applied
+  to a kernel or a comparison with upstream lost its end. A statement that
+  fits is still one line; a longer one goes on under the statement column,
+  broken at spaces. A theorem is printed a part to a line: its variables,
+  each hypothesis under the name of its parameter (`| pde: ...`), and the
+  goal after `|-`, from the `sequent` its fact now carries in its
+  provenance. Any other statement is broken before an `and` that joins two
+  claims, after a label's `:` or a quantifier's `.`, or before a guard's
+  `where`, outside brackets where it can be, and indented a step for each
+  bracket it breaks inside. The column is 100 characters wide where it was
+  72, so that most of a kernel's facts are one line and the table does not
+  double in height; in a terminal it takes what the other columns leave,
+  between 40 and 100, and written to a file or a pipe it is 100, so a
+  transcript does not depend on the window it was made in
+  (`Ledger.render(width=100, columns=...)`, `lanky.cli.terminal_columns`).
+- **`LANKY_LEAN_DISABLE` prints what a machine without Lean prints**, the
+  `WITHOUT LEAN` line below included, so a CI job that sets it checks the
+  transcripts such a machine shows.
+
+- **A warm check starts no Lean REPL** (#118). The Lean oracle reads every
+  attempt of every part from the proof cache first, under the version of the
+  Lean it would run (the pool's, else `LANKY_LEAN_VERSION`, else the
+  toolchain found), and starts a session only for a part with an attempt
+  that is not kept; a counterexample is checked from the cache the same
+  way. A theorem of lanky's own is kept and read back the same way, every
+  attempt of its ladder and its side conditions, where before it was asked
+  of Lean on every check: a Mathlib theorem whose ladder tried a few dozen
+  attempts was most of a warm check's time. Mathlib's answers are kept
+  under the project's toolchain and Mathlib revision together, read from its
+  files, so a part about reals and a Mathlib theorem are read back without
+  importing Mathlib, and a Mathlib upgrade reads no stale answer. `lanky
+  check` on a file checked before, with nothing changed, prints the same
+  ledger without starting Lean:
+
+  ```console
+  $ lanky check examples/gauss.py   # the second time: no REPL, same rows
+  ```
+- The `LEAN` line under the ledger counts the claims about reals core Lean
+  was not asked apart, and says where Lean checks them: `LEAN proved all 11
+  facts isl decided; 2 more are about real numbers, which Lean checks where
+  Mathlib is (LANKY_LEAN_MATHLIB)`. It said they were not stated for Lean
+  yet, and left out one a cited theorem decided.
+
+- A family of families prints as the family with several indices it is:
+  `Fn[Fin(n), Nat, Nat]` where it was `Fn[Fin(n), Fn[Nat, Nat]]`, in a
+  statement and in a reason that names the sort.
+
 ### Fixed
+
+- **A generator's binder names are read once per code object** (#125).
+  `sum(... for p in Fin[n])` disassembled its generator at every call to
+  name its binders, and a kernel run natively sums once per instance: that
+  was about 15 of the 45 seconds `lanky check` took over loopty's
+  hexahedra demonstration. The rest was loopty's interpreter, which loopty
+  makes faster on its side.
 
 - **A family applied at another's value, `u[node[p]]`, printed.** For a
   `node: Fn[Fin[nf], Fin[nv]]` and a `u: Fn[Fin[nv], Real]`, `node[p]` is
@@ -125,7 +219,6 @@ All notable changes to lanky are recorded here. The format follows
   hypothesis after the family, `∀ c, 0 ≤ c → c < nc → ∀ j, 0 ≤ j → j < d →
   (cell c j : Int) < nv` (`lanky.lean.codomain_bound`), and
   `LeanStatement.codomain_bounds` names it for a strategy.
-
 - **Families with several indices.** `Fn[A, B, C]` is a family with two
   indices, the family of families `Fn[A, Fn[B, C]]`, and any number of
   indices is curried the same way; a matrix is `Fn[Fin[n], Fin[m], Real]`.
@@ -253,49 +346,12 @@ All notable changes to lanky are recorded here. The format follows
   from the variables' bounds (`Case.facts`): `k + b + 2 <= p` from the
   goal's `a + b <= p` at `a = k + 2`.
 
-### Changed
-
-- **A warm check starts no Lean REPL** (#118). The Lean oracle reads every
-  attempt of every part from the proof cache first, under the version of the
-  Lean it would run (the pool's, else `LANKY_LEAN_VERSION`, else the
-  toolchain found), and starts a session only for a part with an attempt
-  that is not kept; a counterexample is checked from the cache the same
-  way. A theorem of lanky's own is kept and read back the same way, every
-  attempt of its ladder and its side conditions, where before it was asked
-  of Lean on every check: a Mathlib theorem whose ladder tried a few dozen
-  attempts was most of a warm check's time. Mathlib's answers are kept
-  under the project's toolchain and Mathlib revision together, read from its
-  files, so a part about reals and a Mathlib theorem are read back without
-  importing Mathlib, and a Mathlib upgrade reads no stale answer. `lanky
-  check` on a file checked before, with nothing changed, prints the same
-  ledger without starting Lean:
-
-  ```console
-  $ lanky check examples/gauss.py   # the second time: no REPL, same rows
-  ```
-
-- The `LEAN` line under the ledger counts the claims about reals core Lean
-  was not asked apart, and says where Lean checks them: `LEAN proved all 11
-  facts isl decided; 2 more are about real numbers, which Lean checks where
-  Mathlib is (LANKY_LEAN_MATHLIB)`. It said they were not stated for Lean
-  yet, and left out one a cited theorem decided.
-
-### Fixed
-
 - **A fact a plugin hands over already settled** (loopty's casts, decided
   by isl as each schedule step is taken) is no longer counted as settled by
   an oracle that hands it back as it came, with only its notes on why it did
   not prove it: the walk goes on to the next oracle, and the fact keeps the
   trust class its checker gave it. An oracle settles such a fact when it
   changes its status or says it decided it (`decided_by`).
-
-### Changed
-
-- A family of families prints as the family with several indices it is:
-  `Fn[Fin(n), Nat, Nat]` where it was `Fn[Fin(n), Fn[Nat, Nat]]`, in a
-  statement and in a reason that names the sort.
-
-### Fixed
 
 - A hypothesis that defines a family written with brackets,
   `all(f[i] == 2 * i for i in Fin[n])`, was read only as a filter on random

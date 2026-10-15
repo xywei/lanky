@@ -146,7 +146,11 @@ above, apart from one ascription described below, and declines less:
   modulus Python's ``abs`` computes.
 - ``exp``, ``log`` and ``sqrt`` (:class:`lanky.terms.Elementary`) are
   ``Real.exp``, ``Real.log`` and ``Real.sqrt``, and ``Complex.exp``,
-  ``Complex.log`` and ``Complex.sqrt`` for a complex argument. The complex
+  ``Complex.log`` and ``Complex.sqrt`` for a complex argument. The parts of
+  a complex number are ``Complex.re z``, ``Complex.im z`` and ``(starRingEnd
+  ℂ) z``, Mathlib's conjugate, each a function the kernel computes; of a
+  real or an integer argument they are the argument itself, ``0`` and the
+  argument, as Python's are. The complex
   logarithm and square root are principal branches, as ``cmath``'s are, and
   agree with them off the branch cut, the non-positive real axis; on it they
   cannot, and a statement that may reach it is declined (see *the branch
@@ -299,12 +303,15 @@ def _in_mathlib() -> bool:
 #: The root names of core Lean and Mathlib that the printer and the Lean
 #: oracle's tactic scripts write unqualified: the types a variable, a value or
 #: a cast is given, and the namespaces of the functions, constants and lemmas
-#: they apply (``Int.fdiv``, ``Finset.Ico``, ``Complex.I``, ``Real.exp_add``).
+#: they apply (``Int.fdiv``, ``Finset.Ico``, ``Complex.I``, ``Real.exp_add``),
+#: and ``starRingEnd``, which Mathlib's complex conjugate is.
 #: ``True`` and ``False`` are the propositions a Boolean constant prints as.
 #: A variable named like one of them would be what the name means after its
 #: binder, so a statement that has one prints them from the root
 #: (:func:`global_name`).
-ROOT_NAMES = frozenset({"Bool", "Complex", "False", "Finset", "Int", "Nat", "Real", "True"})
+ROOT_NAMES = frozenset(
+    {"Bool", "Complex", "False", "Finset", "Int", "Nat", "Real", "True", "starRingEnd"}
+)
 
 #: The root names a variable of the statement being printed is named like,
 #: which are printed from the root while it is printed (see :func:`global_name`).
@@ -999,7 +1006,14 @@ def _kind(expr: Any, types: _Types) -> str:
     if isinstance(expr, Abs):
         return "Int" if _kind(expr.operand, types) == "Int" else "Real"
     if isinstance(expr, Elementary):
-        return "Complex" if _kind(expr.argument, types) == "Complex" else "Real"
+        argument = _kind(expr.argument, types)
+        if expr.function in _PARTS:
+            # a part of a complex number is real, and of a real number or an
+            # integer the number itself (or 0), of its kind
+            if expr.function == "conj" or argument != "Complex":
+                return argument
+            return "Real"
+        return "Complex" if argument == "Complex" else "Real"
     if isinstance(expr, Sum):
         inner = dict(types)
         for var, domain in expr.binders:
@@ -1085,6 +1099,14 @@ _ELEMENTARY = {
     "sqrt": ("Real.sqrt", "Complex.sqrt"),
 }
 
+#: What each part of a complex number is called in Mathlib: the real part, the
+#: imaginary part and the conjugate, which ``starRingEnd ℂ`` is.
+_PARTS = {
+    "real": "Complex.re",
+    "imag": "Complex.im",
+    "conj": "starRingEnd",
+}
+
 #: The functions with a branch cut on the complex plane, what each is called
 #: where the printer says why a statement is declined, and where its cut is:
 #: a logarithm's takes zero in, where ``cmath.log`` has no value.
@@ -1108,7 +1130,12 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
     entire, and has no cut to disagree about. An
     :class:`~lanky.terms.Elementary` built by hand with any other function is
     declined.
+
+    A part of a complex number is ``Complex.re z``, ``Complex.im z`` or
+    ``(starRingEnd ℂ) z`` (:func:`_render_part`).
     """
+    if expr.function in _PARTS:
+        return _render_part(expr, outer, types)
     if expr.function not in _ELEMENTARY:
         raise UnsupportedTerm(
             f"{render(expr)} applies {expr.function!r}, which lanky does not print"
@@ -1125,6 +1152,41 @@ def _render_elementary(expr: Elementary, outer: int, types: _Types) -> str:
         )
     name = complex_ if is_complex else real
     return _parens(f"{global_name(name)} {_render(expr.argument, _ATOM, types)}", _APP, outer)
+
+
+def _render_part(expr: Elementary, outer: int, types: _Types) -> str:
+    """Print ``real(z)``, ``imag(z)`` or ``conj(z)`` as Mathlib's part of ``z``.
+
+    Of a complex argument, ``Complex.re z``, ``Complex.im z`` and
+    ``(starRingEnd ℂ) z``. Of a real number or an integer they are what
+    Python's ``.real``, ``.imag`` and ``.conjugate()`` are, the argument
+    itself and ``0``, which is printed as such: ``Complex.re`` of a real
+    ``x`` would be of ``x`` cast to ``ℂ``, which is ``x`` too, with a cast
+    in the way of every tactic.
+
+    Of anything else, a truth value or a family not applied, Python has no
+    part (:func:`lanky.terms.elementary_value` raises), so it is declined:
+    ``imag(b)`` printed as ``0`` would let Lean prove what Python cannot
+    evaluate.
+    """
+    kind = _kind(expr.argument, types)
+    argument = expr.argument
+    family = isinstance(argument, Var | prim.Variable) and isinstance(
+        _unrefined(types.get(argument.name)), FnType
+    )
+    if kind not in _NUMBER_KINDS or family:
+        raise UnsupportedTerm(
+            f"{render(expr)} takes a part of {render(argument)}, which is not a "
+            "number; Python's real, imag and conj take numbers only"
+        )
+    if kind != "Complex":
+        if expr.function == "imag":
+            return f"(0 : {'ℤ' if kind == 'Int' else 'ℝ'})"
+        return _render(expr.argument, outer, types)
+    argument = _render(expr.argument, _ATOM, types)
+    if expr.function == "conj":
+        return _parens(f"({global_name('starRingEnd')} ℂ) {argument}", _APP, outer)
+    return _parens(f"{global_name(_PARTS[expr.function])} {argument}", _APP, outer)
 
 
 def _literal_on_the_cut(function: str, argument: Any) -> bool:

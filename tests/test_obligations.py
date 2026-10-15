@@ -29,6 +29,9 @@ from lanky.obligations import (
     Obligation,
     Part,
     Piece,
+    Product,
+    Quotient,
+    Rewrite,
     attempts,
     negation_source,
     obligation_of,
@@ -37,8 +40,8 @@ from lanky.obligations import (
 )
 from lanky.oracles.lean import LeanOracle, ProofCache
 from lanky.plugins import registry
-from lanky.prelude import FinType, Fn, Int, Real
-from lanky.terms import Exists, Forall, LogicalAnd, LogicalOr, Var
+from lanky.prelude import FinType, Fn, Int, Nat, Real
+from lanky.terms import Abs, Comparison, Exists, Forall, LogicalAnd, LogicalOr, Sum, Var
 
 n, x, y, i, a, r, j = (Var(name) for name in ("n", "x", "y", "i", "a", "r", "j"))
 
@@ -331,6 +334,204 @@ def test_a_theorem_a_hypothesis_is_is_applied_with_what_the_plugin_bound() -> No
     tried = attempts(part, part_statement(part, "applied"))
     assert ("the theorem applied", "intros\napply h0 (p := p) (c := c)\n"
             "all_goals first | assumption | omega | linarith") in tried
+
+
+#: Two one-axis passes over each field ``q`` of ``g``, and the theorem that
+#: they are the dense operator: what a program's statements store, unfolded,
+#: and a cited identity used where its one side is.
+Fa, Fb, g, v2, out, A, B, h2 = (Var(name) for name in ("Fa", "Fb", "g", "v", "out", "A", "B", "h"))
+k, q = Var("k"), Var("q")
+FIELDS = Fn[Int, Fn[Int, Fn[Int, Real]]]
+TWO_PASSES = Forall(
+    ((n, Nat), (A, TABLE), (B, TABLE), (h2, TABLE), (k, FinType(n)), (j, FinType(n))),
+    Sum(((b, FinType(n)), (a, FinType(n))), A[k, b] * B[j, a] * h2[b, a])
+    == Sum(((b, FinType(n)),), A[k, b] * Sum(((a, FinType(n)),), B[j, a] * h2[b, a])),
+)
+ALONG_A = Forall(
+    ((q, Int), (b, Int), (j, Int)),
+    v2[q, b, j] == Sum(((a, FinType(n)),), Fb[q, j, a] * g[q, b, a]),
+    (q >= 0) & (q < 2) & (b >= 0) & (b < n) & (j >= 0) & (j < n),
+)
+ALONG_B = Forall(
+    ((q, Int), (k, Int), (j, Int)),
+    out[q, k, j] == Sum(((b, FinType(n)),), Fa[q, k, b] * v2[q, b, j]),
+    (q >= 0) & (q < 2) & (k >= 0) & (k < n) & (j >= 0) & (j < n),
+)
+DENSE = Part(
+    "post",
+    "out[x, k, j] is the dense operator",
+    claim(
+        (n, (Fa, FIELDS), (Fb, FIELDS), (g, FIELDS), (v2, FIELDS), (out, FIELDS), x, k, j),
+        [TWO_PASSES, ALONG_A, ALONG_B, n >= 0, x >= 0, x < 2, k >= 0, k < n, j >= 0, j < n],
+        out[x, k, j]
+        == Sum(
+            ((b, FinType(n)), (a, FinType(n))), g[x, b, a] * Fa[x, k, b] * Fb[x, j, a]
+        ),
+    ),
+    Hints(
+        rewrites=(
+            Rewrite(2),
+            Rewrite(1),
+            Rewrite(0, (n, Fa[x], Fb[x], g[x], k, j), backwards=True),
+        )
+    ),
+    mathlib=True,
+)
+
+
+def test_equations_are_rewritten_with_in_order_and_ring_compares_the_sides() -> None:
+    """``simp only`` unfolds what the statements store, ``rw`` uses the identity backwards.
+
+    The two unfoldings with no arguments are one ``simp only``, whose
+    discharger shows a premise from the range of the sum it is under; the
+    identity is taken at the sections ``Fa x`` and ``g x``, its premises
+    shown by ``omega``; and ``ring_nf`` compares the two sides, ordering the
+    factors of each summand by ``mul_comm`` where it leaves them apart.
+    """
+    tried = attempts(DENSE, part_statement(DENSE, "post"))
+    how, script = tried[-1]
+    assert how == "the equations rewritten with, in order, then ring"
+    assert script.splitlines() == [
+        "all_goals simp (disch := (first | omega | (simp only [Finset.mem_Ico] at *; omega))) "
+        "only [h2, h1]",
+        "all_goals rw [← h0 n (by omega) (Fa x) (Fb x) (g x) k (by omega) (by omega) j "
+        "(by omega) (by omega)]",
+        "all_goals first | (ring_nf; done) "
+        "| (ring_nf; simp only [mul_comm, mul_assoc, mul_left_comm]; done) | linarith",
+    ]
+
+
+#: ``t[x]`` stores a sum over ``Fin[3]``, which the claim writes out.
+t, d = Var("t"), Var("d")
+WRITTEN_OUT = Part(
+    "post",
+    "t[x] is three terms",
+    claim(
+        ((g, FIELDS), (t, Fn[Int, Real]), x),
+        [Forall(((x, Int),), t[x] == Sum(((d, FinType(3)),), g[x, d, 0]))],
+        t[x] == g[x, 0, 0] + g[x, 1, 0] + g[x, 2, 0],
+    ),
+    Hints(rewrites=(Rewrite(0),)),
+    mathlib=True,
+)
+
+
+def test_a_sum_over_a_literal_range_is_written_out_before_ring() -> None:
+    """The sum a rewrite brings in, over ``Fin[3]``, is three terms ``ring`` compares."""
+    _how, script = attempts(WRITTEN_OUT, part_statement(WRITTEN_OUT, "post"))[-1]
+    assert script.splitlines()[1] == (
+        "all_goals try simp (disch := decide) only [show Finset.Ico (0 : ℤ) 3 = {0, 1, 2} "
+        "by decide, Finset.sum_insert, Finset.sum_singleton]"
+    )
+
+
+def test_a_rewrite_that_names_no_universal_with_arguments_is_not_written() -> None:
+    """An instance needs a universal to take: the attempt is dropped, the others stand."""
+    part = Part(
+        "post",
+        "t[x] is three terms",
+        WRITTEN_OUT.term,
+        Hints(rewrites=(Rewrite(0, (x, x)),)),
+        mathlib=True,
+    )
+    tried = attempts(part, part_statement(part, "post"))
+    assert [how for how, _ in tried] == ["omega"]
+
+
+def test_an_identity_is_rewritten_before_the_theorem_is_applied() -> None:
+    """``rw [h1 (z := ...)]`` makes the goal the theorem's, ``apply h0`` concludes it.
+
+    And where ``apply`` cannot unify the theorem's numerals with the goal's,
+    the goal is rewritten by the theorem too, and ``norm_num`` is left the
+    numerals.
+    """
+    c, z, w, k = Var("c"), Var("z"), Var("w"), Var("k")
+    series = Forall(
+        ((z, Real), (c, Fn[Int, Real])),
+        Forall(((k, Int),), c(k) == z * k, k >= 1),
+        c(1) == z,
+    )
+    identity = Forall(((z, Real), (w, Real)), w * (1 / w) * z == z, ~(w == 0))
+    part = Part(
+        "term_2",
+        "c(2) is what the kernel adds",
+        claim(
+            ((c, Fn[Int, Real]), (x, Real), (y, Real)),
+            [series, identity, ~(y == 0), c(1) == x],
+            c(2) == y * (1 / y) * x * 2,
+        ),
+        Hints(
+            applications=(Application(0, (("z", x), ("c", c))),),
+            rewrites=(Application(1, (("z", x), ("w", y))),),
+        ),
+        mathlib=True,
+    )
+    tried = dict((how, script) for how, script in attempts(part, part_statement(part, "s")))
+    assert tried["rewritten by the identity, the theorem applied"].splitlines() == [
+        "intros",
+        "rw [h1 (z := x) (w := y)]",
+        "apply h0 (z := x) (c := c)",
+        "all_goals first | assumption | omega | linarith",
+    ]
+    assert tried["rewritten by the identity and the theorem"].splitlines() == [
+        "intros",
+        "rw [h1 (z := x) (w := y)]",
+        "rw [h0 (z := x) (c := c)]",
+        "all_goals first | assumption | omega | linarith | (norm_num [Int.toNat]; done)",
+    ]
+
+
+def test_a_value_mathlib_prints_is_given_to_a_rewrite_as_it_prints_it() -> None:
+    """A true division is Mathlib's, and is not dropped from the script (Codex)."""
+    z, w = Var("z"), Var("w")
+    identity = Forall(((z, Real), (w, Real)), w * (1 / w) * z == z, ~(w == 0))
+    part = Part(
+        "halved",
+        "the identity at y / 2",
+        claim(
+            ((x, Real), (y, Real)),
+            [identity, ~(y == 0)],
+            (y / 2) * (1 / (y / 2)) * x == x,
+        ),
+        Hints(
+            applications=(Application(0, (("z", x), ("w", y / 2))),),
+            rewrites=(Application(0, (("z", x), ("w", y / 2))),),
+        ),
+        mathlib=True,
+    )
+    tried = dict(attempts(part, part_statement(part, "h")))
+    script = tried["rewritten by the identity, the theorem applied"].splitlines()
+    assert script[1] == "rw [h0 (z := x) (w := (y : ℝ) / 2)]"
+
+
+def test_absolute_values_are_given_to_linarith_with_their_bounds() -> None:
+    """``|a - b| <= e (|b| + 1)`` from ``a = q |x|``: ``abs_le`` first, then each bar's bounds."""
+    goal = Abs(y - Abs(x) / 12) <= 1e-6 * (Abs(Abs(x) / 12) + 1)
+    part = Part(
+        "conjunct_0",
+        "y == abs(x) / 12",
+        claim(((x, Real), (y, Real)), [y == Abs(x) / 12], goal),
+        mathlib=True,
+    )
+    tried = dict((how, script) for how, script in attempts(part, part_statement(part, "c")))
+    bounds = (
+        "abs_nonneg (x), le_abs_self (x), neg_abs_le (x), "
+        "abs_nonneg ((|x| : ℝ) / 12), le_abs_self ((|x| : ℝ) / 12), "
+        "neg_abs_le ((|x| : ℝ) / 12), "
+        "abs_nonneg (y - (|x| : ℝ) / 12), le_abs_self (y - (|x| : ℝ) / 12), "
+        "neg_abs_le (y - (|x| : ℝ) / 12)"
+    )
+    taken = tried["linarith, with the absolute values taken apart"].splitlines()
+    assert taken[0] == "rw [abs_le]"
+    assert taken[1].startswith("constructor <;> linarith [")
+    assert set(taken[1].removeprefix("constructor <;> linarith [").removesuffix("]").split(
+        ", "
+    )) == set(bounds.split(", "))
+    # a part with no absolute value of a real gets neither attempt
+    assert [how for how, _ in attempts(REAL_PART, part_statement(REAL_PART, "post"))] == [
+        "omega",
+        "linarith, with the hypotheses taken at 1 point",
+    ]
 
 
 def test_without_mathlib_a_claim_about_reals_is_declined_saying_why(
@@ -861,6 +1062,157 @@ def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
 
 # }}}
 
+# {{{ where unknowns multiply: a layout at every size
+
+#: A layout of ``Fin[n] x Fin[m]``, row ``j`` after row ``j - 1``: ``i + n * j``,
+#: at every ``n`` and ``m``, with a second cell ``(i2, j2)`` and an address ``c``.
+m, i2, j2, c = (Var(name) for name in ("m", "i2", "j2", "c"))
+ROW = i + n * j
+ROW2 = i2 + n * j2
+CELL = [n >= 0, m >= 0, i >= 0, i < n, j >= 0, j < m]
+CELL2 = [i2 >= 0, i2 < n, j2 >= 0, j2 < m]
+
+#: Every cell's address is in ``Fin[m * n]``: ``n * j`` is at most ``n * (m - 1)``.
+ROW_IN_BOUNDS = Part(
+    "in_bounds",
+    "the address of a cell",
+    claim((n, m, i, j), CELL, (ROW >= 0) & (ROW < m * n)),
+    Hints(products=(Product(n, j), Product(n, m - 1 - j))),
+)
+
+#: Two cells at one address are one cell: in the case ``j < j2``, ``n * j2`` is
+#: at least ``n * j + n``, which no ``i`` makes up for.
+ROW_ONE_FOR_ONE = Part(
+    "one_for_one",
+    "two cells at one address",
+    claim(
+        (n, m, i, j, i2, j2),
+        [*CELL, *CELL2, Comparison(ROW, "==", ROW2)],
+        (i == i2) & (j == j2),
+    ),
+    Hints(
+        products=(
+            Product(n, j),
+            Product(n, m - 1 - j),
+            Product(n, j2),
+            Product(n, m - 1 - j2),
+            Product(n, j2 - j - 1, in_cases=True),
+            Product(n, j - j2 - 1, in_cases=True),
+            Product(n, j - j2, in_cases=True),
+            Product(n, j2 - j, in_cases=True),
+        ),
+        splits=(LogicalOr(((j < j2), (j == j2), (j2 < j))),),
+    ),
+)
+
+#: Every address has its cell, its digits ``c % n`` and ``c // n``.
+cx, cy = Var("i_cell"), Var("j_cell")
+ROW_ONTO = Part(
+    "onto",
+    "a cell at every address",
+    claim(
+        (n, m, c),
+        [n >= 0, m >= 0, c >= 0, c < m * n],
+        Exists(
+            ((cx, Int), (cy, Int)),
+            (cx >= 0) & (cx < n) & (cy >= 0) & (cy < m) & Comparison(cx + n * cy, "==", c),
+        ),
+    ),
+    Hints(
+        quotients=(Quotient(c, n),),
+        splits=(LogicalOr(((n <= 0), (n > 0))), LogicalOr(((c // n < m), (m <= c // n)))),
+        products=(Product(0 - n, m, in_cases=True), Product(n, c // n - m, in_cases=True)),
+        witness=(Piece((c % n, c // n)),),
+    ),
+)
+
+#: Two ways of writing one layout: a polynomial identity, multiplied out.
+ROW_SAME = Part(
+    "same",
+    "a cell of both",
+    claim((n, m, i, j), CELL, Comparison(n**2 * j + n * i, "==", n * (n * j + i))),
+    Hints(ring=True),
+)
+
+
+def test_products_are_taken_and_the_arithmetic_multiplied_out() -> None:
+    [first, (how, script)] = attempts(
+        ROW_IN_BOUNDS, part_statement(ROW_IN_BOUNDS, "row")
+    )
+    assert first == ("omega", "omega")
+    assert how == "omega, with 2 products and the arithmetic multiplied out"
+    lines = script.splitlines()
+    assert lines[:2] == [
+        "have hp0 : 0 ≤ n * j := Int.mul_nonneg (by omega) (by omega)",
+        "have hp1 : 0 ≤ n * (m - 1 - j) := Int.mul_nonneg (by omega) (by omega)",
+    ]
+    assert lines[2].startswith("all_goals (try simp only [Int.pow_succ, ")
+    assert lines[2].endswith("] at *)")
+    assert lines[3] == "all_goals omega"
+
+
+def test_a_product_in_cases_is_tried_in_each_case_after_the_splits() -> None:
+    [_, (how, script)] = attempts(
+        ROW_ONE_FOR_ONE, part_statement(ROW_ONE_FOR_ONE, "row")
+    )
+    assert how == (
+        "omega, with 8 products, a case split and the arithmetic multiplied out"
+    )
+    lines = script.splitlines()
+    split = lines.index("rcases hs0 with hs0 | hs0 | hs0")
+    # the products that hold everywhere before the split, the others after it
+    assert all(line.startswith("have hp") for line in lines[: split - 1])
+    assert lines[split + 1] == (
+        "all_goals try have hp4 : 0 ≤ n * (j2 - j - 1) := "
+        "Int.mul_nonneg (by omega) (by omega)"
+    )
+
+
+def test_a_quotient_by_a_size_is_what_lean_knows_of_fdiv_and_fmod() -> None:
+    [(how, script)] = attempts(ROW_ONTO, part_statement(ROW_ONTO, "row"))
+    assert how == (
+        "omega, with 2 products, a quotient, a case split, the witness and the "
+        "arithmetic multiplied out"
+    )
+    lines = script.splitlines()
+    assert "all_goals try have hq0 := Int.fmod_add_fdiv_mul c n" in lines
+    assert (
+        "all_goals try have hq0_r := Int.fmod_nonneg_of_pos c (show 0 < n by omega)"
+        in lines
+    )
+    assert "all_goals refine ⟨Int.fmod c n, Int.fdiv c n, ?_⟩" in lines
+    # a divisor omega divides by itself needs nothing
+    assert attempts(
+        Part("x", "x", ROW_ONTO.term, Hints(quotients=(Quotient(c, 4),), ring=True)),
+        part_statement(ROW_ONTO, "row"),
+    )[0][1].count("hq") == 0
+
+
+def test_a_witness_in_pieces_keeps_its_script_beside_the_products() -> None:
+    # Codex: a part with products and a witness in pieces had no script at
+    # all; it keeps the one a part with no products has
+    part = Part(
+        "pieces",
+        "pieces",
+        LAST_WRITER,
+        Hints(
+            witness=(Piece((), r == 0, 0), Piece((r - 1,), None, 1)),
+            ring=True,
+        ),
+    )
+    [(how, script)] = attempts(part, part_statement(part, "pieces"))
+    assert how == "omega, with a witness in 2 pieces"
+    assert script.splitlines()[0].startswith("by_cases hp0 : ")
+
+
+def test_a_polynomial_identity_needs_only_the_arithmetic_multiplied_out() -> None:
+    [_, (how, script)] = attempts(ROW_SAME, part_statement(ROW_SAME, "row"))
+    assert how == "omega, with the arithmetic multiplied out"
+    assert script.splitlines()[-1] == "all_goals omega"
+
+
+# }}}
+
 
 # {{{ with Lean
 
@@ -1305,6 +1657,52 @@ def test_the_ledger_names_what_lean_did_not_prove_and_shows_the_lean(
     CheckVerb._report(Ledger([proved, unproved]), show_lean="S1")
     shown = capsys.readouterr().out.split("\nLEAN kernel ", 1)[1]
     assert shown.startswith("at kernel.py:2")
+
+
+def test_a_layout_at_every_size_is_proved_with_its_products(lean: LeanOracle) -> None:
+    # without the products, omega knows nothing of n * j
+    bare = Part("in_bounds", "the address of a cell", ROW_IN_BOUNDS.term)
+    assert lean.establish(fact_of(Obligation(parts=(bare,)))).status is Status.ASSUMED
+    parts = (ROW_IN_BOUNDS, ROW_ONE_FOR_ONE, ROW_ONTO, ROW_SAME)
+    fact = lean.establish(fact_of(Obligation(parts=parts, decider="isl")))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+    hows = [record["how"] for record in fact.provenance["lean_parts"]]
+    assert hows[0] == "omega, with 2 products and the arithmetic multiplied out"
+    # omega alone does not multiply out
+    assert hows[3] == "omega, with the arithmetic multiplied out"
+
+
+def test_a_fallbacks_split_keeps_the_products_a_part_has(lean: LeanOracle) -> None:
+    # Codex: the fallback's hints took the place of the products and the
+    # multiplying out. One for one needs the split, which here only the
+    # fallback gives, and the products, which only the part has.
+    from dataclasses import replace
+
+    (split,) = ROW_ONE_FOR_ONE.hints.splits
+    unsplit = replace(ROW_ONE_FOR_ONE.hints, splits=())
+    part = Part(
+        "one_for_one",
+        "two cells at one address",
+        ROW_ONE_FOR_ONE.term,
+        unsplit,
+        fallback=lambda: Hints(splits=(split,)),
+    )
+    fact = lean.establish(fact_of(Obligation(parts=(part,))))
+    assert fact.status is Status.PROVED, fact.provenance.get("lean_reason")
+    assert fact.provenance["lean_parts"][0]["how"] == (
+        "omega, with 8 products, a case split and the arithmetic multiplied out"
+    )
+
+
+def test_a_wrong_product_fails_the_part(lean: LeanOracle) -> None:
+    # 0 ≤ n * (j - 1) does not hold at j = 0, and Lean says so
+    wrong = Part(
+        "in_bounds",
+        "the address of a cell",
+        ROW_IN_BOUNDS.term,
+        Hints(products=(Product(n, j - 1), Product(n, m - 1 - j))),
+    )
+    assert lean.establish(fact_of(Obligation(parts=(wrong,)))).status is Status.ASSUMED
 
 
 # }}}

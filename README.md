@@ -393,8 +393,13 @@ raises its floor to match.
   the oracles after Lean with that reason. A hypothesis that is itself a
   theorem is applied as one (`Hints.applications`): Lean is asked for
   `apply h (p := ...) (c := ...)` with the values the plugin matched, and
-  checks that the theorem's conclusion is the claim. loopty states its isl
-  facts this way, and they read `proved lean`; it states a kernel that
+  checks that the theorem's conclusion is the claim. Where unknowns
+  multiply, a layout's address `i + n * j` at every `n`, the plugin gives
+  the steps `omega` cannot take: products not negative (`Hints.products`,
+  `0 ≤ n * (m - 1 - j)` by `Int.mul_nonneg`), what Lean knows of `c // n`
+  and `c % n` (`Hints.quotients`), and the arithmetic multiplied out
+  (`Hints.ring`), so `omega` reads each product of unknowns as one atom;
+  all in core Lean. loopty states its isl facts this way, and they read `proved lean`; it states a kernel that
   cites a theorem the same way:
 
   ```python

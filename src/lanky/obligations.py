@@ -39,11 +39,53 @@ that fails is named. A part's :class:`Hints` are what ``omega`` cannot find:
   variables the plugin matched given by name, the others found by Lean where
   the theorem's conclusion is the goal, and each premise left a hypothesis
   of the part or arithmetic. Lean checks that the theorem applies, and so
-  that the claim follows from it.
+  that the claim follows from it;
+- *rewrites* with hypotheses that are equations, of two kinds, each
+  :class:`Hints` entry saying by its type how it is used:
+
+  - an :class:`Application` names an identity, a theorem whose conclusion is
+    an equation, and the values of its variables: ``rw`` by it, before the
+    applications, turns the goal's left side of it into its right side, so
+    that a theorem stated of ``-beta / alpha`` applies to a goal that
+    computes it another way. Its premises are left as goals, closed as an
+    application's are;
+  - a :class:`Rewrite` is one step of a script, in the order the plugin
+    found them: what a program's statements store, unfolded into the claim
+    wherever it applies, and a cited identity at the instances the plugin
+    matched. Then the sums over a literal range are written out, and
+    ``ring`` compares the two sides (Mathlib only).
+
+Where unknowns multiply, a size times an index in a layout's address ``n * j
++ i``, ``omega`` reads each product as an atom of its own and knows nothing of
+it. Three more hints take it the rest of the way, and the plugin finds them
+from the shape of its claim, as ``nlinarith`` would search for them:
+
+- *products*, ``0 ≤ a * b`` from ``0 ≤ a`` and ``0 ≤ b``, each factor shown by
+  ``omega`` (``Int.mul_nonneg``): ``0 ≤ n * (n - 1 - j)`` bounds ``n * j`` by
+  ``n * n - n``. A product marked ``in_cases`` is taken after the splits, in
+  each case where its factors are not negative, and left out of the others;
+- *quotients*, what Lean knows of ``a // m`` and ``a % m`` for a divisor that
+  is not a number, which ``omega`` reads only by a number: the remainder and
+  the quotient times the divisor add up to ``a``, the remainder is in ``0 ≤
+  r < m`` and the quotient is not negative, each in the cases of the splits
+  where its premise holds;
+- *ring*, that the arithmetic is to be multiplied out before ``omega`` reads
+  it: every product of sums is expanded and every product of atoms put in one
+  order, so that ``n ^ 2 * k`` and ``k * (n * n)`` are one atom. A
+  polynomial identity, ``n ^ 3 * e + n * j = ((e * n) * n + j) * n``, needs
+  this and nothing else.
+
+Each is a step of the argument, not a suggestion: where one of them is given,
+the script is the one the plugin asked for, and a product or a quotient that
+cannot be written fails it rather than being dropped.
 
 A part about real numbers is printed in the Mathlib dialect and checked where
 Mathlib is (:attr:`Part.mathlib`), its cases closed by ``linarith`` where an
-integer part's are by ``omega``.
+integer part's are by ``omega``. One that reads an absolute value of a real
+gets ``linarith`` with the bounds of each, ``0 ≤ |t|`` and ``-|t| ≤ t ≤
+|t|``, which it does not know; a goal ``|a| ≤ b`` is taken apart into ``-b ≤
+a`` and ``a ≤ b`` first, which is how a value within an allowance of another
+is shown.
 
 A claim the solver refuted comes with a :class:`Counterexample`: the part it
 breaks and a value for every variable of that part. Lean proves the negation
@@ -69,12 +111,14 @@ from lanky.lean import (
     LeanStatement,
     UnsupportedTerm,
     _affine,
+    dialect,
     domain_guards,
     lean_identifier,
+    number_type,
     render_term,
     statement_of,
 )
-from lanky.prelude import FnType, Refined
+from lanky.prelude import FinType, FnType, Refined
 from lanky.terms import Exists, Forall, conjuncts, init_args
 
 __all__ = [
@@ -85,6 +129,9 @@ __all__ = [
     "Obligation",
     "Part",
     "Piece",
+    "Product",
+    "Quotient",
+    "Rewrite",
     "attempts",
     "negation_source",
     "obligation_of",
@@ -152,17 +199,106 @@ class Application:
 
 
 @dataclass(frozen=True)
+class Product:
+    """``0 ≤ left * right``, from ``0 ≤ left`` and ``0 ≤ right``: a step ``omega`` cannot take.
+
+    ``left`` and ``right`` are lanky terms over the part's variables, and
+    ``omega`` shows each factor not negative from the hypotheses and the
+    hints before it: a factor that is another product's, written the same
+    way, is that product's atom. One taken before the splits has to hold
+    everywhere, and fails the script where it does not; one ``in_cases`` is
+    taken after them, in each case where its factors are not negative, and
+    left out of the others: ``0 ≤ n * (j' - j - 1)`` where ``j < j'``.
+    """
+
+    left: Any
+    right: Any
+    in_cases: bool = False
+
+
+@dataclass(frozen=True)
+class Quotient:
+    """What Lean knows of ``dividend // divisor`` and ``dividend % divisor``.
+
+    For a divisor that is not a number, which ``omega`` cannot divide by:
+    that the remainder and the quotient times the divisor add up to the
+    dividend, that the remainder is in ``0 ≤ r < divisor`` and that the
+    quotient is not negative. They are taken after the splits, each in the
+    cases where its premise holds (a positive divisor, a dividend that is not
+    negative), so a split ``m ≤ 0 ∨ 0 < m`` keeps a divisor that can be zero.
+    """
+
+    dividend: Any
+    divisor: Any
+
+
+@dataclass(frozen=True)
+class Rewrite:
+    """A hypothesis that is an equation, the goal rewritten with it: ``simp only [h3]``.
+
+    ``hypothesis`` is its position among the conjuncts of the part's guard,
+    as an :class:`Instance`'s is, and it has to be a universal whose body is
+    an equation. With no ``arguments``, the goal is rewritten with it from
+    left to right wherever it applies, inside a sum too, each premise (a
+    binder's bounds, the hypothesis's own guard) shown by ``omega`` from the
+    part's hypotheses and the range of every sum the rewrite is under; the
+    rewrites with no arguments that come one after another are made
+    together, until none applies. That is how a plugin unfolds what its
+    statements store, ``v[q, e, k, j, i] == sum(Fr[q, i, a] * w[q, e, k, j,
+    a] for a in Fin[n])``, into a claim about what a program leaves.
+
+    With ``arguments``, lanky terms over the part's own variables, one for
+    each binder of the hypothesis, outermost first, the one instance is
+    rewritten with, ``rw [← h1 n (by omega) (Fr (3 * x + 0)) ...]``, each
+    premise shown by ``omega``. The value of a family may be a family of the
+    part applied to its first arguments, ``Fr(3 * x + 0)``, which is the
+    family of what is left. ``backwards`` rewrites the right side of the
+    instance into its left. That is how a cited theorem, an identity such as
+    sum factorization, is used where the plugin found its one side.
+    """
+
+    hypothesis: int
+    arguments: tuple[Any, ...] = ()
+    backwards: bool = False
+
+
+@dataclass(frozen=True)
 class Hints:
-    """What a solver found that ``omega`` does not look for (see the module docstring)."""
+    """What a solver found that ``omega`` does not look for (see the module docstring).
+
+    ``rewrites`` are equations among the part's hypotheses, of two kinds. An
+    :class:`Application` names an identity and the values of its variables,
+    rewritten in the goal before ``applications`` are applied. A
+    :class:`Rewrite` is a step of the script that unfolds a goal with its
+    equations, in order, and compares the two sides by ``ring``.
+    """
 
     instances: tuple[Instance, ...] = ()
     witness: tuple[Piece, ...] = ()
     splits: tuple[Any, ...] = ()
     applications: tuple[Application, ...] = ()
+    products: tuple[Product, ...] = ()
+    quotients: tuple[Quotient, ...] = ()
+    ring: bool = False
+    rewrites: tuple[Rewrite | Application, ...] = ()
 
     def __bool__(self) -> bool:
         """Whether there is any hint at all."""
-        return bool(self.instances or self.witness or self.splits or self.applications)
+        return bool(
+            self.instances
+            or self.witness
+            or self.splits
+            or self.applications
+            or self.products
+            or self.quotients
+            or self.ring
+            or self.rewrites
+        )
+
+    @property
+    def multiplies(self) -> bool:
+        """Whether the part's arithmetic multiplies unknowns, and is multiplied out."""
+        return bool(self.products or self.quotients or self.ring)
 
 
 @dataclass(frozen=True)
@@ -519,11 +655,256 @@ def _application_line(statement: LeanStatement, part: Part, application: Applica
     binders = {var.name for var, _ in hypothesis.binders}
     name = _hypothesis_names(statement)[application.hypothesis]
     values = [
-        f"({lean_identifier(binder)} := {render_term(value, statement.types)})"
+        f"({lean_identifier(binder)} := {_value(value, statement)})"
         for binder, value in application.values
         if binder in binders
     ]
     return " ".join(["apply", name, *values])
+
+
+#: The longest literal range a sum the rewrites leave is written out over,
+#: term by term: ``∑ d ∈ Finset.Ico 0 3, f d`` is ``f 0 + f 1 + f 2``.
+_WRITTEN_OUT = 8
+
+
+def _literal_ranges(expr: Any, out: set[int]) -> None:
+    """The literal bounds of the sums below ``expr``: ``3`` for a sum over ``Fin[3]``."""
+    from lanky.terms import Sum
+
+    if isinstance(expr, tuple | list):
+        for item in expr:
+            _literal_ranges(item, out)
+        return
+    if isinstance(expr, Sum):
+        for _var, domain in expr.binders:
+            bound = getattr(domain, "bound", None)
+            if (
+                isinstance(domain, FinType)
+                and isinstance(bound, int)
+                and not isinstance(bound, bool)
+                and 0 < bound <= _WRITTEN_OUT
+            ):
+                out.add(bound)
+        _literal_ranges(expr.body, out)
+        if expr.guard is not None:
+            _literal_ranges(expr.guard, out)
+        return
+    if isinstance(expr, Forall | Exists):
+        _literal_ranges(expr.body, out)
+        if expr.guard is not None:
+            _literal_ranges(expr.guard, out)
+        return
+    if isinstance(expr, prim.ExpressionNode):
+        _literal_ranges(init_args(expr), out)
+
+
+def _rewrite_lines(statement: LeanStatement, part: Part, rewrites: Sequence[Rewrite]) -> list[str]:
+    """The script of :class:`Rewrite` hints: the rewrites in order, the sums written out, ring.
+
+    Rewrites with no arguments that come one after another are one ``simp
+    only``, whose discharger shows each premise by ``omega``, from the range
+    of a sum the rewrite is under once ``Finset.mem_Ico`` has read its
+    membership; a rewrite with arguments is a ``rw`` of that instance. Each
+    line is for every goal left, so a rewrite that closes the goal by
+    ``rfl`` leaves the lines after it nothing to do. Then a sum over a
+    literal range, ``Finset.Ico 0 3``, is written out term by term, and
+    ``ring_nf`` compares the two sides; a product whose factors the two
+    sides order differently, under a sum where ``ring_nf`` normalizes each
+    side's summand apart, is put in one order by ``mul_comm`` and
+    ``mul_left_comm`` first.
+
+    Raises:
+        UnsupportedTerm: If a rewrite names no hypothesis, or one that is
+            not a universal over as many variables as it has arguments.
+    """
+    guards = list(conjuncts(part.term.guard)) if isinstance(part.term, Forall) else []
+    names = _hypothesis_names(statement)
+    mathlib = bool(getattr(part, "mathlib", False))
+    if mathlib:
+        member = statement.qualified("Finset.mem_Ico")
+        discharge = f"(first | omega | (simp only [{member}] at *; omega))"
+    else:
+        discharge = "omega"
+    lines: list[str] = []
+    batch: list[str] = []
+    rewritten: list[Any] = []
+
+    def flush() -> None:
+        if batch:
+            lines.append(f"all_goals simp (disch := {discharge}) only [{', '.join(batch)}]")
+            batch.clear()
+
+    for rewrite in rewrites:
+        if not 0 <= rewrite.hypothesis < len(guards):
+            raise UnsupportedTerm(
+                f"the rewrite names hypothesis {rewrite.hypothesis}, and the part has "
+                f"{len(guards)}"
+            )
+        hypothesis = guards[rewrite.hypothesis]
+        rewritten.append(hypothesis)
+        name = names[rewrite.hypothesis]
+        arrow = "← " if rewrite.backwards else ""
+        if not rewrite.arguments:
+            batch.append(f"{arrow}{name}")
+            continue
+        if not isinstance(hypothesis, Forall) or len(hypothesis.binders) != len(
+            rewrite.arguments
+        ):
+            raise UnsupportedTerm(
+                f"hypothesis {rewrite.hypothesis} is not a universal over "
+                f"{len(rewrite.arguments)} variables"
+            )
+        flush()
+        scope = dict(statement.types)
+        pieces: list[str] = []
+        for (var, domain), value in zip(hypothesis.binders, rewrite.arguments, strict=True):
+            pieces.append(render_term(value, statement.types, atomic=True))
+            pieces += ["(by omega)"] * len(domain_guards(var, domain, scope))
+            scope = {**scope, var.name: domain}
+        pieces += ["(by omega)"] * len(conjuncts(hypothesis.guard))
+        lines.append(f"all_goals rw [{arrow}{name} {' '.join(pieces)}]")
+    flush()
+    if not mathlib:
+        return [*lines, "all_goals first | omega | rfl"]
+    ranges: set[int] = set()
+    _literal_ranges([statement.goal_term, *rewritten], ranges)
+    if ranges:
+        ico = statement.qualified("Finset.Ico")
+        shown = [
+            f"show {ico} (0 : ℤ) {bound} = {{{', '.join(map(str, range(bound)))}}} by decide"
+            for bound in sorted(ranges)
+        ]
+        written = ("Finset.sum_insert", "Finset.sum_singleton")
+        lemmas = ", ".join([*shown, *map(statement.qualified, written)])
+        lines.append(f"all_goals try simp (disch := decide) only [{lemmas}]")
+    order = ", ".join(
+        statement.qualified(name) for name in ("mul_comm", "mul_assoc", "mul_left_comm")
+    )
+    lines.append(
+        "all_goals first | (ring_nf; done) "
+        f"| (ring_nf; simp only [{order}]; done) | linarith"
+    )
+    return lines
+def _value(value: Any, statement: LeanStatement) -> str:
+    """A value a script gives a binder, printed in the statement's dialect and names.
+
+    A part about reals is Mathlib's, and a value in it may be too: ``conj(z)``
+    or a true division, which core Lean's printer declines.
+    """
+    return render_term(
+        value, statement.types, mathlib=statement.mathlib, shadowed=statement.shadowed
+    )
+
+
+def _rewrite_line(statement: LeanStatement, part: Part, rewrite: Application) -> str:
+    """``rw [h3 (alpha := c t - y s) (beta := z t - c t)]``: an identity, rewritten.
+
+    The hypothesis is a universal whose body is an equation; its premises,
+    a guard such as ``alpha ≠ 0``, are left as goals after the rewritten one.
+
+    Raises:
+        UnsupportedTerm: If it names no universal hypothesis that is an equation.
+    """
+    guards = list(conjuncts(part.term.guard)) if isinstance(part.term, Forall) else []
+    if not 0 <= rewrite.hypothesis < len(guards):
+        raise UnsupportedTerm(
+            f"the rewrite names hypothesis {rewrite.hypothesis}, and the part has "
+            f"{len(guards)}"
+        )
+    hypothesis = guards[rewrite.hypothesis]
+    if not (
+        isinstance(hypothesis, Forall)
+        and isinstance(hypothesis.body, prim.Comparison)
+        and hypothesis.body.operator == "=="
+    ):
+        raise UnsupportedTerm(f"hypothesis {rewrite.hypothesis} is no identity to rewrite by")
+    binders = {var.name for var, _ in hypothesis.binders}
+    name = _hypothesis_names(statement)[rewrite.hypothesis]
+    values = [
+        f"({lean_identifier(binder)} := {_value(value, statement)})"
+        for binder, value in rewrite.values
+        if binder in binders
+    ]
+    return f"rw [{' '.join([name, *values])}]"
+
+
+def _absolute_values(statement: LeanStatement) -> list[str]:
+    """Each real ``t`` the statement takes the absolute value of, as Lean source, once.
+
+    The operands of ``|t|`` in the goal and the hypotheses, innermost first,
+    each printed as the statement prints it. A complex one's modulus is a
+    norm, whose bounds are another lemma's, and is left out, as is one under
+    a binder of the goal or a hypothesis, which names what the script cannot.
+    """
+    found: list[Any] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, tuple | list):
+            for item in node:
+                visit(item)
+            return
+        if isinstance(node, Forall | Exists) or not isinstance(node, prim.ExpressionNode):
+            # under a binder, an operand names what the script cannot
+            return
+        visit(init_args(node))
+        if type(node).__name__ == "Abs":
+            found.append(node.operand)
+
+    visit(statement.goal_term)
+    visit([term for term in statement.hypothesis_terms if term is not None])
+    out: list[str] = []
+    for operand in found:
+        try:
+            if number_type(operand, statement.types, mathlib=True) == "ℂ":
+                continue
+            # printed as the statement is, in Mathlib's dialect
+            text = render_term(
+                operand, statement.types, mathlib=True, shadowed=statement.shadowed
+            )
+        except UnsupportedTerm:
+            continue
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def _absolute_value_attempts(statement: LeanStatement, intro: str) -> list[tuple[str, str]]:
+    """``linarith`` with the bounds of every absolute value of a real, and ``abs_le`` first.
+
+    ``linarith`` takes ``|t|`` for an atom and knows nothing of it: given
+    ``0 ≤ |t|``, ``t ≤ |t|`` and ``-|t| ≤ t``, it reasons about a value
+    within an allowance of another, ``|a - b| ≤ e * (|b| + 1)``, once the
+    goal's own bars are taken apart (``abs_le``) into ``-e * (|b| + 1) ≤ a -
+    b`` and ``a - b ≤ e * (|b| + 1)``. A statement with no absolute value of
+    a real gets neither attempt.
+    """
+    operands = _absolute_values(statement)
+    if not operands:
+        return []
+    nonneg = statement.qualified("abs_nonneg")
+    above = statement.qualified("le_abs_self")
+    below = statement.qualified("neg_abs_le")
+    bounds = ", ".join(
+        f"{lemma} ({operand})" for operand in operands for lemma in (nonneg, above, below)
+    )
+    out = []
+    goal = statement.goal_term
+    while isinstance(goal, Forall):
+        goal = goal.body
+    if (
+        isinstance(goal, prim.Comparison)
+        and goal.operator == "<="
+        and type(goal.left).__name__ == "Abs"
+    ):
+        out.append(
+            (
+                "linarith, with the absolute values taken apart",
+                f"{intro}rw [{statement.qualified('abs_le')}]\n"
+                f"constructor <;> linarith [{bounds}]",
+            )
+        )
+    out.append(("linarith, with the bounds of the absolute values", f"{intro}linarith [{bounds}]"))
+    return out
 
 
 def _disjuncts(prop: Any) -> int:
@@ -619,6 +1000,148 @@ def hints_witness_only(part: Part) -> bool:
     return bool(part.hints.witness) and part.hints.witness[0].disjunct is not None
 
 
+#: The lemmas that multiply out integer arithmetic: powers by a number as
+#: products, products of sums expanded, and every product of atoms put in one
+#: order by commutativity and associativity, which ``simp`` rewrites with as an
+#: ordered rewriting and so does not loop. A conjunct ``simp`` closes is
+#: ``True``, which ``omega`` does not read, and goes.
+_RING_LEMMAS = (
+    "Int.pow_succ",
+    "Int.pow_zero",
+    "Int.one_mul",
+    "Int.mul_one",
+    "Int.zero_mul",
+    "Int.mul_zero",
+    "Int.mul_add",
+    "Int.add_mul",
+    "Int.mul_sub",
+    "Int.sub_mul",
+    "Int.neg_mul",
+    "Int.mul_neg",
+    "Int.mul_assoc",
+    "Int.mul_comm",
+    "Int.mul_left_comm",
+    "true_and",
+    "and_true",
+)
+
+
+def _counted(count: int, one: str, many: str) -> str:
+    """``a product``, ``3 products``: a count of hints in words."""
+    return one if count == 1 else f"{count} {many}"
+
+
+def _product_line(statement: LeanStatement, product: Product, index: int) -> str:
+    """``have hp0 : 0 ≤ n * (n - 1 - j) := Int.mul_nonneg (by omega) (by omega)``.
+
+    Raises:
+        UnsupportedTerm: If a factor leaves the printer's fragment.
+    """
+    text = render_term(prim.Product((product.left, product.right)), statement.types)
+    lemma = statement.qualified("Int.mul_nonneg")
+    return f"have hp{index} : 0 ≤ {text} := {lemma} (by omega) (by omega)"
+
+
+def _quotient_lines(statement: LeanStatement, quotient: Quotient, index: int) -> list[str]:
+    """What Lean knows of ``a // m`` and ``a % m``, as the statement prints them.
+
+    A divisor that is not a positive number prints as ``Int.fdiv a m`` and
+    ``Int.fmod a m`` (:func:`lanky.lean.render_term`), so the facts are
+    those of ``Int.fdiv`` and ``Int.fmod``: ``Int.fmod a m + Int.fdiv a m * m
+    = a``, the remainder in ``0 ≤ r < m`` where ``0 < m``, and the quotient
+    not negative where neither is ``a`` nor ``m``. A positive number is a
+    divisor ``omega`` divides by itself, and has none.
+
+    Raises:
+        UnsupportedTerm: If either operand leaves the printer's fragment.
+    """
+    divisor = quotient.divisor
+    if isinstance(divisor, int) and not isinstance(divisor, bool) and divisor > 0:
+        return []
+    a = render_term(quotient.dividend, statement.types, atomic=True)
+    m = render_term(divisor, statement.types, atomic=True)
+    q = statement.qualified
+    return [
+        f"have hq{index} := {q('Int.fmod_add_fdiv_mul')} {a} {m}",
+        f"have hq{index}_r := {q('Int.fmod_nonneg_of_pos')} {a} (show 0 < {m} by omega)",
+        f"have hq{index}_s := {q('Int.fmod_lt_of_pos')} {a} (show 0 < {m} by omega)",
+        f"have hq{index}_q := {q('Int.fdiv_nonneg')} (show 0 ≤ {a} by omega) "
+        f"(show 0 ≤ {m} by omega)",
+    ]
+
+
+def _multiplied_attempt(
+    statement: LeanStatement,
+    hints: Hints,
+    lines: Sequence[str],
+    said: Sequence[str],
+    split_lines: Sequence[str],
+) -> tuple[str, str] | None:
+    """The script for a part whose arithmetic multiplies unknowns (see the module).
+
+    The instances first (``lines``), then the products that hold everywhere,
+    then the splits; in each case, every fact about a quotient and every
+    product ``in_cases`` whose premises ``omega`` shows there, each tried and
+    left out where it does not hold; then the witness, given whole, of a goal
+    that is an existential; and last the arithmetic multiplied out
+    (:data:`_RING_LEMMAS`) in every hypothesis and the goal, and ``omega`` on
+    what is left in each case. ``None`` when a product, a quotient or the
+    witness cannot be written for this statement: unlike an instance, each is
+    a step of the argument, and the attempt without it would fail.
+    """
+    goal = statement.goal_term
+    out = list(lines)
+    words = list(said)
+    try:
+        everywhere = [p for p in hints.products if not p.in_cases]
+        in_cases = [p for p in hints.products if p.in_cases]
+        for index, product in enumerate(everywhere):
+            out.append(_product_line(statement, product, index))
+        out += split_lines
+        each = "all_goals " if split_lines else ""
+        for index, quotient in enumerate(hints.quotients):
+            out += [f"{each}try {line}" for line in _quotient_lines(statement, quotient, index)]
+        for index, product in enumerate(in_cases, start=len(everywhere)):
+            out.append(f"{each}try {_product_line(statement, product, index)}")
+        witness = ""
+        if hints.witness:
+            if (
+                len(hints.witness) != 1
+                or hints.witness[0].condition is not None
+                or hints.witness[0].disjunct is not None
+                or not isinstance(goal, Exists)
+                or len(goal.binders) != len(hints.witness[0].values)
+            ):
+                return None
+            scope = dict(statement.types)
+            for var, domain in goal.binders:
+                if domain_guards(var, domain, scope):
+                    # a binder with conditions of its own between the next
+                    return None
+                scope = {**scope, var.name: domain}
+            values = ", ".join(
+                render_term(value, statement.types) for value in hints.witness[0].values
+            )
+            witness = f"refine ⟨{values}, ?_⟩"
+    except UnsupportedTerm:
+        return None
+    if hints.products:
+        words.append(_counted(len(hints.products), "a product", "products"))
+    if hints.quotients:
+        words.append(_counted(len(hints.quotients), "a quotient", "quotients"))
+    if split_lines:
+        words.append("a case split")
+    if witness:
+        out.append(f"{each}{witness}")
+        words.append("the witness")
+    ring = ", ".join(statement.qualified(lemma) for lemma in _RING_LEMMAS)
+    out.append(f"{each or 'all_goals '}(try simp only [{ring}] at *)")
+    out.append("all_goals omega")
+    words.append("the arithmetic multiplied out")
+    listed = words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
+    return f"omega, with {listed}", "\n".join(out)
+
+
 def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
     """The scripts tried on one part, as ``(how, tactic)``, ``omega`` alone first.
 
@@ -647,16 +1170,60 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         hints_witness_only(part) and isinstance(goal, prim.LogicalOr)
     ):
         out.append(("omega", f"{intro}omega"))
+    if mathlib:
+        out += _absolute_value_attempts(statement, intro)
     hints = part.hints
     if not hints:
         return out
+    rewrites: list[str] = []
+    for rewrite in getattr(hints, "rewrites", ()):
+        if not isinstance(rewrite, Application):
+            # a step of the unfolding script below, not an identity
+            continue
+        try:
+            rewrites.append(_rewrite_line(statement, part, rewrite))
+        except UnsupportedTerm:
+            continue
     for application in getattr(hints, "applications", ()):
         try:
             line = _application_line(statement, part, application)
         except UnsupportedTerm:
             continue
         rest = "first | assumption | omega" + (" | linarith" if mathlib else "")
-        out.append(("the theorem applied", f"intros\n{line}\nall_goals {rest}"))
+        if rewrites:
+            # the identities first, which make the goal what the theorem concludes
+            identities = "identity" if len(rewrites) == 1 else "identities"
+            script = "\n".join(["intros", *rewrites, line, f"all_goals {rest}"])
+            out.append((f"rewritten by the {identities}, the theorem applied", script))
+        else:
+            out.append(("the theorem applied", f"intros\n{line}\nall_goals {rest}"))
+        if mathlib:
+            # ``apply`` unifies the conclusion's numerals with the goal's, and
+            # ``↑(1 : ℤ)`` is not ``(1 : ℂ)`` to it: rewrite the goal by the
+            # theorem instead, and leave the numerals to norm_num
+            by_theorem = "rw [" + line.removeprefix("apply ") + "]"
+            to_nat = statement.qualified("Int.toNat")
+            closers = f"{rest} | (norm_num [{to_nat}]; done)"
+            script = "\n".join(["intros", *rewrites, by_theorem, f"all_goals {closers}"])
+            what = "the theorem" if not rewrites else f"the {identities} and the theorem"
+            out.append((f"rewritten by {what}", script))
+    steps = [step for step in getattr(hints, "rewrites", ()) if isinstance(step, Rewrite)]
+    if steps:
+        try:
+            script = _rewrite_lines(statement, part, steps)
+        except UnsupportedTerm:
+            script = []
+        if script:
+            if isinstance(goal, Forall):
+                from lanky.oracles.lean import _goal_intro
+
+                with dialect(mathlib):
+                    names = _goal_intro(statement)[0]
+                script = [f"intro {' '.join(names)}", *script]
+            how = "the equations rewritten with, in order, then " + (
+                "ring" if mathlib else "omega"
+            )
+            out.append((how, "\n".join(script)))
     lines: list[str] = []
     said: list[str] = []
     instances: list[str] = []
@@ -697,6 +1264,15 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
             split_lines += ["  " + line for line in lines_of_split]
         else:
             split_lines += lines_of_split
+    if getattr(hints, "multiplies", False) and not mathlib:
+        # where unknowns multiply, the hints above are tried with the
+        # products and quotients, and the arithmetic multiplied out
+        found = _multiplied_attempt(statement, hints, lines, said, split_lines)
+        if found is not None:
+            out.append((found[0], intro + found[1]))
+            return out
+        # a witness in pieces, which that script does not give: the script
+        # below, as a part with no products has it (Codex)
     if split_lines:
         lines += split_lines
         said.append("a case split")
