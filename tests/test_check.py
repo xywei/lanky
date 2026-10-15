@@ -987,6 +987,42 @@ def test_each_root_is_checked_in_one_process_of_its_own(tmp_path, monkeypatch, c
         sys.modules.pop(ROOTS_HELPER, None)
 
 
+LONG_CLAIM = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def reordered(a: Nat, b: Nat, c: Nat) -> a + b + c == c + b + a:
+    """Fits a line of 100 characters, and not one of 40."""
+'''
+
+
+def test_a_childs_ledger_fits_the_terminal_its_parent_prints_to(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A child prints to a pipe, and still sizes its table to the parent's terminal.
+
+    At 100 characters the theorem is one line; in a terminal 20 columns wide
+    the statement column is its narrowest, 40, and the theorem goes a part
+    to a line, in each root's ledger.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    monkeypatch.setattr(cli, "terminal_columns", lambda: 20)
+    files = []
+    for root in ("a", "b"):
+        (tmp_path / root).mkdir()
+        files.append(tmp_path / root / "long.py")
+        files[-1].write_text(LONG_CLAIM, encoding="utf-8")
+    assert cli.main(["check", *map(str, files)]) == 0
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    assert lines.count("|- a + b + c == c + b + a") == 2
+    whole = "a : Nat, b : Nat, c : Nat |- a + b + c == c + b + a"
+    assert not any(line.endswith(whole) for line in lines)
+
+
 def test_files_of_one_root_are_checked_in_this_process(tmp_path, monkeypatch, capsys) -> None:
     """Files that share their roots are checked as they always were: here, one after another."""
     import os

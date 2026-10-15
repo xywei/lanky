@@ -326,6 +326,7 @@ class CheckVerb:
                     "path": [os.fsdecode(entry) for entry in sys.path if _is_path(entry)],
                     "argv": list(sys.argv),
                     "parent": os.getpid(),
+                    "columns": terminal_columns(),
                 }
                 spec_path.write_text(json.dumps(spec), encoding="utf-8")
                 named = ", ".join(files)
@@ -808,13 +809,23 @@ def _rows_named(facts: list[Fact]) -> tuple[str, bool]:
     return words, len(named) > 1
 
 
+#: The width of the terminal a child's parent prints to, ``None`` when it
+#: prints to none (see :func:`_check_in_child`).
+_PARENT_COLUMNS: int | None = None
+
+
 def terminal_columns() -> int | None:
     """How wide the terminal the ledger is printed in is; ``None`` when it goes elsewhere.
 
     The table fits a terminal (see :meth:`lanky.ledger.Ledger.render`), and
     not a file or a pipe, so that what a transcript shows does not depend on
-    the window it was made in.
+    the window it was made in. A child that checks the files of one source
+    root (see :meth:`CheckVerb._check_in_children`) prints to a pipe its
+    parent copies, and takes the width of the parent's terminal, so that its
+    ledgers fit it as the parent's own would.
     """
+    if _PARENT_COLUMNS is not None:
+        return _PARENT_COLUMNS
     try:
         if not sys.stdout.isatty():
             return None
@@ -950,9 +961,13 @@ def _check_in_child(spec: dict[str, Any]) -> int:
     the parent writes what it would have written for a check of its own.
 
     Before anything is checked, the child arranges to end with its parent
-    (see :func:`_end_with_parent`).
+    (see :func:`_end_with_parent`), and takes the width of the terminal the
+    parent prints to, if it prints to one, since its own output is a pipe
+    (see :func:`terminal_columns`).
     """
+    global _PARENT_COLUMNS
     _end_with_parent(spec["parent"])
+    _PARENT_COLUMNS = spec.get("columns")
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
     code, checked, facts = CheckVerb._check_files(
