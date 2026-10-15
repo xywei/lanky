@@ -127,13 +127,13 @@ with the code it was written after.
 
 ## Run it
 
-lanky's own examples run on the 0.2.0 release on PyPI too; loopty's
-demonstrations need lanky's `main`, which a clone gives. On Python 3.12 or
-later:
+lanky's own examples and loopty's demonstrations run on the 0.3.0 release
+on PyPI. The examples are in the repository and not in the package, so clone
+the release's tag for them. On Python 3.12 or later:
 
 ```sh
-git clone https://github.com/xywei/lanky.git && cd lanky
-pip install -e ".[lean,cas]"
+pip install "lanky[lean,cas]"
+git clone --branch v0.3.0 https://github.com/xywei/lanky.git && cd lanky
 lanky check examples/gauss.py
 ```
 
@@ -203,10 +203,13 @@ Lean. [Install](#install) has the rest.
 
 ## Status
 
-This is 0.2.0. The core works; the edges are sharp. New in 0.2.0, each claim's
-reading is checked: the annotations are run again as Python at drawn points and
-the term the oracles prove has to agree there, so a misreading is refuted
-rather than proved, and a proof is worth `tested`, the strength of that check.
+This is 0.3.0. The core works; the edges are sharp. New in 0.3.0, Lean checks
+what a plugin's solver decides, part by part, and Mathlib mode proves claims
+about finite sums, scatters and complex numbers for every size. Since 0.2.0,
+each claim's reading is checked: the annotations are run again as Python at
+drawn points and the term the oracles prove has to agree there, so a
+misreading is refuted rather than proved, and a proof is worth `tested`, the
+strength of that check.
 Below is what works, what works in part and what does not work yet, and after
 it, under Known limits, what the check cannot see and the open issues you are
 most likely to meet, each with what to do about it: read that before you rely
@@ -704,7 +707,7 @@ The open issues you are most likely to meet:
 pip install lanky
 ```
 
-That is the 0.2.0 release; loopty's demonstrations need `main`
+That is the 0.3.0 release, which loopty's demonstrations need
 ([Run it](#run-it)). lanky needs Python 3.12 or later. In a uv project, `uv add lanky`, and the
 same for the extras below. The examples and the quickstart are in the
 repository and not in the package; clone it to follow them.

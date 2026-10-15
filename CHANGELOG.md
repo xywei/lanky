@@ -6,6 +6,24 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-15
+
+Lean checks what a plugin decides, and Mathlib proves claims for every size.
+A plugin's claim comes to Lean as parts, each with the hints its solver found,
+and Lean proves each part again, `omega` first and then with the hints. loopty
+states its isl facts this way. `lanky check --show-lean` prints the Lean, a
+proof cache keeps Lean's answers, and a warm check starts no Lean (#118). In
+Mathlib mode lanky now proves equations between finite sums (an exchange of
+sums, sum factorization and the Kronecker mixed product, for every size),
+claims for every order from an order on, the total of a scatter, a scatter as
+the transpose of a gather, and identities about the parts of a complex number.
+A family takes several indices (`Fn[Fin[n], Fin[m], Real]`, applied as
+`F[i, j]`), a literal domain can stand beside a symbolic one, and a hypothesis
+that is a theorem is applied. The ledger prints every statement whole, and
+under the table it says what the machine lacks for a row to be proved, with
+the command that installs it. loopty's five demonstrations need this release,
+and loopty 0.3.0 raises its floor to it.
+
 ### Added
 
 - **What a row lacks to be proved, said under the table.** Without Lean a
@@ -28,7 +46,6 @@ All notable changes to lanky are recorded here. The format follows
   installed and does not start is named by its reason rather than a command
   (`LeanOracle.missing`, `LeanOracle.remedy`, and `lanky.cli.report_missing`,
   which a plugin's verb that prints a ledger can call too).
-
 - **Hints for arithmetic where unknowns multiply** (`lanky.obligations`:
   `Product`, `Quotient`, `Hints.ring`). `omega` reads `n * j` as an atom it
   knows nothing of, so a layout's address at every size, `i + n * j`, was
@@ -126,106 +143,6 @@ All notable changes to lanky are recorded here. The format follows
   `Fin[3]`, `all(... for j in Fin[3])`, is the conjunction of its three
   instances, which `ring` proves one at a time and not at once; the ladder
   now splits it with `And.intro` and closes each conjunct.
-
-### Changed
-
-- **The README opens with a front page**: lanky's story first, a claim
-  written as Python and proved by Lean, the ledger, and facts that rest on
-  facts, with two rows from loopty's flagship where a kernel cites a
-  theorem; then loopty's five demonstrations in a table, how to run them
-  from `main`, with Lean and Mathlib, and where the limits are. The
-  paragraph about loopty under "What nothing else does", whose refusal was
-  quoted in an older wording, now points to that section.
-- **`lanky check` prints every statement whole** (#142). A statement too
-  long for its column was cut at 72 characters, so a theorem showed its
-  variables and never its conclusion, and a postcondition, a theorem applied
-  to a kernel or a comparison with upstream lost its end. A statement that
-  fits is still one line; a longer one goes on under the statement column,
-  broken at spaces. A theorem is printed a part to a line: its variables,
-  each hypothesis under the name of its parameter (`| pde: ...`), and the
-  goal after `|-`, from the `sequent` its fact now carries in its
-  provenance. Any other statement is broken before an `and` that joins two
-  claims, after a label's `:` or a quantifier's `.`, or before a guard's
-  `where`, outside brackets where it can be, and indented a step for each
-  bracket it breaks inside. The column is 100 characters wide where it was
-  72, so that most of a kernel's facts are one line and the table does not
-  double in height; in a terminal it takes what the other columns leave,
-  between 40 and 100, and written to a file or a pipe it is 100, so a
-  transcript does not depend on the window it was made in
-  (`Ledger.render(width=100, columns=...)`, `lanky.cli.terminal_columns`).
-- **`LANKY_LEAN_DISABLE` prints what a machine without Lean prints**, the
-  `WITHOUT LEAN` line below included, so a CI job that sets it checks the
-  transcripts such a machine shows.
-
-- **A warm check starts no Lean REPL** (#118). The Lean oracle reads every
-  attempt of every part from the proof cache first, under the version of the
-  Lean it would run (the pool's, else `LANKY_LEAN_VERSION`, else the
-  toolchain found), and starts a session only for a part with an attempt
-  that is not kept; a counterexample is checked from the cache the same
-  way. A theorem of lanky's own is kept and read back the same way, every
-  attempt of its ladder and its side conditions, where before it was asked
-  of Lean on every check: a Mathlib theorem whose ladder tried a few dozen
-  attempts was most of a warm check's time. Mathlib's answers are kept
-  under the project's toolchain and Mathlib revision together, read from its
-  files, so a part about reals and a Mathlib theorem are read back without
-  importing Mathlib, and a Mathlib upgrade reads no stale answer. `lanky
-  check` on a file checked before, with nothing changed, prints the same
-  ledger without starting Lean:
-
-  ```console
-  $ lanky check examples/gauss.py   # the second time: no REPL, same rows
-  ```
-- The `LEAN` line under the ledger counts the claims about reals core Lean
-  was not asked apart, and says where Lean checks them: `LEAN proved all 11
-  facts isl decided; 2 more are about real numbers, which Lean checks where
-  Mathlib is (LANKY_LEAN_MATHLIB)`. It said they were not stated for Lean
-  yet, and left out one a cited theorem decided.
-
-- A family of families prints as the family with several indices it is:
-  `Fn[Fin(n), Nat, Nat]` where it was `Fn[Fin(n), Fn[Nat, Nat]]`, in a
-  statement and in a reason that names the sort.
-
-### Fixed
-
-- **A generator's binder names are read once per code object** (#125).
-  `sum(... for p in Fin[n])` disassembled its generator at every call to
-  name its binders, and a kernel run natively sums once per instance: that
-  was about 15 of the 45 seconds `lanky check` took over loopty's
-  hexahedra demonstration. The rest was loopty's interpreter, which loopty
-  makes faster on its side.
-
-- **A family applied at another's value, `u[node[p]]`, printed.** For a
-  `node: Fn[Fin[nf], Fin[nv]]` and a `u: Fn[Fin[nv], Real]`, `node[p]` is
-  not affine, so the printer could not place it in `u`'s domain and declined
-  the statement ("applies u outside the domain it declares"), though its
-  value is a point of `Fin[nv]` by `node`'s type. A theorem's statement
-  takes `node`'s bound as a hypothesis, so Lean knows it too, and the
-  application is in the domain where the values' bound is at most the
-  domain's; printed as one proposition, with no such hypothesis, it is
-  declined as before, and so is a map whose values reach past the domain.
-- **A family whose type mentions a name bound again inside is declined.**
-  `node: Fn[Fin[1], Fin[n]]` under an inner `n in Fin[m]`, or `u: Fn[Fin[m],
-  Int]` under an inner `m in Fin[5]`: the bounds the printer read the
-  application against were the inner name's, and the family's type means
-  the outer one, so an application past the family's domain could look in
-  bounds. The refusal names the name and asks for the inner binder to be
-  named apart. A family bound after the inner name means that one, as a cited
-  theorem's own parameters do inside a claim with the same names, and is
-  read as before.
-- **A fact a plugin names shortly is named so in the status column.** A
-  fact that rests on one of a kernel's many facts showed that fact's id,
-  `decided under assumption:demo.k@4:[c].assume('n % 4 == 0')` for a cast
-  under a schedule's assumption; a `label` in the fact's provenance is
-  shown instead where the owner does not name one fact, `decided under
-  assume('n % 4 == 0')`.
-- **A family whose values are a `Fin` keeps their bound in Lean.**
-  `cell: Fn[Fin[nc], Fin[d], Fin[nv]]` prints as `Int → Int → Nat`, which
-  says the values are not negative and not that they are below `nv`, so a
-  claim resting on that bound was a stronger claim in Lean than in Python,
-  and one Lean could not prove. The statement now takes the bound as a
-  hypothesis after the family, `∀ c, 0 ≤ c → c < nc → ∀ j, 0 ≤ j → j < d →
-  (cell c j : Int) < nv` (`lanky.lean.codomain_bound`), and
-  `LeanStatement.codomain_bounds` names it for a strategy.
 - **Families with several indices.** `Fn[A, B, C]` is a family with two
   indices, the family of families `Fn[A, Fn[B, C]]`, and any number of
   indices is curried the same way; a matrix is `Fn[Fin[n], Fin[m], Real]`.
@@ -353,13 +270,110 @@ All notable changes to lanky are recorded here. The format follows
   from the variables' bounds (`Case.facts`): `k + b + 2 <= p` from the
   goal's `a + b <= p` at `a = k + 2`.
 
+### Changed
+
+- **The README opens with a front page**: lanky's story first, a claim
+  written as Python and proved by Lean, the ledger, and facts that rest on
+  facts, with two rows from loopty's flagship where a kernel cites a
+  theorem; then loopty's five demonstrations in a table, how to run them,
+  with Lean and Mathlib, and where the limits are. The
+  paragraph about loopty under "What nothing else does", whose refusal was
+  quoted in an older wording, now points to that section. Run it and
+  Install install this release from PyPI: loopty's demonstrations no longer
+  need lanky's `main`.
+- **`lanky check` prints every statement whole** (#142). A statement too
+  long for its column was cut at 72 characters, so a theorem showed its
+  variables and never its conclusion, and a postcondition, a theorem applied
+  to a kernel or a comparison with upstream lost its end. A statement that
+  fits is still one line; a longer one goes on under the statement column,
+  broken at spaces. A theorem is printed a part to a line: its variables,
+  each hypothesis under the name of its parameter (`| pde: ...`), and the
+  goal after `|-`, from the `sequent` its fact now carries in its
+  provenance. Any other statement is broken before an `and` that joins two
+  claims, after a label's `:` or a quantifier's `.`, or before a guard's
+  `where`, outside brackets where it can be, and indented a step for each
+  bracket it breaks inside. The column is 100 characters wide where it was
+  72, so that most of a kernel's facts are one line and the table does not
+  double in height; in a terminal it takes what the other columns leave,
+  between 40 and 100, and written to a file or a pipe it is 100, so a
+  transcript does not depend on the window it was made in
+  (`Ledger.render(width=100, columns=...)`, `lanky.cli.terminal_columns`).
+- **`LANKY_LEAN_DISABLE` prints what a machine without Lean prints**, the
+  `WITHOUT LEAN` line (under Added) included, so a CI job that sets it checks the
+  transcripts such a machine shows.
+- **A warm check starts no Lean REPL** (#118). The Lean oracle reads every
+  attempt of every part from the proof cache first, under the version of the
+  Lean it would run (the pool's, else `LANKY_LEAN_VERSION`, else the
+  toolchain found), and starts a session only for a part with an attempt
+  that is not kept; a counterexample is checked from the cache the same
+  way. A theorem of lanky's own is kept and read back the same way, every
+  attempt of its ladder and its side conditions, where before it was asked
+  of Lean on every check: a Mathlib theorem whose ladder tried a few dozen
+  attempts was most of a warm check's time. Mathlib's answers are kept
+  under the project's toolchain and Mathlib revision together, read from its
+  files, so a part about reals and a Mathlib theorem are read back without
+  importing Mathlib, and a Mathlib upgrade reads no stale answer. `lanky
+  check` on a file checked before, with nothing changed, prints the same
+  ledger without starting Lean:
+
+  ```console
+  $ lanky check examples/gauss.py   # the second time: no REPL, same rows
+  ```
+- The `LEAN` line under the ledger counts the claims about reals core Lean
+  was not asked apart, and says where Lean checks them: `LEAN proved all 11
+  facts isl decided; 2 more are about real numbers, which Lean checks where
+  Mathlib is (LANKY_LEAN_MATHLIB)`. It said they were not stated for Lean
+  yet, and left out one a cited theorem decided.
+- A family of families prints as the family with several indices it is:
+  `Fn[Fin(n), Nat, Nat]` where it was `Fn[Fin(n), Fn[Nat, Nat]]`, in a
+  statement and in a reason that names the sort.
+
+### Fixed
+
+- **A generator's binder names are read once per code object** (#125).
+  `sum(... for p in Fin[n])` disassembled its generator at every call to
+  name its binders, and a kernel run natively sums once per instance: that
+  was about 15 of the 45 seconds `lanky check` took over loopty's
+  hexahedra demonstration. The rest was loopty's interpreter, which loopty
+  makes faster on its side.
+- **A family applied at another's value, `u[node[p]]`, printed.** For a
+  `node: Fn[Fin[nf], Fin[nv]]` and a `u: Fn[Fin[nv], Real]`, `node[p]` is
+  not affine, so the printer could not place it in `u`'s domain and declined
+  the statement ("applies u outside the domain it declares"), though its
+  value is a point of `Fin[nv]` by `node`'s type. A theorem's statement
+  takes `node`'s bound as a hypothesis, so Lean knows it too, and the
+  application is in the domain where the values' bound is at most the
+  domain's; printed as one proposition, with no such hypothesis, it is
+  declined as before, and so is a map whose values reach past the domain.
+- **A family whose type mentions a name bound again inside is declined.**
+  `node: Fn[Fin[1], Fin[n]]` under an inner `n in Fin[m]`, or `u: Fn[Fin[m],
+  Int]` under an inner `m in Fin[5]`: the bounds the printer read the
+  application against were the inner name's, and the family's type means
+  the outer one, so an application past the family's domain could look in
+  bounds. The refusal names the name and asks for the inner binder to be
+  named apart. A family bound after the inner name means that one, as a cited
+  theorem's own parameters do inside a claim with the same names, and is
+  read as before.
+- **A fact a plugin names shortly is named so in the status column.** A
+  fact that rests on one of a kernel's many facts showed that fact's id,
+  `decided under assumption:demo.k@4:[c].assume('n % 4 == 0')` for a cast
+  under a schedule's assumption; a `label` in the fact's provenance is
+  shown instead where the owner does not name one fact, `decided under
+  assume('n % 4 == 0')`.
+- **A family whose values are a `Fin` keeps their bound in Lean.**
+  `cell: Fn[Fin[nc], Fin[d], Fin[nv]]` prints as `Int → Int → Nat`, which
+  says the values are not negative and not that they are below `nv`, so a
+  claim resting on that bound was a stronger claim in Lean than in Python,
+  and one Lean could not prove. The statement now takes the bound as a
+  hypothesis after the family, `∀ c, 0 ≤ c → c < nc → ∀ j, 0 ≤ j → j < d →
+  (cell c j : Int) < nv` (`lanky.lean.codomain_bound`), and
+  `LeanStatement.codomain_bounds` names it for a strategy.
 - **A fact a plugin hands over already settled** (loopty's casts, decided
   by isl as each schedule step is taken) is no longer counted as settled by
   an oracle that hands it back as it came, with only its notes on why it did
   not prove it: the walk goes on to the next oracle, and the fact keeps the
   trust class its checker gave it. An oracle settles such a fact when it
   changes its status or says it decided it (`decided_by`).
-
 - A hypothesis that defines a family written with brackets,
   `all(f[i] == 2 * i for i in Fin[n])`, was read only as a filter on random
   draws, which met it at the smallest sizes alone, so that a false claim
