@@ -34,22 +34,27 @@ $ python examples/gauss.py           # theorems run as property tests
 $ pytest examples/gauss.py           # the same theorems, collected as test items
 $ lanky check examples/gauss.py      # the ledger: every claim and who decided it
 STATUS  EFFECTIVE  BY             WHERE        OWNER          STATEMENT
-------  ---------  -------------  -----------  -------------  ---------------------------------
-tested  tested     property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fi...
-tested  tested     python         gauss.py:31  gauss          the term computes what the ann...
-proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat]...
-tested  tested     python         gauss.py:39  scan_monotone  the term computes what the ann...
+------  ---------  -------------  -----------  -------------  -------------------------------------------------------------------------
+tested  tested     property-test  gauss.py:31  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested  tested     python         gauss.py:31  gauss          the term computes what the annotations compute
+proved  tested     lean           gauss.py:39  scan_monotone  n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat]
+                                                              | h0: off(0) == 0
+                                                              | hs: forall r in Fin(n). off(r + 1) == off(r) + cnt(r)
+                                                              |- forall a in Fin(n + 1), b in Fin(n + 1) where a <= b. off(a) <= off(b)
+tested  tested     python         gauss.py:39  scan_monotone  the term computes what the annotations compute
 
 4 facts: 1 proved, 3 tested
+
+WITHOUT MATHLIB: gauss is not proved, since only Lean with Mathlib can state it. To have Lean prove it: python -m lanky.mathlib ~/mathlib (about 7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.
 ```
 
-(Abridged: the statement column is trimmed here to fit the page, and this run
-is on a machine with the `lean` extra installed. CI runs it on one too, and
-checks this table against what it prints.
-[docs/quickstart.md](https://github.com/xywei/lanky/blob/main/docs/quickstart.md)
-has the untrimmed table.)
+(This run is on a machine with the `lean` extra installed, and no Mathlib,
+which the last line says how to set up. CI runs it on one too, and checks
+this output against what it prints.)
 
 The third row is what the project is for: `scan_monotone` is proved by Lean.
+Its statement is printed whole, a part to a line: the variables, each
+hypothesis under the name of its parameter, and the goal after `|-`.
 Under each claim is its reading. lanky reads an annotation by running it on
 symbolic terms, and every oracle is handed the term that run builds, so a proof
 is a proof of the term. To check that the term is what was written, the
@@ -59,7 +64,9 @@ The proof rests on that check, so the `EFFECTIVE` column says what it is worth,
 `tested`. The same file, on a machine without Lean, reads `tested
 property-test` and exits 0 just the same: the status column says how strongly
 each fact is established, and the `EFFECTIVE` column, there only when some fact
-is worth less than its status, what it is worth.
+is worth less than its status, what it is worth. A `WITHOUT LEAN` line under
+the table then names the claims Lean would prove, and the command that
+installs it.
 
 ## What nothing else does
 
@@ -667,8 +674,9 @@ is available. The first use builds a Lean REPL, which takes about a minute and
 the network, and caches it in `$XDG_CACHE_HOME/lanky/lean-repl`
 (`~/.cache/lanky` by default), outside the virtual environment so that a
 reinstall does not throw it away. Useful environment variables:
-`LANKY_LEAN_DISABLE=1` makes the oracle a declared no-op (the main CI job sets
-it), `LANKY_LEAN_VERSION` pins a toolchain and skips the probe,
+`LANKY_LEAN_DISABLE=1` makes the oracle a declared no-op, and the check prints
+what a machine without Lean prints (the main CI job sets it),
+`LANKY_LEAN_VERSION` pins a toolchain and skips the probe,
 `LANKY_LEAN_CACHE_DIR` moves the cache, `LANKY_LEAN_TIMEOUT` caps each
 tactic attempt (60 s), `LANKY_LEAN_BUDGET` the whole ladder of one fact
 (120 s) and `LANKY_LEAN_VACUITY_BUDGET` that of a question whether a fact

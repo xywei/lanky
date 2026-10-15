@@ -1584,10 +1584,22 @@ def _binder_names(gen: Any) -> Sequence[str]:
 
     An unrecognized shape (a tuple target, say) gives no name, and the binder
     falls back to a fresh one, which is correct and merely less readable.
+
+    The names are read once per code object (:func:`_code_binder_names`). A
+    kernel's body runs the same comprehension once per instance when it is
+    run natively, and disassembling it each time was most of what a sum
+    cost: about 15 of the 45 seconds of a check of a file whose faithful
+    checks run sum-factorized kernels (lanky #125).
     """
     code = getattr(gen, "gi_code", None)
     if code is None:
         return ()
+    return _code_binder_names(code)
+
+
+@functools.lru_cache(maxsize=1024)
+def _code_binder_names(code: Any) -> tuple[str, ...]:
+    """:func:`_binder_names` of a generator with this code object."""
     names: list[str] = []
     storing = False
     for instruction in dis.get_instructions(code):
@@ -1602,8 +1614,8 @@ def _binder_names(gen: Any) -> Sequence[str]:
                 names.append(str(argument[0] if isinstance(argument, tuple) else argument))
             storing = False
     if names:
-        return names
-    return [n for n in code.co_varnames[1:] if not n.startswith(".")]
+        return tuple(names)
+    return tuple(n for n in code.co_varnames[1:] if not n.startswith("."))
 
 
 def _drive(gen: Iterable[Any]) -> _Driven:

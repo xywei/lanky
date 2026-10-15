@@ -72,6 +72,7 @@ import functools
 import json
 import os
 import selectors
+import shutil
 import signal
 import subprocess
 import sys
@@ -85,7 +86,7 @@ from typing import Any, BinaryIO, TextIO
 
 from lanky.check import check_path, oracle_lines, source_roots
 from lanky.ledger import Fact, Ledger, Status
-from lanky.plugins import registry
+from lanky.plugins import oracle_availability, registry
 
 __all__ = [
     "CheckVerb",
@@ -94,8 +95,10 @@ __all__ = [
     "main",
     "refutation_lines",
     "report_lean",
+    "report_missing",
     "report_proved",
     "report_unproved",
+    "terminal_columns",
 ]
 
 
@@ -323,6 +326,7 @@ class CheckVerb:
                     "path": [os.fsdecode(entry) for entry in sys.path if _is_path(entry)],
                     "argv": list(sys.argv),
                     "parent": os.getpid(),
+                    "columns": terminal_columns(),
                 }
                 spec_path.write_text(json.dumps(spec), encoding="utf-8")
                 named = ", ".join(files)
@@ -365,8 +369,9 @@ class CheckVerb:
         ``--show-lean`` prints the Lean last (see :meth:`_report_lean`);
         neither fails the check.
         """
-        print(ledger.render())
+        print(ledger.render(columns=terminal_columns()))
         report_proved(ledger)
+        report_missing(ledger)
         CheckVerb._report_citations(ledger)
         CheckVerb._report_declines(ledger)
         CheckVerb._report_unproved(ledger, verbose=verbose)
@@ -630,6 +635,10 @@ def report_proved(ledger: Ledger) -> None:
 
         LEAN proved all 11 facts isl decided; 2 more are about real numbers,
         which Lean checks where Mathlib is (LANKY_LEAN_MATHLIB). ...
+
+    The ``WITHOUT MATHLIB`` line under it names them, with the command that
+    sets Mathlib up (:func:`report_missing`); with no fact a solver decided,
+    it is the only line about them.
     """
     settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
     by_decider: dict[str, list[Fact]] = {}
@@ -642,12 +651,7 @@ def report_proved(ledger: Ledger) -> None:
         if fact.provenance.get("lean_needs_mathlib") and fact.status not in settled
     )
     if not by_decider:
-        if reals:
-            print()
-            print(
-                f"LEAN checks {_count(reals, 'claim')} about real numbers where "
-                "Mathlib is (LANKY_LEAN_MATHLIB); core Lean has no real numbers."
-            )
+        # the claims about real numbers are named under WITHOUT MATHLIB
         return
     unstated: dict[str, int] = {}
     for fact in ledger:
@@ -701,6 +705,133 @@ def report_proved(ledger: Ledger) -> None:
             f"{decider}'s results, and {decider}'s hints were checked, not trusted. "
             "--show-lean prints the Lean."
         )
+
+
+#: Why the rows that need each piece an oracle may say this machine lacks are
+#: not proved, for its line (see :func:`report_missing`); a piece not named
+#: here gets the line without a reason.
+_WHY_MISSING: dict[str, tuple[str, str]] = {
+    "mathlib": ("only Lean with Mathlib can state it", "only Lean with Mathlib can state them"),
+    "cas": (
+        "it is an induction whose steps sympy finds and Lean checks",
+        "each is an induction whose steps sympy finds and Lean checks",
+    ),
+}
+
+#: What each piece is called in the heading of its line.
+_PIECE_NAMES = {"lean": "LEAN", "mathlib": "MATHLIB", "cas": "SYMPY"}
+
+
+def report_missing(ledger: Ledger) -> None:
+    """Say, a line for each, what this machine lacks for Lean to prove the rows it did not.
+
+    Without Lean a theorem reads ``assumed`` or ``tested`` and a fact isl
+    decided reads ``decided``, which says how far each is established here
+    and not that Lean, installed, would prove it. An oracle that can tell
+    what it lacks for a fact (:meth:`lanky.oracles.lean.LeanOracle.missing`)
+    is asked about each row, and each piece some row lacks gets one line,
+    in the order the oracle names them: the rows, by the names of the
+    claims and a count of the rest, why they are not proved, and the
+    command that installs the piece (its ``remedy``)::
+
+        WITHOUT LEAN: compressed_taylor, on_every_triangle and 40 more rows
+        are not proved. To have Lean prove what it can: pip install
+        "lanky[lean]", and Lean v4.29.1 from elan (elan default
+        leanprover/lean4:v4.29.1).
+
+    Where the piece is installed and does not work, a Lean whose REPL could
+    not be built, say, there is no command to give, and the line says why
+    instead, as ``--verbose`` does: ``WITHOUT LEAN (<the reason>): ...``.
+    The line depends on what is installed and not on why it is not, so a
+    machine without Lean and a CI job with ``LANKY_LEAN_DISABLE`` print the
+    same one.
+
+    ``lanky check`` prints it under the ``LEAN`` line (:func:`report_proved`),
+    and so can a plugin's verb that prints a ledger. Nothing is printed when
+    nothing is lacking.
+    """
+    lacking: dict[str, tuple[Any, list[Fact]]] = {}
+    for oracle in registry.sorted_oracles():
+        if not callable(getattr(oracle, "missing", None)):
+            continue
+        for fact in ledger:
+            try:
+                pieces = oracle.missing(fact)
+            except Exception:  # noqa: BLE001 - a line under the table must not stop the check
+                continue
+            for piece in pieces:
+                lacking.setdefault(piece, (oracle, []))[1].append(fact)
+    if not lacking:
+        return
+    print()
+    for piece, (oracle, facts) in lacking.items():
+        rows, many = _rows_named(facts)
+        heading = f"WITHOUT {_PIECE_NAMES.get(piece, piece.upper())}"
+        try:
+            remedy = oracle.remedy(piece) if callable(getattr(oracle, "remedy", None)) else ""
+        except Exception:  # noqa: BLE001 - as above
+            remedy = ""
+        if not remedy:
+            # installed and not working: the reason is what there is to say
+            _, reason = oracle_availability(oracle)
+            if reason:
+                heading += f" ({reason})"
+        line = f"{heading}: {rows} {'are' if many else 'is'} not proved"
+        why = _WHY_MISSING.get(piece)
+        if why is not None:
+            line += f", since {why[many]}"
+        line += "."
+        if remedy:
+            what = "what it can" if piece == "lean" else ("them" if many else "it")
+            line += f" To have Lean prove {what}: {remedy}."
+        print(line)
+
+
+def _rows_named(facts: list[Fact]) -> tuple[str, bool]:
+    """The rows of a ``WITHOUT`` line in words, and whether they are more than one.
+
+    A claim of lanky's, a theorem, is named by its owner, up to three of
+    them, and the other rows are counted: ``compressed_taylor,
+    on_every_triangle and 41 more rows``. A plugin's facts, a kernel's
+    many, are counted and not named.
+    """
+
+    def claim(fact: Fact) -> bool:
+        return bool(fact.owner) and not callable(getattr(fact.term, "lean_obligation", None))
+
+    named = list(dict.fromkeys(fact.owner for fact in facts if claim(fact)))[:3]
+    rest = sum(1 for fact in facts if not (claim(fact) and fact.owner in named))
+    if not named:
+        return (f"{rest} rows" if rest > 1 else "one row"), rest > 1
+    if rest:
+        named.append(f"{rest} more row{'s' if rest > 1 else ''}")
+    words = named[0] if len(named) == 1 else ", ".join(named[:-1]) + " and " + named[-1]
+    return words, len(named) > 1
+
+
+#: The width of the terminal a child's parent prints to, ``None`` when it
+#: prints to none (see :func:`_check_in_child`).
+_PARENT_COLUMNS: int | None = None
+
+
+def terminal_columns() -> int | None:
+    """How wide the terminal the ledger is printed in is; ``None`` when it goes elsewhere.
+
+    The table fits a terminal (see :meth:`lanky.ledger.Ledger.render`), and
+    not a file or a pipe, so that what a transcript shows does not depend on
+    the window it was made in. A child that checks the files of one source
+    root (see :meth:`CheckVerb._check_in_children`) prints to a pipe its
+    parent copies, and takes the width of the parent's terminal, so that its
+    ledgers fit it as the parent's own would.
+    """
+    if _PARENT_COLUMNS is not None:
+        return _PARENT_COLUMNS
+    try:
+        if not sys.stdout.isatty():
+            return None
+    except (AttributeError, ValueError):
+        return None
+    return shutil.get_terminal_size().columns
 
 
 def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
@@ -830,9 +961,13 @@ def _check_in_child(spec: dict[str, Any]) -> int:
     the parent writes what it would have written for a check of its own.
 
     Before anything is checked, the child arranges to end with its parent
-    (see :func:`_end_with_parent`).
+    (see :func:`_end_with_parent`), and takes the width of the terminal the
+    parent prints to, if it prints to one, since its own output is a pipe
+    (see :func:`terminal_columns`).
     """
+    global _PARENT_COLUMNS
     _end_with_parent(spec["parent"])
+    _PARENT_COLUMNS = spec.get("columns")
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
     code, checked, facts = CheckVerb._check_files(

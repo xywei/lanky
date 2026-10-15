@@ -28,6 +28,7 @@ from lanky.oracles.lean import (
     LeanOracle,
     decline,
     family_induction_scripts,
+    induction_over_families,
     tactic_ladder,
     use_certificate,
 )
@@ -350,6 +351,61 @@ def test_a_lemmas_binder_is_never_taken_for_a_name_of_the_case(searching) -> Non
     (use,) = find_certificate(case)
     assert use.lemma == "h0"
     assert render(use.arguments[0]) == "n__0"
+
+
+def test_what_a_claim_for_every_order_lacks_is_said_piece_by_piece(monkeypatch) -> None:
+    """``missing`` names what this machine lacks for Lean to prove ``laplace``, in install order.
+
+    Without Lean, Lean and Mathlib, since core Lean cannot state it; with
+    Lean and no Mathlib project, Mathlib; with both and no sympy, sympy,
+    which finds the induction's steps; with all three, or once it is
+    proved, nothing.
+    """
+    import lanky.mathlib
+    import lanky.oracles.lean as lean_module
+
+    oracle = LeanOracle()
+    fact = laplace.fact()
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    assert oracle.missing(fact) == ("lean", "mathlib")
+    monkeypatch.setattr(LeanOracle, "availability", lambda self: (True, ""))
+    assert oracle.missing(fact) == ("mathlib",)
+    monkeypatch.setattr(lanky.mathlib, "project_directory", lambda: "/mathlib")
+    monkeypatch.setattr(lean_module, "_sympy_imports", lambda: False)
+    assert oracle.missing(fact) == ("cas",)
+    monkeypatch.setattr(lean_module, "_sympy_imports", lambda: True)
+    assert oracle.missing(fact) == ()
+    monkeypatch.setattr(lean_module, "_sympy_imports", lambda: False)
+    assert oracle.missing(fact.with_status(Status.PROVED, "lean")) == ()
+
+
+@theorem
+def nothing_to_combine(
+    f: Fn[Nat, Real],
+    positive: all(f(n) >= 0 for n in Nat),
+) -> all(f(n + 1) == f(n) for n in Nat):
+    """A claim for every order with no hypothesis that is an equation, for a step to combine."""
+
+
+def test_sympy_is_named_only_where_the_induction_would_search(monkeypatch) -> None:
+    """A claim the induction writes no script for, with sympy or without it, lacks no sympy.
+
+    ``laplace`` has equations to combine, and its steps are what sympy
+    finds; ``nothing_to_combine`` has none, so installing sympy would not
+    prove it, and its row names nothing it lacks.
+    """
+    import lanky.mathlib
+    import lanky.oracles.lean as lean_module
+
+    assert induction_over_families(_statement(laplace))
+    assert not induction_over_families(_statement(nothing_to_combine))
+    monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
+    monkeypatch.setattr(LeanOracle, "availability", lambda self: (True, ""))
+    monkeypatch.setattr(lanky.mathlib, "project_directory", lambda: "/mathlib")
+    monkeypatch.setattr(lean_module, "_sympy_imports", lambda: False)
+    oracle = LeanOracle()
+    assert oracle.missing(laplace.fact()) == ("cas",)
+    assert oracle.missing(nothing_to_combine.fact()) == ()
 
 
 def test_without_sympy_the_search_finds_nothing(monkeypatch) -> None:

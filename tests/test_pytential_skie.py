@@ -20,7 +20,7 @@ from pathlib import Path
 import pymbolic.primitives as prim
 import pytest
 
-from conftest import claims, plugin_arguments
+from conftest import claims, plugin_arguments, without_lean_line
 from lanky import cli
 from lanky.check import check_path, import_path
 from lanky.ledger import Status
@@ -272,8 +272,9 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(capsys) -> None:
 
     The document shows it as a machine without Lean prints it. Where Lean
     proves the three coefficient rows, those rows and the summary read
-    ``proved lean`` instead, and every column is sized to what it holds, so
-    the rows are compared cell by cell.
+    ``proved lean`` instead, the ``WITHOUT LEAN`` line under the table is
+    not there, and every column is sized to what it holds, so the rows are
+    compared cell by cell.
     """
     lines = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
     start = lines.index("$ uv run lanky check examples/pytential_skie.py")
@@ -284,7 +285,7 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(capsys) -> None:
         shown.append(line)
     proved = any(fact.status is Status.PROVED for fact in claims(check_path(DEMO)))
     if proved:
-        shown = [_with_lean(line) for line in shown]
+        shown = [_with_lean(line) for line in without_lean_line(shown)]
     assert cli.main(["check", str(DEMO)]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
     assert len(shown) == len(printed)

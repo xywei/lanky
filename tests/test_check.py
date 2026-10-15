@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from conftest import ProcessWatch, claims
+from conftest import ProcessWatch, claims, without_lean_line
 from lanky import cli
 from lanky.check import check_path, oracle_lines
 from lanky.ledger import Fact, Ledger, Status
@@ -578,8 +578,9 @@ def test_the_cli_checks_a_neighbour_when_it_is_listed(tmp_path, monkeypatch, cap
             assert code == 1  # false_claim
             assert printed.startswith(f"==> {files[0]} <==\n")
             assert f"\n\n==> {files[1]} <==\n" in printed
-            # the claim's row and its reading's, under the helper's heading
-            assert printed.count("helper_claim") == 2
+            # the claim's row and its reading's, under the helper's heading (the
+            # WITHOUT LEAN line under it names the claim too)
+            assert printed.count("  helper_claim  ") == 2
             assert "4 facts: 1 refuted, 3 tested" in printed
             assert "2 facts: 2 tested" in printed
             data = claims(json.loads(out_json.read_text(encoding="utf-8")))
@@ -984,6 +985,42 @@ def test_each_root_is_checked_in_one_process_of_its_own(tmp_path, monkeypatch, c
         assert printed.count(" own_helper: n : Nat |- ") == 3
     finally:
         sys.modules.pop(ROOTS_HELPER, None)
+
+
+LONG_CLAIM = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Nat
+
+
+@theorem
+def reordered(a: Nat, b: Nat, c: Nat) -> a + b + c == c + b + a:
+    """Fits a line of 100 characters, and not one of 40."""
+'''
+
+
+def test_a_childs_ledger_fits_the_terminal_its_parent_prints_to(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A child prints to a pipe, and still sizes its table to the parent's terminal.
+
+    At 100 characters the theorem is one line; in a terminal 20 columns wide
+    the statement column is its narrowest, 40, and the theorem goes a part
+    to a line, in each root's ledger.
+    """
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    monkeypatch.setattr(cli, "terminal_columns", lambda: 20)
+    files = []
+    for root in ("a", "b"):
+        (tmp_path / root).mkdir()
+        files.append(tmp_path / root / "long.py")
+        files[-1].write_text(LONG_CLAIM, encoding="utf-8")
+    assert cli.main(["check", *map(str, files)]) == 0
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    assert lines.count("|- a + b + c == c + b + a") == 2
+    whole = "a : Nat, b : Nat, c : Nat |- a + b + c == c + b + a"
+    assert not any(line.endswith(whole) for line in lines)
 
 
 def test_files_of_one_root_are_checked_in_this_process(tmp_path, monkeypatch, capsys) -> None:
@@ -2134,14 +2171,20 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
 
     out = tmp_path / "out.json"
     assert cli.main(["check", path, "--json", str(out)]) == 0
-    lines = capsys.readouterr().out.splitlines()
+    # a statement too long for its column goes on under it, on lines of its
+    # own, and what the machine lacks to prove a row is said under the table
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if not line.startswith((" ", "WITHOUT "))
+    ]
     assert lines[0].split()[:3] == ["STATUS", "EFFECTIVE", "BY"]
     assert lines[2].startswith("tested                   tested     property-test")
     assert lines[3].startswith("tested                   tested     python")
     assert lines[4].startswith("assumed (axiom)          assumed    -")
     assert lines[6].startswith("tested under nicomachus  assumed    property-test")
     assert lines[9] == "6 facts: 1 assumed, 5 tested"
-    assert lines[10:] == [
+    assert lines[-2:] == [
         "",
         f"CITED nicomachus at {nicomachus.where}: "
         "Nicomachus of Gerasa, Introduction to Arithmetic",
@@ -2639,7 +2682,8 @@ def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
 
     Every statement in the file has a sum in it, which core Lean cannot print,
     so the table is the same with Lean and without it, and both CI jobs hold
-    the document to it.
+    the document to it. So are the lines under it, but for the ``WITHOUT
+    LEAN`` line a machine without Lean prints above ``WITHOUT MATHLIB``.
     """
     from pathlib import Path
 
@@ -2653,7 +2697,8 @@ def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
         shown.append(line)
     assert cli.main(["check", str(root / "examples" / "nicomachus.py")]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
-    assert shown == printed
+    # a machine without Lean says so above what it lacks with Lean, Mathlib
+    assert shown == without_lean_line(printed)
 
 
 # }}}
@@ -2676,8 +2721,9 @@ def test_lanky_check_prints_each_axioms_citation_under_the_table(tmp_path, capsy
     _gauss, nicomachus, _cubes = claims(check_path(path))
     assert cli.main(["check", path]) == 0
     lines = capsys.readouterr().out.splitlines()
-    summary = lines.index("6 facts: 1 assumed, 5 tested")
-    assert lines[summary + 1 :] == [
+    assert "6 facts: 1 assumed, 5 tested" in lines
+    # last, after what the machine lacks to prove the claims (WITHOUT ...)
+    assert lines[-3:] == [
         "",
         f"CITED nicomachus at {nicomachus.where}: "
         "Nicomachus of Gerasa, Introduction to Arithmetic,",

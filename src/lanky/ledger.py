@@ -52,7 +52,16 @@ from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-__all__ = ["FAITHFUL", "Fact", "Ledger", "Status", "Support", "fact_id"]
+__all__ = [
+    "FAITHFUL",
+    "Fact",
+    "Ledger",
+    "Status",
+    "Support",
+    "fact_id",
+    "statement_lines",
+    "wrap",
+]
 
 #: The kind of the fact that says a claim's term computes what its annotations
 #: compute (see :mod:`lanky.faithful`).
@@ -550,11 +559,27 @@ class Ledger:
             cell += " under " + ", ".join(self._label(entry, owners) for entry in support.under)
         return cell
 
-    def render(self, width: int = 72) -> str:
+    def render(self, width: int = 100, *, columns: int | None = None) -> str:
         """A fixed-width table: status, decider, location, and statement.
 
         ``width`` bounds the statement column; everything else is sized to its
-        contents, so the table stays readable in a terminal.
+        contents, so the table stays readable in a terminal. Most of a kernel's
+        facts fit in 100 characters, and a theorem is broken at its parts
+        anyway, so few rows take more than a line. ``columns`` is
+        the width of the terminal the table is printed in, when there is one:
+        the statement column then takes what the other columns leave of it,
+        between :data:`NARROWEST` and :data:`WIDEST` characters, whatever
+        ``width`` says. ``lanky check`` passes it when it prints to a terminal
+        and not when its output goes to a file or a pipe, so what a transcript
+        shows does not depend on the window it was made in.
+
+        A statement is shown whole. One that fits the column is one line, as
+        it always was, and a longer one is wrapped under the column (#142),
+        not cut: a theorem's statement at its parts (see
+        :func:`statement_lines`), a conjunction before its ``and``, and
+        otherwise at a space outside every bracket where there is one. The
+        row's other cells are on its first line, so a row still starts where
+        its status is.
 
         A fact's location is ``basename:line``, which is short and enough for
         the usual ledger of one file. When two facts from different files share
@@ -584,14 +609,13 @@ class Ledger:
             support.effective is not fact.status or support.heuristic is not fact.is_heuristic
             for fact, support in zip(facts, supports, strict=True)
         )
-        rows = [
+        cells = [
             (
                 self._status_cell(fact, support, owners),
                 *((support.text,) if weaker else ()),
                 fact.decided_by or "-",
                 locations[index] or "-",
                 fact.owner or "-",
-                _clip(fact.statement, width),
             )
             for index, (fact, support) in enumerate(zip(facts, supports, strict=True))
         ]
@@ -604,17 +628,27 @@ class Ledger:
             "statement",
         )
         widths = [
-            max(len(headers[i]), max(len(row[i]) for row in rows))
-            for i in range(len(headers))
+            max(len(headers[i]), max(len(row[i]) for row in cells))
+            for i in range(len(headers) - 1)
         ]
+        if columns is not None:
+            left = columns - sum(widths) - 2 * len(widths)
+            width = min(max(left, NARROWEST), WIDEST)
+        statements = [statement_lines(fact, width) for fact in facts]
+        widths.append(
+            max(len(headers[-1]), max(len(line) for lines in statements for line in lines))
+        )
         lines = [
-            "  ".join(h.upper().ljust(w) for h, w in zip(headers, widths, strict=True)),
+            "  ".join(h.upper().ljust(w) for h, w in zip(headers, widths, strict=True)).rstrip(),
             "  ".join("-" * w for w in widths),
         ]
-        lines += [
-            "  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip()
-            for row in rows
-        ]
+        indent = sum(widths[:-1]) + 2 * len(widths[:-1])
+        for row, (first, *more) in zip(cells, statements, strict=True):
+            lines.append(
+                "  ".join(cell.ljust(w) for cell, w in zip((*row, first), widths, strict=True))
+                .rstrip()
+            )
+            lines += [" " * indent + line for line in more]
         summary = ", ".join(f"{n} {name}" for name, n in sorted(self.counts().items()))
         vacuous = len(self.vacuous())
         if vacuous:
@@ -651,7 +685,215 @@ def _locations(facts: list[Fact]) -> list[str]:
     return out
 
 
-def _clip(text: str, width: int) -> str:
-    """Shorten ``text`` to ``width`` characters, marking what was dropped."""
-    text = " ".join(text.split())
-    return text if len(text) <= width else text[: width - 3] + "..."
+def statement_lines(fact: Fact, width: int = 100) -> list[str]:
+    """A fact's statement as the table prints it: whole, in lines of ``width`` at most.
+
+    A statement that fits is one line, its whitespace collapsed. A longer one
+    is wrapped (:func:`wrap`), and the lines after the first are indented, so
+    that they read as the rest of one statement. A word longer than the
+    column stays whole, and its line is longer.
+
+    A theorem's statement is a sequent, ``variables | hypotheses |- goal``,
+    whose hypotheses are joined by ``, ``, which also separates the binders
+    of a ``forall``: on one line, where one hypothesis ends cannot be told.
+    Where it does not fit, it is printed a part to a line, each hypothesis
+    under the name its parameter has in the source (the ``sequent`` its
+    fact's provenance carries, see :meth:`lanky.theory.Theorem.fact`)::
+
+        D : Fn[Nat, Nat, Real], R : Fn[Nat, Nat, Real]
+        | pde: forall a in Nat, b in Nat. D[a + 2, b] + D[a, b + 2] == 0
+        | stored: forall a in Nat, b in Nat where a < 2. R[a, b] == D[a, b]
+        |- forall a in Nat, b in Nat. R[a, b] == D[a, b]
+    """
+    text = _one_line(fact.statement)
+    if len(text) <= width:
+        return [text]
+    parts = _sequent_parts(fact)
+    if parts is None:
+        return wrap(text, width)
+    lines: list[str] = []
+    for part, indent in parts:
+        lines += wrap(part, width, indent=indent)
+    return lines
+
+
+def _one_line(text: str) -> str:
+    """``text`` with every run of whitespace, newlines included, one space."""
+    return " ".join(str(text).split())
+
+
+def _sequent_parts(fact: Fact) -> list[tuple[str, str]] | None:
+    """A theorem's statement a part to a line, with each part's indent; ``None`` for none.
+
+    The parts are read off the ``sequent`` in the fact's provenance: the
+    variables, ``| name: hypothesis`` for each hypothesis, and ``|- goal``.
+    A fact without one, or with one of another shape, is wrapped as text.
+    """
+    provenance = fact.provenance if isinstance(fact.provenance, dict) else {}
+    sequent = provenance.get("sequent")
+    if not isinstance(sequent, dict):
+        return None
+    variables = sequent.get("variables")
+    hypotheses = sequent.get("hypotheses")
+    goal = sequent.get("goal")
+    if not (
+        isinstance(variables, str)
+        and isinstance(goal, str)
+        and isinstance(hypotheses, list | tuple)
+        and all(
+            isinstance(entry, list | tuple)
+            and len(entry) == 2
+            and all(isinstance(item, str) for item in entry)
+            for entry in hypotheses
+        )
+    ):
+        return None
+    if not variables and not hypotheses:
+        return None
+    parts = [(_one_line(variables), "  ")] if variables else []
+    parts += [(f"| {name}: {_one_line(text)}", "    ") for name, text in hypotheses]
+    parts.append((f"|- {_one_line(goal)}", "    "))
+    return parts
+
+
+#: The narrowest and the widest the statement column is made to fit a terminal
+#: (see :meth:`Ledger.render`).
+NARROWEST = 40
+WIDEST = 100
+
+#: The words a long statement is broken before, so that a line starts with them.
+_CONNECTIVES = frozenset({"and", "or"})
+
+#: The comparisons a long statement may be broken before, outside a guard.
+_COMPARISONS = frozenset({"==", "!=", "<", "<=", ">", ">="})
+
+
+def wrap(text: str, width: int, indent: str = "  ") -> list[str]:
+    """``text`` in lines of ``width`` characters at most, the lines after the first indented.
+
+    Each line is broken at the space :func:`_break_at` picks: outside the
+    brackets where it can be, so that ``D[i, a, b + 2]`` and ``Fin(n + 1)``
+    stay whole, and where the statement has a seam (:func:`_seam`), before
+    an ``and`` that joins two claims or after a label's ``:`` or a
+    quantifier's ``.``, and failing that before a guard's ``where``. A line
+    after a break inside brackets is indented two more spaces for each
+    bracket it is in, so that the guard of a ``forall`` inside a
+    conjunction reads as the ``forall``'s and not as the conjunction's::
+
+        (forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10.
+            R[i, a, b] == C[i, a, b])
+          and (forall i in Fin(nb), a in Nat, b in Nat where a + b + 2 <= 10.
+            R[i, a + 2, b] == -R[i, a, b + 2])
+
+    A word longer than a line is kept whole.
+    """
+    depths, guarded = _structure(text)
+    lines: list[str] = []
+    lead = ""
+    start = 0
+    while len(lead) + len(text) - start > width:
+        cut = _break_at(text, depths, guarded, start, max(width - len(lead), 1))
+        if cut is None:
+            break
+        lines.append(lead + text[start:cut])
+        lead = indent + "  " * depths[cut]
+        start = cut + 1
+    lines.append(lead + text[start:])
+    return lines
+
+
+def _structure(text: str) -> tuple[list[int], list[bool]]:
+    """How many brackets each character of ``text`` is inside, and whether it is in a guard.
+
+    A guard runs from a ``where`` to the word that ends in ``.`` at the same
+    depth, the ``.`` that ends a quantifier's binders: in ``forall a in Nat
+    where a < 2 and a <= p. R[a] == D[a]``, the ``and`` is the guard's, and
+    breaking a line before it would read as a conjunction of two claims.
+    A bracket that closes ends a guard opened inside it.
+    """
+    depths: list[int] = []
+    guarded: list[bool] = []
+    open_at: set[int] = set()
+    depth = 0
+    word_start = True
+    for position, char in enumerate(text):
+        if char in ")]}":
+            depth = max(depth - 1, 0)
+            open_at = {level for level in open_at if level <= depth}
+        if word_start and char != " ":
+            word = text[position:].split(" ", 1)[0]
+            if word == "where":
+                open_at.add(depth)
+        depths.append(depth)
+        guarded.append(depth in open_at)
+        if char in "([{":
+            depth += 1
+        word_start = char == " "
+        if char == "." and depth in open_at and (
+            position + 1 == len(text) or text[position + 1] == " "
+        ):
+            open_at.discard(depth)
+    return depths, guarded
+
+
+def _break_at(
+    text: str, depths: list[int], guarded: list[bool], start: int, room: int
+) -> int | None:
+    """Where to break ``text`` after ``start`` for a line of ``room`` characters; ``None`` for none.
+
+    ``depths`` is how many brackets each character of ``text`` is inside,
+    and ``guarded`` whether it is in a guard (:func:`_structure`).
+    Of the spaces that leave a line that fits, those outside the most
+    brackets are taken, so that ``r]*sum(...`` does not start a line where
+    ``== sum(...`` could. Among them, those that leave the line at least a
+    third full and a sixth of a line or more to follow, so that a break
+    leaves no stub of a line at either end; failing that, a third full;
+    failing that, a sixth, before a space inside one more bracket is
+    taken. Then the strongest seam among them (:func:`_seam`), and of those
+    the last. Where no space leaves a line that fits, the first space is
+    taken, and the line is a word longer than the room.
+    """
+    end = len(text)
+    spaces = [
+        (position, depths[position])
+        for position in range(start + 1, end)
+        if text[position] == " "
+    ]
+    fitting = [(p, depth) for p, depth in spaces if p - start <= room]
+    if not fitting:
+        return spaces[0][0] if spaces else None
+    tiers = ((room // 3, room // 6), (room // 3, 0), (room // 6, 0))
+    for level in sorted({depth for _, depth in fitting}):
+        for floor, widow in tiers:
+            candidates = [
+                p
+                for p, depth in fitting
+                if depth == level and p - start >= floor and end - p - 1 >= widow
+            ]
+            if candidates:
+                seams = {p: _seam(text, p, guarded[p]) for p in candidates}
+                best = min(seams.values())
+                return [p for p in candidates if seams[p] == best][-1]
+    return fitting[-1][0]
+
+
+def _seam(text: str, position: int, guarded: bool = False) -> int:
+    """How good a place to break the space at ``position`` is: 0 the best, 2 the worst.
+
+    0 before ``and`` or ``or`` that join two claims, so that the line after
+    starts with it, and after a word that ends in ``:`` (a label: ``|
+    pde:``, ``by lemma, ...:``) or in ``.`` (the binders of a ``forall``);
+    1 before a guard's ``where``, a comparison's ``==`` or a generator's
+    ``for``, and after a ``,``, between two items of a list; 2 anywhere
+    else, the ``:`` of ``n : Nat``, and an ``and`` or a comparison inside a
+    guard (``guarded``) included.
+    """
+    before = text[:position].rsplit(" ", 1)[-1]
+    after = text[position + 1 :].split(" ", 1)[0]
+    if after in _CONNECTIVES:
+        return 2 if guarded else 0
+    if len(before) > 1 and before.endswith((":", ".")):
+        return 0
+    if after in _COMPARISONS:
+        return 2 if guarded else 1
+    return 1 if after in ("where", "for") or before.endswith(",") else 2

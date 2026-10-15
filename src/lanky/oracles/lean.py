@@ -138,6 +138,7 @@ __all__ = [
     "default_cache_dir",
     "default_proof_cache_dir",
     "family_induction_scripts",
+    "induction_over_families",
     "induction_scripts",
     "kill_servers",
     "part_scripts",
@@ -305,6 +306,15 @@ MATHLIB_IMPORT_TIMEOUT = float(os.environ.get("LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT
 
 
 # {{{ choosing a Lean version
+
+
+def _sympy_imports() -> bool:
+    """Whether sympy, which the induction over families finds its steps with, is installed."""
+    try:
+        spec = find_spec("sympy")
+    except (ImportError, ValueError):  # pragma: no cover - a broken installation
+        return False
+    return spec is not None and spec.origin is not None
 
 
 def _lean_interact_installed() -> bool:
@@ -1837,6 +1847,70 @@ def _bounds_of(domain: Any) -> tuple[Any, Any] | None:
     return None
 
 
+def induction_over_families(statement: LeanStatement) -> bool:
+    """Whether :func:`family_induction_scripts` searches for a statement's steps.
+
+    It does where the statement is a claim about every order it can induce
+    on (:func:`_family_plan`). Whether the search finds the steps is another
+    question, which needs sympy (:mod:`lanky.induction`): a statement this
+    is false of gets no script with sympy or without it.
+    """
+    return _family_plan(statement) is not None
+
+
+def _family_plan(statement: LeanStatement) -> tuple[_FamilyGoal, list[Var]] | None:
+    """What a family induction shares, and the orders it may be on; ``None`` for none.
+
+    Mathlib mode, a goal that is a universal of an equation, a family among
+    the statement's variables, and no variable of the goal named like one of
+    the statement's: a goal variable named like a parameter hides it after
+    ``intro``, where the hypotheses still mean the parameter, and the search
+    would confuse the two. Then a hypothesis that is an equation under
+    universals, for the certificates to combine, and an order to induce on:
+    a natural variable of the goal, introduced with the guard that makes it
+    one right after it. None of this needs sympy; only the search for each
+    case's certificate does.
+    """
+    if not statement.mathlib:
+        return None
+    goal = statement.goal_term
+    if not isinstance(goal, Forall) or not (
+        isinstance(goal.body, prim.Comparison) and goal.body.operator == "=="
+    ):
+        return None
+    families = _family_names(statement)
+    if not families:
+        return None
+    if {var.name for var, _ in goal.binders} & set(statement.types):
+        return None
+    terms = statement.hypothesis_terms or (None,) * len(statement.hypotheses)
+    lemmas = [
+        lemma
+        for (name, _), term in zip(statement.hypotheses, terms, strict=False)
+        if term is not None
+        for lemma in (lemma_of(name, term),)
+        if lemma is not None
+    ]
+    if not lemmas:
+        return None
+    with dialect(statement.mathlib):
+        names, variables, _, naturals, introduced = _goal_intro(statement)
+    shared = _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced)
+    orders = [
+        target
+        for target in variables
+        if target.name in naturals and _introduced_as_natural(shared, target)
+    ]
+    return (shared, orders) if orders else None
+
+
+def _introduced_as_natural(shared: _FamilyGoal, target: Var) -> bool:
+    """Whether ``intro`` names the guard that makes ``target`` a natural right after it."""
+    position = shared.names.index(shared.introduced[target.name])
+    following = shared.names[position + 1 : position + 2]
+    return following == [shared.naturals[target.name]]
+
+
 def family_induction_scripts(
     statement: LeanStatement, finder: Finder | None = None, until: float | None = None
 ) -> list[str]:
@@ -1872,38 +1946,13 @@ def family_induction_scripts(
     (:func:`lanky.deadline.deadline`) where one can be set, and the scripts
     written before then are kept.
     """
-    if not statement.mathlib:
+    plan = _family_plan(statement)
+    if plan is None:
         return []
-    goal = statement.goal_term
-    if not isinstance(goal, Forall) or not (
-        isinstance(goal.body, prim.Comparison) and goal.body.operator == "=="
-    ):
-        return []
-    families = _family_names(statement)
-    if not families:
-        return []
-    # a goal variable named like a parameter hides it after intro, where the
-    # hypotheses still mean the parameter, and the search would confuse the two
-    if {var.name for var, _ in goal.binders} & set(statement.types):
-        return []
-    terms = statement.hypothesis_terms or (None,) * len(statement.hypotheses)
-    lemmas = [
-        lemma
-        for (name, _), term in zip(statement.hypotheses, terms, strict=False)
-        if term is not None
-        for lemma in (lemma_of(name, term),)
-        if lemma is not None
-    ]
-    if not lemmas:
-        return []
-    with dialect(statement.mathlib):
-        names, variables, _, naturals, introduced = _goal_intro(statement)
-    shared = _FamilyGoal(goal, families, lemmas, names, variables, naturals, introduced)
+    shared, orders = plan
     scripts: list[str] = []
-    for target in variables:
-        if target.name not in naturals:
-            continue
-        for step in _steps(target, goal, lemmas):
+    for target in orders:
+        for step in _steps(target, shared.goal, shared.lemmas):
             left = None if until is None else until - time.monotonic()
             if left is not None and left <= 0:
                 return scripts
@@ -2695,6 +2744,115 @@ class LeanOracle:
         except (UnsupportedTerm, AttributeError, TypeError, ValueError):
             return False
         return True
+
+    def missing(self, fact: Fact, /) -> tuple[str, ...]:
+        """What this machine lacks for Lean to be asked to prove ``fact``; ``()`` for nothing.
+
+        ``lanky check`` says it under the table, with the command that
+        installs each (:func:`lanky.cli.report_missing`), so that a row
+        left ``assumed`` or ``decided`` where Lean would have proved it does
+        not read as a claim nothing can prove. The pieces come in the order
+        they are installed:
+
+        ``"lean"``
+            Lean cannot be driven from here (:meth:`availability`), and
+            ``fact`` is one it would be asked about and has something to
+            check in: a statement the printer states in either dialect, or a
+            plugin's claim whose obligation has parts (:mod:`lanky.obligations`;
+            one the plugin states for its own solver only is not counted,
+            since Lean would not prove it either).
+        ``"mathlib"``
+            ``fact`` is a statement only Lean with Mathlib can state, and no
+            Mathlib project is set (``LANKY_LEAN_MATHLIB``): the printer
+            declines it in core Lean and states it with Mathlib, or a part of
+            a plugin's claim is about real numbers (:attr:`Part.mathlib
+            <lanky.obligations.Part.mathlib>`).
+        ``"cas"``
+            Lean has Mathlib and did not prove ``fact``, an induction over
+            families (:func:`induction_over_families`), and sympy, which finds
+            the steps Lean checks (:mod:`lanky.induction`), does not import.
+
+        A fact proved, certified or refuted lacks nothing, and so do a
+        claim's reading, an axiom, a fact with no term, a claim whose reading
+        is refuted (``unfaithful``, offered to no oracle) and one Lean is
+        told to decline (:attr:`declines`), which Lean is not asked about.
+        ``LANKY_LEAN_DISABLE`` is read as a machine without Lean,
+        so that a CI job that sets it prints what such a machine prints.
+        What a fact lacks is read from its statement and not from the
+        machine, but for whether Lean and Mathlib are there, so the same
+        rows are named with Lean as without it.
+        """
+        settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
+        if fact.status in settled or fact.is_reading or fact.is_axiom or fact.term is None:
+            return ()
+        if fact.provenance.get("unfaithful") or fact.id in self.declines:
+            return ()
+        available, _ = self.availability()
+        with_mathlib = mathlib_mode.project_directory() is not None
+        if callable(getattr(fact.term, "lean_obligation", None)):
+            if available:
+                # Lean was asked, and said whether it needs Mathlib
+                return ("mathlib",) if fact.provenance.get("lean_needs_mathlib") else ()
+            try:
+                obligation = obligation_of(fact.term)
+            except Exception:  # noqa: BLE001 - a plugin's failure is said when Lean is asked
+                return ()
+            if obligation is None or obligation.declined or not obligation.parts:
+                return ()
+            reals = any(getattr(part, "mathlib", False) for part in obligation.parts)
+            return ("lean", "mathlib") if reals and not with_mathlib else ("lean",)
+        owner = fact.owner or fact.id
+        stated: dict[bool, LeanStatement] = {}
+        for mathlib in (False, True):
+            try:
+                stated[mathlib] = statement_of(fact.term, owner, mathlib=mathlib)
+            except (UnsupportedTerm, AttributeError, TypeError, ValueError):
+                continue
+        if not stated:
+            return ()
+        needs: list[str] = []
+        if not available:
+            needs.append("lean")
+        if False not in stated and not with_mathlib:
+            needs.append("mathlib")
+        if (
+            available
+            and with_mathlib
+            and True in stated
+            and not _sympy_imports()
+            and induction_over_families(stated[True])
+        ):
+            needs.append("cas")
+        return tuple(needs)
+
+    def remedy(self, piece: str, /) -> str:
+        """The command that installs a piece :meth:`missing` names; empty when there is none.
+
+        ``"lean"`` is the extra and the toolchain, whichever of the two is
+        not there, and both where ``LANKY_LEAN_DISABLE`` is set, which reads
+        as a machine with neither; a Lean that is installed and could not be
+        started has no command, and its reason, which :meth:`availability`
+        gives, says why.
+        """
+        if piece == "lean":
+            disabled = bool(os.environ.get("LANKY_LEAN_DISABLE"))
+            steps = []
+            if disabled or not _lean_interact_installed():
+                steps.append('pip install "lanky[lean]"')
+            if disabled or shutil.which("lean") is None:
+                steps.append(
+                    f"Lean {mathlib_mode.MATHLIB_REVISION} from elan "
+                    f"(elan default {mathlib_mode.TOOLCHAIN})"
+                )
+            return ", and ".join(steps)
+        if piece == "mathlib":
+            return (
+                "python -m lanky.mathlib ~/mathlib (about 7 GB), then "
+                "export LANKY_LEAN_MATHLIB=~/mathlib"
+            )
+        if piece == "cas":
+            return 'pip install "lanky[cas]"'
+        return ""
 
     def _mathlib(self) -> bool:
         """Whether the session in effect has Mathlib."""

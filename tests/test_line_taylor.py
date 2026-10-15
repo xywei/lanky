@@ -128,7 +128,9 @@ def test_without_mathlib_the_claim_for_every_order_rests_on_the_ode(cas, capsys)
     """The axiom ``assumed`` on its citation, the claim ``assumed under`` it, sumpy's decided."""
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
-    statuses = [_cells(line)[0] for line in printed.splitlines()[2:7]]
+    # a row whose statement is wrapped goes on under it, on lines of its own
+    rows = [line for line in printed.splitlines() if not line.startswith(" ")]
+    statuses = [_cells(line)[0] for line in rows[2:7]]
     assert statuses == [
         "assumed (axiom)",
         "tested",
