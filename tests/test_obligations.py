@@ -909,6 +909,23 @@ def test_a_quotient_by_a_size_is_what_lean_knows_of_fdiv_and_fmod() -> None:
     )[0][1].count("hq") == 0
 
 
+def test_a_witness_in_pieces_keeps_its_script_beside_the_products() -> None:
+    # Codex: a part with products and a witness in pieces had no script at
+    # all; it keeps the one a part with no products has
+    part = Part(
+        "pieces",
+        "pieces",
+        LAST_WRITER,
+        Hints(
+            witness=(Piece((), r == 0, 0), Piece((r - 1,), None, 1)),
+            ring=True,
+        ),
+    )
+    [(how, script)] = attempts(part, part_statement(part, "pieces"))
+    assert how == "omega, with a witness in 2 pieces"
+    assert script.splitlines()[0].startswith("by_cases hp0 : ")
+
+
 def test_a_polynomial_identity_needs_only_the_arithmetic_multiplied_out() -> None:
     [_, (how, script)] = attempts(ROW_SAME, part_statement(ROW_SAME, "row"))
     assert how == "omega, with the arithmetic multiplied out"

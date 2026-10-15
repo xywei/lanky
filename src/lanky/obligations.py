@@ -916,12 +916,14 @@ def attempts(part: Part, statement: LeanStatement) -> list[tuple[str, str]]:
         else:
             split_lines += lines_of_split
     if getattr(hints, "multiplies", False) and not mathlib:
-        # where unknowns multiply, the hints above are tried only with the
+        # where unknowns multiply, the hints above are tried with the
         # products and quotients, and the arithmetic multiplied out
         found = _multiplied_attempt(statement, hints, lines, said, split_lines)
         if found is not None:
             out.append((found[0], intro + found[1]))
-        return out
+            return out
+        # a witness in pieces, which that script does not give: the script
+        # below, as a part with no products has it (Codex)
     if split_lines:
         lines += split_lines
         said.append("a case split")
