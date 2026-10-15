@@ -20,7 +20,7 @@ from pathlib import Path
 import pymbolic.primitives as prim
 import pytest
 
-from conftest import claims, plugin_arguments
+from conftest import claims, plugin_arguments, without_lean_line
 from lanky import cli
 from lanky.check import check_path, import_path
 from lanky.ledger import Status
@@ -285,7 +285,7 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(capsys) -> None:
         shown.append(line)
     proved = any(fact.status is Status.PROVED for fact in claims(check_path(DEMO)))
     if proved:
-        shown = [_with_lean(line) for line in shown if not line.startswith("WITHOUT LEAN:")]
+        shown = [_with_lean(line) for line in without_lean_line(shown)]
     assert cli.main(["check", str(DEMO)]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
     assert len(shown) == len(printed)

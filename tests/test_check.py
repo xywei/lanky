@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from conftest import ProcessWatch, claims
+from conftest import ProcessWatch, claims, without_lean_line
 from lanky import cli
 from lanky.check import check_path, oracle_lines
 from lanky.ledger import Fact, Ledger, Status
@@ -2662,7 +2662,7 @@ def test_the_quickstart_shows_the_ledger_nicomachus_prints(capsys) -> None:
     assert cli.main(["check", str(root / "examples" / "nicomachus.py")]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
     # a machine without Lean says so above what it lacks with Lean, Mathlib
-    assert shown == [line for line in printed if not line.startswith("WITHOUT LEAN:")]
+    assert shown == without_lean_line(printed)
 
 
 # }}}

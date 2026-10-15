@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import claims
+from conftest import claims, without_lean_line
 from lanky import cli
 from lanky.check import check_path
 from lanky.ledger import Status
@@ -352,10 +352,6 @@ def _whole_rows(printed: str) -> list[str]:
     return rows
 
 
-def _without_lean_line(lines: list[str]) -> list[str]:
-    """``lines`` but for the ``WITHOUT LEAN`` line, which only a machine without Lean prints."""
-    return [line for line in lines if not line.startswith("WITHOUT LEAN:")]
-
 
 def test_the_quickstart_shows_what_python_prints() -> None:
     """The quickstart's run of the demonstration is a real one, line for line."""
@@ -374,10 +370,10 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(cas, capsys) -> None:
     The ``WITHOUT LEAN`` line a machine without Lean prints under the table
     is left out on both sides.
     """
-    shown = _without_lean_line(_shown("uv run lanky check examples/sumpy_recurrence.py"))
+    shown = without_lean_line(_shown("uv run lanky check examples/sumpy_recurrence.py"))
     assert cli.main(["check", str(DEMO)]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
-    printed = _without_lean_line(printed)
+    printed = without_lean_line(printed)
     assert len(shown) == len(printed)
     for doc, real in zip(shown, printed, strict=True):
         if doc and set(doc) <= {"-", " "}:
