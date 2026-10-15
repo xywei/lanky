@@ -397,6 +397,40 @@ def gathered(nc: Nat, nv: Nat, cell: Fn[Fin[nc], Fin[nv]], x: Fn[Fin[nc], Real])
 
 
 @theorem
+def transposed(
+    nf: Nat,
+    m: Nat,
+    nv: Nat,
+    node: Fn[Fin[nf], Fin[m], Fin[nv]],
+    h: Fn[Fin[nf], Fin[m], Real],
+    u: Fn[Fin[nv], Real],
+) -> sum(
+    sum(h[f, a] for f in Fin[nf] for a in Fin[m] if node[f, a] == i) * u[i]
+    for i in Fin[nv]
+) == sum(h[f, a] * u[node[f, a]] for f in Fin[nf] for a in Fin[m]):
+    """A scatter is the transpose of a gather: what it adds into ``i``, weighted by ``u[i]``."""
+
+
+@theorem
+def transposed_weight_first(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], h: Fn[Fin[nf], Real], u: Fn[Fin[nv], Real]
+) -> sum(u[i] * sum(h[p] for p in Fin[nf] if node[p] == i) for i in Fin[nv]) == sum(
+    h[p] * u[node[p]] for p in Fin[nf]
+):
+    """The same with the weight first on the left and last on the right."""
+
+
+@theorem
+def _two_fibers(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], h: Fn[Fin[nf], Real]
+) -> sum(
+    sum(h[p] for p in Fin[nf] if node[p] == i) * sum(h[p] for p in Fin[nf] if node[p] == i)
+    for i in Fin[nv]
+) == sum(h[p] for p in Fin[nf]):
+    """False: the squares of what a scatter adds are not its total."""
+
+
+@theorem
 def three_rows(J: Real, u: Fn[Fin[3], Real]) -> all(
     J * (u[j] + u[0]) == J * u[j] + J * u[0] for j in Fin[3]
 ):
@@ -1085,6 +1119,37 @@ def test_a_scatter_keeps_its_total_by_a_script_python_writes() -> None:
     assert fiber_scripts(statement_of(factorized.term, "factorized", mathlib=True)) == []
 
 
+def test_a_scatter_is_the_transpose_of_a_gather_by_the_same_script() -> None:
+    """A weight at ``i`` moves into the fibers' sums and their ``if`` before the exchanges.
+
+    ``Finset.sum_ite_eq`` then puts it at the cell's node, ``u[node[f, a]]``,
+    which is the gather on the right; ``ring1`` closes a weight written on the
+    other side of the value.
+    """
+    statement = statement_of(transposed.term, "transposed", mathlib=True)
+    (script,) = fiber_scripts(statement)
+    lines = script.splitlines()
+    assert lines[0] == (
+        "simp only [Finset.sum_filter, Finset.sum_mul, Finset.mul_sum, ite_mul, "
+        "mul_ite, zero_mul, mul_zero]"
+    )
+    assert lines[1:5] == [
+        "rw [Finset.sum_comm]",
+        "refine Finset.sum_congr rfl fun f_ hf_ => ?_",
+        "rw [Finset.sum_comm]",
+        "refine Finset.sum_congr rfl fun a_ ha_ => ?_",
+    ]
+    assert lines[-1] == "all_goals ring1"
+    assert script in tactic_ladder(statement)
+    first = statement_of(transposed_weight_first.term, "first", mathlib=True)
+    (script,) = fiber_scripts(first)
+    assert script.splitlines()[0].startswith("simp only [Finset.sum_filter, Finset.sum_mul")
+    # a weight on a sum that is not over a fiber has no script
+    assert fiber_scripts(statement_of(factorized.term, "factorized", mathlib=True)) == []
+    # nor does a product of two fibers' sums, which is no scatter
+    assert fiber_scripts(statement_of(_two_fibers.term, "_two_fibers", mathlib=True)) == []
+
+
 def test_a_conjunction_is_proved_a_conjunct_at_a_time() -> None:
     """``all(... for j in Fin[3])`` is three equations, which ``ring`` proves one at a time."""
     statement = statement_of(three_rows.term, "three_rows", mathlib=True)
@@ -1592,7 +1657,9 @@ def test_mathlib_proves_real_and_complex_claims(mathlib_oracle: LeanOracle, clai
 
 
 @pytest.mark.parametrize(
-    "claim", [scattered, gathered, three_rows], ids=lambda claim: claim.__name__
+    "claim",
+    [scattered, gathered, transposed, transposed_weight_first, three_rows],
+    ids=lambda claim: claim.__name__,
 )
 def test_mathlib_proves_a_scatter_keeps_its_total_and_a_conjunction(
     mathlib_oracle: LeanOracle, claim

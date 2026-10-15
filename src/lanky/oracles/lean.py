@@ -1452,6 +1452,31 @@ def _fiber(sum_term: Any, outer: Var) -> tuple[Any, tuple[Var, ...]] | None:
     return mapped, binders
 
 
+def _weighted_fiber(term: Any, outer: Var) -> tuple[Any, tuple[Var, ...]] | None:
+    """A sum over a fiber of a map, times other factors: its map and its binders.
+
+    ``sum(h[p] for p in Fin[nf] if node[p] == i) * u[i]`` with ``outer`` the
+    ``i``: one factor of the product is a sum :func:`_fiber` reads, and the
+    others, the weight, may mention ``i``. ``None`` for any other term.
+    """
+    if not isinstance(term, prim.Product):
+        return None
+    found = [fiber for fiber in (_fiber(child, outer) for child in term.children) if fiber]
+    return found[0] if len(found) == 1 else None
+
+
+#: What moves a weight into the sums over a fiber and through their ``if``,
+#: either side of the product.
+_WEIGHT_INWARD = (
+    "Finset.sum_mul",
+    "Finset.mul_sum",
+    "ite_mul",
+    "mul_ite",
+    "zero_mul",
+    "mul_zero",
+)
+
+
 def fiber_scripts(statement: LeanStatement) -> list[str]:
     """Add up the sums over the fibers of a map: the total of what a scatter adds.
 
@@ -1463,14 +1488,22 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
     ``Fin[nv]``. That is a scatter-add keeping the total: every cell's value
     lands in exactly one ``y[i]``.
 
+    The sums over the fibers, written out, may also carry a weight at ``i``:
+    ``sum(sum(h[p] for p in Fin[nf] if node[p] == i) * u[i] for i in
+    Fin[nv]) == sum(h[p] * u[node[p]] for p in Fin[nf])``. That is the
+    scatter as the transpose of the gather ``u[node[p]]``, and the total is
+    its weight ``1``.
+
     The script is the proof by hand, with the order of the sums read off the
     statement: rewrite ``y[i]`` with its hypothesis under the sum
     (``Finset.sum_congr``), turn the filter into an ``if``
-    (``Finset.sum_filter``), move the sum over ``i`` inside the map's
-    arguments one exchange at a time (``Finset.sum_comm``), each time
+    (``Finset.sum_filter``), and move a weight inside the sums and the ``if``
+    (``Finset.sum_mul``, ``ite_mul``), move the sum over ``i`` inside the
+    map's arguments one exchange at a time (``Finset.sum_comm``), each time
     stepping under the outer sum on both sides, add up the ``if`` over ``i``
-    (``Finset.sum_ite_eq``), which leaves whether ``cell[c, k]`` is a point
-    of ``Fin[nv]``, and show it is from the bound the family's type gives
+    (``Finset.sum_ite_eq``), which puts the weight at ``cell[c, k]`` and
+    leaves whether ``cell[c, k]`` is a point of ``Fin[nv]``, and show it is
+    from the bound the family's type gives
     (:func:`lanky.lean.codomain_bound`). Lean checks every step, so a shape
     read wrongly costs an attempt and never a proof.
     """
@@ -1494,6 +1527,10 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
         outer = outer_side.binders[0][0]
         head = ["symm"] if flip else []
         fiber = _fiber(outer_side.body, outer)
+        weighted = False
+        if fiber is None:
+            fiber = _weighted_fiber(outer_side.body, outer)
+            weighted = fiber is not None
         if fiber is None:
             # y[i], with a hypothesis that says what it is
             applied = _application(outer_side.body)
@@ -1539,7 +1576,9 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
             var.name: (_fresh(f"{var.name}_", used), _fresh(f"h{var.name}_", used))
             for var in binders
         }
-        steps = [*head, f"simp only [{statement.qualified('Finset.sum_filter')}]"]
+        rewrites = ["Finset.sum_filter", *(_WEIGHT_INWARD if weighted else ())]
+        names_used = ", ".join(statement.qualified(name) for name in rewrites)
+        steps = [*head, f"simp only [{names_used}]"]
         for var in binders:
             point, held = names[var.name]
             steps.append(f"rw [{statement.qualified('Finset.sum_comm')}]")
@@ -1556,6 +1595,9 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
         steps.append(
             f"rw [if_pos ({member}.mpr ⟨by omega, {bounds[family]} {arguments}⟩)]"
         )
+        if weighted:
+            # the weight may stand on the other side of the value on the right
+            steps.append("all_goals ring1")
         scripts.append("\n".join(steps))
     return scripts
 

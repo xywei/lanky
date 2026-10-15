@@ -468,6 +468,107 @@ def test_a_chained_application_in_bounds_still_prints() -> None:
 
 
 @theorem
+def gathered_through(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], u: Fn[Fin[nv], Int]
+) -> all(u[node[p]] * u[node[p]] >= 0 for p in Fin[nf]):
+    """A family applied at another's value: a gather through a map into its domain."""
+
+
+@theorem
+def _gathered_past_the_end(
+    nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv + 1]], u: Fn[Fin[nv], Int]
+) -> all(u[node[p]] * u[node[p]] >= 0 for p in Fin[nf]):
+    """The same through a map whose values reach ``nv``, one point past ``u``'s domain.
+
+    The name is private so that the pytest plugin does not collect a
+    statement about a value ``u`` does not have.
+    """
+
+
+def test_a_gather_through_a_map_into_the_domain_prints_with_the_maps_bound() -> None:
+    """``u[node[p]]`` is in ``u``'s domain because ``node``'s values are, by type.
+
+    ``node[p]`` is not affine, so the bounds of the binders cannot place it;
+    its type does, and the statement takes ``node``'s bound as a hypothesis
+    (:func:`lanky.lean.codomain_bound`), so Lean knows it too. Printed as one
+    proposition, with no such hypothesis, it is declined; through a map whose
+    values reach past the domain it is declined either way.
+    """
+    statement = statement_of(gathered_through.term, "gathered_through")
+    assert [family for family, _ in statement.codomain_bounds] == ["node"]
+    assert "(h2 : ∀ node_arg : Int, 0 ≤ node_arg → node_arg < nf → (node node_arg : Int) < nv)" in (
+        statement.source("sorry")
+    )
+    assert "u (node p : Int)" in statement.goal
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        print_lean(gathered_through.term)
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        statement_of(_gathered_past_the_end.term, "past_the_end")
+
+
+def test_a_family_bound_again_inside_is_not_the_one_whose_bound_is_taken() -> None:
+    """``node``'s bound is a hypothesis about the statement's own ``node``.
+
+    A quantifier inside that binds ``node`` again, even at the same type
+    object, binds a family the hypothesis says nothing about, so ``u`` applied
+    at its value is declined (Codex on #141).
+    """
+    nf, nv, node, u, p = Var("nf"), Var("nv"), Var("node"), Var("u"), Var("p")
+    maps = Fn[Fin[nf], Fin[nv]]
+    claim = Forall(
+        ((nf, Nat), (nv, Nat), (node, maps), (u, Fn[Fin[nv], Int])),
+        Forall(((node, maps),), Forall(((p, FinType(nf)),), u(node(p)) * u(node(p)) >= 0)),
+    )
+    with pytest.raises(UnsupportedTerm, match="outside the domain"):
+        statement_of(claim, "shadowed")
+    # the same claim with no binder inside is the gather, and prints
+    plain = Forall(claim.binders, Forall(((p, FinType(nf)),), u(node(p)) * u(node(p)) >= 0))
+    assert "u (node p : Int)" in statement_of(plain, "plain").goal
+
+
+def test_a_size_bound_again_inside_is_not_the_one_a_family_type_means() -> None:
+    """``node: Fn[Fin[1], Fin[n]]`` under an inner ``n in Fin[m]`` (Codex on #141).
+
+    The bounds in scope are the inner ``n``'s, and ``node``'s values are below
+    the outer one, which may be past ``u``'s domain; read against the inner
+    one, ``u[node[0]]`` looked in bounds. A family's own domain has the same
+    trap, ``u[i]`` for an ``i`` below an inner ``m``, which may be past the
+    outer ``m`` of ``u``'s domain. Both are declined, naming the binder.
+    """
+    n, m, i, node, u = Var("n"), Var("m"), Var("i"), Var("node"), Var("u")
+    gather = Forall(
+        ((n, Nat), (m, Nat), (node, Fn[Fin[1], Fin[n]]), (u, Fn[Fin[m], Int])),
+        Forall(((n, FinType(m)),), u(node(0)) * u(node(0)) >= 0),
+    )
+    with pytest.raises(UnsupportedTerm, match="binds n again"):
+        statement_of(gather, "shadowed_size")
+    own = Forall(
+        ((m, Nat), (u, Fn[Fin[m], Int])),
+        Forall(((m, FinType(5)),), Forall(((i, FinType(m)),), u(i) * u(i) >= 0)),
+    )
+    with pytest.raises(UnsupportedTerm, match="binds m again"):
+        print_lean(own)
+    # a gather into the domain the values are bounded by prints with an inner
+    # binder named apart, and is declined with one that binds n again
+    k = Var("k")
+    into = ((n, Nat), (m, Nat), (node, Fn[Fin[1], Fin[n]]), (u, Fn[Fin[n], Int]))
+    apart = Forall(into, Forall(((k, FinType(m)),), u(node(0)) * u(node(0)) >= 0))
+    assert "u (node 0 : Int)" in statement_of(apart, "apart").goal
+    again = Forall(into, Forall(((n, FinType(m)),), u(node(0)) * u(node(0)) >= 0))
+    with pytest.raises(UnsupportedTerm, match="binds n again"):
+        statement_of(again, "again")
+    # a family bound after the inner n means that one: a cited theorem's own
+    # parameters inside a claim with the same names
+    off = Var("off")
+    offsets = Fn[Fin[n + 1], Int]
+    cited = Forall(
+        ((n, Nat), (off, offsets)),
+        Forall(((n, Nat), (off, offsets)), off(n) * off(n) >= 0),
+    )
+    assert "off n * off n ≥ 0" in print_lean(cited)
+
+
+@theorem
 def _over_a_refined_domain(fam: Fn[Fin[1] & False, Nat]) -> fam(0) == fam(0):
     """A family over a domain a refinement empties, applied at ``0``.
 
