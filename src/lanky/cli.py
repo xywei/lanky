@@ -98,6 +98,7 @@ __all__ = [
     "report_missing",
     "report_proved",
     "report_unproved",
+    "terminal_columns",
 ]
 
 
@@ -367,7 +368,7 @@ class CheckVerb:
         ``--show-lean`` prints the Lean last (see :meth:`_report_lean`);
         neither fails the check.
         """
-        print(ledger.render(columns=_terminal_columns()))
+        print(ledger.render(columns=terminal_columns()))
         report_proved(ledger)
         report_missing(ledger)
         CheckVerb._report_citations(ledger)
@@ -732,10 +733,17 @@ def report_missing(ledger: Ledger) -> None:
     claims and a count of the rest, why they are not proved, and the
     command that installs the piece (its ``remedy``)::
 
-        WITHOUT LEAN (lean is not on PATH): compressed_taylor, on_every_triangle
-        and 41 more rows are not proved. To have Lean prove what it can: pip
-        install "lanky[lean]", and Lean v4.29.1 from elan (elan default
+        WITHOUT LEAN: compressed_taylor, on_every_triangle and 40 more rows
+        are not proved. To have Lean prove what it can: pip install
+        "lanky[lean]", and Lean v4.29.1 from elan (elan default
         leanprover/lean4:v4.29.1).
+
+    Where the piece is installed and does not work, a Lean whose REPL could
+    not be built, say, there is no command to give, and the line says why
+    instead, as ``--verbose`` does: ``WITHOUT LEAN (<the reason>): ...``.
+    The line depends on what is installed and not on why it is not, so a
+    machine without Lean and a CI job with ``LANKY_LEAN_DISABLE`` print the
+    same one.
 
     ``lanky check`` prints it under the ``LEAN`` line (:func:`report_proved`),
     and so can a plugin's verb that prints a ledger. Nothing is printed when
@@ -758,14 +766,15 @@ def report_missing(ledger: Ledger) -> None:
     for piece, (oracle, facts) in lacking.items():
         rows, many = _rows_named(facts)
         heading = f"WITHOUT {_PIECE_NAMES.get(piece, piece.upper())}"
-        if piece == "lean":
-            _, reason = oracle_availability(oracle)
-            if reason:
-                heading += f" ({reason})"
         try:
             remedy = oracle.remedy(piece) if callable(getattr(oracle, "remedy", None)) else ""
         except Exception:  # noqa: BLE001 - as above
             remedy = ""
+        if not remedy:
+            # installed and not working: the reason is what there is to say
+            _, reason = oracle_availability(oracle)
+            if reason:
+                heading += f" ({reason})"
         line = f"{heading}: {rows} {'are' if many else 'is'} not proved"
         why = _WHY_MISSING.get(piece)
         if why is not None:
@@ -799,7 +808,7 @@ def _rows_named(facts: list[Fact]) -> tuple[str, bool]:
     return words, len(named) > 1
 
 
-def _terminal_columns() -> int | None:
+def terminal_columns() -> int | None:
     """How wide the terminal the ledger is printed in is; ``None`` when it goes elsewhere.
 
     The table fits a terminal (see :meth:`lanky.ledger.Ledger.render`), and

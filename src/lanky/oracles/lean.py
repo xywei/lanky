@@ -2600,38 +2600,51 @@ class LeanOracle:
 
         ``"lean"``
             Lean cannot be driven from here (:meth:`availability`), and
-            ``fact`` is one it would be asked about: a statement the printer
-            states in either dialect, or a plugin's claim
-            (:mod:`lanky.obligations`).
+            ``fact`` is one it would be asked about and has something to
+            check in: a statement the printer states in either dialect, or a
+            plugin's claim whose obligation has parts (:mod:`lanky.obligations`;
+            one the plugin states for its own solver only is not counted,
+            since Lean would not prove it either).
         ``"mathlib"``
             ``fact`` is a statement only Lean with Mathlib can state, and no
             Mathlib project is set (``LANKY_LEAN_MATHLIB``): the printer
-            declines it in core Lean and states it with Mathlib, or, for a
-            plugin's claim, Lean said so when it was asked
-            (``lean_needs_mathlib``).
+            declines it in core Lean and states it with Mathlib, or a part of
+            a plugin's claim is about real numbers (:attr:`Part.mathlib
+            <lanky.obligations.Part.mathlib>`).
         ``"cas"``
             Lean has Mathlib and did not prove ``fact``, an induction over
             families (:func:`induction_over_families`), and sympy, which finds
             the steps Lean checks (:mod:`lanky.induction`), does not import.
 
         A fact proved, certified or refuted lacks nothing, and so do a
-        claim's reading, an axiom and a fact with no term, which Lean is not
-        asked about. Without Lean, whether a plugin's claim needs Mathlib is
-        not known: the plugin states it only when Lean is asked. And nothing
-        is lacking where ``LANKY_LEAN_DISABLE`` is set, which says that Lean
-        is not wanted, as in a CI job that checks what a machine without Lean
-        prints.
+        claim's reading, an axiom, a fact with no term, a claim whose reading
+        is refuted (``unfaithful``, offered to no oracle) and one Lean is
+        told to decline (:attr:`declines`), which Lean is not asked about.
+        ``LANKY_LEAN_DISABLE`` is read as a machine without Lean,
+        so that a CI job that sets it prints what such a machine prints.
+        What a fact lacks is read from its statement and not from the
+        machine, but for whether Lean and Mathlib are there, so the same
+        rows are named with Lean as without it.
         """
         settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
         if fact.status in settled or fact.is_reading or fact.is_axiom or fact.term is None:
             return ()
-        if os.environ.get("LANKY_LEAN_DISABLE"):
+        if fact.provenance.get("unfaithful") or fact.id in self.declines:
             return ()
         available, _ = self.availability()
+        with_mathlib = mathlib_mode.project_directory() is not None
         if callable(getattr(fact.term, "lean_obligation", None)):
-            if not available:
-                return ("lean",)
-            return ("mathlib",) if fact.provenance.get("lean_needs_mathlib") else ()
+            if available:
+                # Lean was asked, and said whether it needs Mathlib
+                return ("mathlib",) if fact.provenance.get("lean_needs_mathlib") else ()
+            try:
+                obligation = obligation_of(fact.term)
+            except Exception:  # noqa: BLE001 - a plugin's failure is said when Lean is asked
+                return ()
+            if obligation is None or obligation.declined or not obligation.parts:
+                return ()
+            reals = any(getattr(part, "mathlib", False) for part in obligation.parts)
+            return ("lean", "mathlib") if reals and not with_mathlib else ("lean",)
         owner = fact.owner or fact.id
         stated: dict[bool, LeanStatement] = {}
         for mathlib in (False, True):
@@ -2644,7 +2657,6 @@ class LeanOracle:
         needs: list[str] = []
         if not available:
             needs.append("lean")
-        with_mathlib = mathlib_mode.project_directory() is not None
         if False not in stated and not with_mathlib:
             needs.append("mathlib")
         if (
@@ -2661,15 +2673,21 @@ class LeanOracle:
         """The command that installs a piece :meth:`missing` names; empty when there is none.
 
         ``"lean"`` is the extra and the toolchain, whichever of the two is
-        not there; a Lean that is installed and could not be started has no
-        command, and its reason, which :meth:`availability` gives, says why.
+        not there, and both where ``LANKY_LEAN_DISABLE`` is set, which reads
+        as a machine with neither; a Lean that is installed and could not be
+        started has no command, and its reason, which :meth:`availability`
+        gives, says why.
         """
         if piece == "lean":
+            disabled = bool(os.environ.get("LANKY_LEAN_DISABLE"))
             steps = []
-            if not _lean_interact_installed():
+            if disabled or not _lean_interact_installed():
                 steps.append('pip install "lanky[lean]"')
-            if shutil.which("lean") is None:
-                steps.append("Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1)")
+            if disabled or shutil.which("lean") is None:
+                steps.append(
+                    f"Lean {mathlib_mode.MATHLIB_REVISION} from elan "
+                    f"(elan default {mathlib_mode.TOOLCHAIN})"
+                )
             return ", and ".join(steps)
         if piece == "mathlib":
             return (

@@ -637,7 +637,7 @@ class Ledger:
             max(len(headers[-1]), max(len(line) for lines in statements for line in lines))
         )
         lines = [
-            "  ".join(h.upper().ljust(w) for h, w in zip(headers, widths, strict=True)),
+            "  ".join(h.upper().ljust(w) for h, w in zip(headers, widths, strict=True)).rstrip(),
             "  ".join("-" * w for w in widths),
         ]
         indent = sum(widths[:-1]) + 2 * len(widths[:-1])
@@ -768,11 +768,12 @@ def wrap(text: str, width: int, indent: str = "  ") -> list[str]:
 
     Each line is broken at the space :func:`_break_at` picks: outside the
     brackets where it can be, so that ``D[i, a, b + 2]`` and ``Fin(n + 1)``
-    stay whole, and where the statement has a seam, before an ``and`` or
-    after a label's ``:`` or a quantifier's ``.``. A line after a break
-    inside brackets is indented two more spaces for each bracket it is in,
-    so that the guard of a ``forall`` inside a conjunction reads as the
-    ``forall``'s and not as the conjunction's::
+    stay whole, and where the statement has a seam (:func:`_seam`), before
+    an ``and`` that joins two claims or after a label's ``:`` or a
+    quantifier's ``.``, and failing that before a guard's ``where``. A line
+    after a break inside brackets is indented two more spaces for each
+    bracket it is in, so that the guard of a ``forall`` inside a
+    conjunction reads as the ``forall``'s and not as the conjunction's::
 
         (forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10.
             R[i, a, b] == C[i, a, b])
@@ -781,19 +782,12 @@ def wrap(text: str, width: int, indent: str = "  ") -> list[str]:
 
     A word longer than a line is kept whole.
     """
-    depths: list[int] = []
-    depth = 0
-    for char in text:
-        if char in ")]}":
-            depth = max(depth - 1, 0)
-        depths.append(depth)
-        if char in "([{":
-            depth += 1
+    depths, guarded = _structure(text)
     lines: list[str] = []
     lead = ""
     start = 0
     while len(lead) + len(text) - start > width:
-        cut = _break_at(text, depths, start, max(width - len(lead), 1))
+        cut = _break_at(text, depths, guarded, start, max(width - len(lead), 1))
         if cut is None:
             break
         lines.append(lead + text[start:cut])
@@ -803,10 +797,47 @@ def wrap(text: str, width: int, indent: str = "  ") -> list[str]:
     return lines
 
 
-def _break_at(text: str, depths: list[int], start: int, room: int) -> int | None:
+def _structure(text: str) -> tuple[list[int], list[bool]]:
+    """How many brackets each character of ``text`` is inside, and whether it is in a guard.
+
+    A guard runs from a ``where`` to the word that ends in ``.`` at the same
+    depth, the ``.`` that ends a quantifier's binders: in ``forall a in Nat
+    where a < 2 and a <= p. R[a] == D[a]``, the ``and`` is the guard's, and
+    breaking a line before it would read as a conjunction of two claims.
+    A bracket that closes ends a guard opened inside it.
+    """
+    depths: list[int] = []
+    guarded: list[bool] = []
+    open_at: set[int] = set()
+    depth = 0
+    word_start = True
+    for position, char in enumerate(text):
+        if char in ")]}":
+            depth = max(depth - 1, 0)
+            open_at = {level for level in open_at if level <= depth}
+        if word_start and char != " ":
+            word = text[position:].split(" ", 1)[0]
+            if word == "where":
+                open_at.add(depth)
+        depths.append(depth)
+        guarded.append(depth in open_at)
+        if char in "([{":
+            depth += 1
+        word_start = char == " "
+        if char == "." and depth in open_at and (
+            position + 1 == len(text) or text[position + 1] == " "
+        ):
+            open_at.discard(depth)
+    return depths, guarded
+
+
+def _break_at(
+    text: str, depths: list[int], guarded: list[bool], start: int, room: int
+) -> int | None:
     """Where to break ``text`` after ``start`` for a line of ``room`` characters; ``None`` for none.
 
-    ``depths`` is how many brackets each character of ``text`` is inside.
+    ``depths`` is how many brackets each character of ``text`` is inside,
+    and ``guarded`` whether it is in a guard (:func:`_structure`).
     Of the spaces that leave a line that fits, those outside the most
     brackets are taken, among those that leave the line at least a third
     full, and of those the ones that leave a sixth of a line or more to
@@ -834,21 +865,26 @@ def _break_at(text: str, depths: list[int], start: int, room: int) -> int | None
                 if depth == level and p - start >= floor and end - p - 1 >= widow
             ]
             if candidates:
-                best = min(_seam(text, p) for p in candidates)
-                return [p for p in candidates if _seam(text, p) == best][-1]
+                seams = {p: _seam(text, p, guarded[p]) for p in candidates}
+                best = min(seams.values())
+                return [p for p in candidates if seams[p] == best][-1]
     return fitting[-1][0]
 
 
-def _seam(text: str, position: int) -> int:
+def _seam(text: str, position: int, guarded: bool = False) -> int:
     """How good a place to break the space at ``position`` is: 0 the best, 2 the worst.
 
-    0 before ``and`` or ``or``, so that the line after starts with it, and
-    after a word that ends in ``:`` (a label: ``| pde:``, ``by lemma, ...:``)
-    or in ``.`` (the binders of a ``forall``); 1 after a ``,``, between two
-    items of a list; 2 anywhere else, the ``:`` of ``n : Nat`` included.
+    0 before ``and`` or ``or`` that join two claims, so that the line after
+    starts with it, and after a word that ends in ``:`` (a label: ``|
+    pde:``, ``by lemma, ...:``) or in ``.`` (the binders of a ``forall``);
+    1 before a guard's ``where``, and after a ``,``, between two items of a
+    list; 2 anywhere else, the ``:`` of ``n : Nat`` and an ``and`` inside a
+    guard (``guarded``) included.
     """
     before = text[:position].rsplit(" ", 1)[-1]
     after = text[position + 1 :].split(" ", 1)[0]
-    if after in _CONNECTIVES or (len(before) > 1 and before.endswith((":", "."))):
+    if after in _CONNECTIVES:
+        return 2 if guarded else 0
+    if len(before) > 1 and before.endswith((":", ".")):
         return 0
-    return 1 if before.endswith(",") else 2
+    return 1 if after == "where" or before.endswith(",") else 2

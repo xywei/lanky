@@ -246,7 +246,7 @@ def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order
     """
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
-    rows = [line for line in printed.splitlines() if "compressed_taylor" in line]
+    rows = [line for line in _whole_rows(printed) if "  compressed_taylor  " in line]
     assert rows[0].startswith("tested                  mpmath  sumpy_recurrence.py:")
     assert rows[1].startswith("decided (heuristic)     cas     sumpy_recurrence.py:")
     assert rows[2].startswith("assumed under harmonic  -       sumpy_recurrence.py:")
@@ -336,6 +336,27 @@ def _cells(line: str) -> list[str]:
     return re.split(r"\s{2,}", line.rstrip())
 
 
+def _whole_rows(printed: str) -> list[str]:
+    """The lines ``lanky check`` printed, each wrapped statement joined back to its row.
+
+    A statement too long for its column goes on under it, indented, and is
+    broken only at spaces, so a line that starts with one continues the row
+    above it.
+    """
+    rows: list[str] = []
+    for line in printed.splitlines():
+        if line.startswith(" ") and rows:
+            rows[-1] += " " + line.strip()
+        else:
+            rows.append(line)
+    return rows
+
+
+def _without_lean_line(lines: list[str]) -> list[str]:
+    """``lines`` but for the ``WITHOUT LEAN`` line, which only a machine without Lean prints."""
+    return [line for line in lines if not line.startswith("WITHOUT LEAN:")]
+
+
 def test_the_quickstart_shows_what_python_prints() -> None:
     """The quickstart's run of the demonstration is a real one, line for line."""
     run = subprocess.run(
@@ -350,10 +371,13 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(cas, capsys) -> None:
     """The quickstart's table for the demonstration is the real one, with the CAS oracle on.
 
     Every column is sized to what it holds, so the rows are compared cell by cell.
+    The ``WITHOUT LEAN`` line a machine without Lean prints under the table
+    is left out on both sides.
     """
-    shown = _shown("uv run lanky check examples/sumpy_recurrence.py")
+    shown = _without_lean_line(_shown("uv run lanky check examples/sumpy_recurrence.py"))
     assert cli.main(["check", str(DEMO)]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+    printed = _without_lean_line(printed)
     assert len(shown) == len(printed)
     for doc, real in zip(shown, printed, strict=True):
         if doc and set(doc) <= {"-", " "}:
