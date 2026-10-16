@@ -22,6 +22,31 @@ All notable changes to lanky are recorded here. The format follows
   larger budget or timeout, asks Lean again. The record never proves
   anything: a claim proved after an attempt that timed out is proved by
   the kept answer that closed it, read back as before.
+- **A counterexample to a part about reals is read back without Mathlib**
+  (#155). The cache was read first only for a counterexample to an integer
+  part, so with Mathlib a warm check started the session that imports
+  Mathlib for one the cold check had confirmed, or had run out of time on.
+  It is now read under the Mathlib project's key, as the part's answers
+  are, and the warm check says what the cold one said without a session.
+  A counterexample to an integer part beside a part about reals no longer
+  imports Mathlib at all: it is checked in core Lean, where its part is.
+- **A part's stop record names the attempts its fallback adds** (#155).
+  The record of where a part stopped was kept under its own attempts
+  alone, so a plugin that changed the case splits its fallback gives, the
+  statement and the part's hints the same, had a warm check say the old
+  "ran out of time" again instead of trying the new splits. The record is
+  now kept under every attempt the check reached, the fallback's among
+  them once it was asked for, so new ones are asked; a fallback the check
+  did not reach is not asked for to make the key. A record never proved
+  anything, so only a part left open was affected.
+- **`python -m lanky.mathlib mathlib` keeps the downloads in `mathlib`**
+  (#155). With a relative `DIR`, the cache tool, which runs in the project,
+  read `MATHLIB_CACHE_DIR=mathlib/.lake/mathlib-cache` from there, so the
+  408 MB of archives went to `mathlib/mathlib/.lake/mathlib-cache`, and the
+  command reported 0 MB in the place it meant. `DIR` and a relative
+  `MATHLIB_CACHE_DIR` are now read from the current directory before the
+  tool starts, and the closing lines name the project in full: `ready:
+  export LANKY_LEAN_MATHLIB=/home/you/mathlib`, which works from anywhere.
 - **`python -m lanky.mathlib DIR` keeps Mathlib's packed downloads in the
   project** (#151). The cache tool kept its 408 MB of archives in
   `~/.cache/mathlib`, outside `DIR`, so deleting the project left them

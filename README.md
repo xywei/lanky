@@ -783,8 +783,9 @@ Lean's answers are kept in `$XDG_CACHE_HOME/lanky/proofs`
 (`~/.cache/lanky/proofs` by default; `LANKY_LEAN_PROOF_CACHE` moves it, and
 `off` turns it off), so a check after the first starts no Lean. A question the first check ran out of time on, its
 budget spent or an attempt timed out, is kept as where it stopped: the next
-check reads the same row back, and asks Lean again only when it is given more
-time, a larger budget or timeout.
+check reads the same row back, with Mathlib as without it, and asks Lean
+again only when it is given more time, a larger budget or timeout, or has
+other attempts to send, such as the new case splits of a plugin's solver.
 
 For work on lanky itself:
 

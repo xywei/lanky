@@ -2754,22 +2754,6 @@ def _claim_questions(statement: LeanStatement, ladder: list[str]) -> list[str]:
     return sources + [statement.source(tactic) for tactic in ladder]
 
 
-def _part_questions(part: Any, owner: str) -> list[str] | None:
-    """Every declaration of a part's own attempts, in order; ``None`` for a part with none.
-
-    What a stop record of the part is kept under (:meth:`ProofCache.stop`):
-    the part's statement and its hints, and so its solver's answer, are in
-    them. The attempts its fallback adds are not, since they are only asked
-    for once the part's own have failed (:meth:`LeanOracle._check_part`).
-    """
-    try:
-        statement = part_statement(part, theorem_name(owner, part))
-    except (UnsupportedTerm, AttributeError, TypeError, ValueError):
-        return None
-    sources = [statement.source(tactic) for _how, tactic in attempts(part, statement)]
-    return sources or None
-
-
 #: What an attempt the stop record passes over answers on a check after the
 #: one that stopped (:meth:`LeanOracle._part_from_cache`): not answered.
 _LEFT_OPEN = "not answered in the time the check that kept it had"
@@ -3535,13 +3519,21 @@ class LeanOracle:
         directory = self.session.mathlib if reals else None
         version = self._cache_version()
         real_key = _mathlib_key(directory) if reals else None
+        counter = obligation.counterexample
+        if counter is not None:
+            # a counterexample is checked where its part would be: in the
+            # Mathlib session for a part about reals, in the core pool else
+            refuted = next((p for p in obligation.parts if p.name == counter.part), None)
+            on_reals = refuted is not None and bool(getattr(refuted, "mathlib", False))
+        else:
+            on_reals = reals
         records: list[dict] | None = None
-        if obligation.counterexample is not None:
-            # every answer from the cache, or none: no session is started (#118)
-            if version is not None and not reals:
-                found = self._check_counterexample(
-                    fact, obligation, owner, None, version, budget
-                )
+        if counter is not None:
+            # every answer from the cache, or none: no session is started
+            # (#118); one about reals is kept under the Mathlib project's key
+            key = real_key if on_reals else version
+            if key is not None:
+                found = self._check_counterexample(fact, obligation, owner, None, key, budget)
                 if found is not None:
                     return found
         elif not reals or real_key is not None:
@@ -3550,12 +3542,8 @@ class LeanOracle:
                 version = mathlib_mode.toolchain(directory) if directory else None
         if records is None:
             # the core pool only for a part of core Lean's, or a counterexample to one
-            if obligation.counterexample is not None:
-                refuted = next(
-                    (p for p in obligation.parts if p.name == obligation.counterexample.part),
-                    None,
-                )
-                core = refuted is None or not getattr(refuted, "mathlib", False)
+            if counter is not None:
+                core = not on_reals
             else:
                 core = any(not getattr(part, "mathlib", False) for part in obligation.parts)
             sessions = self._part_sessions() if core else []
@@ -3563,13 +3551,13 @@ class LeanOracle:
                 return fact.with_status(
                     fact.status, lean_tried=0, lean_reason=self._pool_error()
                 )
-            if reals and not self.session.ready():
+            if on_reals and not self.session.ready():
                 # Mathlib is imported before the budget starts, not inside it
                 return fact.with_status(
                     fact.status, lean_tried=0, lean_reason=self.session.error
                 )
             until = None if budget is None else time.monotonic() + budget
-            if obligation.counterexample is not None:
+            if counter is not None:
                 checked = self._check_counterexample(
                     fact, obligation, owner, until, budget=budget
                 )
@@ -3695,28 +3683,37 @@ class LeanOracle:
         no less time stopped on this part (:meth:`ProofCache.stopped`). The
         attempts it left unanswered are then passed over, and a part no kept
         answer proves gets the record that check gave it.
+
+        The record is looked for once the part's attempts are read, under
+        the attempts the check reached (:meth:`_check_part`): the attempts
+        its fallback adds are among them when the last of the part's own was
+        answered and failed, and then the check that stopped reached them
+        too, since it had the same answers. A plugin whose fallback now gives other hints
+        finds no record, and Lean is asked them (#155).
         """
         cache = self.proofs
         if cache is None:
             return None
-        stop: dict | None | bool = False
+        passed = False
 
-        def kept(source: str) -> tuple[bool, str, bool, bool] | None:
-            nonlocal stop
+        def kept(source: str) -> tuple[bool, str, bool, bool]:
+            nonlocal passed
             found = cache.get(key, source)
             if found is not None:
                 return found[0], found[1], True, True
-            if stop is False:
-                questions = _part_questions(part, owner)
-                stop = cache.stopped(key, questions, budget, timeout) if questions else None
-            if not stop:
-                return None
+            # passed over for now; without a record, Lean has to be asked
+            passed = True
             return False, _LEFT_OPEN, True, False
 
-        record = self._check_part(part, owner, None, kept)
-        if record is None or record.get("proved") or not stop:
+        questions: list[str] = []
+        record = self._check_part(part, owner, None, kept, questions)
+        if record is None or not passed:
             return record
-        assert isinstance(stop, dict)
+        stop = cache.stopped(key, questions, budget, timeout) if questions else None
+        if not stop:
+            return None
+        if record.get("proved"):
+            return record
         stored = stop.get("record")
         if not isinstance(stored, dict) or stored.get("proved"):
             # it was proved by an answer the cache no longer holds
@@ -3811,13 +3808,13 @@ class LeanOracle:
                 short = True
             return answer
 
-        record = self._check_part(part, owner, until, ask)
+        questions: list[str] = []
+        record = self._check_part(part, owner, until, ask, questions)
         assert record is not None  # a session answers every attempt, or says why not
         if record.get("timed_out") and _spent(until):
             short = True
         if short and session.error is None and self.proofs is not None:
             key = self._answer_key(session)
-            questions = _part_questions(part, owner)
             if key is not None and questions:
                 self.proofs.stop(key, questions, budget, session.timeout, {"record": record})
         return record
@@ -3858,7 +3855,12 @@ class LeanOracle:
         return session.version
 
     def _check_part(
-        self, part: Any, owner: str, until: float | None, ask: Any
+        self,
+        part: Any,
+        owner: str,
+        until: float | None,
+        ask: Any,
+        questions: list[str] | None = None,
     ) -> dict | None:
         """Prove one part: its record, with how it was proved or why it was not.
 
@@ -3869,9 +3871,14 @@ class LeanOracle:
         ``timed_out``.
 
         ``ask`` answers one declaration's source as :meth:`_ask` does, or
-        gives ``None`` when it cannot, which a reading of the cache alone does
-        for a declaration it does not hold (:meth:`_cached_parts`); the part
-        then has no record, and ``None`` comes back.
+        gives ``None`` when it cannot; the part then has no record, and
+        ``None`` comes back.
+
+        ``questions``, when given, gets the declaration of every attempt the
+        check reached, in order: the part's own, and those its fallback adds
+        once it is asked for. A stop record of the part is kept under them
+        (:meth:`_checked`), and so the fallback is asked for no more often
+        than the check asks for it (#155).
         """
         record: dict[str, Any] = {"name": part.name, "label": part.label, "proved": False}
         try:
@@ -3892,6 +3899,8 @@ class LeanOracle:
         start = time.monotonic()
         last = ""
         tried = list(tried)
+        if questions is not None:
+            questions.extend(statement.source(tactic) for _how, tactic in tried)
         asked = False
         while tried:
             how, tactic = tried.pop(0)
@@ -3927,6 +3936,8 @@ class LeanOracle:
                 # what the solver finds only when asked: a case split, say
                 asked = True
                 tried = _fallback_attempts(part, statement)
+                if questions is not None:
+                    questions.extend(statement.source(tactic) for _how, tactic in tried)
         record["seconds"] = round(time.monotonic() - start, 3)
         return record
 
@@ -3952,12 +3963,14 @@ class LeanOracle:
         ``lean_counterexample_detail``).
 
         With ``version``, the answers are read from the cache alone, as they
-        were kept under that Lean version, and ``None`` comes back when one
-        Lean has to be asked for is not there (#118); without it, the pool's
-        first session is asked, the cache first. A check that ran out of time
-        on it keeps where it stopped, as a part does (:meth:`_checked`), and
-        a check after it with no more time, the obligation's ``budget`` and
-        the session's timeout, reads that back (#134).
+        were kept under that key, the Lean version or, for a part about
+        reals, the Mathlib project's (:func:`_mathlib_key`), and ``None``
+        comes back when one Lean has to be asked for is not there (#118);
+        without it, the session the part is checked in is asked, the cache
+        first. A check that ran out of time on it keeps where it stopped, as
+        a part does (:meth:`_checked`), and a check after it with no more
+        time, the obligation's ``budget`` and the session's timeout, reads
+        that back (#134), with Mathlib as without it (#155).
         """
         counter = obligation.counterexample
         where = counter.text or ", ".join(f"{k}={v}" for k, v in counter.point.items())
@@ -4002,16 +4015,22 @@ class LeanOracle:
                 return answer
 
         else:
-            timeout = self._part_timeout(bool(getattr(part, "mathlib", False)))
+            mathlib = bool(getattr(part, "mathlib", False))
+            timeout = self._part_timeout(mathlib)
+            key = version
+            if mathlib:
+                # the key names the project's Mathlib too; the version is its toolchain's
+                project = self.session.mathlib
+                version = mathlib_mode.toolchain(project) if project else None
 
             def ask(source: str) -> tuple[bool, str, bool, bool] | None:
                 nonlocal stop
                 cache = self.proofs
-                kept = cache.get(version, source) if cache else None
+                kept = cache.get(key, source) if cache else None
                 if kept is not None:
                     return kept[0], kept[1], True, True
                 if stop is False:
-                    stop = cache.stopped(version, questions, budget, timeout) if cache else None
+                    stop = cache.stopped(key, questions, budget, timeout) if cache else None
                 if not stop:
                     return None
                 return False, _LEFT_OPEN, True, False
