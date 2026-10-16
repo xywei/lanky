@@ -272,7 +272,7 @@ def test_a_refused_table_proof_declines_the_fact(asked, monkeypatch) -> None:
     monkeypatch.setitem(table.PROOFS, "exp_of_a_sum", "simp\n#exit")
     declined = oracle.establish(known.exp_of_a_sum.fact())
     assert declined.status is Status.ASSUMED
-    assert "exp_of_a_sum is refused: it runs the command #exit" in declined.provenance[
+    assert "exp_of_a_sum is refused: it has #exit, a Lean command" in declined.provenance[
         "lean_declined"
     ]
     assert not sent
