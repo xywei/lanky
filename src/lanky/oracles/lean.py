@@ -951,6 +951,55 @@ class LeanSession:
             return False, failure, True
         return True, "", True
 
+    def said(self, source: str, until: float | None = None) -> tuple[dict | None, str]:
+        """Everything Lean says of one command, each message with where it is.
+
+        :meth:`answer` keeps the first line of the first error, which is
+        enough for a ladder's attempt and not for a written proof, whose
+        report names the Python line each failing step came from
+        (:mod:`lanky.proofs`): one command holds the whole proof, and Lean
+        goes on after an error in one step, so it reports every step that
+        fails. The record is ``{"messages": [...], "sorries": [...]}``, each
+        message a dict of ``severity``, ``line`` and ``column`` (Lean's: the
+        line counted from 1 in the command, the column from 0), ``end_line``,
+        ``end_column`` and ``data``, and each ``sorry`` its ``line`` and
+        ``column``; ``None`` with the reason when the command was not
+        answered, as :meth:`answer` says it.
+        """
+        from lean_interact import Command
+
+        if not self.start():
+            return None, self.error or "no Lean session"
+        if not self._revive():
+            return None, self.error or "no Lean session"
+        timeout = self.timeout
+        if until is not None:
+            left = until - time.monotonic()
+            if left <= 0:
+                return None, BUDGET_SPENT
+            timeout = min(timeout, left)
+        if self.mathlib is not None:
+            command = Command(cmd=source, env=self.environment)
+        else:
+            command = Command(cmd=source)
+        try:
+            response = self.server.run(command, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - a timeout is a reason, not a crash
+            return None, f"{type(exc).__name__}: {exc}"
+        except BaseException:
+            self._interrupted()
+            raise
+        message = getattr(response, "message", None)
+        if message is not None:
+            return None, str(message)
+        return {
+            "messages": [_message_record(item) for item in getattr(response, "messages", ())],
+            "sorries": [
+                _position_record(getattr(item, "start_pos", None))
+                for item in getattr(response, "sorries", ())
+            ],
+        }, ""
+
 
 #: Every session that opened, for :func:`kill_servers`.
 _OPENED: weakref.WeakSet[LeanSession] = weakref.WeakSet()
@@ -1197,6 +1246,29 @@ def _audit(source: str, response: Any) -> str | None:
 #: What the oracle answers for a command it will not send: one that declares
 #: a theorem and does not end with lanky's axiom audit of it.
 UNAUDITED = "the command has no axiom audit, so lanky does not send it as a proof"
+
+
+def _position_record(position: Any) -> dict[str, int | None]:
+    """A REPL position as ``{"line": ..., "column": ...}``; ``None`` for each part it lacks."""
+    return {
+        "line": getattr(position, "line", None),
+        "column": getattr(position, "column", None),
+    }
+
+
+def _message_record(item: Any) -> dict[str, Any]:
+    """One message of a REPL response as plain data (see :meth:`LeanSession.said`)."""
+    start = _position_record(getattr(item, "start_pos", None))
+    end = _position_record(getattr(item, "end_pos", None))
+    severity = str(getattr(item, "severity", ""))
+    return {
+        "severity": severity.rsplit(".", 1)[-1],
+        "line": start["line"],
+        "column": start["column"],
+        "end_line": end["line"],
+        "end_column": end["column"],
+        "data": str(getattr(item, "data", "")),
+    }
 
 
 def _problems(response: Any) -> list[str]:
@@ -2848,6 +2920,30 @@ class ProofCache:
             {"version": version, "source": source, "closed": closed, "detail": detail},
         )
 
+    def said(self, version: str | None, source: str) -> dict | None:
+        """Everything Lean said of a command, kept for ``source`` (:meth:`LeanSession.said`)."""
+        path = self._path(version, f"said\n{source}")
+        if path is None:
+            return None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                import json
+
+                record = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict) or record.get("source") != source:
+            return None
+        if not isinstance(record.get("messages"), list):
+            return None
+        return record
+
+    def keep_said(self, version: str | None, source: str, record: dict) -> None:
+        """Keep what Lean said of a command, as :meth:`said` reads it back."""
+        self._write(
+            version, f"said\n{source}", {**record, "version": version, "source": source}
+        )
+
     def _write(self, version: str | None, text: str, record: dict) -> None:
         """Write ``record`` where ``text`` is kept under ``version``, whole or not at all."""
         path = self._path(version, text)
@@ -3519,6 +3615,52 @@ class LeanOracle:
             return result
         source = statement.source(proved)
         return self._proved_claim(fact, statement, proved, source, conditions, session.version)
+
+    def written(self, source: str, fact: Fact | None = None) -> tuple[dict | None, str, bool]:
+        """What Lean says of a written proof's command: ``(record, reason, cached)``.
+
+        A theorem whose body is a proof is checked in one Lean command
+        (:mod:`lanky.proofs`), sent here through this oracle's session, in
+        the dialect it runs, under its budget for a claim (``fact`` gives
+        it, as for the ladder), and kept in the proof cache by its source
+        with every message and where it is (:meth:`ProofCache.said`), so a
+        warm check starts no Lean. ``record`` is what
+        :meth:`LeanSession.said` gives, and ``None`` when Lean did not
+        answer: Lean is not available here, the REPL could not start, or
+        the command ran past its time, which ``reason`` then says.
+        ``cached`` says whether the record was read back.
+        """
+        available, reason = self.availability()
+        if not available:
+            return None, reason, False
+        session = self.session
+        if self.proofs is None:
+            self.proofs = ProofCache(default_proof_cache_dir())
+        if session.mathlib is not None:
+            key = _mathlib_key(session.mathlib)
+        elif self._pinned is not None:
+            key = session.version
+        else:
+            key = self._cache_version()
+        if key is not None:
+            kept = self.proofs.said(key, source)
+            if kept is not None:
+                return kept, "", True
+        if not session.ready():
+            return None, session.error or "no Lean session", False
+        budget: float | None = None
+        if fact is not None:
+            try:
+                budget = self._budget(fact)
+            except ValueError as exc:
+                return None, str(exc), False
+        until = None if budget is None else time.monotonic() + budget
+        record, reason = session.said(source, until)
+        if record is not None:
+            answered = self._answer_key(session)
+            if answered is not None:
+                self.proofs.keep_said(answered, source, record)
+        return record, reason, False
 
     def _stopping(
         self,

@@ -204,7 +204,8 @@ starts no Lean, also for a question the first check ran out of time on.
 
 ## Status
 
-This is 0.4.0. The core works; the edges are sharp. New in 0.4.0, the ledger
+This is 0.4.0. The core works; the edges are sharp. On main since 0.4.0, a
+theorem's body can be its proof, written in Python and checked by Lean. New in 0.4.0, the ledger
 says what happened where it said nothing: an oracle that raised, in a
 `RAISED` line, a claim Lean was not asked about and why, under `--verbose`,
 and a Mathlib project Lean cannot import, in the `WITHOUT LEAN` line; and a
@@ -252,6 +253,21 @@ raises its floor to match.
   against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
+- Written proofs. A theorem whose body holds more than a docstring, `...` or
+  `pass` is proved by that body: ordinary Python that cites facts and gives
+  a reason for each, `return copies, stored`, with `if` for a case split and
+  a local `def claim(i, a, b)` that calls itself at smaller values for an
+  induction. `lanky check` traces the body after every run and draw, on
+  symbolic values (`python file.py` never calls it), compiles it to one Lean
+  command, with each hypothesis under its Python name and `claim` a theorem
+  of its own with the measure lanky finds, and adds a line to the claim's
+  row: `by its proof, every_box.py:106-113: induction on a, 3 cases, 3
+  steps`. A proof that fails is reported at the Python line, with what is
+  left over and the fix where lanky can name one, and fails the check, also
+  for a claim lanky proves alone, whose row still reads `proved`.
+  `examples/every_box.py`, lanky #140's claim, which lanky's search does not
+  prove, is the worked case; the quickstart's *Write a proof* says what each
+  form means.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
   citation. Its fact is `assumed (axiom)`, with the citation in its
   provenance; no oracle is asked to establish it, and the property tester

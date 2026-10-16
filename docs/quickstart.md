@@ -1409,6 +1409,121 @@ the order found, to its right side. A proof by any other rung of the ladder
 names the rung, as in `by integer arithmetic` or `by induction on n, taking
 the last term off the sum`.
 
+## Write a proof
+
+lanky finds a proof where it can, and a claim it proves alone needs no
+body. Where it cannot, or where a proof helps the reader, the theorem's body
+is the proof: ordinary Python that states facts and gives a reason for each.
+`examples/every_box.py` is sumpy's compressed Taylor table, box by box, in
+sumpy's storage order, where the base case rests on two pairs of hypotheses,
+the centre at order zero and the stored derivatives above it. lanky's search
+does not split a case on the conditions of the facts it combines (#140), so
+the claim read `assumed`. The body says how:
+
+```python
+@theorem
+def every_box(
+    n: Nat, p: Nat, c: Fn[Nat, Int, Real], D: Fn[Nat, Nat, Nat, Real], R: Fn[Nat, Nat, Nat, Real],
+    pde: all(D[i, a + 2, b] + D[i, a, b + 2] == 0 for i in Fin[n] for a in Nat for b in Nat),
+    centre: all(c[i, 0] == D[i, 0, 0] for i in Fin[n]),
+    stored: all(c[i, 2 * (a + b) - 1 + a] == D[i, a, b] for i in Fin[n] for a in Nat for b in Nat
+                if a < 2 if a + b >= 1 if a + b <= p),
+    centre_copy: all(R[i, 0, 0] == c[i, 0] for i in Fin[n]),
+    copies: all(R[i, a, b] == c[i, 2 * (a + b) - 1 + a] for i in Fin[n] for a in Nat for b in Nat
+                if a < 2 if a + b >= 1 if a + b <= p),
+    recurrence: all(R[i, a + 2, b] == -R[i, a, b + 2] for i in Fin[n] for a in Nat for b in Nat
+                    if a + b + 2 <= p),
+) -> all(R[i, a, b] == D[i, a, b] for i in Fin[n] for a in Nat for b in Nat if a + b <= p):
+    def claim(i, a, b):
+        if a + b == 0:
+            return centre_copy, centre
+        if a < 2:
+            return copies, stored
+        return recurrence(i, a - 2, b), claim(i, a - 2, b + 2), pde(i, a - 2, b)
+
+    return claim
+```
+
+Read it aloud: "The claim at (i, a, b): at order zero, by the centre's copy
+and the centre. If a < 2, by the copies and what is stored. Otherwise by the
+recurrence, the claim at (i, a − 2, b + 2) and the PDE. That proves the
+claim."
+
+| You write | It means |
+|---|---|
+| no body (a docstring, `...` or `pass`) | lanky finds the proof, as it always has |
+| `return f, g` | this case's claim follows from these facts; lanky finds how they combine, and Lean checks it |
+| a bare `return` | this case is routine: lanky closes it |
+| `pde(i, a - 2, b)` | a fact at a point: a hypothesis, or a theorem, at these values of its variables; its conditions are checked for you |
+| `stored`, alone | the same fact, at the point lanky finds by matching it against the case's claim; where no single point fits, lanky asks you to write it |
+| `if` / `else` | a case split; each branch proves the claim with its condition true |
+| `def claim(i, a, b):`, then `return claim` | the claim for every `i, a, b`, at one point; its parameters are the claim's variables, by name and in order, and one that names a parameter of the theorem generalizes it |
+| `claim(i, a - 2, b + 2)` inside `claim` | the claim at values closer to a base case: induction |
+
+A hypothesis written `p & q` is cited as both parts. Hypotheses are always in
+scope, for the conditions of the facts you cite. `python examples/every_box.py`
+never runs the proof: `lanky check` traces the body, after every run and draw
+of the check, on the symbolic terms the annotations were read with, and has
+Lean check it in one command. With Mathlib the claim reads `proved`, and its
+row says how, in a line of its own:
+
+```text
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/every_box.py
+STATUS  EFFECTIVE  BY      WHERE            OWNER      STATEMENT
+...
+proved  tested     lean    every_box.py:61  every_box  n : Nat, p : Nat, c : Fn[Nat, Int, Real], D : Fn[Nat, Nat, Nat, Real], R : Fn[Nat, Nat, Nat, Real]
+                                                       | pde: forall i in Fin(n), a in Nat, b in Nat. D[i, a + 2, b] + D[i, a, b + 2] == 0
+                                                       ...
+                                                       |- forall i in Fin(n), a in Nat, b in Nat where a + b <= p. R[i, a, b] == D[i, a, b]
+                                                       by its proof, every_box.py:106-113: induction on a, 3 cases, 3 steps
+```
+
+The proof is Lean's to check and Python's to find the details of. `def claim`
+is a theorem of its own, `Lanky.every_box.claim`, which calls itself with
+`termination_by a.toNat`, the measure lanky finds: an argument that gets
+smaller at every call, one that climbs toward a bound, or a pair. `if a + b ==
+0` is a case split, and among naturals it fixes `a` and `b` at `0`, so lanky
+substitutes both. `centre_copy` and `centre`, cited by name, are matched
+against the case's claim, `R[i, 0, 0] == D[i, 0, 0]`, at `i`. Each fact's
+conditions are shown by `omega`, and `return f, g` is closed by
+`linear_combination` with the multipliers Python finds, the same search as
+lanky's own induction's. `--show-lean` prints the command, with each
+hypothesis under its Python name.
+
+A proof that does not hold is reported at the line that fails, in lanky's
+notation, with the fix where lanky can name one. Here the induction is at the
+wrong cells, `claim(a - 2, b + 3)`, in the sumpy demonstration's claim over
+two tables, `R` and `D`, written over the integers so that core Lean checks
+it:
+
+```text
+UNPROVED ct at cases.py:25: a step of its proof does not follow.
+
+  cases.py:36    return recurrence(a - 2, b), claim(a - 2, b + 3), pde(a - 2, b)
+
+  When a >= 2 (cases.py:34), the step needs   R[a, b] == D[a, b]
+    recurrence(a - 2, b) says   R[a, b] == -R[a - 2, b + 2]
+    claim(a - 2, b + 3)  says   R[a - 2, b + 3] == D[a - 2, b + 3]
+    pde(a - 2, b)        says   D[a, b] + D[a - 2, b + 2] == 0
+  Left over:
+      D[a - 2, b + 2] + R[a - 2, b + 3] - D[a - 2, b + 3] - R[a - 2, b + 2] == 0
+  Fix: claim(a - 2, b + 2) makes the step follow (checked).
+```
+
+Python computes what is left over, from the facts at their points; Lean only
+says that the step failed. The fix is the fact at another point, and
+`(checked)` means Lean accepted the proof with it. A condition that is not
+met says `stored, at (a, b) needs a < 2, and this case has a >= 2.`; a call
+of the claim below zero, `claim(a - 2, b + 2) is at a negative a when a = 1:
+split off a < 2 first.`; a call not at smaller values, a theorem that calls
+itself by name, and a fact cited by name that no single point fits each say
+so at their line, before Lean is asked. A broken proof fails the check, also
+for a claim lanky proves alone, whose row still reads `proved`, by lanky's own
+proof, with `WARNING ct at cases.py:25: your proof fails at cases.py:36;
+lanky proved the claim without it`. Without Lean, or without Mathlib for a
+claim only Mathlib can state, the proof is not checked, a `NOT CHECKED` line
+says why, and nothing fails.
+
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
@@ -1589,6 +1704,8 @@ the last term off the sum`.
 | the proof lanky found, said back in Python: `--proofs` and `--steps` | `src/lanky/outline.py` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |
+| written proofs: the trace, the Lean they compile to, and the report at the Python line | `src/lanky/proofs/` |
+| a written proof, lanky #140's `every_box` | `examples/every_box.py` |
 | the pytential demonstration, and its rule engine | `examples/pytential_skie.py`, `examples/layer_potentials.py` |
 | the bridge to sympy, and the CAS oracle | `src/lanky/cas.py`, `src/lanky/oracles/cas.py` |
 | the sumpy demonstration, and its `mpmath` oracle | `examples/sumpy_recurrence.py` |

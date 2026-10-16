@@ -281,6 +281,7 @@ __all__ = [
     "lean_type",
     "number_type",
     "print_lean",
+    "render_prop",
     "render_term",
     "statement_of",
 ]
@@ -1682,6 +1683,24 @@ def render_term(
     """
     with dialect(mathlib), _shadowing(shadowed):
         return _render(expr, _ATOM if atomic else _QUANT, dict(types))
+
+
+def render_prop(
+    expr: Any,
+    types: Mapping[str, Any],
+    mathlib: bool | None = None,
+    shadowed: Collection[str] = frozenset(),
+) -> str:
+    """Print one proposition as it stands inside a proof, with the names around it typed.
+
+    :func:`render_term` for a proposition: a case split's condition, or a
+    fact a written proof states on the way (see :mod:`lanky.proofs`).
+
+    Raises:
+        UnsupportedTerm: If the proposition leaves the fragment of the dialect.
+    """
+    with dialect(mathlib), _shadowing(shadowed):
+        return _render_prop(expr, _QUANT, dict(types))
 
 
 def number_type(expr: Any, types: Mapping[str, Any], mathlib: bool | None = None) -> str:
