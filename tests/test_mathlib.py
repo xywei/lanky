@@ -16,6 +16,8 @@ import json
 import math
 import os
 import random
+import subprocess
+import sys
 from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
@@ -1240,6 +1242,31 @@ def test_writing_the_project_copies_the_pinned_files(tmp_path) -> None:
     mathlib_mode.write_project(target)
     assert (target / "lean-toolchain").read_text(encoding="utf-8").strip().endswith("v4.29.1")
     assert (target / ".lake").is_dir()
+
+
+def test_the_documented_command_runs_without_a_warning(tmp_path) -> None:
+    """#162: ``python -m lanky.mathlib DIR`` printed a ``RuntimeWarning`` from runpy first.
+
+    ``import lanky`` imports :mod:`lanky.mathlib`, and ``python -m`` imports
+    ``lanky`` before it runs the command, so the command is the package's
+    ``__main__``, which nothing imports. The warnings are turned on, so that
+    one set off in the environment cannot hide it.
+    """
+    run = subprocess.run(
+        [sys.executable, "-W", "always", "-m", "lanky.mathlib", "mathlib", "--no-fetch"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        timeout=300,
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stderr == ""
+    assert run.stdout == (
+        f"wrote the pinned Mathlib project (v4.29.1) to {tmp_path.resolve() / 'mathlib'}\n"
+    )
+    target = tmp_path / "mathlib"
+    for name in mathlib_mode.PROJECT_FILES:
+        assert (target / name).read_bytes() == (mathlib_mode.TEMPLATE / name).read_bytes()
 
 
 def test_a_project_that_is_not_ready_is_named_with_the_fix(tmp_path) -> None:

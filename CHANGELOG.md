@@ -6,6 +6,18 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`python -m lanky.mathlib DIR` starts without a warning** (#162). The
+  command the `WITHOUT MATHLIB` line and the README give printed a
+  `RuntimeWarning` from runpy before its own first line, saying the module
+  had been imported already and that running it might be unpredictable:
+  `import lanky` imports `lanky.mathlib`, since the Lean oracle and
+  `lanky.semantics` read the project from it, and `python -m` imports `lanky`
+  first. `lanky.mathlib` is now a package, and the command is its `__main__`,
+  which nothing imports. What the command does is unchanged, and so is
+  `from lanky import mathlib`.
+
 ## [0.4.0] - 2026-10-16
 
 Checking a file again is fast, and the ledger says why a row is not proved.
