@@ -476,9 +476,7 @@ def _sharpened(facts: Sequence[Any], types: Mapping[str, Any]) -> list[Any]:
     return out
 
 
-def pins(
-    prop: Any, types: Mapping[str, Any], local: Sequence[str] = ()
-) -> list[tuple[str, Any]]:
+def pins(prop: Any, types: Mapping[str, Any], local: Sequence[str] = ()) -> list[tuple[str, Any]]:
     """The integer variables an equation fixes, with the value each is fixed at.
 
     ``n == 1`` fixes ``n`` at ``1``, ``2 - k == 0`` fixes ``k`` at ``2``,
@@ -515,8 +513,9 @@ def pins(
     for name in local:
         if name in form and form[name] in (1, -1):
             rest: dict[str | None, Fraction] = {}
-            _accumulate(rest, {key: value for key, value in form.items() if key != name},
-                        -1 / form[name])
+            _accumulate(
+                rest, {key: value for key, value in form.items() if key != name}, -1 / form[name]
+            )
             if all(value.denominator == 1 for value in rest.values()):
                 return [(name, from_affine(rest))]
     return []

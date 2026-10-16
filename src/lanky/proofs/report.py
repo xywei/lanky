@@ -235,9 +235,7 @@ def back(algebra: Any, expr: Any) -> Any:
     for index, atom in enumerate(atoms):
         mark = sympy.Symbol(f"lanky_application_{index}")
         marks[atom] = mark
-        arguments = tuple(
-            _tidy_argument(from_sympy(argument, variables)) for argument in atom.args
-        )
+        arguments = tuple(_tidy_argument(from_sympy(argument, variables)) for argument in atom.args)
         family = Var(str(atom.func))
         variables[mark.name] = family[arguments if len(arguments) > 1 else arguments[0]]
     return from_sympy(expr.xreplace(marks), variables)
@@ -265,6 +263,19 @@ def tidy(term: Any) -> Any:
             )
         )
     return term
+
+
+def tidy_prop(prop: Any) -> Any:
+    """A proposition with each side of a comparison written as its affine form, and tidied."""
+    from lanky.terms import Comparison
+
+    if isinstance(prop, prim.Comparison):
+        sides = []
+        for side in (prop.left, prop.right):
+            form = affine(side)
+            sides.append(tidy(side) if form is None else from_affine(form))
+        return Comparison(sides[0], prop.operator, sides[1])
+    return tidy(prop)
 
 
 def _tidy_argument(argument: Any) -> Any:
@@ -562,8 +573,9 @@ def _condition(proof: Proof, origin: Any) -> Failure:
             ),
         )
     label = _label(citation, values)
-    has = " and ".join(render(fact) for fact, _ in conditions) or "nothing that shows it"
-    shown_condition = render(tidy(condition)) if condition is not None else "a condition"
+    known = [*(detail.get("guards") or ()), *(fact for fact, _ in conditions)]
+    has = " and ".join(render(tidy_prop(fact)) for fact in known) or "nothing that shows it"
+    shown_condition = render(tidy_prop(condition)) if condition is not None else "a condition"
     return Failure(
         "condition",
         origin.line,

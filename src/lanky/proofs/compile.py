@@ -581,11 +581,17 @@ def measure(claim: ClaimDef, calls: Sequence[Citation], conditions: Sequence[Any
 
 @dataclass(eq=False)
 class _Context:
-    """What the emitter knows at a point of the tree."""
+    """What the emitter knows at a point of the tree.
+
+    ``guards`` are the claim's own conditions, the goal's guard at its
+    variables; ``conditions`` the case splits on the path, each with the line
+    of its ``if``; ``facts`` everything that holds, for deciding.
+    """
 
     pins: dict[str, Any]
     conditions: list[tuple[Any, int]]
     facts: list[Any]
+    guards: tuple[Any, ...] = ()
 
 
 class _Compiler:
@@ -691,7 +697,7 @@ class _Compiler:
                 measured = measure(proof.claim, calls, conditions)
             base = [part for _name, prop in theorem.hypotheses for part in conjuncts(prop)]
             goal_guards = list(conjuncts(self.goal.guard)) if isinstance(self.goal, Forall) else []
-            context = _Context({}, [], [*base, *goal_guards])
+            context = _Context({}, [], [*base, *goal_guards], tuple(goal_guards))
             tactic = self._node(proof.root, context, body)
             lines.append(_Line(ELABORATION_OPTIONS))
             lines += self._head(claim_statement, Origin("statement", proof.claim.line))
@@ -711,7 +717,7 @@ class _Compiler:
                     self.types[var.name] = domain
             base = [part for _name, prop in theorem.hypotheses for part in conjuncts(prop)]
             goal_guards = list(conjuncts(self.goal.guard)) if isinstance(self.goal, Forall) else []
-            context = _Context({}, [], [*base, *goal_guards])
+            context = _Context({}, [], [*base, *goal_guards], tuple(goal_guards))
             tactic = intro + self._node(proof.root, context, body)
             lines.append(_Line(ELABORATION_OPTIONS))
             lines += self._head(main, Origin("statement", proof.lines[0]))
@@ -854,6 +860,7 @@ class _Compiler:
                 dict(context.pins),
                 [*context.conditions, (holds, question.line)],
                 [*context.facts, holds],
+                context.guards,
             )
             body: list[_Line] = []
             if answer:
@@ -1005,6 +1012,7 @@ class _Compiler:
                     "values": values,
                     "condition": condition,
                     "conditions": tuple(context.conditions),
+                    "guards": tuple(substitute(guard, context.pins) for guard in context.guards),
                     "facts": tuple(context.facts),
                 },
             )
@@ -1158,6 +1166,7 @@ class _Compiler:
                     "values": citation.values,
                     "condition": condition,
                     "conditions": tuple(context.conditions),
+                    "guards": tuple(substitute(guard, context.pins) for guard in context.guards),
                     "facts": tuple(context.facts),
                     "negative": negative,
                     "claim": True,

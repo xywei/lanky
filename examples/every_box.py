@@ -1,12 +1,22 @@
 """Every box of sumpy's compressed Taylor table, reconstructed: a proof written in Python.
 
+``python examples/every_box.py``
+    Builds a few boxes' tables of a harmonic function's derivatives, stores
+    them in sumpy's order, reconstructs every derivative through order 8 by
+    the recurrence, and prints how far the reconstruction is from the
+    derivatives: nowhere, in exact arithmetic. The proof is never run.
+
 ``uv run lanky check examples/every_box.py``
     The ledger: one claim, that every derivative a box's table reconstructs
-    is the derivative it stands for. With Lean and Mathlib it reads
-    ``proved``, by the proof written in ``every_box``'s body, and the row
-    says so in a line of its own: ``by its proof, every_box.py:...:
-    induction on a, 3 cases, 3 steps``. Without them it reads ``tested``, and
-    a ``NOT CHECKED`` line says why the proof was not checked.
+    is the derivative it stands for, for every order. With Lean and Mathlib
+    it reads ``proved``, by the proof written in ``every_box``'s body, and the
+    row says so in a line of its own::
+
+        by its proof, every_box.py:106-113: induction on a, 3 cases, 3 steps
+
+    Without them it reads ``assumed``, since the property tester draws no
+    family over ``Nat``, and a ``NOT CHECKED`` line under the table says why
+    the proof was not checked.
 
 The mathematics. sumpy's ``LinearPDEBasedExpansionTermsWrangler`` stores, for
 each box ``i`` of ``n``, the derivatives ``D[i, a, b]`` of the 2-D Laplace
@@ -40,9 +50,6 @@ claim."
   checks each fact's conditions there (``a - 2 >= 0`` follows from the case
   ``a >= 2``, and ``a - 2 + b + 2 <= p`` from the claim's ``a + b <= p``), and
   that the three facts give the claim, with the multipliers Python finds.
-
-``python examples/every_box.py`` runs the claim as a property test on a table
-that obeys it, and never runs the proof.
 """
 
 from __future__ import annotations
@@ -106,6 +113,45 @@ def every_box(
     return claim
 
 
+def tables(boxes: int, order: int) -> tuple[dict, dict, dict]:
+    """``D``, ``c`` and ``R`` for ``boxes`` boxes through ``order``, as dicts keyed as the claim's.
+
+    Box ``i``'s ``D`` holds the derivatives at the origin of ``Re(exp(z_i * (x
+    + 1j * y)))``, which is harmonic, ``Re(z_i ** (a + b) * 1j ** b)``, with
+    ``z_i`` a Gaussian integer so that every one is an exact integer. ``c``
+    stores them in sumpy's order, and ``R`` copies ``c`` where it stores and
+    follows the recurrence elsewhere, an order at a time, ``a`` rising.
+    """
+    D: dict = {}
+    c: dict = {}
+    R: dict = {}
+    for i in range(boxes):
+        z = complex(i + 1, 2 - i)
+        for a in range(order + 1):
+            for b in range(order + 1 - a):
+                D[i, a, b] = round((z ** (a + b) * 1j**b).real)
+        c[i, 0] = D[i, 0, 0]
+        for a in range(2):
+            for b in range(order + 1 - a):
+                if a + b >= 1:
+                    c[i, 2 * (a + b) - 1 + a] = D[i, a, b]
+        for total in range(order + 1):
+            for a in range(total + 1):
+                b = total - a
+                if total == 0:
+                    R[i, a, b] = c[i, 0]
+                elif a < 2:
+                    R[i, a, b] = c[i, 2 * total - 1 + a]
+                else:
+                    R[i, a, b] = -R[i, a - 2, b + 2]
+    return D, c, R
+
+
 if __name__ == "__main__":
-    report = every_box.report(n=50)
-    print(f"every_box: {report.valid} valid draws, ok: {report.ok}")
+    BOXES, ORDER = 3, 8
+    D, c, R = tables(BOXES, ORDER)
+    worst = max(abs(R[key] - D[key]) for key in D)
+    print(
+        f"{BOXES} boxes through order {ORDER}: {len(D)} derivatives reconstructed from "
+        f"{len(c)} stored, largest difference {worst}"
+    )
