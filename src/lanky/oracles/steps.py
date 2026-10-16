@@ -876,13 +876,9 @@ def chain_script(chain: Chain, scope: StepScope, claim: Any = None) -> Script:
     _refuse_another_claim(chain, claim, scope)
     name = scope.fresh("chain")
     script = Script()
-    first, *rest = calc.lines
-    script.lines.append((f"have {name} := {first[0]}", first[1]))
-    script.lines.extend(rest)
-    script.holes.extend(calc.holes)
-    script.restated.update(calc.restated)
-    script.rests_on.extend(item for item in calc.rests_on if item not in script.rests_on)
-    script.outline.extend(calc.outline)
+    # the calc on lines of its own, under the have, so its steps line up as in a case
+    script.add(f"have {name} :=", chain.line)
+    script.extend(calc, indent=2)
     attempts = [f"exact {name}"]
     if claim.operator == "==" and chain.relation == "==":
         attempts.append(f"exact {name}.symm")

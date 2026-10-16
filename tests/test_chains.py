@@ -464,7 +464,7 @@ def test_a_chain_that_ends_elsewhere_is_a_fact_of_the_case() -> None:
     chain, scope, _, _ = compressed_taylor_case()
     script = chain_script(chain, scope, claim=D[a, b] == R[a, b])
     text = script.text()
-    assert text.startswith("have chain := calc R a b\n")
+    assert text.startswith("have chain :=\n  calc R a b\n")
     assert "| exact chain.symm" in text
     assert "(-1 : ℝ) * chain" in text
 
@@ -787,6 +787,19 @@ def test_compressed_taylor_by_its_chain_closes_in_lean(mathlib_session) -> None:
     holes = script.sorry_lines(_first_line(source, script))
     verdict, messages, _ = mathlib_session.answer_with_holes(source, holes)
     assert (verdict, messages) == (CLOSED_WITH_HOLES, [])
+
+
+def test_a_chain_whose_ends_are_the_claim_turned_round_closes_in_lean(mathlib_session) -> None:
+    """The chain shows ``R = D`` and the claim is ``D = R``: the chain is a fact, turned round."""
+    chain, scope, _, _ = compressed_taylor_case()
+    script = chain_script(chain, scope, claim=D[a, b] == R[a, b])
+    source = (
+        compressed_taylor_lean(script.text(indent=4))
+        .replace(": R a b = D a b := by", ": D a b = R a b := by")
+        .replace("· exact stored a ha b hb case_1", "· exact (stored a ha b hb case_1).symm")
+    )
+    verdict, messages, answered = mathlib_session.answer_with_holes(source)
+    assert answered and (verdict, messages) == ("closed", [])
 
 
 def test_a_wrong_step_fails_at_its_line(mathlib_session) -> None:
