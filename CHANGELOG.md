@@ -6,6 +6,19 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A rewrite under a sum shows its theorem's condition at the sum's point.**
+  A part whose steps rewrite with a theorem that has a condition, such as
+  `alpha != 0` in `x / alpha == x * conj(alpha) * (1 / real(alpha *
+  conj(alpha)))`, states the condition for every point of the sums it is
+  under, `all(c[t] - y[s] != 0 for s in Fin[ns])`. The `simp only` of its
+  rewrites now discharges the condition there: the hypothesis is taken at
+  the sum's point by `refine`, and `omega` shows the point is in the sum's
+  range from the membership `Finset.mem_Ico` reads. This is what loopty's
+  math steps (`Schedule.rewrite`) need under the sum over the sources of a
+  layer potential. A part with no such condition keeps its script.
+
 ### Fixed
 
 - **`python -m lanky.mathlib DIR` starts without a warning** (#162). The
