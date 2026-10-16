@@ -2054,14 +2054,17 @@ conj = _elementary("conj")
 
 
 def reading_annotation() -> bool:
-    """Whether an annotation is being read (:func:`evaluate_annotations`) in this context.
+    """Whether a statement is being read in this context: an annotation, or a written proof.
 
     A library whose functions build a node of its own for a term, a kernel's
     ``loopty.math.conj`` say, asks this to build lanky's instead where the
     term is a statement's: ``conj(alpha)`` in a theorem's annotation is the
-    conjugate every oracle reads, and not a family named ``conj``.
+    conjugate every oracle reads, and not a family named ``conj``. So is
+    ``log(abs(alpha))`` in a step of the theorem's proof, which is traced
+    on the same terms (:func:`asking_proof_questions`) and is matched
+    against the facts it cites.
     """
-    return bool(_ANNOTATION_CODE.get())
+    return bool(_ANNOTATION_CODE.get()) or _PROOF_QUESTIONS.get() is not None
 
 
 #: The builtins that mean something else inside an annotation.

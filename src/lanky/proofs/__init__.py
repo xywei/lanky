@@ -263,7 +263,19 @@ def _restate_from_proved(ledger: Ledger, oracle: Any, verbose: bool) -> None:
             continue
         if again.status in (Status.PROVED, Status.CERTIFIED) or fact.status is Status.ASSUMED:
             again = again.with_status(again.status, trust_class=oracle.trust_class())
-            ledger.add(_rest_on_the_reading(again))
+            still = {
+                note.get("theorem")
+                for record in again.provenance.get("lean_parts") or ()
+                if isinstance(record, dict)
+                for note in record.get("cited", ())
+                if note.get("restated") == "by the printer"
+            }
+            provenance = dict(again.provenance)
+            if still:
+                provenance["lean_restated_by_printer"] = sorted(str(name) for name in still)
+            else:
+                provenance.pop("lean_restated_by_printer", None)
+            ledger.add(_rest_on_the_reading(replace(again, provenance=provenance)))
 
 
 def _lean_oracle() -> Any:

@@ -108,6 +108,7 @@ def failure_of(error: ProofError) -> Failure:
         "paths": "the proof does not run the same way on every path",
         "cite": "a fact is cited at the wrong number of values",
         "unsupported": "Lean cannot state part of the proof",
+        "chain": "the chain does not give the claim",
     }
     return Failure(
         error.kind,
