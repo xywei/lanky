@@ -1065,15 +1065,19 @@ def outline_text(
     """
     if not rows:
         return []
+    base = os.path.basename(path) if path else ""
+    wheres = [
+        f"{base}:{line}" if base and line is not None else ("" if line is None else str(line))
+        for line, *_ in rows
+    ]
+    width_where = max(len(where) for where in wheres)
     width_left = max(len(left) for _, left, _, _, _ in rows)
     width_term = max(len(term) + len(relation) + 1 for _, _, relation, term, _ in rows)
-    base = os.path.basename(path) if path else ""
     out = []
-    for line, left, relation, term, reason in rows:
-        where = f"{base}:{line}" if base and line is not None else (str(line) if line else "")
+    for where, (_, left, relation, term, reason) in zip(wheres, rows, strict=True):
         statement = f"{relation} {term}"
         out.append(
-            f"{where:<{len(base) + 5}}{indent}{left:>{width_left}} "
+            f"{where:<{width_where}}  {indent}{left:>{width_left}} "
             f"{statement:<{width_term}}  {reason}".rstrip()
         )
     return out
