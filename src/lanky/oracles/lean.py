@@ -2470,15 +2470,15 @@ class ProofCache:
     replays.
 
     What a question came to when its time ran out is kept apart, as where it
-    stopped (:meth:`stop`): a claim whose ladder its budget cut short, or a
-    part an attempt of which timed out, is left open by the check, and a
-    check after it, which would read every kept answer for nothing and have
-    the whole budget left for the attempts it was never answered, used to
-    start Lean for them (#134). With the record, a check given no more time
-    than the one that stopped (:meth:`stopped`) leaves the question open as
-    that check did, with its words, and starts no Lean; a check given more
-    time, a larger budget or timeout, asks Lean again. Only a kept answer
-    ever proves anything: the record says what was not answered, and why.
+    stopped (:meth:`stop`). A claim whose ladder its budget cut short, or a
+    part an attempt at which timed out, is left open by the check, and the
+    check after it, which reads every kept answer for nothing and so has the
+    whole budget for the attempts that were never answered, used to start
+    Lean for them (#134). With the record, a check given no more time than
+    the one that stopped (:meth:`stopped`) leaves the question open as that
+    check did, in its words, and starts no Lean; a check given more time, a
+    larger budget or timeout, asks Lean again. Only a kept answer ever
+    proves anything: the record says what was not answered, and why.
     """
 
     def __init__(self, directory: str | None) -> None:
@@ -3130,9 +3130,10 @@ class LeanOracle:
         # the budget is Lean's, from now: starting the REPL, or importing
         # Mathlib, does not count against it (LeanSession.ready)
         until = None if budget is None else time.monotonic() + budget
-        # whether an attempt went unanswered for want of time (#134)
+        # the attempts that went unanswered for want of time (#134)
         short: list[str] = []
         proved: str | None = None
+        outcome: dict[str, Any] | None
         conditions, declined = self._side_conditions(statement, until, short)
         if declined is not None:
             if session.error is not None:
