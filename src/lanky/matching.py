@@ -342,7 +342,7 @@ def _same_parts(left: Any, right: Any) -> bool:
         )
     if isinstance(left, prim.ExpressionNode) or isinstance(right, prim.ExpressionNode):
         return same(left, right)
-    return bool(left == right) if not isinstance(left, prim.ExpressionNode) else False
+    return structurally_equal(left, right)
 
 
 # }}}
