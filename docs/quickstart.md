@@ -1337,6 +1337,51 @@ ties the theorem to the code pytential runs. Without Mathlib the claim for
 every order reads `assumed under line_ode`: the property tester draws no
 family over `Nat`.
 
+### The proof lanky found
+
+What the search found can be read back in Python. After the ledger,
+`--proofs` prints the proof of each proved theorem as a body, in the
+theorem's own names, ready to paste under its docstring:
+
+```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --proofs line_taylor
+...
+PROOF line_taylor at line_taylor.py:115, by induction on n, two at a time:
+
+    def claim(n):
+        if n == 1:
+            return first
+        return ode(n - 1), claim(n - 1)
+
+    return claim
+```
+
+Read aloud: the claim at `n`; if `n` is 1, it is `first`; otherwise it
+follows from `ode` at `n - 1` and the claim at `n - 1`. That proves the
+claim. `claim` calling itself at a smaller order is the induction, and a fact
+is written at a point only where the point says something: `first` has none,
+and `ode` fits the claim at `n - 1` and at `n`, so its point is written. The
+multipliers are not: lanky finds them. `--steps` prints the outline, each
+case a chain of equations from the claim's left side to its right, with the
+fact, the point and the multiplier of every link:
+
+```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --steps line_taylor
+...
+STEPS line_taylor at line_taylor.py:115, as lanky found them:
+  the claim at n, for every n in Nat with n >= 1, by induction on n, two at a time
+    if n == 1:  c[1] == -(-beta / alpha)                          by first, times 1 / alpha
+    otherwise:  c[n] == -beta * (n - 1) * c[n - 1] / (alpha * n)  by ode, at n - 1, times 1 / (alpha * n)
+                     == -(-beta / alpha) ** n / n                 by the claim at n - 1, times -beta * (n - 1) / (alpha * n)
+```
+
+lanky builds both from what Python found, and reads nothing back from Lean.
+An exchange of sums, `exchange` in `examples/sum_factorization.py`, is
+printed as a chain from its left side, through the left side with its sums in
+the order found, to its right side. A proof by any other rung of the ladder
+names the rung, as in `by integer arithmetic` or `by induction on n, taking
+the last term off the sum`.
+
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
@@ -1514,6 +1559,7 @@ family over `Nat`.
 | Mathlib mode: the pinned project and its setup | `src/lanky/mathlib/`, `src/lanky/mathlib-project/` |
 | induction over families: the search for a certificate, and the script Lean checks | `src/lanky/induction.py`, `src/lanky/oracles/lean.py` |
 | exchanging finite sums: the order Python finds, and the script Lean checks | `src/lanky/sums.py`, `src/lanky/oracles/lean.py` |
+| the proof lanky found, said back in Python: `--proofs` and `--steps` | `src/lanky/outline.py` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |
 | the pytential demonstration, and its rule engine | `examples/pytential_skie.py`, `examples/layer_potentials.py` |

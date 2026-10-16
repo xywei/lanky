@@ -6,6 +6,52 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`lanky check --proofs` prints the proof lanky found, in Python** (the
+  proof-interface decision of 2026-10-16, increment I0). For a theorem proved
+  by an induction over families, the body a written proof would have, in the
+  theorem's own names and at the points the search found, written as the user
+  writes them (`a - 2` where the search had a fresh `k`), ready to paste under
+  the docstring. On loopty's `examples/l2p.py`:
+
+  ```python
+      def claim(a, b):
+          if a < 2:
+              return stored
+          return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)
+
+      return claim
+  ```
+
+  A fact that fits the case's claim at one point only is cited by its name
+  (`return stored`); the others keep their points, and the claim at a smaller
+  point, which is the induction, always does. For an exchange of finite sums,
+  the chain through the left side with its sums in the order found. For a
+  proof by any other rung of the ladder, the rung is named in words (`by
+  integer arithmetic`, `by induction on n, taking the last term off the
+  sum`). `--proofs TEXT` keeps the theorems whose name, id or statement
+  contains `TEXT`.
+- **`lanky check --steps` prints the outline of that proof** in lanky's
+  notation: each case of an induction as a chain of equations from the
+  claim's left side to its right, each link with the fact it follows from,
+  its point, and its multiplier where that is not `1` or `-1`. lanky builds
+  the outline from what the search found; nothing is read back from Lean.
+- The record both read is kept as `found_proof` in the provenance (and in
+  `--json`): `how`, and where Python can say it, `body` and `steps`. The Lean
+  oracle's ladder now hands each script over as a `lanky.outline.Script`, a
+  `str` that also carries its rung and the plan Python found
+  (`FamilyPlan`, `SumPlan`); it is the script's text wherever a script is
+  used, so the Lean source, the proof cache and the `tactic` recorded are as
+  they were.
+
+### Changed
+
+- `lanky check --proofs examples/l2p.py`, `--steps` and `--show-lean` given
+  a Python file that exists in place of their text check that file, rather
+  than stopping with `the following arguments are required: FILE`, and
+  `lanky check` with no file says to name one (exit code 2, as before).
+
 ### Fixed
 
 - **`python -m lanky.mathlib DIR` starts without a warning** (#162). The

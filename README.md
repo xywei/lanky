@@ -227,7 +227,8 @@ raises its floor to match.
 
 **Works.**
 
-- `lanky check FILE... [--json OUT] [--verbose] [--show-lean [TEXT]]`, exit code 1 on any
+- `lanky check FILE... [--json OUT] [--verbose] [--show-lean [TEXT]] [--proofs [TEXT]]
+  [--steps [TEXT]]`, exit code 1 on any
   refutation or vacuous claim. Each refuted fact is repeated under the table
   with its counterexample, its witness and its reason, the three standard
   provenance keys, read the same way whichever oracle or plugin refuted it; or
@@ -517,6 +518,17 @@ raises its floor to match.
   under a name of its own in the ledger: the facts of one owner whose parts
   have one name, a kernel's accesses, are told apart as
   `Lanky.jacobi_in_bounds`, `Lanky.jacobi_in_bounds_2` and on.
+- `--proofs` prints the proof lanky found for each proved theorem, in Python
+  where Python can say it: for an induction over families, the body a written
+  proof would have, in the theorem's own names and at the points the search
+  found, ready to paste under the docstring (`def claim(a, b): ...`, `return
+  recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)`, `return
+  claim`); for an exchange of sums, the chain through the left side with its
+  sums in the order found; for any other rung of the ladder, the rung, in
+  words. `--steps` prints its outline in lanky's notation, each case a chain
+  of equations whose links name the fact, the point and the multiplier. Both
+  read `found_proof` in the provenance, and take a text as `--show-lean`
+  does.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
 
