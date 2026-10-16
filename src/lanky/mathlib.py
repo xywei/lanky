@@ -170,6 +170,11 @@ def write_project(directory: str | os.PathLike[str]) -> Path:
     return path
 
 
+def _absolute(path: str | os.PathLike[str]) -> Path:
+    """``path`` with ``~`` expanded, read from the current directory, symbolic links kept."""
+    return Path(os.path.abspath(Path(path).expanduser()))
+
+
 def archive_directory(directory: str | os.PathLike[str]) -> Path:
     """Where :func:`fetch_cache` has Mathlib's cache tool keep the packed files it downloads.
 
@@ -179,11 +184,16 @@ def archive_directory(directory: str | os.PathLike[str]) -> Path:
     :data:`ARCHIVES` in the project, which goes when the project goes.
     ``MATHLIB_CACHE_DIR``, when it names a place, is the user's choice and
     wins, as it does for the tool; an empty one is unset.
+
+    The place is absolute, a relative one read from the current directory,
+    as every path on the command line is: the tool runs in the project, and
+    would read ``mathlib/.lake/mathlib-cache`` from there, as
+    ``mathlib/mathlib/.lake/mathlib-cache`` (#155).
     """
     chosen = os.environ.get(ARCHIVE_VARIABLE)
     if chosen:
-        return Path(chosen).expanduser()
-    return Path(directory).expanduser() / ARCHIVES
+        return _absolute(chosen)
+    return _absolute(directory) / ARCHIVES
 
 
 def fetch_cache(directory: str | os.PathLike[str], lake: str = "lake") -> int:
@@ -200,7 +210,7 @@ def fetch_cache(directory: str | os.PathLike[str], lake: str = "lake") -> int:
     try:
         return subprocess.run(
             [lake, "exe", "cache", "get"],
-            cwd=Path(directory).expanduser(),
+            cwd=_absolute(directory),
             env=environment,
             check=False,
         ).returncode
@@ -242,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
     Exit code 0 when the project is ready, with where the cache tool left its
     packed files and the line that turns Mathlib mode on; otherwise the cache
     tool's exit code, or 1 when the project is still not ready after it ran.
+    ``DIR`` may be relative, and is read from the current directory; what the
+    command prints names it in full, so the line to export works from
+    anywhere.
     """
     parser = argparse.ArgumentParser(
         prog="python -m lanky.mathlib",
@@ -258,7 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--lake", default="lake", help="the lake executable to run")
     args = parser.parse_args(argv)
-    path = write_project(args.directory)
+    # absolute before anything runs in the project, and in the line to export
+    path = write_project(_absolute(args.directory))
     print(f"wrote the pinned Mathlib project ({MATHLIB_REVISION}) to {path}", flush=True)
     if args.no_fetch:
         return 0

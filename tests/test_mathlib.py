@@ -1355,19 +1355,15 @@ def test_the_oracles_line_names_the_lean_the_repl_runs(monkeypatch, tmp_path) ->
     )
 
 
-def test_the_archives_mathlib_downloads_stay_in_the_project(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    """#151: deleting the project deletes the packed files the cache tool downloaded.
+def _stand_in_lake(directory: Path) -> Path:
+    """A ``lake`` that downloads one archive where it is told to and leaves a Mathlib behind.
 
-    The tool's own default is ``~/.cache/mathlib``, outside the project. A
-    place ``MATHLIB_CACHE_DIR`` names is the user's and is kept, and the
-    closing lines say it is outside. The ``lake`` here is a stand-in that
-    downloads one archive where it is told to and leaves a Mathlib behind.
+    It runs in the project, as the cache tool does, and so reads a relative
+    ``MATHLIB_CACHE_DIR`` from there.
     """
     import sys
 
-    lake = tmp_path / "lake"
+    lake = directory / "lake"
     lake.write_text(
         f"#!{sys.executable}\n"
         "import os, pathlib\n"
@@ -1378,6 +1374,19 @@ def test_the_archives_mathlib_downloads_stay_in_the_project(
         encoding="utf-8",
     )
     lake.chmod(0o755)
+    return lake
+
+
+def test_the_archives_mathlib_downloads_stay_in_the_project(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """#151: deleting the project deletes the packed files the cache tool downloaded.
+
+    The tool's own default is ``~/.cache/mathlib``, outside the project. A
+    place ``MATHLIB_CACHE_DIR`` names is the user's and is kept, and the
+    closing lines say it is outside. The ``lake`` here is a stand-in.
+    """
+    lake = _stand_in_lake(tmp_path)
     monkeypatch.delenv("MATHLIB_CACHE_DIR", raising=False)
     project = tmp_path / "mathlib"
     assert mathlib_mode.main([str(project), "--lake", str(lake)]) == 0
@@ -1396,6 +1405,33 @@ def test_the_archives_mathlib_downloads_stay_in_the_project(
     assert "which MATHLIB_CACHE_DIR names, outside the project" in capsys.readouterr().out
     monkeypatch.setenv("MATHLIB_CACHE_DIR", "")  # empty is unset, as for lanky's variables
     assert mathlib_mode.archive_directory(project) == archives
+
+
+def test_a_relative_project_keeps_the_downloads_in_itself(monkeypatch, tmp_path, capsys) -> None:
+    """#155: ``python -m lanky.mathlib mathlib`` put the archives in ``mathlib/mathlib``.
+
+    The command named ``mathlib/.lake/mathlib-cache`` to the cache tool, which
+    runs in the project and read it from there, and then said 0 MB were in
+    the place it meant. The project is now read from where the command runs,
+    as a relative ``MATHLIB_CACHE_DIR`` is, and the line to export names it
+    in full, so that it works from any directory.
+    """
+    lake = _stand_in_lake(tmp_path)
+    monkeypatch.delenv("MATHLIB_CACHE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    here = Path.cwd()
+    assert mathlib_mode.main(["mathlib", "--lake", str(lake)]) == 0
+    archives = here / "mathlib" / ".lake" / "mathlib-cache"
+    assert (archives / "a.ltar").is_file()
+    assert not (here / "mathlib" / "mathlib").exists()
+    assert mathlib_mode.archive_directory("mathlib") == archives
+    printed = capsys.readouterr().out
+    assert f"Mathlib's packed downloads (2 MB) are in {archives}, inside the project" in printed
+    assert f"ready: export LANKY_LEAN_MATHLIB={here / 'mathlib'}\n" in printed
+    monkeypatch.setenv("MATHLIB_CACHE_DIR", "archives")
+    assert mathlib_mode.main(["mathlib", "--lake", str(lake)]) == 0
+    assert (here / "archives" / "a.ltar").is_file()
+    assert not (here / "mathlib" / "archives").exists()
 
 
 def test_a_pinned_version_that_is_not_the_projects_is_refused(monkeypatch, tmp_path) -> None:

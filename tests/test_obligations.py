@@ -1247,6 +1247,118 @@ def test_a_counterexample_whose_time_ran_out_is_read_back_without_lean(
     assert warm.provenance["lean_counterexample"] == cold.provenance["lean_counterexample"]
 
 
+#: ``u < 1`` for every positive real ``u``, false at ``u = 2``.
+_REAL_PART = Part(
+    "S0", "u < 1", claim(((Var("u"), Real),), [Var("u") > 0], Var("u") < 1), mathlib=True
+)
+_AT_TWO = Counterexample("S0", {"u": 2}, "u=2")
+
+
+def test_a_counterexample_about_reals_whose_time_ran_out_is_read_back_without_mathlib(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#155: the record of a counterexample to a part about reals was never read.
+
+    The cache was read first only for a counterexample to an integer part, so
+    the check after a cold one that ran out of time started the session that
+    imports Mathlib, and was given the same time to run out of.
+    """
+    oracle, started = no_session
+    _answering(monkeypatch, [(False, _TIMED_OUT, False), (False, _TIMED_OUT, False)])
+    obligation = Obligation(parts=(_REAL_PART,), counterexample=_AT_TWO)
+    cold = oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert "it ran out of time" in cold.provenance["lean_counterexample"]
+    warm = _second_check(monkeypatch, oracle).establish(fact_of(obligation, Status.REFUTED))
+    assert started == []
+    assert warm.provenance["lean_counterexample"] == cold.provenance["lean_counterexample"]
+
+
+def test_a_counterexample_about_reals_lean_confirmed_is_read_back_without_mathlib(
+    no_session, fake_mathlib: str
+) -> None:
+    """Lean's answer is kept under the project's key, and the version said is its toolchain's."""
+    oracle, started = no_session
+    statement = part_statement(_REAL_PART, theorem_name("kernel", _REAL_PART))
+    source = negation_source(_REAL_PART, statement, _AT_TWO.point, decide=True)
+    oracle.proofs.put(fake_mathlib, source, True, "")
+    obligation = Obligation(parts=(_REAL_PART,), counterexample=_AT_TWO)
+    fact = oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert started == []
+    assert fact.provenance["lean_counterexample"] == (
+        "Lean confirmed the counterexample: the claim is false at u=2"
+    )
+    assert fact.provenance["lean_version"] == "v0.0.0-test"
+
+
+def test_a_counterexample_to_an_integer_part_beside_reals_imports_no_mathlib(
+    no_session, fake_mathlib: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It is checked in core Lean, where its part is, from the cache or in a core session.
+
+    A part about reals beside it made the check start the Mathlib session
+    first, which was minutes of importing Mathlib for a question core Lean
+    answers, and kept the cache from being read at all (#155).
+    """
+    from lanky.oracles.lean import LeanSession
+
+    oracle, started = no_session
+    wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    obligation = Obligation(
+        parts=(_REAL_PART, wrong), counterexample=Counterexample("S1", {"n": 2, "x": 1}, "x=1")
+    )
+    readied: list[bool] = []
+
+    def ready(session: LeanSession) -> bool:
+        readied.append(session.mathlib is not None)
+        session.version = "v0.0.0-test"
+        return True
+
+    monkeypatch.setattr(LeanSession, "ready", ready)
+    monkeypatch.setattr(
+        LeanSession, "answer", lambda self, source, until=None: (True, "", True)
+    )
+    cold = oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert cold.provenance["lean_refuted_by"] == "decide"
+    assert readied and not any(readied)
+    warm = _second_check(monkeypatch, oracle).establish(fact_of(obligation, Status.REFUTED))
+    assert started == []
+    assert warm.provenance["lean_counterexample"] == cold.provenance["lean_counterexample"]
+
+
+def test_a_part_whose_fallback_gives_new_splits_is_asked_again(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#155: where a part stopped is kept under the attempts its fallback adds, too.
+
+    It was kept under the part's own attempts alone, so a plugin that gave
+    other case splits for the same statement and hints had the check after
+    say again what the old splits came to, and never try the new ones. The
+    same fallback is read back without Lean, as before.
+    """
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    asked = _answering(monkeypatch, [(False, "no", True), (False, _TIMED_OUT, False)])
+    term = claim((n, x), [x >= 0, x < n], x + 1 < n)
+
+    def part(at: int) -> Part:
+        """The part, whose fallback splits ``x`` at ``at``."""
+        split = LogicalOr(((x < at), (x >= at)))
+        return Part("S1", "x + 1 < n", term, fallback=lambda: Hints(splits=(split,)))
+
+    cold = oracle.establish(fact_of(Obligation(parts=(part(1),), decider="isl")))
+    assert len(asked) >= 2  # omega, then the fallback's split, which timed out
+    assert cold.provenance["lean_parts"][0]["timed_out"]
+    same = _second_check(monkeypatch, oracle).establish(
+        fact_of(Obligation(parts=(part(1),), decider="isl"))
+    )
+    assert started == []
+    assert same.provenance["lean_reason"] == cold.provenance["lean_reason"]
+    _second_check(monkeypatch, oracle).establish(
+        fact_of(Obligation(parts=(part(2),), decider="isl"))
+    )
+    assert started
+
+
 def test_a_stop_record_is_read_by_no_check_with_more_time(tmp_path) -> None:
     cache = ProofCache(str(tmp_path))
     questions = ["theorem a : True := by omega", "theorem a : True := by simp"]
