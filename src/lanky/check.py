@@ -1215,6 +1215,13 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     the function before it is decorated. A plugin's facts are collected
     here too, so two kernels one factory makes are refused the same way.
 
+    A theorem whose body is a written proof (:mod:`lanky.proofs`) has it
+    checked last, once every fact of the file is established, so that
+    nothing the body does when it is traced can change what a run or a draw
+    of the check read: a proof Lean accepts adds its account to the claim's
+    fact as ``proof``, and proves a claim no oracle did; one Lean does not
+    accept is recorded there with its failures, which fail ``lanky check``.
+
     What it does not keep apart is their imports. The file is imported into
     the calling process, and every check that process runs shares one
     ``sys.modules``: after ``check_path("a/main.py")`` has imported
