@@ -1267,21 +1267,72 @@ def test_a_copy_that_fails_kills_the_child(monkeypatch) -> None:
     assert child.returncode is not None and child.returncode != 0
 
 
+#: A child that says ``ready`` and then waits, with ``{handler}`` for ``SIGTERM``.
+#:
+#: The handler ``stop`` writes to the descriptor and leaves with ``os._exit``,
+#: past ``sys.stdout``: ``print("ready", flush=True)`` runs the handlers of
+#: signals that came while it wrote before it lets go of standard output, and
+#: the parent sends ``SIGTERM`` as soon as it has read the line. On a loaded
+#: machine the handler ran in there, and a ``print`` in it raised
+#: ``RuntimeError: reentrant call``, so the child exited 1 (#149).
 STOPPABLE = """\
+import os
 import signal
-import sys
 import time
 
 
 def stop(*_):
-    print("stopped", flush=True)
-    sys.exit(0)
+    os.write(1, b"stopped\\n")
+    os._exit(0)
 
 
 signal.signal(signal.SIGTERM, {handler})
 print("ready", flush=True)
 time.sleep(30)
 """
+
+#: Put before :data:`STOPPABLE`: standard output that sends this process
+#: ``SIGTERM`` as soon as it has written, inside ``print``, which is where a
+#: loaded machine delivered it now and then.
+SIGNALLED_WHILE_PRINTING = """\
+import io
+import os
+import signal
+import sys
+
+
+class Signalling(io.RawIOBase):
+    def writable(self):
+        return True
+
+    def write(self, data):
+        written = os.write(1, data)
+        os.kill(os.getpid(), signal.SIGTERM)
+        return written
+
+
+sys.stdout = io.TextIOWrapper(io.BufferedWriter(Signalling()))
+"""
+
+
+@pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
+def test_the_stopped_child_ends_cleanly_when_sigterm_comes_while_it_prints() -> None:
+    """The child of the next test exits 0 on ``SIGTERM``, wherever the signal finds it (#149).
+
+    That test failed now and then on a loaded machine with the child's exit
+    code 1, since its handler printed and the signal could come while
+    ``print("ready")`` still held standard output. Here it comes there each
+    time.
+    """
+    import subprocess
+    import sys
+
+    child = subprocess.run(
+        [sys.executable, "-c", SIGNALLED_WHILE_PRINTING + STOPPABLE.format(handler="stop")],
+        capture_output=True,
+        timeout=60,
+    )
+    assert (child.returncode, child.stdout) == (0, b"ready\nstopped\n"), child.stderr
 
 
 @pytest.mark.skipif("sys.platform == 'win32'", reason="POSIX signals")
@@ -1294,11 +1345,15 @@ def test_an_interrupt_stops_the_child_with_sigterm_first(monkeypatch, handler, r
     starts the REPL in a session of its own; a child now kills its REPLs on
     ``SIGTERM``. One that has not ended a moment later, because a checked
     file ignores the signal, say, is still killed.
+
+    The child that handles the signal is given a long grace, which it does
+    not wait out, since on a loaded machine a second was not always enough
+    for it to run its handler (#149); the one that ignores it, a second.
     """
     import io
     import sys
 
-    monkeypatch.setattr(cli, "_STOP_GRACE", 1.0)
+    monkeypatch.setattr(cli, "_STOP_GRACE", 60.0 if returncode == 0 else 1.0)
     out = io.StringIO()
     monkeypatch.setattr(sys, "stdout", out)
     child = _sleeper(STOPPABLE.format(handler=handler))

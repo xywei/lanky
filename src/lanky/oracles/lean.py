@@ -77,6 +77,7 @@ import sys
 import threading
 import time
 import weakref
+from collections.abc import Iterator
 from dataclasses import replace
 from importlib.util import find_spec
 from typing import Any
@@ -461,6 +462,54 @@ def default_cache_dir() -> str:
     return os.path.join(base, "lanky", "lean-repl")
 
 
+#: The file in the REPL cache that a process locks while it sets a REPL up there.
+BUILD_LOCK = "build.lock"
+
+
+@contextlib.contextmanager
+def _setting_up(cache_dir: str) -> Iterator[None]:
+    """Hold the REPL cache's lock while a REPL is set up in it, so that one process builds it.
+
+    lean_interact builds the REPL with ``lake build`` in the REPL's directory
+    in the cache, and locks the checkout but not the build. So processes that
+    opened sessions at once in an empty cache, pytest's workers or ``lanky
+    check`` runs side by side, built it at once, and some failed (#122); a run
+    that later met the build they left could fail to open a session with that
+    Lean and settle on the next one it tried (see :func:`candidate_versions`).
+    Now the others wait here while one builds, and then find its build.
+
+    The lock is ``flock`` on a file in the cache, which the system lets go of
+    when the process ends, however it ends. Where it cannot be had, on Windows
+    or on a file system that refuses it, nothing is locked.
+    """
+    handle = _locked(os.path.join(cache_dir, BUILD_LOCK))
+    if handle is None:
+        yield
+        return
+    with handle:  # closing it lets go of the lock
+        yield
+
+
+def _locked(path: str) -> Any:
+    """The file at ``path``, open and locked by this process, or ``None`` where it cannot be."""
+    try:
+        import fcntl
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        handle = open(path, "a", encoding="utf-8")  # closed by _setting_up
+    except (ImportError, OSError):
+        return None
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+    except OSError:
+        handle.close()
+        return None
+    except BaseException:  # an interrupt while it waits
+        handle.close()
+        raise
+    return handle
+
+
 class LeanSession:
     """A Lean REPL, opened on demand and kept for the life of the process.
 
@@ -554,7 +603,8 @@ class LeanSession:
         reasons = []
         for version in candidate_versions():
             try:
-                config = LeanREPLConfig(lean_version=version, **options)
+                with _setting_up(self.cache_dir):
+                    config = LeanREPLConfig(lean_version=version, **options)
                 self.server = LeanServer(config)
             except Exception as exc:  # noqa: BLE001 - every failure is a reason to move on
                 reasons.append(f"{version or 'newest supported'}: {exc}")
@@ -587,9 +637,10 @@ class LeanSession:
             return False
         directory = os.path.expanduser(self.mathlib)
         try:
-            config = config_class(
-                project=LocalProject(directory=directory, auto_build=False), **options
-            )
+            with _setting_up(self.cache_dir):
+                config = config_class(
+                    project=LocalProject(directory=directory, auto_build=False), **options
+                )
         except Exception as exc:  # noqa: BLE001 - every failure is a reason to report
             self.error = f"no Lean REPL could be built for the Mathlib project ({exc})"
             return False

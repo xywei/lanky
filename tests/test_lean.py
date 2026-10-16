@@ -1601,6 +1601,74 @@ def test_a_core_session_starts_a_killed_server_again(monkeypatch) -> None:
     assert "could not be restarted" in detail
 
 
+@pytest.mark.skipif("sys.platform == 'win32'", reason="flock")
+@pytest.mark.parametrize("mathlib", [False, True], ids=["core", "mathlib"])
+def test_sessions_opened_at_once_set_the_repl_up_one_at_a_time(
+    monkeypatch, tmp_path, mathlib
+) -> None:
+    """#122: sessions opened at once in one cache built the REPL there at once.
+
+    lean_interact builds the REPL in its directory in the cache without a
+    lock, and pytest's workers starting on an empty cache each built it, and
+    some failed. A session now holds a lock in the cache while it sets its REPL
+    up. Here the setting up takes a moment and counts who is in it, and four
+    sessions start at once; a lock on a file shuts out a thread of this process
+    as it does another process.
+    """
+    import sys
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    count = threading.Lock()
+    inside = [0]
+    most = [0]
+
+    class Config:
+        def __init__(self, **options) -> None:
+            with count:
+                inside[0] += 1
+                most[0] = max(most[0], inside[0])
+            time.sleep(0.2)
+            with count:
+                inside[0] -= 1
+            self.lean_version = "v4.29.1"
+
+    class Server:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def kill(self) -> None:
+            pass
+
+    fake = SimpleNamespace(
+        LeanREPLConfig=Config, LeanServer=Server, LocalProject=lambda **fields: fields
+    )
+    monkeypatch.setitem(sys.modules, "lean_interact", fake)
+    monkeypatch.setenv("LANKY_LEAN_VERSION", "v4.29.1")
+    monkeypatch.setattr(lean_module, "_RESOLVED", ())
+    project = None
+    if mathlib:
+        monkeypatch.setattr(lean_module.mathlib_mode, "problem", lambda directory: None)
+        monkeypatch.setattr(lean_module.mathlib_mode, "revision", lambda directory: "pinned")
+        monkeypatch.setattr(LeanSession, "_import_mathlib", lambda self: True)
+        project = str(tmp_path / "project")
+    cache = str(tmp_path / "cache")
+    sessions = [LeanSession(cache_dir=cache, mathlib=project) for _ in range(4)]
+    threads = [threading.Thread(target=session.start) for session in sessions]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    try:
+        assert [session.error for session in sessions] == [None] * 4
+        assert all(session.server is not None for session in sessions)
+        assert most[0] == 1
+    finally:
+        for session in sessions:
+            session.close()
+
+
 class _Slow:
     """A stand-in server whose every attempt fails after ``seconds``, unless its timeout is shorter.
 

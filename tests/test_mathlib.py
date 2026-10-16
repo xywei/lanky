@@ -1684,6 +1684,31 @@ def mathlib_oracle(mathlib_project: str | None) -> Iterator[LeanOracle]:
     oracle.session.close()
 
 
+def test_the_project_reaches_every_pytest_xdist_worker(pytester, monkeypatch) -> None:
+    """``mathlib_project`` is the project the run was started with, in each worker too (#148).
+
+    The suite's conftest takes ``LANKY_LEAN_MATHLIB`` out of the environment
+    when it is imported, which pytest-xdist's controller does before it starts
+    the workers, so in each worker the fixture was ``None``: the tests that
+    want Mathlib skipped, or failed under ``LANKY_LEAN_MATHLIB_TEST_REQUIRED``.
+    Here a run with the conftest and a test that reads the fixture, once
+    without workers and once with two.
+    """
+    pytest.importorskip("xdist")
+    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text(encoding="utf-8"))
+    pytester.makepyfile(
+        test_probe="""
+        def test_the_fixture(mathlib_project):
+            assert mathlib_project == "/a/mathlib/project"
+        """
+    )
+    monkeypatch.setenv("LANKY_LEAN_MATHLIB", "/a/mathlib/project")
+    autoload_off = os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD")
+    xdist = ["-p", "xdist.plugin"] if autoload_off else []
+    for arguments in ([], [*xdist, "-n", "2"]):
+        pytester.runpytest_subprocess(*arguments).assert_outcomes(passed=1)
+
+
 def test_mathlib_refuses_a_name_the_declaration_does_not_bind(
     mathlib_oracle: LeanOracle,
 ) -> None:
