@@ -1339,24 +1339,60 @@ def test_a_part_whose_fallback_gives_new_splits_is_asked_again(
     oracle, started = no_session
     asked = _answering(monkeypatch, [(False, "no", True), (False, _TIMED_OUT, False)])
     term = claim((n, x), [x >= 0, x < n], x + 1 < n)
+    fallbacks: list[int] = []
 
     def part(at: int) -> Part:
-        """The part, whose fallback splits ``x`` at ``at``."""
+        """The part, whose fallback splits ``x`` at ``at`` and counts that it was asked."""
         split = LogicalOr(((x < at), (x >= at)))
-        return Part("S1", "x + 1 < n", term, fallback=lambda: Hints(splits=(split,)))
+        return Part(
+            "S1",
+            "x + 1 < n",
+            term,
+            fallback=lambda: fallbacks.append(at) or Hints(splits=(split,)),
+        )
 
     cold = oracle.establish(fact_of(Obligation(parts=(part(1),), decider="isl")))
     assert len(asked) >= 2  # omega, then the fallback's split, which timed out
     assert cold.provenance["lean_parts"][0]["timed_out"]
+    assert fallbacks == [1]  # asked by the check, and not again for the record (Codex)
     same = _second_check(monkeypatch, oracle).establish(
         fact_of(Obligation(parts=(part(1),), decider="isl"))
     )
     assert started == []
     assert same.provenance["lean_reason"] == cold.provenance["lean_reason"]
+    assert fallbacks == [1, 1]
     _second_check(monkeypatch, oracle).establish(
         fact_of(Obligation(parts=(part(2),), decider="isl"))
     )
     assert started
+
+
+def test_a_part_whose_own_attempt_timed_out_does_not_ask_its_fallback(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback is asked for once the part's own attempts have failed, never for a key.
+
+    Its solver may search for a while, and the check whose time ran out
+    did not reach it, so neither keeping where the part stopped nor reading
+    that back asks for it (Codex, on #156).
+    """
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    _answering(monkeypatch, [(False, _TIMED_OUT, False)])
+    fallbacks: list[bool] = []
+    part = Part(
+        "S1",
+        "x + 1 < n",
+        claim((n, x), [x >= 0, x < n], x + 1 < n),
+        fallback=lambda: fallbacks.append(True) or Hints(splits=(LogicalOr(((x < 1), (x >= 1))),)),
+    )
+    obligation = Obligation(parts=(part,), decider="isl")
+    cold = oracle.establish(fact_of(obligation))
+    assert cold.provenance["lean_parts"][0]["timed_out"]
+    warm = _second_check(monkeypatch, oracle).establish(fact_of(obligation))
+    assert started == []
+    assert warm.provenance["lean_reason"] == cold.provenance["lean_reason"]
+    assert fallbacks == []
 
 
 def test_a_stop_record_is_read_by_no_check_with_more_time(tmp_path) -> None:

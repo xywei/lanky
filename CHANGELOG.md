@@ -34,9 +34,11 @@ All notable changes to lanky are recorded here. The format follows
   The record of where a part stopped was kept under its own attempts
   alone, so a plugin that changed the case splits its fallback gives, the
   statement and the part's hints the same, had a warm check say the old
-  "ran out of time" again instead of trying the new splits. The fallback's
-  attempts are now part of the record's key, and new ones are asked. A
-  record never proved anything, so only a part left open was affected.
+  "ran out of time" again instead of trying the new splits. The record is
+  now kept under every attempt the check reached, the fallback's among
+  them once it was asked for, so new ones are asked; a fallback the check
+  did not reach is not asked for to make the key. A record never proved
+  anything, so only a part left open was affected.
 - **`python -m lanky.mathlib mathlib` keeps the downloads in `mathlib`**
   (#155). With a relative `DIR`, the cache tool, which runs in the project,
   read `MATHLIB_CACHE_DIR=mathlib/.lake/mathlib-cache` from there, so the

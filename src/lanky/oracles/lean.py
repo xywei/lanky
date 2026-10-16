@@ -2702,29 +2702,6 @@ def _claim_questions(statement: LeanStatement, ladder: list[str]) -> list[str]:
     return sources + [statement.source(tactic) for tactic in ladder]
 
 
-def _part_questions(part: Any, owner: str) -> list[str] | None:
-    """Every declaration a part may send, in order; ``None`` for a part with no attempt.
-
-    What a stop record of the part is kept under (:meth:`ProofCache.stop`):
-    the part's statement and its hints, and so its solver's answer, are in
-    them, and so are the attempts its fallback adds, which are asked for
-    once the part's own have failed (:meth:`LeanOracle._check_part`). A
-    plugin that changes what its fallback gives, while the statement and the
-    part's own hints stay, has a check ask Lean the new attempts, where it
-    would have read back what the old ones came to (#155).
-    """
-    try:
-        statement = part_statement(part, theorem_name(owner, part))
-    except (UnsupportedTerm, AttributeError, TypeError, ValueError):
-        return None
-    tried = attempts(part, statement)
-    if not tried:
-        return None
-    if callable(getattr(part, "fallback", None)):
-        tried = [*tried, *_fallback_attempts(part, statement)]
-    return [statement.source(tactic) for _how, tactic in tried]
-
-
 #: What an attempt the stop record passes over answers on a check after the
 #: one that stopped (:meth:`LeanOracle._part_from_cache`): not answered.
 _LEFT_OPEN = "not answered in the time the check that kept it had"
@@ -3654,28 +3631,37 @@ class LeanOracle:
         no less time stopped on this part (:meth:`ProofCache.stopped`). The
         attempts it left unanswered are then passed over, and a part no kept
         answer proves gets the record that check gave it.
+
+        The record is looked for once the part's attempts are read, under
+        the attempts the check reached (:meth:`_check_part`): the attempts
+        its fallback adds are among them when the last of the part's own was
+        answered and failed, and then the check that stopped reached them
+        too, since it had the same answers. A plugin whose fallback now gives other hints
+        finds no record, and Lean is asked them (#155).
         """
         cache = self.proofs
         if cache is None:
             return None
-        stop: dict | None | bool = False
+        passed = False
 
-        def kept(source: str) -> tuple[bool, str, bool, bool] | None:
-            nonlocal stop
+        def kept(source: str) -> tuple[bool, str, bool, bool]:
+            nonlocal passed
             found = cache.get(key, source)
             if found is not None:
                 return found[0], found[1], True, True
-            if stop is False:
-                questions = _part_questions(part, owner)
-                stop = cache.stopped(key, questions, budget, timeout) if questions else None
-            if not stop:
-                return None
+            # passed over for now; without a record, Lean has to be asked
+            passed = True
             return False, _LEFT_OPEN, True, False
 
-        record = self._check_part(part, owner, None, kept)
-        if record is None or record.get("proved") or not stop:
+        questions: list[str] = []
+        record = self._check_part(part, owner, None, kept, questions)
+        if record is None or not passed:
             return record
-        assert isinstance(stop, dict)
+        stop = cache.stopped(key, questions, budget, timeout) if questions else None
+        if not stop:
+            return None
+        if record.get("proved"):
+            return record
         stored = stop.get("record")
         if not isinstance(stored, dict) or stored.get("proved"):
             # it was proved by an answer the cache no longer holds
@@ -3770,13 +3756,13 @@ class LeanOracle:
                 short = True
             return answer
 
-        record = self._check_part(part, owner, until, ask)
+        questions: list[str] = []
+        record = self._check_part(part, owner, until, ask, questions)
         assert record is not None  # a session answers every attempt, or says why not
         if record.get("timed_out") and _spent(until):
             short = True
         if short and session.error is None and self.proofs is not None:
             key = self._answer_key(session)
-            questions = _part_questions(part, owner)
             if key is not None and questions:
                 self.proofs.stop(key, questions, budget, session.timeout, {"record": record})
         return record
@@ -3817,7 +3803,12 @@ class LeanOracle:
         return session.version
 
     def _check_part(
-        self, part: Any, owner: str, until: float | None, ask: Any
+        self,
+        part: Any,
+        owner: str,
+        until: float | None,
+        ask: Any,
+        questions: list[str] | None = None,
     ) -> dict | None:
         """Prove one part: its record, with how it was proved or why it was not.
 
@@ -3828,9 +3819,14 @@ class LeanOracle:
         ``timed_out``.
 
         ``ask`` answers one declaration's source as :meth:`_ask` does, or
-        gives ``None`` when it cannot, which a reading of the cache alone does
-        for a declaration it does not hold (:meth:`_cached_parts`); the part
-        then has no record, and ``None`` comes back.
+        gives ``None`` when it cannot; the part then has no record, and
+        ``None`` comes back.
+
+        ``questions``, when given, gets the declaration of every attempt the
+        check reached, in order: the part's own, and those its fallback adds
+        once it is asked for. A stop record of the part is kept under them
+        (:meth:`_checked`), and so the fallback is asked for no more often
+        than the check asks for it (#155).
         """
         record: dict[str, Any] = {"name": part.name, "label": part.label, "proved": False}
         try:
@@ -3851,6 +3847,8 @@ class LeanOracle:
         start = time.monotonic()
         last = ""
         tried = list(tried)
+        if questions is not None:
+            questions.extend(statement.source(tactic) for _how, tactic in tried)
         asked = False
         while tried:
             how, tactic = tried.pop(0)
@@ -3886,6 +3884,8 @@ class LeanOracle:
                 # what the solver finds only when asked: a case split, say
                 asked = True
                 tried = _fallback_attempts(part, statement)
+                if questions is not None:
+                    questions.extend(statement.source(tactic) for _how, tactic in tried)
         record["seconds"] = round(time.monotonic() - start, 3)
         return record
 
