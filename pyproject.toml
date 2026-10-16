@@ -34,7 +34,7 @@ dependencies = [
 [project.optional-dependencies]
 # The Lean session driver. Core Lean 4 needs nothing else; Mathlib mode needs
 # a Lake project with Mathlib fetched, which `python -m lanky.mathlib DIR` sets
-# up outside the Python environment (see src/lanky/mathlib.py).
+# up outside the Python environment (see src/lanky/mathlib/__init__.py).
 lean = [
     "lean-interact>=0.11.5",
 ]

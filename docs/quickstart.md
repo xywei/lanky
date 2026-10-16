@@ -1511,7 +1511,7 @@ family over `Nat`.
 | a claim's reading, checked by running its annotations again at drawn values | `src/lanky/faithful.py` |
 | where the readings still differ: division by zero, `log`, `sqrt` | `src/lanky/semantics.py` |
 | the Lean printer, core Lean's dialect and Mathlib's | `src/lanky/lean.py` |
-| Mathlib mode: the pinned project and its setup | `src/lanky/mathlib.py`, `src/lanky/mathlib-project/` |
+| Mathlib mode: the pinned project and its setup | `src/lanky/mathlib/`, `src/lanky/mathlib-project/` |
 | induction over families: the search for a certificate, and the script Lean checks | `src/lanky/induction.py`, `src/lanky/oracles/lean.py` |
 | exchanging finite sums: the order Python finds, and the script Lean checks | `src/lanky/sums.py`, `src/lanky/oracles/lean.py` |
 | the oracles | `src/lanky/oracles/` |

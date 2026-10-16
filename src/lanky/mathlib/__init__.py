@@ -68,8 +68,8 @@ __all__ = [
 #: The environment variable that turns Mathlib mode on, by naming the project.
 ENVIRONMENT_VARIABLE = "LANKY_LEAN_MATHLIB"
 
-#: The directory the pinned project's files are shipped in.
-TEMPLATE = Path(__file__).resolve().parent / "mathlib-project"
+#: The directory the pinned project's files are shipped in, beside this package.
+TEMPLATE = Path(__file__).resolve().parent.parent / "mathlib-project"
 
 #: The files that make up the pinned project.
 PROJECT_FILES = ("lakefile.toml", "lean-toolchain", "lake-manifest.json")
@@ -287,7 +287,3 @@ def main(argv: list[str] | None = None) -> int:
     print(_archives_line(path))
     print(f"ready: export {ENVIRONMENT_VARIABLE}={path}")
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
