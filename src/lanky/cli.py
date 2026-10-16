@@ -98,6 +98,7 @@ __all__ = [
     "decline_lines",
     "main",
     "refutation_lines",
+    "report_known",
     "report_lean",
     "report_missing",
     "report_proved",
@@ -381,6 +382,7 @@ class CheckVerb:
         CheckVerb._report_declines(ledger)
         report_raised(ledger)
         CheckVerb._report_unproved(ledger, verbose=verbose)
+        report_known(ledger)
         for fact in ledger:
             disagreement = fact.provenance.get(
                 "semantics_disagreement"
@@ -896,6 +898,56 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
         print(f"NOT PROVED {fact.owner} at {fact.where}: {fact.statement}")
         for line in str(reason).splitlines():
             print(f"  {line}")
+
+
+def report_known(ledger: Ledger) -> None:
+    """Name the facts of :mod:`lanky.known` that fit a claim Lean did not prove alone.
+
+    A theorem whose row reads ``tested`` because Lean's search found no proof
+    is often one known fact away from a proof: ``log(abs(alpha)) ==
+    log(real(alpha * conj(alpha))) / 2`` needs the modulus squared. So
+    ``lanky check`` names the facts whose shape occurs in the claim
+    (:func:`lanky.suggest.suggestions`), each with the term it fits and its
+    values there, and the import that brings them into a proof::
+
+        NOT PROVED log_of_the_modulus at log_of_the_modulus.py:41: <the statement>
+          Lean found no proof alone. What lanky knows of its shape:
+            modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)), at z = alpha
+          A proof cites them by name: from lanky.known import modulus_squared
+
+    Only a claim Lean was asked about and did not prove gets the line, and
+    only when some fact fits: a claim no Lean could state reads ``tested``
+    for another reason, which the ``WITHOUT`` lines give. A fact of
+    :mod:`lanky.known` is not suggested for itself. The line does not fail the
+    check, and a suggestion that cannot be made is left out without a word:
+    it is help, and nothing rests on it.
+    """
+    found: list[tuple[Fact, list[Any]]] = []
+    settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
+    for fact in ledger:
+        if fact.kind != "theorem" or fact.status in settled or fact.term is None:
+            continue
+        if not fact.provenance.get("lean_tried") or fact.provenance.get("lean_parts"):
+            continue
+        own = fact.owner if fact.id.startswith("theorem:lanky.known.") else None
+        try:
+            from lanky.suggest import suggestions
+
+            fitting = suggestions(fact.term, exclude=(own,) if own else ())
+        except Exception:  # noqa: BLE001 - a suggestion is help, and its failure no one's
+            continue
+        if fitting:
+            found.append((fact, fitting))
+    if not found:
+        return
+    print()
+    for fact, fitting in found:
+        print(f"NOT PROVED {fact.owner} at {fact.where}: {fact.statement}")
+        print("  Lean found no proof alone. What lanky knows of its shape:")
+        for suggestion in fitting:
+            print(f"    {suggestion.text}")
+        names = ", ".join(dict.fromkeys(suggestion.name for suggestion in fitting))
+        print(f"  A proof cites them by name: from lanky.known import {names}")
 
 
 def report_raised(ledger: Ledger) -> None:
