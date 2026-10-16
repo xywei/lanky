@@ -12,6 +12,7 @@ step is compiled in by hand, as the tracer will.
 from __future__ import annotations
 
 import os
+from importlib.util import find_spec
 from types import SimpleNamespace
 
 import pytest
@@ -516,7 +517,10 @@ def test_a_return_cites_the_named_step_and_the_claim() -> None:
     assert "have recurrence_" not in text
     assert "rw [show n.toNat = (n - 1).toNat + 1 by omega, pow_succ]" in text
     assert "((n - 1 : Int) : ℂ) ≠ 0" in text
-    assert "linear_combination" in text and "recurrence + " in text and "* ih" in text
+    assert "linear_combination" in text and "recurrence + " in text
+    if find_spec("sympy") is not None:
+        # the multiplier of the claim at n - 1, which lanky's search finds
+        assert "* ih" in text
 
 
 def test_shifts_and_nonzero_facts_follow_from_the_case() -> None:

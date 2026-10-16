@@ -430,7 +430,8 @@ def nonzero_lines(terms: Iterable[Any], scope: StepScope) -> list[str]:
     if not scope.mathlib:
         return []
     terms = list(terms)
-    ring = scope.ring(*terms) if terms else "ℝ"
+    sides = [side for term in terms for side in _sides(term)]
+    ring = scope.ring(*sides) if sides else "ℝ"
     if ring not in ("ℝ", "ℂ"):
         ring = "ℝ"
     lines: list[str] = []
@@ -468,6 +469,13 @@ def nonzero_lines(terms: Iterable[Any], scope: StepScope) -> list[str]:
             )
             lines.append(f"try push_cast at {name}")
     return lines
+
+
+def _sides(term: Any) -> tuple[Any, ...]:
+    """The two sides of a comparison, or the term itself: what has a number type."""
+    if isinstance(term, prim.Comparison):
+        return (term.left, term.right)
+    return (term,)
 
 
 def _is_modulus_squared(term: Any) -> bool:
