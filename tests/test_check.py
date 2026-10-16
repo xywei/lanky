@@ -2115,6 +2115,280 @@ def test_a_family_whose_values_cannot_be_drawn_is_not_tested_on_its_empty_draws(
 # }}}
 
 
+# {{{ what is printed when an oracle raised, or was not asked
+
+
+class _Crashing:
+    """A prover whose strategy has a bug: it raises on every claim it is handed."""
+
+    name = "crashing"
+
+    def trust_class(self) -> str:
+        return "kernel"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "theorem"
+
+    def establish(self, fact, /):
+        raise AttributeError("'Var' object has no attribute 'free_variables'")
+
+
+def test_an_oracle_that_raises_is_named_in_the_ledger(tmp_path, monkeypatch, capsys) -> None:
+    """#137: an oracle that raised was passed over without a word but under ``--verbose``.
+
+    A bug in a strategy of Lean's made the oracle raise on one claim, and its
+    row read ``tested``, with no ``lean_tried`` or ``lean_reason`` in the
+    JSON: as if Lean had never been asked. The walk still goes on, and the
+    fact says which oracle raised and what, in the provenance and under the
+    table; ``--verbose`` prints where it raised.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, _Crashing()])
+    path = write_file(tmp_path)
+    true_claim, false_claim = claims(check_path(path))
+    said = "crashing raised AttributeError: 'Var' object has no attribute 'free_variables'"
+    assert (true_claim.status, true_claim.decided_by) == (Status.TESTED, "property-test")
+    assert true_claim.provenance["raised"] == [said]
+    assert false_claim.status is Status.REFUTED
+    assert false_claim.provenance["raised"] == [said]
+
+    out_json = tmp_path / "ledger.json"
+    assert cli.main(["check", path, "--json", str(out_json)]) == 1  # the false claim, as before
+    lines = capsys.readouterr().out.splitlines()
+    at = lines.index(f"RAISED true_claim at {true_claim.where}: {true_claim.statement}")
+    assert lines[at + 1 : at + 3] == [
+        f"  {said}",
+        "  the oracle failed, not the claim: the row says what the other oracles found, "
+        "and lanky check --verbose prints where it raised",
+    ]
+    assert f"RAISED false_claim at {false_claim.where}: {false_claim.statement}" in lines
+    written = {fact["owner"]: fact for fact in claims(json.loads(out_json.read_text()))}
+    assert written["true_claim"]["provenance"]["raised"] == [said]
+
+    cli.main(["check", path, "--verbose"])
+    printed = capsys.readouterr().out
+    assert f"  {said}\n    Traceback (most recent call last):" in printed
+    assert 'raise AttributeError("\'Var\' object has no attribute' in printed
+
+
+class _CrashingOnVacuity:
+    """A decision procedure that raises when it is asked whether hypotheses are inconsistent."""
+
+    name = "crashing"
+
+    def trust_class(self) -> str:
+        return "decision-procedure"
+
+    def can_establish(self, fact, /) -> bool:
+        return fact.kind == "hypotheses"
+
+    def establish(self, fact, /):
+        raise ValueError("no such dimension")
+
+
+def test_an_oracle_that_raises_over_a_question_of_vacuity_is_named(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#137: the question whether a claim is vacuous is asked of the stronger oracles too.
+
+    One that raised there left the claim's warning as it was, and nothing
+    said that the question had not been answered.
+    """
+    from lanky.plugins import registry
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [*registry.oracles, _CrashingOnVacuity()])
+    path = write_file(tmp_path, RARE)
+    (fact,) = claims(check_path(path))
+    assert fact.provenance["unsatisfied"]
+    assert fact.provenance["raised"] == [
+        "crashing raised ValueError: no such dimension, while it was asked whether "
+        "the hypotheses of rare are inconsistent"
+    ]
+    assert cli.main(["check", path]) == 0
+    printed = capsys.readouterr().out
+    assert "RAISED rare at claims.py:" in printed
+    assert "WARNING rare at claims.py:" in printed
+
+
+PRINTER_DECLINES = '''
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Real
+
+
+@theorem
+def floor_below(x: Real) -> x // 1 >= x - 1:
+    """The floor of x, written as a term, which Python computes in floating point."""
+'''
+
+
+def test_a_claim_the_lean_printer_declines_says_that_lean_was_not_asked(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """#132: a statement Lean's printer declines was not offered to Lean, and nothing said so.
+
+    ``LeanOracle.can_establish`` asked the printer and said no, so the fact
+    never reached ``establish``, where a decline is recorded: the row read
+    ``tested`` and ``--verbose`` and ``--json`` were silent. The printer's
+    reason is recorded as ``lean_declined``, and ``--verbose`` names it.
+    Lean is said to be available here and is never asked, so nothing needs
+    Lean.
+    """
+    from lanky.oracles.lean import LeanOracle
+    from lanky.plugins import registry
+
+    oracle = LeanOracle()
+    monkeypatch.setattr(oracle, "availability", lambda: (True, ""))
+
+    def establish(fact):
+        raise AssertionError("a claim the printer declines is not offered to Lean")
+
+    monkeypatch.setattr(oracle, "establish", establish)
+    registry.load_entry_points()
+    others = [entry for entry in registry.oracles if entry.name != "lean"]
+    monkeypatch.setattr(registry, "oracles", [oracle, *others])
+    from lanky.lean import UnsupportedTerm, statement_of
+
+    path = write_file(tmp_path, PRINTER_DECLINES)
+    (fact,) = claims(check_path(path))
+    assert (fact.status, fact.decided_by) == (Status.TESTED, "property-test")
+    # the printer's own reason, in the dialect of the session the oracle would open
+    with pytest.raises(UnsupportedTerm) as declined:
+        statement_of(fact.term, "floor_below", mathlib=False)
+    reason = fact.provenance["lean_declined"]
+    assert reason == str(declined.value)
+    # Lean did not look at it and decline it, so there is no DECLINED line
+    assert "declined" not in fact.provenance
+    assert "raised" not in fact.provenance
+
+    assert cli.main(["check", path]) == 0
+    assert "NOT PROVED" not in capsys.readouterr().out
+    assert cli.main(["check", path, "--verbose"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    at = lines.index(f"NOT PROVED floor_below at {fact.where}: {fact.statement}")
+    assert lines[at + 1] == f"  property-test tested it; Lean was not asked: {reason}"
+
+    # a statement the printer states, and a fact with nothing to state, give nothing
+    from lanky.prelude import Nat
+    from lanky.terms import Forall
+
+    n = Var("n")
+    stated = Fact(id="succ", kind="theorem", statement="s", term=Forall(((n, Nat),), n + 1 > n))
+    assert oracle.can_establish(stated)
+    assert oracle.not_taken(stated) == {}
+    assert oracle.not_taken(Fact(id="none", kind="theorem", statement="s")) == {}
+
+
+def test_an_oracle_may_say_why_it_does_not_take_a_fact(monkeypatch) -> None:
+    """#132: ``not_taken`` gives the entries a check records when ``can_establish`` says no."""
+    from lanky.check import establish
+    from lanky.plugins import registry
+
+    class Particular:
+        name = "particular"
+
+        def trust_class(self) -> str:
+            return "decision-procedure"
+
+        def can_establish(self, fact, /) -> bool:
+            return False
+
+        def establish(self, fact, /):
+            raise AssertionError("never asked")
+
+        def not_taken(self, fact, /) -> dict:
+            return {"particular_declined": f"{fact.owner} is outside its fragment"}
+
+    class Broken(Particular):
+        name = "broken"
+
+        def not_taken(self, fact, /) -> dict:
+            raise RuntimeError("cannot say")
+
+    registry.load_entry_points()
+    monkeypatch.setattr(registry, "oracles", [Particular(), Broken()])
+    handed = Fact(id="claim", kind="cast", statement="s", term=Var("c"), owner="kernel")
+    fact = establish(handed)
+    assert fact.status is Status.ASSUMED
+    assert fact.provenance["particular_declined"] == "kernel is outside its fragment"
+    assert fact.provenance["raised"] == ["broken raised RuntimeError: cannot say"]
+
+
+def _proved(owner: str, line: int, statement: str, *names: str) -> Fact:
+    """A fact Lean proved, whose source declares a theorem of each of ``names``."""
+    source = "\n".join(
+        f"set_option autoImplicit false in\ntheorem {name} (n : Int) : n = n := by\n  rfl"
+        for name in names
+    )
+    return Fact(
+        id=f"in-bounds:{owner}@{line}:{statement}",
+        kind="in-bounds",
+        statement=statement,
+        term=Var("c"),
+        status=Status.PROVED,
+        decided_by="lean",
+        provenance={"lean_source": source},
+        where=f"stencil.py:{line}",
+        owner=owner,
+    )
+
+
+def test_the_theorems_of_one_owners_facts_are_shown_under_names_of_their_own(capsys) -> None:
+    """#120: ``--show-lean`` printed ``theorem Lanky.jacobi_in_bounds`` once per access.
+
+    A part's theorem is named after the claim's owner and the part, so the
+    three accesses of loopty's stencil declared one name three times, which
+    a reader could not tell apart and Lean would not take in one file. Each
+    is shown under a name of its own, counted over the whole ledger, and a
+    name a row declares itself is never taken by a rename.
+    """
+    from lanky.cli import report_lean
+
+    ledger = Ledger()
+    ledger.add(_proved("jacobi", 62, "u[t + 1, i] is in bounds", "Lanky.jacobi_in_bounds"))
+    ledger.add(_proved("jacobi", 62, "u[t, i - 1] is in bounds", "Lanky.jacobi_in_bounds"))
+    ledger.add(
+        _proved(
+            "jacobi",
+            62,
+            "u[t, i + 1] is in bounds",
+            "Lanky.jacobi_in_bounds",
+            "Lanky.jacobi_in_bounds_2",
+        )
+    )
+    ledger.add(_proved("fun", 70, "a quoted name", "Lanky.«fun»"))
+    ledger.add(_proved("fun", 71, "another quoted name", "Lanky.«fun»"))
+    report_lean(ledger)
+    declared = [
+        line.split()[1]
+        for line in capsys.readouterr().out.splitlines()
+        if line.strip().startswith("theorem ")
+    ]
+    assert declared == [
+        "Lanky.jacobi_in_bounds",
+        "Lanky.jacobi_in_bounds_3",
+        "Lanky.jacobi_in_bounds_4",
+        "Lanky.jacobi_in_bounds_2",
+        "Lanky.«fun»",
+        "Lanky.«fun_2»",
+    ]
+    # the names are the ledger's, whichever rows are shown
+    report_lean(ledger, "u[t, i - 1]")
+    shown = [line for line in capsys.readouterr().out.splitlines() if "theorem " in line]
+    assert shown == ["    theorem Lanky.jacobi_in_bounds_3 (n : Int) : n = n := by"]
+    # and the provenance keeps the source Lean was given
+    assert "theorem Lanky.jacobi_in_bounds (n" in ledger[
+        "in-bounds:jacobi@62:u[t, i - 1] is in bounds"
+    ].provenance["lean_source"]
+
+
+# }}}
+
+
 # {{{ facts rest on facts
 
 CITED = '''

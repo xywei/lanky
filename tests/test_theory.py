@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import functools
+import math
 import re
 import threading
 
 import numpy as np
 import pytest
 
-from lanky import axiom, theorem
+from lanky import axiom, exp, theorem
 from lanky.ledger import Fact, Status
 from lanky.oracles.test import TestOracle
 from lanky.plugins import registry
-from lanky.prelude import Fin, Fn, Int, Nat
+from lanky.prelude import Fin, Fn, Int, Nat, Real
 from lanky.terms import Undecided, Var, evaluate_annotations
 from lanky.theory import Axiom, Theorem
 
@@ -504,6 +505,76 @@ def test_a_builtin_answered_at_concrete_values_is_refuted() -> None:
 
     assert rounds_half_up.term is False
     assert TestOracle().establish(rounds_half_up.fact()).status is Status.REFUTED
+
+
+def test_math_of_a_variable_names_the_call_and_the_term_to_write() -> None:
+    """``math.floor(x)`` in an annotation failed with pymbolic's ``UnknownVariableError: x`` (#112).
+
+    ``math.floor(exp(x))`` failed with pymbolic's ``UnsupportedExpressionError``
+    instead, and neither named the call or what to write. Each is refused
+    while the annotation is read, naming the call and the term that is the
+    floor, and so is ``math.ceil``; the other functions of ``math`` ask for
+    a float, and are refused naming the term and the terms to write.
+    """
+
+    def floor_below(x: Real) -> math.floor(x) >= x - 1:
+        """The floor of x is above x - 1."""
+
+    with pytest.raises(
+        TypeError,
+        match=r"^math\.floor\(x\) applies Python's math\.floor to a symbolic value, which "
+        r"lanky has no term for: math\.floor computes on a number, and x is no number "
+        r"until it is evaluated\. Write x // 1, which is the floor of x as a term$",
+    ):
+        theorem(floor_below)
+
+    def floor_of_exp(x: Real) -> math.floor(exp(x)) >= 0:
+        """The floor of exp(x) is not negative."""
+
+    with pytest.raises(TypeError, match=r"Write exp\(x\) // 1, which is the floor of exp\(x\)"):
+        theorem(floor_of_exp)
+
+    def ceil_above(x: Real) -> math.ceil(x + 1) >= x:
+        """The ceiling of x + 1 is above x."""
+
+    with pytest.raises(
+        TypeError,
+        match=r"^math\.ceil\(x \+ 1\) applies .* Write -\(-\(x \+ 1\) // 1\), which is the "
+        r"ceiling of x \+ 1 as a term$",
+    ):
+        theorem(ceil_above)
+
+    def root(x: Real) -> math.sqrt(x * x) >= 0:
+        """A square root is not negative."""
+
+    with pytest.raises(
+        TypeError,
+        match=r"^x\*x was made a Python number by the annotation, as math\.sqrt, "
+        r"math\.isclose and the other functions of Python's math module make their "
+        r"arguments: .* lanky\.exp, lanky\.log and lanky\.sqrt are terms, and so is "
+        r"\(x\*x\) // 1, the floor of x\*x$",
+    ):
+        theorem(root)
+
+    def close(x: Real) -> math.isclose(x, 1.0) | (x != 1):
+        """Inside a generator too, and in any argument."""
+
+    with pytest.raises(TypeError, match=r"^x was made a Python number by the annotation"):
+        theorem(close)
+
+    # the term the message names is the claim, read and tested
+    @theorem
+    def floor_term(x: Real) -> x // 1 >= x - 1:
+        """The floor of x, as a term."""
+
+    assert TestOracle().establish(floor_term.fact()).status is Status.TESTED
+
+    # a number is Python's as before, and code that is not an annotation's
+    # gets pymbolic's error, which loopty's tracer explains in its own terms
+    assert math.floor(exp(2)) == 7 and math.ceil(exp(2)) == 8
+    with pytest.raises(Exception, match="cannot handle") as raised:
+        math.floor(exp(Var("x")))
+    assert not isinstance(raised.value, TypeError)
 
 
 def test_an_annotation_that_is_a_builtin_is_refused() -> None:
