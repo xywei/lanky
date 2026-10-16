@@ -6,6 +6,20 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-16
+
+Checking a file again is fast, and the ledger says why a row is not proved.
+A check after the first starts no Lean, also for a question the first check
+ran out of time on: the proof cache keeps where such a question stopped, and
+replays it until the check is given more time (#134, #155). `python -m
+lanky.mathlib DIR` keeps Mathlib's downloads inside `DIR` (#151), and
+`--verbose` names the Lean the REPL runs (#152). An oracle that raises is
+named in the ledger, a theorem Lean's printer declines says why, a Mathlib
+project that fails to import says so, and `--show-lean` names each owner's
+theorems apart (#137, #132, #138, #120, #112). The test suite runs under
+`pytest -n` with Mathlib required, and test workers no longer race to build
+the Lean REPL (#148, #149, #147, #122). loopty 0.4.0 needs this release.
+
 ### Fixed
 
 - **An oracle that raises is named in the ledger** (#137). One that raised
