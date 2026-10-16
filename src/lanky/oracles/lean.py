@@ -77,7 +77,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import replace
 from importlib.util import find_spec
 from typing import Any
@@ -131,6 +131,7 @@ from lanky.terms import (
 )
 
 __all__ = [
+    "CLOSED_WITH_HOLES",
     "COMBINATION_NORM",
     "LeanOracle",
     "LeanSession",
@@ -140,6 +141,7 @@ __all__ = [
     "default_cache_dir",
     "default_proof_cache_dir",
     "family_induction_scripts",
+    "holes_verdict",
     "induction_over_families",
     "induction_scripts",
     "kill_servers",
@@ -931,6 +933,85 @@ class LeanSession:
             lines = problems[0].strip().splitlines()
             return False, lines[0] if lines else "Lean reported an error with no message", True
         return True, "", True
+
+    def answer_with_holes(
+        self, source: str, holes: Collection[int] = (), until: float | None = None
+    ) -> tuple[str, list[tuple[int | None, str]], bool]:
+        """Elaborate a written proof; ``(verdict, messages, answered)``.
+
+        ``holes`` are the lines of ``source``, counted from ``1``, at which
+        lanky wrote ``sorry`` for a step the proof left open (``by=...``).
+        The verdict is :func:`holes_verdict`'s: ``"closed"``, ``"closed with
+        holes"`` when every ``sorry`` Lean found is at one of them, or
+        ``"failed"``. The messages are every error Lean reported, each with
+        its line, which is how a report puts each back at its Python line
+        (:attr:`lanky.oracles.steps.Script.lines`); a command Lean did not
+        answer has one message, the reason, with no line. ``answered`` is
+        :meth:`answer`'s third value.
+        """
+        from lean_interact import Command
+
+        if not self.start() or not self._revive():
+            return "failed", [(None, self.error or "no Lean session")], False
+        timeout = self.timeout
+        if until is not None:
+            left = until - time.monotonic()
+            if left <= 0:
+                return "failed", [(None, BUDGET_SPENT)], False
+            timeout = min(timeout, left)
+        if self.mathlib is not None:
+            command = Command(cmd=source, env=self.environment)
+        else:
+            command = Command(cmd=source)
+        try:
+            response = self.server.run(command, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - a timeout is an answer of no one's
+            return "failed", [(None, f"{type(exc).__name__}: {exc}")], False
+        except BaseException:
+            self._interrupted()
+            raise
+        message = getattr(response, "message", None)
+        if message is not None:
+            return "failed", [(None, str(message))], False
+        verdict, messages = holes_verdict(response, holes)
+        return verdict, messages, True
+
+
+#: The verdict of a written proof that Lean accepted with ``sorry`` at the
+#: steps the proof left open, and nowhere else (:func:`holes_verdict`).
+CLOSED_WITH_HOLES = "closed with holes"
+
+
+def holes_verdict(
+    response: Any, holes: Collection[int] = ()
+) -> tuple[str, list[tuple[int | None, str]]]:
+    """What a REPL response says of a written proof: closed, closed with holes, or failed.
+
+    A proof is ``"closed"`` with no error and no ``sorry``, and ``"closed with
+    holes"`` with no error and a ``sorry`` only at lines in ``holes``, which
+    are where lanky wrote one for a step written ``by=...``: the claim then
+    reads assumed, and its row names those lines (:data:`CLOSED_WITH_HOLES`).
+    A ``sorry`` anywhere else, one a tactic left or one that came in some
+    other way, fails it, as an error does. The messages are the errors, each
+    with its line, and the stray ``sorry`` lines, in the order Lean gave them.
+    """
+    allowed = set(holes)
+    messages: list[tuple[int | None, str]] = []
+    for item in getattr(response, "messages", ()):
+        if str(getattr(item, "severity", "")).endswith("error"):
+            position = getattr(item, "start_pos", None)
+            messages.append((getattr(position, "line", None), str(item.data)))
+    stray: list[tuple[int | None, str]] = []
+    for item in getattr(response, "sorries", ()):
+        position = getattr(item, "start_pos", None)
+        line = getattr(position, "line", None)
+        if line is None or line not in allowed:
+            stray.append((line, "a sorry lanky did not write for a step left open"))
+    if messages or stray:
+        return "failed", messages + stray
+    if getattr(response, "sorries", ()):
+        return CLOSED_WITH_HOLES, []
+    return "closed", []
 
 
 #: Every session that opened, for :func:`kill_servers`.
