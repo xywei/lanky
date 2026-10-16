@@ -90,10 +90,10 @@ Lean proved again (two rows of its ledger, with Lean and Mathlib):
 ```text
 $ lanky check examples/l2p.py
 ...
-proved   proved     lean         l2p.py:249  reconstruct        (forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10. R[i, a, b] == C[i, a, b])
+proved   proved     lean         l2p.py:246  reconstruct        (forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10. R[i, a, b] == C[i, a, b])
                                                                   and (forall i in Fin(nb), a in Nat, b in Nat where a + b + 2 <= 10.
                                                                     R[i, a + 2, b] == -R[i, a, b + 2])
-proved   tested     lean         l2p.py:249  reconstruct        by on_every_triangle, for every D with pde and stored:
+proved   tested     lean         l2p.py:246  reconstruct        by on_every_triangle, for every D with pde and stored:
                                                                   forall i in Fin(nb), a in Nat, b in Nat where a + b <= 10. R[i, a, b] == D[i, a, b]
 ...
 ```
@@ -127,13 +127,13 @@ with the code it was written after.
 
 ## Run it
 
-lanky's own examples and loopty's demonstrations run on the 0.3.0 release
+lanky's own examples and loopty's demonstrations run on the 0.4.0 release
 on PyPI. The examples are in the repository and not in the package, so clone
 the release's tag for them. On Python 3.12 or later:
 
 ```sh
 pip install "lanky[lean,cas]"
-git clone --branch v0.3.0 https://github.com/xywei/lanky.git && cd lanky
+git clone --branch v0.4.0 https://github.com/xywei/lanky.git && cd lanky
 lanky check examples/gauss.py
 ```
 
@@ -150,8 +150,9 @@ export LANKY_LEAN_MATHLIB=~/mathlib
 ```
 
 The first check with Lean builds Lean's REPL, which takes about a minute and
-the network; a check after it reads Lean's answers from a cache and starts no
-Lean. [Install](#install) has the rest.
+the network. Checking a file again reads Lean's answers from a cache and
+starts no Lean, also for a question the first check ran out of time on.
+[Install](#install) has the rest.
 
 ## Where the limits are
 
@@ -203,9 +204,14 @@ Lean. [Install](#install) has the rest.
 
 ## Status
 
-This is 0.3.0. The core works; the edges are sharp. New in 0.3.0, Lean checks
-what a plugin's solver decides, part by part, and Mathlib mode proves claims
-about finite sums, scatters and complex numbers for every size. Since 0.2.0,
+This is 0.4.0. The core works; the edges are sharp. New in 0.4.0, the ledger
+says what happened where it said nothing: an oracle that raised, in a
+`RAISED` line, a claim Lean was not asked about and why, under `--verbose`,
+and a Mathlib project Lean cannot import, in the `WITHOUT LEAN` line; and a
+check after the first starts no Lean, also where the first ran out of time.
+Since 0.3.0, Lean checks what a plugin's solver decides, part by part, and
+Mathlib mode proves claims about finite sums, scatters and complex numbers
+for every size. Since 0.2.0,
 each claim's reading is checked: the annotations are run again as Python at
 drawn points and the term the oracles prove has to agree there, so a
 misreading is refuted rather than proved, and a proof is worth `tested`, the
@@ -708,7 +714,7 @@ The open issues you are most likely to meet:
 pip install lanky
 ```
 
-That is the 0.3.0 release, which loopty's demonstrations need
+That is the 0.4.0 release, which loopty's demonstrations need
 ([Run it](#run-it)). lanky needs Python 3.12 or later. In a uv project, `uv add lanky`, and the
 same for the extras below. The examples and the quickstart are in the
 repository and not in the package; clone it to follow them.
