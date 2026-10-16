@@ -90,6 +90,7 @@ from typing import Any, BinaryIO, TextIO
 
 from lanky.check import check_path, oracle_lines, source_roots
 from lanky.ledger import Fact, Ledger, Status
+from lanky.outline import proof_lines, step_lines
 from lanky.plugins import oracle_availability, registry
 
 __all__ = [
@@ -100,8 +101,10 @@ __all__ = [
     "refutation_lines",
     "report_lean",
     "report_missing",
+    "report_proofs",
     "report_proved",
     "report_raised",
+    "report_steps",
     "report_unproved",
     "terminal_columns",
 ]
@@ -117,7 +120,7 @@ class CheckVerb:
         """Declare the arguments of ``check``."""
         parser.add_argument(
             "files",
-            nargs="+",
+            nargs="*",
             metavar="FILE",
             help="a Python file to check for the claims it defines (several may be listed)",
         )
@@ -136,6 +139,28 @@ class CheckVerb:
             help=(
                 "print the Lean of every row that has some, or of the rows whose "
                 "owner, id or statement contains TEXT"
+            ),
+        )
+        parser.add_argument(
+            "--proofs",
+            nargs="?",
+            const="",
+            default=None,
+            metavar="TEXT",
+            help=(
+                "print the proof lanky found for each proved claim, as a Python body "
+                "where Python can say it, or of the claims whose name contains TEXT"
+            ),
+        )
+        parser.add_argument(
+            "--steps",
+            nargs="?",
+            const="",
+            default=None,
+            metavar="TEXT",
+            help=(
+                "print the outline of the proof lanky found for each proved claim, "
+                "or of the claims whose name contains TEXT"
             ),
         )
 
@@ -193,7 +218,11 @@ class CheckVerb:
         included (the oracles ``--verbose`` lists are listed once, above
         them all), and the check fails when any root's does.
         """
-        files = getattr(args, "files", None) or [args.file]
+        files = getattr(args, "files", None)
+        files = [*(files if files is not None else [args.file]), *_files_given_as_text(args)]
+        if not files:
+            print("lanky check: name a file to check, as in lanky check examples/gauss.py")
+            return 2
         missing = [file for file in files if not Path(file).is_file()]
         if missing:
             for file in missing:
@@ -205,9 +234,17 @@ class CheckVerb:
             print()
         groups = _by_source_roots(files)
         show_lean = getattr(args, "show_lean", None)
+        views = {
+            "proofs": getattr(args, "proofs", None),
+            "steps": getattr(args, "steps", None),
+        }
         if len(groups) == 1:
             code, checked, facts = self._check_files(
-                files, verbose=args.verbose, headings=len(files) > 1, show_lean=show_lean
+                files,
+                verbose=args.verbose,
+                headings=len(files) > 1,
+                show_lean=show_lean,
+                **views,
             )
         else:
             code, checked, facts = self._check_in_children(
@@ -215,6 +252,7 @@ class CheckVerb:
                 verbose=args.verbose,
                 facts_wanted=bool(args.json),
                 show_lean=show_lean,
+                **views,
             )
         if args.json and checked:
             Path(args.json).write_text(json.dumps(facts, indent=2, default=str), encoding="utf-8")
@@ -228,6 +266,8 @@ class CheckVerb:
         verbose: bool,
         headings: bool,
         show_lean: str | None = None,
+        proofs: str | None = None,
+        steps: str | None = None,
     ) -> tuple[int, int, list[dict]]:
         """Check files in this process, printing each ledger as it is done.
 
@@ -236,7 +276,9 @@ class CheckVerb:
         a ``==> FILE <==`` line, and a blank line separates one file from the
         next. ``show_lean`` is ``--show-lean``: ``None`` when it was not
         given, and the text the rows have to contain, maybe empty, when it
-        was (see :meth:`_report_lean`).
+        was (see :meth:`_report_lean`); ``proofs`` and ``steps`` are
+        ``--proofs`` and ``--steps``, read the same way (see
+        :func:`report_proofs` and :func:`report_steps`).
         """
         code = 0
         checked = 0
@@ -255,7 +297,9 @@ class CheckVerb:
                 continue
             checked += 1
             facts.extend(ledger.to_dicts())
-            if cls._report(ledger, verbose=verbose, show_lean=show_lean):
+            if cls._report(
+                ledger, verbose=verbose, show_lean=show_lean, proofs=proofs, steps=steps
+            ):
                 code = 1
         return code, checked, facts
 
@@ -266,6 +310,8 @@ class CheckVerb:
         verbose: bool,
         facts_wanted: bool,
         show_lean: str | None = None,
+        proofs: str | None = None,
+        steps: str | None = None,
     ) -> tuple[int, int, list[dict]]:
         """Check each group of files in a child process of its own, one after another.
 
@@ -326,6 +372,8 @@ class CheckVerb:
                     "files": files,
                     "verbose": verbose,
                     "show_lean": show_lean,
+                    "proofs": proofs,
+                    "steps": steps,
                     "facts": facts_wanted,
                     "results": str(results),
                     "path": [os.fsdecode(entry) for entry in sys.path if _is_path(entry)],
@@ -363,16 +411,23 @@ class CheckVerb:
 
     @staticmethod
     def _report(
-        ledger: Ledger, *, verbose: bool = False, show_lean: str | None = None
+        ledger: Ledger,
+        *,
+        verbose: bool = False,
+        show_lean: str | None = None,
+        proofs: str | None = None,
+        steps: str | None = None,
     ) -> bool:
         """Print one ledger and what follows it; whether anything failed.
 
         A fact fails when it is refuted or vacuous, or when another claim had
         its id (see :meth:`_report_duplicates`). A fact Lean was asked about
         and did not prove, and a refuted one whose counterexample Lean could
-        not confirm, is named (see :meth:`_report_unproved`), and
-        ``--show-lean`` prints the Lean last (see :meth:`_report_lean`);
-        neither fails the check.
+        not confirm, is named (see :meth:`_report_unproved`). ``--proofs``
+        and ``--steps`` print the proofs lanky found (see
+        :func:`report_proofs` and :func:`report_steps`), and ``--show-lean``
+        prints the Lean last (see :meth:`_report_lean`); none of them fails
+        the check.
         """
         print(ledger.render(columns=terminal_columns()))
         report_proved(ledger)
@@ -404,6 +459,10 @@ class CheckVerb:
             print(f"REFUTED {fact.owner} at {fact.where}: {fact.statement}")
             for line in refutation_lines(fact):
                 print(f"  {line}")
+        if proofs is not None:
+            report_proofs(ledger, proofs)
+        if steps is not None:
+            report_steps(ledger, steps)
         if show_lean is not None:
             CheckVerb._report_lean(ledger, show_lean)
         return bool(refuted) or vacuous or duplicated
@@ -982,6 +1041,70 @@ def report_lean(ledger: Ledger, text: str = "") -> None:
         print("\n".join(block))
 
 
+def report_proofs(ledger: Ledger, text: str = "") -> None:
+    """``--proofs``: the proof lanky found for each proved theorem, as a Python body where it can.
+
+    The body is in the surface a written proof uses, in the theorem's own
+    names, and pastes under the theorem's docstring: for an induction over
+    families, ``def claim(a, b):`` with a case per base and the facts each
+    case rests on, at the points the search found, written as the user
+    writes them; for an exchange of sums, the chain through the left side
+    with its sums put in order. For a proof by any other rung of the
+    ladder, the rung is named. ``text`` keeps the theorems whose name, id
+    or statement contains it. See :mod:`lanky.outline`.
+    """
+    _report_found(ledger, text, "PROOF", proof_lines)
+
+
+def report_steps(ledger: Ledger, text: str = "") -> None:
+    """``--steps``: the outline of the proof lanky found for each proved theorem.
+
+    In lanky's notation, with the points the search found: for an induction,
+    each case as a chain of equations from the claim's left side to its
+    right, each link with the fact it follows from and the point, and the
+    multiplier where it is not ``1`` or ``-1``. lanky builds the outline
+    itself; nothing is read back from Lean. ``text`` keeps the theorems as
+    for :func:`report_proofs`.
+    """
+    _report_found(ledger, text, "STEPS", step_lines)
+
+
+def _report_found(ledger: Ledger, text: str, word: str, lines_of: Any) -> None:
+    """Print ``lines_of`` each proved theorem whose name, id or statement contains ``text``."""
+    blocks = []
+    for fact in ledger:
+        if fact.kind != "theorem" or fact.status not in (Status.PROVED, Status.CERTIFIED):
+            continue
+        fields = (fact.owner, fact.id, fact.statement)
+        if text and not any(text in str(field) for field in fields):
+            continue
+        blocks.append(lines_of(fact))
+    if not blocks:
+        print()
+        among = f" among those matching {text!r}" if text else ""
+        print(f"{word} no theorem was proved{among}")
+        return
+    for block in blocks:
+        print()
+        print("\n".join(block))
+
+
+def _files_given_as_text(args: argparse.Namespace) -> list[str]:
+    """The files ``--show-lean``, ``--proofs`` or ``--steps`` took as their text.
+
+    Each of them takes an optional text, so ``lanky check --proofs
+    examples/l2p.py`` hands it the file. A text that is the path of a Python
+    file that exists is taken back as a file to check, and the option as
+    given with no text.
+    """
+    taken = []
+    for option in ("show_lean", "proofs", "steps"):
+        value = getattr(args, option, None)
+        if value and value.endswith(".py") and Path(value).is_file():
+            taken.append(value)
+            setattr(args, option, "")
+    return taken
+
 
 def _by_source_roots(files: list[str]) -> list[list[str]]:
     """The files grouped by their source roots, in the order each group first appears.
@@ -1050,6 +1173,8 @@ def _check_in_child(spec: dict[str, Any]) -> int:
         verbose=spec["verbose"],
         headings=True,
         show_lean=spec.get("show_lean"),
+        proofs=spec.get("proofs"),
+        steps=spec.get("steps"),
     )
     report = {"code": code, "checked": checked, "facts": facts if spec["facts"] else []}
     Path(spec["results"]).write_text(json.dumps(report, default=str), encoding="utf-8")
