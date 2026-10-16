@@ -653,13 +653,6 @@ The open issues you are most likely to meet:
   `gauss.report()` and `gauss.test()`, and so `python examples/gauss.py`,
   evaluate the term, even where the reading is refuted. Use `lanky check` or
   `pytest`, which make the check, or call `gauss.faithful_fact()`.
-- **`math.floor` of a variable fails while the file is read**
-  ([#112](https://github.com/xywei/lanky/issues/112)).
-  `math.floor(x) >= x - 1` raises pymbolic's `UnknownVariableError: x`, and
-  `lanky check` reports a file that does not import; so does any `math`
-  function of a variable, since it asks the term for a float. Write the floor
-  as a term, `x // 1`, and use `lanky.exp`, `lanky.log` and `lanky.sqrt` for
-  those three.
 - **`min` and `max` of a variable are refused**
   ([#66](https://github.com/xywei/lanky/issues/66)), with a `TypeError` that
   names the call. State the claim once per case: under a hypothesis `x <= y`,

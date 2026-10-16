@@ -29,14 +29,17 @@ changes the exit code: a fact resting on a refuted one fails the check through
 the refuted one, and a fact resting on an assumption is no more a failure than
 the assumption.
 
-Five more things are printed under the table and do not change the exit code.
+Six more things are printed under the table and do not change the exit code.
 Each axiom is named in a ``CITED`` line with the citation it is taken on,
 which is the one thing that stands behind an ``assumed (axiom)`` row. A fact
 left ``assumed`` that an oracle looked at and declined, saying why, gets a
 ``DECLINED`` line with that reason, the standard provenance key ``declined``
 (see :func:`decline_lines`): an ``assumed`` row is otherwise read as "no oracle
 knows this kind of claim", where the one that knows it may have found it
-outside what it decides. A
+outside what it decides. A fact an oracle raised over gets a ``RAISED`` line
+with the oracle and the exception (see :func:`report_raised`): its row is
+what the other oracles found, and would otherwise read as a claim that oracle
+was never offered. A
 statement whose sampled reading could not be run where a stronger oracle's
 could, or disagrees with it, is reported under ``SEMANTICS`` (a division by
 zero is the gap that remains; see :mod:`lanky.semantics`): the fact keeps the
@@ -71,6 +74,7 @@ import codecs
 import functools
 import json
 import os
+import re
 import selectors
 import shutil
 import signal
@@ -97,6 +101,7 @@ __all__ = [
     "report_lean",
     "report_missing",
     "report_proved",
+    "report_raised",
     "report_unproved",
     "terminal_columns",
 ]
@@ -143,7 +148,7 @@ class CheckVerb:
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
         nothing is checked. An axiom's citation, the reason an oracle declined
-        a fact left assumed, a semantics disagreement, a warning about
+        a fact left assumed, an oracle that raised, a semantics disagreement, a warning about
         hypotheses no draw satisfied or a pass on thin evidence, and an id a
         fact rests on that the ledger does not hold are printed but do not
         fail the check.
@@ -374,6 +379,7 @@ class CheckVerb:
         report_missing(ledger)
         CheckVerb._report_citations(ledger)
         CheckVerb._report_declines(ledger)
+        report_raised(ledger)
         CheckVerb._report_unproved(ledger, verbose=verbose)
         for fact in ledger:
             disagreement = fact.provenance.get(
@@ -834,6 +840,10 @@ def terminal_columns() -> int | None:
     return shutil.get_terminal_size().columns
 
 
+#: What the oracle that gave a fact its status did, for a ``NOT PROVED`` line.
+_SETTLED_BY = {Status.DECIDED: "decided", Status.TESTED: "tested"}
+
+
 def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
     """Name each fact Lean was asked to prove from a plugin's statement and did not.
 
@@ -849,6 +859,18 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
     names the fact, the parts and why, and says who decided it. A claim
     the plugin could not state for Lean, a kind of fact it has no
     statement for, is named too under ``--verbose``.
+
+    So is a claim of lanky's own whose statement Lean's printer declines,
+    which Lean is not asked about (#132): its row reads ``tested`` or
+    ``assumed``, and the line says who tested it and what the printer could
+    not state (``lean_declined``, see
+    :meth:`lanky.oracles.lean.LeanOracle.not_taken`)::
+
+        NOT PROVED flattening at sum_factorization.py:143: <the statement>
+          property-test tested it; Lean was not asked: <the printer's reason>
+
+    A fact left ``assumed`` whose ``DECLINED`` line gives Lean's reason
+    already is not named again.
     """
     lines: list[tuple[Fact, str]] = []
     for fact in ledger:
@@ -860,9 +882,13 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
             lines.append((fact, f"{who}{reason} (--show-lean shows what Lean said)"))
             continue
         declined = fact.provenance.get("lean_declined")
-        if verbose and fact.decided_by and _recorded(declined):
-            said = f"{fact.decided_by} decided it; Lean was not asked: {declined}"
-            lines.append((fact, said))
+        if not verbose or not _recorded(declined) or fact.is_reading or fact.is_axiom:
+            continue
+        if fact.status is Status.ASSUMED and str(declined) in "\n".join(decline_lines(fact)):
+            continue
+        how = _SETTLED_BY.get(fact.status)
+        who = f"{fact.decided_by} {how} it; " if fact.decided_by and how else ""
+        lines.append((fact, f"{who}Lean was not asked: {declined}"))
     if not lines:
         return
     print()
@@ -870,6 +896,42 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
         print(f"NOT PROVED {fact.owner} at {fact.where}: {fact.statement}")
         for line in str(reason).splitlines():
             print(f"  {line}")
+
+
+def report_raised(ledger: Ledger) -> None:
+    """Name each fact an oracle raised over, with the oracle and the exception (#137).
+
+    An oracle that raises is passed over, and the fact records it as
+    ``raised`` (see :func:`lanky.check.establish`). The row then reads what
+    the other oracles found, ``tested`` where Lean would have proved it,
+    and nothing else said that Lean was asked: a bug in one of Lean's
+    strategies read as a claim Lean had not been offered. A ``RAISED`` line
+    names the fact, each exception is indented under it, and the last line
+    says what it means and where to look::
+
+        RAISED scatter_total at scatter.py:40: <the statement>
+          lean raised AttributeError: 'Var' object has no attribute 'free_variables'
+          the oracle failed, not the claim: the row says what the other oracles
+          found, and lanky check --verbose prints where it raised
+
+    ``lanky check`` prints it under the ``DECLINED`` lines, and so can a
+    plugin's verb that prints a ledger. It does not fail the check: the
+    claim is as established as its row says.
+    """
+    raised = [fact for fact in ledger if _recorded(fact.provenance.get("raised"))]
+    if not raised:
+        return
+    print()
+    for fact in raised:
+        print(f"RAISED {fact.owner} at {fact.where}: {fact.statement}")
+        entries = fact.provenance["raised"]
+        for entry in entries if isinstance(entries, list | tuple) else [entries]:
+            for line in str(entry).splitlines():
+                print(f"  {line}")
+        print(
+            "  the oracle failed, not the claim: the row says what the other oracles "
+            "found, and lanky check --verbose prints where it raised"
+        )
 
 
 def report_lean(ledger: Ledger, text: str = "") -> None:
@@ -887,14 +949,27 @@ def report_lean(ledger: Ledger, text: str = "") -> None:
     no Lean form is left out. ``text`` keeps the rows whose owner, id or
     statement contains it. The status words of Lean appear here and
     nowhere else, which is where a reader who wants them looks.
+
+    A theorem is named after its claim's owner, and a part's after the part
+    as well, so the facts of one owner whose parts have one name declared
+    theorems of one name: loopty's stencil printed ``theorem
+    Lanky.jacobi_in_bounds`` once for each of its three accesses, which a
+    reader could not tell apart by name and Lean would not take in one file
+    (#120). Each theorem is shown under a name of its own in the ledger
+    (:func:`_named_apart`): the first keeps its name, and a later one is
+    shown with ``_2``, ``_3`` and on after it, counted over every row of the
+    ledger whatever ``text`` keeps, so that a theorem has one name in every
+    view of one ledger. Only the display changes, as for a long theorem
+    shown one parameter to a line (:func:`_wrapped`): the provenance keeps
+    the source Lean was given, and the proof cache the answers to it.
     """
+    rows = [(fact, _lean_lines(fact)) for fact in ledger]
+    shown = [(fact, body) for fact, body in rows if body]
+    named = _named_apart([body for _fact, body in shown])
     blocks: list[list[str]] = []
-    for fact in ledger:
+    for (fact, _body), body in zip(shown, named, strict=True):
         fields = (fact.owner, fact.id, fact.statement)
         if text and not any(text in str(field) for field in fields):
-            continue
-        body = _lean_lines(fact)
-        if not body:
             continue
         blocks.append([f"LEAN {fact.owner} at {fact.where}: {fact.statement}", *body])
     if not blocks:
@@ -1507,6 +1582,56 @@ def _wrapped(source: str, width: int = 100) -> str:
     return "\n".join(out)
 
 
+#: A line of shown Lean that declares a theorem: the indent and keyword, and the name.
+_DECLARATION = re.compile(r"^(\s*theorem\s+)(\S+)")
+
+
+def _named_apart(bodies: list[list[str]]) -> list[list[str]]:
+    """``--show-lean``'s rows with every theorem declared under a name of its own (#120).
+
+    ``bodies`` are the rows' lines (:func:`_lean_lines`), in the ledger's
+    order. A theorem whose name a row before it declared is renamed, on the
+    line that declares it, to the name with the first of ``_2``, ``_3``, and
+    on, that no row declares and no rename took: ``Lanky.jacobi_in_bounds``
+    becomes ``Lanky.jacobi_in_bounds_2``, and a quoted name ``Lanky.«fun»``
+    becomes ``Lanky.«fun_2»``. Nothing in a row names its own theorem, so
+    the declaration is all there is to rename.
+    """
+    declared = {
+        match.group(2)
+        for body in bodies
+        for line in body
+        if (match := _DECLARATION.match(line)) is not None
+    }
+    taken: set[str] = set()
+    out: list[list[str]] = []
+    for body in bodies:
+        lines: list[str] = []
+        for line in body:
+            match = _DECLARATION.match(line)
+            if match is None:
+                lines.append(line)
+                continue
+            name = match.group(2)
+            if name in taken:
+                index = 2
+                while (renamed := _numbered(name, index)) in declared | taken:
+                    index += 1
+                line = f"{match.group(1)}{renamed}{line[match.end(2) :]}"
+                name = renamed
+            taken.add(name)
+            lines.append(line)
+        out.append(lines)
+    return out
+
+
+def _numbered(name: str, index: int) -> str:
+    """``name`` with ``_index`` after its last component, inside the quotes of a quoted one."""
+    if name.endswith("»"):
+        return f"{name[:-1]}_{index}»"
+    return f"{name}_{index}"
+
+
 def _lean_lines(fact: Fact) -> list[str]:
     """What ``--show-lean`` prints under one row; empty for a row with no Lean form.
 
@@ -1554,6 +1679,11 @@ def _lean_lines(fact: Fact) -> list[str]:
     if statement is None:
         return []
     why = provenance.get("lean_reason") or provenance.get("lean_declined")
+    if not _recorded(why):
+        # Lean raised over it (#137), which is why it was not proved
+        entries = provenance.get("raised") or ()
+        entries = entries if isinstance(entries, list | tuple) else [entries]
+        why = next((str(entry) for entry in entries if str(entry).startswith("lean ")), None)
     said = f": {why}" if _recorded(why) else ""
     return [f"  not proved by Lean{said}", *_indented(statement.source("sorry"))]
 
