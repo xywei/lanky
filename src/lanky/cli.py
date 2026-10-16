@@ -1680,10 +1680,18 @@ def _lean_lines(fact: Fact) -> list[str]:
         return []
     why = provenance.get("lean_reason") or provenance.get("lean_declined")
     if not _recorded(why):
-        # Lean raised over it (#137), which is why it was not proved
+        # Lean raised over the claim itself (#137), and not over a question
+        # asked about it, which is why it was not proved
         entries = provenance.get("raised") or ()
         entries = entries if isinstance(entries, list | tuple) else [entries]
-        why = next((str(entry) for entry in entries if str(entry).startswith("lean ")), None)
+        why = next(
+            (
+                str(entry)
+                for entry in entries
+                if str(entry).startswith("lean raised ") and ", while it " not in str(entry)
+            ),
+            None,
+        )
     said = f": {why}" if _recorded(why) else ""
     return [f"  not proved by Lean{said}", *_indented(statement.source("sorry"))]
 

@@ -2173,6 +2173,37 @@ def test_an_oracle_that_raises_is_named_in_the_ledger(tmp_path, monkeypatch, cap
     assert 'raise AttributeError("\'Var\' object has no attribute' in printed
 
 
+def test_show_lean_says_that_lean_raised_over_a_claim(capsys) -> None:
+    """#137: ``--show-lean`` said ``not proved by Lean`` with no reason after Lean raised."""
+    from lanky.cli import report_lean
+    from lanky.prelude import Nat
+    from lanky.terms import Forall
+
+    n = Var("n")
+    raised = [
+        "lean raised ValueError: no such dimension, while it was asked whether the "
+        "hypotheses of succ are inconsistent",
+        "lean raised AttributeError: 'Var' object has no attribute 'free_variables'",
+    ]
+    ledger = Ledger()
+    ledger.add(
+        Fact(
+            id="theorem:succ@1",
+            kind="theorem",
+            statement="n : Nat |- n + 1 > n",
+            term=Forall(((n, Nat),), n + 1 > n),
+            status=Status.TESTED,
+            decided_by="property-test",
+            provenance={"raised": raised},
+            where="claims.py:1",
+            owner="succ",
+        )
+    )
+    report_lean(ledger)
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[2] == f"  not proved by Lean: {raised[1]}"
+
+
 class _CrashingOnVacuity:
     """A decision procedure that raises when it is asked whether hypotheses are inconsistent."""
 
