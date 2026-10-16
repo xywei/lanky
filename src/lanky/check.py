@@ -1236,6 +1236,7 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
         module = import_path(path)
     ledger = Ledger()
     collected: set[int] = set()
+    claimed: list[Any] = []
     for obj in decorated:
         if id(obj) in collected:
             continue
@@ -1243,6 +1244,7 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
         owned = _owned(obj, path, module)
         if owned is False:
             continue
+        claimed.append(obj)
         for theory in registry.theories:
             for fact in theory.facts(obj):
                 if owned is None and not _recorded_in(fact, path):
@@ -1261,6 +1263,11 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
                 if verbose:
                     print(f"{fact.where} {fact.owner}: {fact.statement}")
                 ledger.add(establish(fact, verbose=verbose))
+    # last, after every run and draw of the check, so that nothing a proof's
+    # body does can change what they read
+    from lanky.proofs import check_written_proofs
+
+    check_written_proofs(ledger, claimed, verbose=verbose)
     return ledger
 
 

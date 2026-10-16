@@ -87,6 +87,7 @@ __all__ = [
     "Undecided",
     "UndefinedValue",
     "Var",
+    "asking_proof_questions",
     "binder_assignments",
     "binders",
     "code_reads",
@@ -545,6 +546,9 @@ class SymbolicMixin:
         """
         if _ANNOTATION_CODE.get():
             _refuse_truth(self, sys._getframe(1))
+        asker = _PROOF_QUESTIONS.get()
+        if asker is not None:
+            asker.number(self, sys._getframe(1))
         answer = getattr(super(), "__bool__", None)
         return True if answer is None else answer()
 
@@ -1262,18 +1266,48 @@ def _hashed_unless_annotation(cls: type) -> type:
 # }}}
 
 
+#: What answers the truth value of a proposition while a written proof is
+#: traced (see :func:`asking_proof_questions`), or ``None`` outside one.
+_PROOF_QUESTIONS: ContextVar[Any] = ContextVar("lanky_proof_questions", default=None)
+
+
+@contextmanager
+def asking_proof_questions(asker: Any) -> Iterator[None]:
+    """Have ``asker`` answer the truth values a written proof's own ``if`` asks for.
+
+    A theorem's body is a proof, and its ``if`` is a case split
+    (:mod:`lanky.proofs`): the body is run once per path, and each
+    proposition its own code asks the truth value of is answered by the
+    tracer, which schedules the answers, ``asker.ask(prop, frame)``. A
+    number's truth value asked for by the body's own code is refused there,
+    ``asker.number(term, frame)``, as an annotation's is. Binder tracing
+    comes first: a generator inside the body records its ``if`` clause as
+    a guard, as anywhere else.
+    """
+    token = _PROOF_QUESTIONS.set(asker)
+    try:
+        yield
+    finally:
+        _PROOF_QUESTIONS.reset(token)
+
+
 class PropositionMixin(SymbolicMixin):
     """A term whose value is a truth value.
 
     Asking for ``bool`` of one is an error, except inside binder tracing, where
     the question can only come from the ``if`` clause of a generator expression
-    and is answered by recording the proposition as a guard.
+    and is answered by recording the proposition as a guard, and inside the
+    trace of a written proof, where the proof's own ``if`` is a case split
+    whose answer the tracer schedules (:func:`asking_proof_questions`).
     """
 
     def __bool__(self) -> bool:
-        """Record a guard while tracing binders; otherwise refuse."""
+        """Record a guard while tracing binders; answer a proof's case split; otherwise refuse."""
         trace = current_trace()
         if trace is None:
+            asker = _PROOF_QUESTIONS.get()
+            if asker is not None:
+                return asker.ask(self, sys._getframe(1))
             raise SymbolicBoolError(
                 f"the truth value of the symbolic proposition {render(self)!r} is "
                 "undefined; evaluate it at concrete values (Theorem.__call__, "
