@@ -84,8 +84,8 @@ All notable changes to lanky are recorded here. The format follows
   point fits. A broken proof fails the check, also for a claim lanky proves
   alone, whose row still reads `proved` by lanky's own proof, with a
   `WARNING` naming the broken line. Without Lean, or without Mathlib for a
-  claim only Mathlib states, the proof is not checked, and a `NOT CHECKED`
-  line says why. `examples/every_box.py` is lanky #140's claim, which read
+  claim only Mathlib states, the proof is not checked by Lean, and a `NOT
+  CHECKED` line says why. `examples/every_box.py` is lanky #140's claim, which read
   `assumed`, proved by its body. `Theorem.__call__` takes positional values
   only inside a proof, where it cites; `LeanSession.said` and
   `LeanOracle.written` give every message of a command with its position,
@@ -118,27 +118,45 @@ All notable changes to lanky are recorded here. The format follows
   for k in Fin[n])`), the rule loopty's matcher shares. Where no single
   point fits, or several do, the message names them and says to write it.
 
-- **The Lean of a step** (`lanky.oracles.steps`). A chain is a `calc`, each
-  link closed by its facts at their points: `exact`, then a
-  `linear_combination` whose multipliers lanky's search finds among the
-  facts cited, then `linarith`; in core Lean `omega` and `grind`. The
-  compiler adds what a reader never writes: that an integer denominator the
-  case shows is not zero is not zero in the field, and the shift
-  `n.toNat = (n - 1).toNat + 1` where a fact has the power one order down.
-  Where the chain's ends print as the claim's sides the `calc` is the proof,
-  and otherwise the claim follows from it by `linear_combination`; a chain
-  about something else is refused, naming its end and the claim's side. A
-  named chain is a `have`. `by=...` is a `sorry` at a recorded line, and a
-  command whose only `sorry` are those closes "with holes"
-  (`holes_verdict`, `LeanSession.answer_with_holes`). Without Lean, each link
-  is drawn at points, so a wrong step is caught at its line, and a link over
-  a family that cannot be drawn says so (`draw_links`). A theorem cited is
-  restated by the text its own command proved where the check recorded one
-  (`lanky.citations.proved_texts`), and its id is what the citing claim rests
-  on. The proof-trace mode that runs a body, `if` as a case split and
-  `claim` as the induction, is the next increment's; the design's examples
-  1.1 and 1.2, compiled by this one into the recursive theorems the
-  prototypes checked, close in Lean with Mathlib with clean axioms.
+- **The Lean of a step.** A returned chain is the case's proof, and a chain
+  among the facts a case returns, `return recurrence, claim(n - 1)`, is a
+  fact on the way, proved in a `have` of its own before the step that cites
+  it. A chain compiles to a `calc` whose links are steps of their own, each
+  closed as a `return` is: its facts at their points, the fact itself
+  (`exact`), a rewrite by it under a function of the step (`rw`, `simp
+  only`), a `linear_combination` with the multipliers lanky's search finds
+  among the facts cited, then `linarith`; in core Lean `omega` and `grind`.
+  The compiler adds what a reader never writes (`lanky.oracles.steps`): that
+  an integer denominator the case shows is not zero is not zero in the
+  field, the shift `n.toNat = (n - 1).toNat + 1` where a fact has the power
+  one order down, and each fact with its casts pushed in. Where the chain's
+  ends print as the claim's sides the `calc` is the proof, and otherwise the
+  claim follows from it, turned round or by `linear_combination`; a chain
+  about something else is refused, naming its end and the claim. `by=...`
+  is a `sorry` at a recorded line: a command whose only `sorry` are those,
+  and whose audit rests on `sorryAx` besides Lean's own three, closes "with
+  holes", and the claim's row names the lines, `left open at l2p.py:149,
+  assumed there`, with a `LEFT OPEN` line under the table that fails
+  nothing. Without Lean, each link is drawn at points, so a wrong step fails
+  the check at its own line, and a link over a family that cannot be drawn
+  says so in the `NOT CHECKED` line. `lanky check --steps` prints a written
+  proof's outline: a row per step at its Python line, the case it is in, the
+  step, and the facts it follows from at the points lanky found.
+
+- **A proof cites a theorem by the text its own command proved.** A written
+  proof's command proves the claim's `as_cited` text too, as the ladder's
+  does, and the oracle keeps it, so a theorem proved only by its written
+  proof is cited like any other; the theorems a proof cites are hypotheses
+  of its `as_cited`, and a citation of it restates their texts as well, all
+  the way down, and rests on them. Written proofs are checked in the order
+  their citations need, and two that cite each other are refused. A theorem
+  a proof cites from another module, a fact of `lanky.known` or a theorem of
+  a file the file imports, is established into the citing file's ledger, as
+  rows whose `WHERE` is its module, so that what the claim rests on is in
+  the ledger it is counted in. A plugin's fact that cited a theorem proved
+  only by its written proof, and restated it by the printer when it was
+  established, is asked of Lean again from the proved text once the proof is
+  checked.
 
 - **`examples/line_taylor.py` writes its proof** in the theorem's body, the
   recurrence named on the way, and its names are the design's: the
@@ -184,7 +202,10 @@ All notable changes to lanky are recorded here. The format follows
 - **`examples/log_of_the_modulus.py`**: `log|alpha|` with no square root,
   half the log of `alpha` times its conjugate, the `log(r2) / 2` of a QBX
   kernel. Lean's search alone does not prove it; its proof is a chain whose
-  two links cite `log_of_a_power` and `modulus_squared`.
+  two links cite `log_of_a_power` and `modulus_squared`, and with Mathlib
+  the claim reads `proved`, `by its proof, ...: 2 steps, using
+  log_of_a_power and modulus_squared from lanky.known`, the two facts rows of
+  its ledger.
 
 - **A rewrite under a sum shows its theorem's condition at the sum's point.**
   A part whose steps rewrite with a theorem that has a condition, such as
@@ -213,6 +234,18 @@ All notable changes to lanky are recorded here. The format follows
   `as_cited` theorem below change the source of every command, and the
   cache is keyed by the source: the first check after the upgrade asks Lean
   again, and every check after it reads the cache as before.
+
+- `lanky.terms.reading_annotation()` is true while a written proof is
+  traced, as while an annotation is read, so that a library function that
+  builds a node of its own for a term (`loopty.math.log`) builds lanky's in a
+  proof's steps, where they are matched against the facts they cite.
+
+- `lanky.cli.report_written` is the name of the report of written proofs
+  that fail, a plugin's verb prints; `report_proofs` is `--proofs`'.
+
+- One screen for Lean text lanky did not write, `lanky.audit.screen`, for
+  `use_tactic` and for the library's proofs alike; a written proof's audit
+  is read by `lanky.audit.audit_failure`, as every command's is.
 
 - `lanky check --proofs examples/l2p.py`, `--steps` and `--show-lean` given
   a Python file that exists in place of their text check that file, rather

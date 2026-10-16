@@ -1349,7 +1349,7 @@ and with Mathlib:
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py
 STATUS                 EFFECTIVE            BY      WHERE               OWNER          STATEMENT
----------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------------
+---------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------------------
 assumed (axiom)        assumed              -       line_taylor.py:109  line_ode       alpha : Complex, beta : Complex, tau : Real
                                                                                        | off: alpha + tau*beta != 0
                                                                                        |- (alpha + tau*beta)*(beta / (alpha + beta*tau)) == beta
@@ -1359,6 +1359,7 @@ proved under line_ode  assumed              lean    line_taylor.py:123  line_tay
                                                                                        | first_term: alpha*a[1] == beta
                                                                                        | ode: forall n in Nat where n >= 1. (n + 1)*alpha*a[n + 1] + n*beta*a[n] == 0
                                                                                        |- forall n in Nat where n >= 1. a[n] == -(-beta / alpha)**n / n
+                                                                                       by its proof, line_taylor.py:137-145: induction on n, 2 cases, 3 steps, 1 named fact
 tested                 tested               python  line_taylor.py:123  line_taylor    the term computes what the annotations compute
 decided (heuristic)    decided (heuristic)  cas     line_taylor.py:294  qbx_expansion  a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j
                                                                                          and beta = b0 + b1*1j, sumpy's coefficient(0) == log(abs(alpha))
@@ -1368,6 +1369,10 @@ decided (heuristic)    decided (heuristic)  cas     line_taylor.py:294  qbx_expa
 
 CITED line_ode at line_taylor.py:109: L. V. Ahlfors, Complex Analysis, 3rd ed., McGraw-Hill, 1979, chs. 2 and 5
 ```
+
+The row's last line says the body proved it too: `by its proof`, with where
+the proof is and what it is. lanky's own search proves the claim as well,
+and the paragraph below is how; a broken body would still fail the check.
 
 The claim starts at order 1, and the induction takes that into account. Its
 guard, `n >= 1`, leaves order 0 without an equation, and the induction
@@ -1389,46 +1394,53 @@ family over `Nat`.
 
 What the search found can be read back in Python. After the ledger,
 `--proofs` prints the proof of each proved theorem as a body, in the
-theorem's own names, ready to paste under its docstring:
+theorem's own names, ready to paste under its docstring. For `line_taylor`,
+whose body is a chain, it is the proof lanky's search found on its own, in
+the shorter form a proof takes when every step is routine algebra:
 
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --proofs line_taylor
 ...
-PROOF line_taylor at line_taylor.py:115, by induction on n, two at a time:
+PROOF line_taylor at line_taylor.py:123, by induction on n, two at a time:
 
     def claim(n):
         if n == 1:
-            return first
+            return first_term
         return ode(n - 1), claim(n - 1)
 
     return claim
 ```
 
-Read aloud: the claim at `n`; if `n` is 1, it is `first`; otherwise it
+Read aloud: the claim at `n`; if `n` is 1, it is `first_term`; otherwise it
 follows from `ode` at `n - 1` and the claim at `n - 1`. That proves the
 claim. `claim` calling itself at a smaller order is the induction, and a fact
-is written at a point only where the point says something: `first` has none,
-and `ode` fits the claim at `n - 1` and at `n`, so its point is written. The
-multipliers are not: lanky finds them. `--steps` prints the outline, each
-case a chain of equations from the claim's left side to its right, with the
-fact, the point and the multiplier of every link:
+is written at a point only where the point says something: `first_term` has
+none, and `ode` fits the claim at `n - 1` and at `n`, so its point is
+written. The multipliers are not: lanky finds them.
+
+`--steps` prints the outline of a proof in lanky's notation: of the proof as
+written, where the theorem has one, a row per step at its Python line, with
+the case it is in and the facts it follows from at the points lanky found;
+and otherwise of the proof the search found, each case a chain of equations
+from the claim's left side to its right, with the fact, the point and the
+multiplier of every link:
 
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --steps line_taylor
 ...
-STEPS line_taylor at line_taylor.py:115, as lanky found them:
-  the claim at n, for every n in Nat with n >= 1, by induction on n, two at a time
-    if n == 1:  c[1] == -(-beta / alpha)                          by first, times 1 / alpha
-    otherwise:  c[n] == -beta * (n - 1) * c[n - 1] / (alpha * n)  by ode, at n - 1, times 1 / (alpha * n)
-                     == -(-beta / alpha) ** n / n                 by the claim at n - 1, times -beta * (n - 1) / (alpha * n)
+STEPS line_taylor at line_taylor.py:123, as its proof says them:
+  the claim, induction on n, 2 cases, 3 steps, 1 named fact
+  line_taylor.py:141  if n == 1:              a[1] == -(-beta / alpha)**1 / 1               by first_term
+  line_taylor.py:142  otherwise:  recurrence: a[n] == (n - 1) / n*(-beta / alpha)*a[n - 1]  by ode, at (n - 1)
+  line_taylor.py:143                          a[n] == -(-beta / alpha)**n / n               by recurrence and the claim at (n - 1)
 ```
 
-lanky builds both from what Python found, and reads nothing back from Lean.
-An exchange of sums, `exchange` in `examples/sum_factorization.py`, is
-printed as a chain from its left side, through the left side with its sums in
-the order found, to its right side. A proof by any other rung of the ladder
-names the rung, as in `by integer arithmetic` or `by induction on n, taking
-the last term off the sum`.
+lanky builds both from the proof, and reads nothing back from Lean. An
+exchange of sums, `exchange` in `examples/sum_factorization.py`, is printed as
+a chain from its left side, through the left side with its sums in the order
+found, to its right side. A proof by any other rung of the ladder names the
+rung, as in `by integer arithmetic` or `by induction on n, taking the last
+term off the sum`.
 
 ## Write a proof
 
@@ -1480,6 +1492,10 @@ claim."
 | `if` / `else` | a case split; each branch proves the claim with its condition true |
 | `def claim(i, a, b):`, then `return claim` | the claim for every `i, a, b`, at one point; its parameters are the claim's variables, by name and in order, and one that names a parameter of the theorem generalizes it |
 | `claim(i, a - 2, b + 2)` inside `claim` | the claim at values closer to a base case: induction |
+| `x.equals(y, by=fact)`, and `.at_most`, `.less_than`, `.at_least`, `.more_than` | one link of a chain, a calculation a link to a line; `by=` takes a fact or a tuple of facts, and with no `by=` the link is algebra alone |
+| `name = x.equals(y, by=fact)` | a fact on the way, named so that a later step can cite it |
+| `by=...` | a step left open: the proof holds but for it, and the claim's row names the line |
+| `from lanky.known import log_of_a_power` | a fact lanky knows, under a plain name, cited like any other |
 
 A hypothesis written `p & q` is cited as both parts. Hypotheses are always in
 scope, for the conditions of the facts you cite. `python examples/every_box.py`
@@ -1611,11 +1627,34 @@ reader thinks.
 
 Lean's search alone does not prove `log_of_the_modulus`: no power is in
 sight for the log of a power to apply to, which is why the proof writes the
-term where the two facts meet as the middle of its chain. Where Lean has
-found no proof alone, `lanky check` names the known facts whose shape occurs
-in the claim, the term each fits, and its values there:
+term where the two facts meet as the middle of its chain. With the proof, and
+Mathlib, the claim reads `proved`, and the two facts it cites are rows of the
+file's ledger, marked with the module they come from, so that what the claim
+rests on is in the ledger it is counted in:
 
 ```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/log_of_the_modulus.py
+STATUS  EFFECTIVE  BY      WHERE                     OWNER               STATEMENT
+------  ---------  ------  ------------------------  ------------------  -----------------------------------------------------------------------------------
+proved  tested     lean    log_of_the_modulus.py:42  log_of_the_modulus  alpha : Complex | alpha != 0 |- log(abs(alpha)) == log(real(alpha*conj(alpha))) / 2
+                                                                         by its proof, log_of_the_modulus.py:47-51: 2 steps, using log_of_a_power
+                                                                           and modulus_squared from lanky.known
+tested  tested     python  log_of_the_modulus.py:42  log_of_the_modulus  the term computes what the annotations compute
+proved  tested     lean    lanky.known               log_of_a_power      x : Real, n : Nat |- log(x**n) == n*log(x)
+tested  tested     python  lanky.known               log_of_a_power      the term computes what the annotations compute
+proved  tested     lean    lanky.known               modulus_squared     z : Complex |- real(z*conj(z)) == abs(z)**2
+tested  tested     python  lanky.known               modulus_squared     the term computes what the annotations compute
+
+6 facts: 3 proved, 3 tested
+```
+
+A cited theorem is restated in the citing proof's Lean by the text its own
+command proved, `Lanky.log_of_a_power.as_cited`, byte for byte, never printed
+again for the citation. Where a claim has no proof and Lean found none alone,
+`lanky check` names the known facts whose shape occurs in the claim, the term
+each fits, and its values there:
+
+```text
 NOT PROVED log_of_the_modulus at log_of_the_modulus.py:42: alpha : Complex | alpha != 0 |- log(abs(alpha)) == ...
   Lean found no proof alone. What lanky knows of its shape:
     modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)), at z = alpha
