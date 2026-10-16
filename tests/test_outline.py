@@ -122,6 +122,17 @@ def on_every_triangle(
 
 
 @theorem
+def stored_and_followed(
+    D: Fn[Nat, Nat, Real],
+    R: Fn[Nat, Nat, Real],
+    pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
+    table: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2)
+    & all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
+) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
+    """The reconstruction, with what is stored and the recurrence as one hypothesis."""
+
+
+@theorem
 def exchange(
     n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]
 ) -> sum(sum(f[i, j] for j in Fin[m]) for i in Fin[n]) == sum(
@@ -308,6 +319,18 @@ def test_a_fact_that_fits_the_claim_at_one_point_is_cited_by_name(searching) -> 
         "  if a < 2:   R[i, a, b] == c[i, a, b]           by copies, at (i, a, b)",
         "                         == D[i, a, b]           by stored, at (i, a, b)",
     ]
+
+
+def test_both_parts_of_a_hypothesis_written_p_and_q_answer_to_its_name(searching) -> None:
+    """``table`` is two conjuncts in Lean; the body cites it by its name in both cases."""
+    proved, _ = _found(stored_and_followed)
+    record = proved.provenance["found_proof"]
+    assert record["body"][1:4] == [
+        "    if a < 2:",
+        "        return table",
+        "    return table(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)",
+    ]
+    assert "by table, at (a - 2, b)" in record["steps"][2]
 
 
 # }}}

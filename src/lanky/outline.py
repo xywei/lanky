@@ -321,7 +321,9 @@ def _family_record(plan: FamilyPlan, names: Mapping[str, str]) -> dict[str, Any]
     outline: list[tuple[str, list[tuple[str, str]]]] = []
     for condition, case, uses in cases:
         cited = _citations(plan, case, uses, names)
-        returned = f"return {', '.join(text for text, _ in cited)}" if cited else "return"
+        # the two conjuncts of p & q at one point are one citation
+        texts = list(dict.fromkeys(text for text, _ in cited))
+        returned = f"return {', '.join(texts)}" if texts else "return"
         if condition is None:
             body.append(f"    {returned}")
         else:
@@ -373,9 +375,9 @@ def _citations(
 ) -> list[tuple[str, Any]]:
     """Each fact a case's certificate uses, cited as a written proof cites it, in chain order.
 
-    Pairs of the citation's text and the use it stands for; a fact cited
-    twice alike (the two conjuncts of ``p & q`` at one point) is cited once,
-    with the first of its uses.
+    Pairs of the citation's text and the use it stands for, one per use: the
+    two conjuncts of ``p & q`` at one point are two uses with one text, which
+    the body writes once and the outline takes a link each for.
     """
     lemmas = {lemma.name: lemma for lemma in case.lemmas}
     ordered = _chain_order(case, uses, lemmas)
@@ -404,8 +406,7 @@ def _citations(
                 len(points[name]) == 1 and _fits_alone(lemma, use, case)
             )
             text = name if alone else f"{name}({', '.join(map(python_source, values))})"
-        if all(text != earlier for earlier, _ in cited):
-            cited.append((text, use))
+        cited.append((text, use))
     return cited
 
 
@@ -542,7 +543,7 @@ def _chain_order(case: Any, uses: tuple[Any, ...], lemmas: Mapping[str, Any]) ->
 
 def _reason(plan: FamilyPlan, use: Any, text: str, lemma: Any, multiplier: str | None) -> str:
     """Why a link of a case's chain holds: ``by pde, at (a - 2, b)``."""
-    if text.startswith("claim("):
+    if use.lemma == plan.hypothesis:
         reason = f"by the claim at {_point_of_call(text)}"
     else:
         name = text.split("(", 1)[0]
@@ -561,10 +562,16 @@ def _together(plan: FamilyPlan, cited: list[tuple[str, Any]], lemmas: Mapping[st
     if len(cited) == 1:
         text, use = cited[0]
         return _reason(plan, use, text, lemmas.get(use.lemma), None)
-    words = [
-        _reason(plan, use, text, lemmas.get(use.lemma), None)[len("by ") :].replace(", at ", " at ")
-        for text, use in cited
-    ]
+    words = list(
+        dict.fromkeys(
+            _reason(plan, use, text, lemmas.get(use.lemma), None)[len("by ") :].replace(
+                ", at ", " at "
+            )
+            for text, use in cited
+        )
+    )
+    if len(words) == 1:
+        return f"by {words[0]}"
     return f"from {', '.join(words[:-1])} and {words[-1]}"
 
 
