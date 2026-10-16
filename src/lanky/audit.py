@@ -51,6 +51,7 @@ import re
 from collections.abc import Sequence
 
 __all__ = [
+    "REFUSED_WORDS",
     "TRUSTED_AXIOMS",
     "audit_failure",
     "audit_lines",
@@ -214,6 +215,14 @@ _WORD = re.compile(
     rf"(?!{_NAME_CHARACTER})"
 )
 
+#: The words a screened script may not use, each a token on its own: ``end``
+#: is refused, ``Finset.sum_def`` and ``Foo.end`` are not.
+REFUSED_WORDS = frozenset(_REFUSED_WORDS)
+
+#: The holes a library proof may not leave: its claim reads proved on its
+#: proof alone, and a hole would make that a failure on every check.
+_HOLE = re.compile(rf"(?<!{_NAME_CHARACTER})(?P<word>sorry|admit)(?!{_NAME_CHARACTER})")
+
 #: ``set_option maxHeartbeats N in``, which a library proof may use to give a
 #: slow step its time, and nothing else may.
 _HEARTBEATS = re.compile(
@@ -267,9 +276,12 @@ def screen(script: str, library: bool = False) -> str | None:
     """Why ``script`` cannot be handed to Lean as a proof; ``None`` when it can.
 
     ``library`` is for the Lean proofs of lanky's library of known facts,
-    which may give a slow step its time with ``set_option maxHeartbeats N
-    in``. The reason names what was found, in the words of the script.
+    :mod:`lanky.known`, which may give a slow step its time with ``set_option
+    maxHeartbeats N in``, and may not leave a hole (``sorry``, ``admit``).
+    The reason names what was found, in the words of the script.
     """
+    if not isinstance(script, str):
+        return f"a proof is Lean text, not {type(script).__name__}"
     text, unclosed = _without_comments(script)
     if unclosed:
         return (
@@ -289,6 +301,10 @@ def screen(script: str, library: bool = False) -> str | None:
     found = _WORD.search(text)
     if found is not None:
         return f"it has {found.group('word')}, which a proof never needs"
+    if library:
+        hole = _HOLE.search(text)
+        if hole is not None:
+            return f"it leaves a hole ({hole.group('word')}), and a library proof leaves none"
     return None
 
 

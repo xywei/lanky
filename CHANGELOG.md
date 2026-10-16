@@ -144,6 +144,48 @@ All notable changes to lanky are recorded here. The format follows
   recurrence named on the way, and its names are the design's: the
   coefficient family is `a`, the hypotheses `nonzero` and `first_term`.
 
+- **`lanky.known`: what lanky knows, proved once with Mathlib.** Twenty
+  facts under plain names, `from lanky.known import log_of_a_power,
+  modulus_squared`, each a theorem stated in Python with a docstring that
+  says it in words and cites the Mathlib lemma it is (`Mathlib:
+  Real.log_pow`): logs, exponentials and roots (`log_of_a_power`,
+  `log_of_a_product`, `exp_of_a_sum`, `square_root_squared`), absolute values
+  and moduli (`abs_of_positive`, `abs_of_negative`, `modulus_squared`,
+  `modulus_of_a_product`, `triangle_inequality`,
+  `complex_triangle_inequality`), and finite sums (`one_more_term`,
+  `geometric_sum`, `sum_of_a_constant`, `distribute`,
+  `triangle_inequality_for_sums`, and the shapes of #128: `sum_exchange`,
+  `triangle_exchange` over the triangle `a + b < q`, `shifted_sum`, a sum
+  from `m` on written with a guard, `fiber_exchange`, a sum regrouped by a
+  map, and `sum_of_sums`). Each fact's Lean proof is written once, against
+  the statement lanky prints, and kept in a table the Lean oracle reads in
+  place of its search (`lanky.oracles.known`); a user's file never holds
+  Lean. Importing the module builds the theorems and nothing more. A new CI
+  job, `prove lanky.known with Mathlib`, proves every fact under the current
+  printer, so a printer change that a proof does not survive fails CI rather
+  than turning the library into `tested`. `lanky check src/lanky/known.py`
+  reads `proved` for all twenty with Mathlib.
+
+- **The table's proofs are screened** with `use_tactic`'s screen
+  (`lanky.audit.screen`, `library=True`): refused, before Lean sees them, if
+  they run a `#` command (`#exit`), set an option other than a step's
+  `maxHeartbeats`, use `native_decide`, declare anything or open a scope, or
+  leave a hole (`sorry`, `admit`), which only a library proof is held to.
+
+- **`lanky check` names the known facts that fit a claim Lean did not prove
+  alone.** A `NOT PROVED` line under the table lists each fact of
+  `lanky.known` whose shape occurs in the claim, with the term it fits and
+  its values there, and the import that brings it into a proof:
+  `modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)),
+  at z = alpha`. The matcher (`lanky.suggest.suggestions`) binds a fact's
+  variables by type, a family to what the claim sums, and a factor to what
+  the others leave, and is there for a written proof's step report too.
+
+- **`examples/log_of_the_modulus.py`**: `log|alpha|` with no square root,
+  half the log of `alpha` times its conjugate, the `log(r2) / 2` of a QBX
+  kernel. Lean's search alone does not prove it; its proof is a chain whose
+  two links cite `log_of_a_power` and `modulus_squared`.
+
 ### Changed
 
 - **A theorem's hypotheses have their Python names in Lean.** The printed
