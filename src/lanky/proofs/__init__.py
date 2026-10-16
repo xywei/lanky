@@ -57,7 +57,7 @@ from typing import Any
 
 from lanky.ledger import Fact, Ledger, Status
 from lanky.proofs.compile import Command, compile_proof
-from lanky.proofs.report import Failure, failure_of, fix_for, read
+from lanky.proofs.report import CLOSED_WITH_HOLES, Failure, failure_of, fix_for, read, verdict
 from lanky.proofs.trace import (
     Citation,
     Proof,
@@ -84,40 +84,186 @@ def check_written_proofs(ledger: Ledger, objects: Any, verbose: bool = False) ->
     :func:`lanky.check.check_path` calls this once every fact of the file is
     established, so that nothing a body does can change what a run or a draw
     of the check read. An axiom has no proof, and its body is not read.
+
+    A proof that cites another theorem is checked after that theorem: one of
+    the file with a written proof of its own is checked first, and one from
+    another module (a fact of :mod:`lanky.known`, a theorem of a file the
+    file imports) is established into this ledger, as a row marked with its
+    module, so that what the proof rests on is in the ledger it is counted
+    in (see the design's foreign facts). A citation restates the text the
+    cited theorem's own command proved, which the Lean oracle keeps
+    (:func:`lanky.citations.proved_texts`); the circle of two proofs citing
+    each other is refused. Last, a fact a plugin stated that cites a theorem
+    proved only now, and was restated by the printer when it was
+    established, is asked of Lean again, from the text its command proved
+    (:func:`_restate_from_proved`).
     """
     from lanky.theory import Axiom, Theorem
 
+    pending: dict[str, Any] = {}
     for obj in objects:
         if not isinstance(obj, Theorem) or isinstance(obj, Axiom):
             continue
         if obj.fact_id not in ledger or written_lines(obj.fn) is None:
             continue
-        fact = ledger[obj.fact_id]
-        started = time.monotonic()
-        try:
-            checked = prove(obj, fact)
-        except Exception as exc:  # noqa: BLE001 - lanky's own failure is no verdict on the proof
-            if verbose:
-                import traceback
+        pending.setdefault(obj.fact_id, obj)
+    if not pending:
+        return
+    oracle = _lean_oracle()
+    texts = getattr(oracle, "proved_texts", None)
+    from lanky.citations import proved_texts
 
-                traceback.print_exc()
-            checked = _not_checked(
-                fact,
-                _where(obj),
-                f"lanky raised {type(exc).__name__} while it checked the proof: {exc} "
-                "(--verbose prints where)",
-            )
-        ledger.add(checked)
+    with proved_texts(texts if texts is not None else {}):
+        done: set[str] = set()
+        for identifier in list(pending):
+            _check_in_order(identifier, pending, done, (), ledger, verbose)
+    _restate_from_proved(ledger, oracle, verbose)
+
+
+def _check_in_order(
+    identifier: str,
+    pending: dict[str, Any],
+    done: set[str],
+    path: tuple[str, ...],
+    ledger: Ledger,
+    verbose: bool,
+) -> None:
+    """Check one theorem's written proof after the theorems it cites (see the caller)."""
+    if identifier in done:
+        return
+    theorem = pending[identifier]
+    fact = ledger[identifier]
+    started = time.monotonic()
+    proof: Proof | None = None
+    try:
+        proof = trace_proof(theorem)
+    except ProofError:
+        proof = None
+    except Exception:  # noqa: BLE001 - prove() says what the trace raised, at its line
+        proof = None
+    if proof is not None:
+        for cited in proof.cited:
+            cited_id = getattr(cited, "fact_id", None)
+            if cited_id is None:
+                continue
+            if cited_id in pending and cited_id not in done:
+                if cited_id in path or cited_id == identifier:
+                    names = " -> ".join(
+                        pending[item].__name__ for item in (*path, identifier, cited_id)
+                    )
+                    done.add(identifier)
+                    ledger.add(
+                        _failed(
+                            fact,
+                            _where(theorem),
+                            None,
+                            [
+                                Failure(
+                                    "cite",
+                                    None,
+                                    "the proofs cite each other in a circle",
+                                    (f"The proofs cite each other in a circle: {names}.",),
+                                    "prove one of them without the other",
+                                )
+                            ],
+                            theorem.path,
+                        )
+                    )
+                    return
+                _check_in_order(cited_id, pending, done, (*path, identifier), ledger, verbose)
+            elif cited_id not in ledger:
+                _establish_foreign(cited, ledger, verbose)
+    done.add(identifier)
+    fact = ledger[identifier]
+    try:
+        checked = prove(theorem, fact, traced=proof)
+    except Exception as exc:  # noqa: BLE001 - lanky's own failure is no verdict on the proof
         if verbose:
-            said = checked.provenance.get("proof") or {}
-            state = {True: "Lean accepted it", False: "it fails"}.get(
-                said.get("closed"), f"not checked: {said.get('reason')}"
-            )
-            print(
-                f"  its proof, {said.get('where')}: {said.get('summary') or ''}"
-                f"{'; ' if said.get('summary') else ''}{state} "
-                f"({time.monotonic() - started:.1f} s)"
-            )
+            import traceback
+
+            traceback.print_exc()
+        checked = _not_checked(
+            fact,
+            _where(theorem),
+            f"lanky raised {type(exc).__name__} while it checked the proof: {exc} "
+            "(--verbose prints where)",
+        )
+    ledger.add(checked)
+    if verbose:
+        said = checked.provenance.get("proof") or {}
+        state = {True: "Lean accepted it", False: "it fails"}.get(
+            said.get("closed"), f"not checked: {said.get('reason')}"
+        )
+        if said.get("closed") == "holes":
+            state = "Lean accepted it, with steps left open"
+        print(
+            f"  its proof, {said.get('where')}: {said.get('summary') or ''}"
+            f"{'; ' if said.get('summary') else ''}{state} "
+            f"({time.monotonic() - started:.1f} s)"
+        )
+
+
+def _establish_foreign(theorem: Any, ledger: Ledger, verbose: bool) -> None:
+    """Establish a theorem of another module into ``ledger``, as rows marked with its module.
+
+    A proof's citation rests on the cited theorem, and a ledger counts an id
+    it does not hold as assumed, so the theorem is established here, with
+    its reading, as the file that states it would establish it, warm from
+    the proof cache. Its rows say where it is from, ``lanky.known``.
+    """
+    from lanky.check import establish
+    from lanky.plugins import registry
+
+    module = getattr(theorem, "module", None) or ""
+    for theory in registry.theories:
+        for fact in theory.facts(theorem):
+            if fact.id in ledger:
+                continue
+            if verbose:
+                print(f"{module} {fact.owner}: {fact.statement} (cited from {module})")
+            established = establish(fact, verbose=verbose)
+            marked = established.with_status(established.status, module=module)
+            ledger.add(replace(marked, where=module or marked.where))
+
+
+def _restate_from_proved(ledger: Ledger, oracle: Any, verbose: bool) -> None:
+    """Ask Lean again about each plugin fact restated by the printer where a proved text now exists.
+
+    A part that cites a theorem restates the text its command proved
+    (:mod:`lanky.citations`); a theorem proved only by its written proof has
+    that text only once its proof is checked, after the plugin's facts were
+    established, so their parts restated it by the printer. Each such fact is
+    offered to the Lean oracle again, and its new answer is kept where it is
+    at least as strong.
+    """
+    if oracle is None or getattr(oracle, "proved_texts", None) is None:
+        return
+    from lanky.check import _rest_on_the_reading
+
+    for fact in list(ledger):
+        printed = fact.provenance.get("lean_restated_by_printer")
+        if not printed or not callable(getattr(fact.term, "lean_obligation", None)):
+            continue
+        cited = {
+            note.get("fact")
+            for record in fact.provenance.get("lean_parts") or ()
+            if isinstance(record, dict)
+            for note in record.get("cited", ())
+            if note.get("restated") == "by the printer"
+        }
+        if not any(identifier in oracle.proved_texts for identifier in cited if identifier):
+            continue
+        if verbose:
+            print(f"  {fact.owner}: {fact.statement} (asked again, from the texts proved since)")
+        try:
+            again = oracle.establish(fact)
+        except Exception:  # noqa: BLE001 - the answer it had stands
+            continue
+        if again is None or again.status is Status.ASSUMED:
+            continue
+        if again.status in (Status.PROVED, Status.CERTIFIED) or fact.status is Status.ASSUMED:
+            again = again.with_status(again.status, trust_class=oracle.trust_class())
+            ledger.add(_rest_on_the_reading(again))
 
 
 def _lean_oracle() -> Any:
@@ -128,15 +274,17 @@ def _lean_oracle() -> Any:
     return next((oracle for oracle in registry.oracles if isinstance(oracle, LeanOracle)), None)
 
 
-def prove(theorem: Any, fact: Fact) -> Fact:
+def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
     """``fact``, with what checking the theorem's written proof says (see the module).
 
     The proof's account is the provenance entry ``proof``: ``where`` it is
     written, a ``summary`` of it, whether Lean accepted it (``closed``:
-    ``True``, ``False``, or ``None`` when it was not checked, with the
-    ``reason``), the ``failures`` when it was not accepted, each a dict of
-    ``kind``, ``line``, ``headline``, ``lines``, ``fix``, ``source`` and
-    ``where``, and the ``lean_source``.
+    ``True``, ``"holes"`` for a proof accepted with steps left open,
+    ``False``, or ``None`` when it was not checked, with the ``reason``), the
+    ``failures`` when it was not accepted, each a dict of ``kind``, ``line``,
+    ``headline``, ``lines``, ``fix``, ``source`` and ``where``, the
+    ``holes``, the ``outline`` ``--steps`` prints, and the ``lean_source``.
+    ``traced`` is the proof traced already, if it was.
     """
     if written_lines(theorem.fn) is None:
         return fact
@@ -149,24 +297,29 @@ def prove(theorem: Any, fact: Fact) -> Fact:
         )
         return _not_checked(fact, where, why)
     try:
-        proof = trace_proof(theorem)
+        proof = traced if traced is not None else trace_proof(theorem)
     except ProofError as exc:
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
     oracle = _lean_oracle()
     if oracle is None:
-        return _not_checked(fact, where, "no Lean oracle is registered")
+        return _without_lean(fact, where, proof, "no Lean oracle is registered")
     available, reason = oracle.availability()
     if not available:
-        return _not_checked(fact, where, f"Lean is not available here ({reason})")
+        return _without_lean(fact, where, proof, f"Lean is not available here ({reason})")
     mathlib = oracle.session.mathlib is not None
     from lanky.lean import UnsupportedTerm
+    from lanky.oracles.lean import claim_statement
 
     try:
-        command = compile_proof(proof, mathlib)
+        as_cited = claim_statement(fact, mathlib).as_cited
+    except UnsupportedTerm:
+        as_cited = None
+    try:
+        command = compile_proof(proof, mathlib, as_cited)
     except UnsupportedTerm as exc:
         if not mathlib:
-            return _not_checked(
-                fact, where, "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)"
+            return _without_lean(
+                fact, where, proof, "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)"
             )
         return _not_checked(fact, where, f"Lean cannot state it: {exc}")
     except ProofError as exc:
@@ -183,9 +336,11 @@ def prove(theorem: Any, fact: Fact) -> Fact:
             )
             return _failed(fact, where, command, [failure], theorem.path)
         return _not_checked(fact, where, said or "Lean did not answer")
-    closed, failures = read(proof, command, record)
-    if closed:
+    said_verdict, failures = verdict(proof, command, record)
+    if said_verdict == "closed":
         return _closed(fact, where, proof, command, oracle)
+    if said_verdict == CLOSED_WITH_HOLES:
+        return _holes(fact, where, proof, command)
     failures = [_checked_fix(failure, proof, command, oracle, fact) for failure in failures]
     return _failed(fact, where, command, failures, theorem.path)
 
@@ -212,7 +367,9 @@ def _closed(fact: Fact, where: str, proof: Proof, command: Command, oracle: Any)
 
     A claim lanky proved alone keeps its row, with the line added. One it did
     not is proved now, by Lean, resting on its reading as any proof does, and
-    on the theorems the proof cites.
+    on the theorems the proof cites, their premises included. The command
+    proved the claim's ``as_cited`` text too, which the Lean oracle keeps for
+    the proofs and the parts that cite this theorem (:mod:`lanky.citations`).
     """
     from lanky.check import _rest_on_the_reading
 
@@ -221,13 +378,21 @@ def _closed(fact: Fact, where: str, proof: Proof, command: Command, oracle: Any)
         "summary": command.summary,
         "closed": True,
         "lean_source": _source(command),
+        "outline": [list(row) for row in command.outline],
     }
-    cited = tuple(theorem.fact_id for theorem in command.cited)
+    cited = tuple(command.rests_on)
     rests_on = tuple(dict.fromkeys((*fact.rests_on, *cited)))
-    if fact.status in (Status.PROVED, Status.CERTIFIED):
-        return replace(fact.with_status(fact.status, proof=account), rests_on=rests_on)
-    session = oracle.session
     extra: dict[str, Any] = {}
+    if command.as_cited is not None and fact.term is not None:
+        from lanky.citations import Proved
+
+        oracle.proved_texts.record(
+            Proved(fact.id, command.declared, command.as_cited, command.mathlib, fact.term, cited)
+        )
+        extra["lean_as_cited"] = command.as_cited
+    if fact.status in (Status.PROVED, Status.CERTIFIED):
+        return replace(fact.with_status(fact.status, proof=account, **extra), rests_on=rests_on)
+    session = oracle.session
     if command.mathlib:
         extra["lean_mathlib"] = session.mathlib_revision
     proved = fact.with_status(
@@ -241,6 +406,119 @@ def _closed(fact: Fact, where: str, proof: Proof, command: Command, oracle: Any)
         **extra,
     )
     return _rest_on_the_reading(replace(proved, rests_on=rests_on))
+
+
+def _holes(fact: Fact, where: str, proof: Proof, command: Command) -> Fact:
+    """``fact`` as it was, with a proof Lean accepted but for the steps it left open, ``by=...``.
+
+    The claim is not proved by it: it reads as the other oracles left it,
+    assumed where none settled it, and its row names the lines left open.
+    """
+    import os
+
+    base = os.path.basename(proof.path)
+    account = {
+        "where": where,
+        "summary": command.summary,
+        "closed": "holes",
+        "holes": [f"{base}:{line}" for line in command.holes],
+        "lean_source": _source(command),
+        "outline": [list(row) for row in command.outline],
+    }
+    return fact.with_status(fact.status, proof=account)
+
+
+def _without_lean(fact: Fact, where: str, proof: Proof, reason: str) -> Fact:
+    """``fact``, its written proof not checked by Lean: each link of its chains drawn instead.
+
+    Where the values can be drawn, each link's two sides are compared at
+    drawn points, under the theorem's hypotheses and the case's conditions,
+    so that a wrong step is caught at its own line with no Lean at all, and
+    fails the check. A link over a family that cannot be drawn, a table over
+    ``Nat``, leaves the proof unchecked, and says why.
+    """
+    import os
+
+    draws = _draw_links(proof)
+    if not draws:
+        return _not_checked(fact, where, reason)
+    name = proof.theorem.__name__
+    base = os.path.basename(proof.path)
+    for line, statement, outcome, detail in draws:
+        if outcome == "refuted":
+            failure = Failure(
+                "false",
+                line,
+                "a step of its proof is false",
+                (f"The step says {statement}, which is false {detail}.",),
+                None,
+            )
+            return _failed(fact, where, None, [failure], proof.path)
+    undrawn = [detail for _line, _statement, outcome, detail in draws if outcome == "undrawn"]
+    if undrawn:
+        return _not_checked(fact, where, f"{reason}; its steps could not be drawn: {undrawn[0]}")
+    lines = sorted({line for line, *_ in draws if line is not None})
+    shown = ", ".join(str(line) for line in lines)
+    return _not_checked(
+        fact,
+        where,
+        f"{reason}; the proof of {name} was tested step by step at drawn points "
+        f"({base}:{shown}), not checked by Lean",
+    )
+
+
+def _draw_links(proof: Proof, samples: int = 50) -> list[tuple[int | None, str, str, str]]:
+    """Each link of the proof's chains, drawn: ``(line, statement, outcome, detail)``.
+
+    As :func:`lanky.oracles.steps.draw_links` draws a chain: the link as a
+    claim over the theorem's variables and the claim's, under the theorem's
+    hypotheses, the goal's guard and the case's conditions.
+    """
+    from lanky.terms import Comparison, Forall, conjuncts, render
+    from lanky.testing import OpenStatement, check
+
+    theorem = proof.theorem
+    variables = list(theorem.variables)
+    goal = theorem.goal
+    guards: list[Any] = []
+    if proof.claim is not None:
+        names = {name for name, _ in variables}
+        for name, domain in zip(proof.claim.params, proof.claim.domains, strict=True):
+            if name not in names:
+                variables.append((name, domain))
+        if isinstance(goal, Forall):
+            guards = list(conjuncts(goal.guard))
+    hypotheses = [part for _name, prop in theorem.hypotheses for part in conjuncts(prop)]
+    out: list[tuple[int | None, str, str, str]] = []
+    seen: set[int] = set()
+    for leaf in proof.leaves:
+        conditions = [condition for condition, _line in leaf.conditions]
+        chains = (*leaf.named, *((leaf.chain,) if leaf.chain is not None else ()))
+        for chain in chains:
+            if id(chain) in seen:
+                continue
+            seen.add(id(chain))
+            for left, link in chain.steps():
+                prop = Comparison(left, link.relation, link.term)
+                statement = render(prop)
+                try:
+                    report = check(variables, [*hypotheses, *guards, *conditions], prop, samples, 0)
+                except OpenStatement as exc:
+                    out.append((link.line, statement, "undrawn", str(exc)))
+                    continue
+                except Exception as exc:  # noqa: BLE001 - a draw that cannot run checks nothing
+                    out.append((link.line, statement, "undrawn", f"{type(exc).__name__}: {exc}"))
+                    continue
+                if report.counterexample is not None:
+                    point = ", ".join(
+                        f"{key} = {value}" for key, value in report.counterexample.items()
+                    )
+                    out.append((link.line, statement, "refuted", f"at {point}"))
+                elif report.valid == 0:
+                    out.append((link.line, statement, "undrawn", report.reason or "no draw"))
+                else:
+                    out.append((link.line, statement, "tested", f"{report.valid} draws"))
+    return out
 
 
 def _failed(
@@ -273,7 +551,7 @@ def _checked_fix(
     """
     if failure.kind != "step" or failure.fix is None:
         return failure
-    step = next((step for step in command.steps if step.leaf.line == failure.line), None)
+    step = next((step for step in command.steps if step.where == failure.line), None)
     if step is None:
         return failure
     found = fix_for(step, proof, command.measure)
@@ -296,11 +574,22 @@ def _checked_fix(
 
 
 def _with_citation(proof: Proof, leaf: Any, old: Citation, new: Citation) -> Proof:
-    """``proof`` with one citation of one leaf put at another point."""
+    """``proof`` with one citation of one leaf put at another point, in a return or a link."""
+
+    def swapped(citations: Any) -> tuple[Citation, ...]:
+        return tuple(new if citation is old else citation for citation in citations)
+
+    def chain_with(chain: Any) -> Any:
+        if chain is None:
+            return None
+        links = tuple(replace(link, facts=swapped(link.facts)) for link in chain.links)
+        return replace(chain, links=links)
+
     leaves = []
     for each in proof.leaves:
         if each is leaf:
-            facts = tuple(new if citation is old else citation for citation in each.facts or ())
-            each = replace(each, facts=facts)
+            facts = None if each.facts is None else swapped(each.facts)
+            # a fact on the way keeps its chain, which the citations of it name
+            each = replace(each, facts=facts, chain=chain_with(each.chain))
         leaves.append(each)
     return replace(proof, leaves=tuple(leaves), root=_tree(leaves))

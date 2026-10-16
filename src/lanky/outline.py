@@ -1112,7 +1112,13 @@ def proof_lines(fact: Any) -> list[str]:
 
 
 def step_lines(fact: Any) -> list[str]:
-    """What ``lanky check --steps`` prints for a proved claim: its outline in lanky's notation."""
+    """What ``lanky check --steps`` prints for a proved claim: its outline in lanky's notation.
+
+    A claim with a written proof gets that proof's outline (:func:`written_step_lines`).
+    """
+    proof = fact.provenance.get("proof")
+    if isinstance(proof, dict) and proof.get("outline"):
+        return written_step_lines(fact)
     found = fact.provenance.get("found_proof")
     if not isinstance(found, dict):
         found = {"how": f"by {fact.decided_by or 'an oracle'}"}
@@ -1120,6 +1126,59 @@ def step_lines(fact: Any) -> list[str]:
     # a rung with nothing more to say is an outline of one line
     steps = found.get("steps") or [f"the claim, {how}"]
     return [f"STEPS {_head(fact)}, as lanky found them:", *(f"  {line}" for line in steps)]
+
+
+def written_step_lines(fact: Any) -> list[str]:
+    """The outline of a written proof, as ``lanky check --steps`` prints it.
+
+    A row per step, at its Python line: the case it is in, the step in
+    lanky's notation, and the facts it follows from, at the points lanky
+    found. The links of a chain are rows one under the other, each later
+    one starting at the term the one before reached::
+
+        STEPS compressed_taylor at l2p.py:130, as its proof says them:
+          the claim at (a, b), by induction on a, 2 cases, 4 steps
+          l2p.py:145  if a < 2:   R[a, b] == D[a, b]           by stored, at (a, b)
+          l2p.py:148  otherwise:  R[a, b] == -R[a - 2, b + 2]  by recurrence, at (a - 2, b)
+          l2p.py:149                      == -D[a - 2, b + 2]  by the claim at (a - 2, b + 2)
+          l2p.py:150                      == D[a, b]           by pde, at (a - 2, b)
+
+    lanky builds it from the proof as it compiled it; nothing is read back
+    from Lean.
+    """
+    import os
+
+    proof = fact.provenance.get("proof") or {}
+    rows = [tuple(row) for row in proof.get("outline") or ()]
+    base = os.path.basename(str(fact.provenance.get("path") or "")) or str(
+        fact.where or ""
+    ).split(":")[0]
+    summary = proof.get("summary") or ""
+    holes = proof.get("holes") or ()
+    head = f"STEPS {_head(fact)}, as its proof says them:"
+    out = [head, f"  the claim, {summary}" if summary else "  the claim"]
+    if holes:
+        out.append(f"  left open at {', '.join(str(hole) for hole in holes)}, assumed there")
+    shown: list[tuple[str, str, str, str, str]] = []
+    previous_right = None
+    for line, case, left, relation, right, reason in rows:
+        where = f"{base}:{line}" if line is not None else ""
+        if not case and previous_right is not None and left == previous_right:
+            left = ""
+        shown.append((where, case, left, f"{relation} {right}".strip(), reason))
+        previous_right = right
+    if not shown:
+        return out
+    width_where = max(len(row[0]) for row in shown)
+    width_case = max(len(row[1]) for row in shown)
+    width_left = max(len(row[2]) for row in shown)
+    width_step = max(len(row[3]) for row in shown)
+    for where, case, left, step, reason in shown:
+        out.append(
+            f"  {where:<{width_where}}  {case:<{width_case}}  {left:>{width_left}} "
+            f"{step:<{width_step}}  {reason}".rstrip()
+        )
+    return out
 
 
 # }}}

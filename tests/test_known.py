@@ -538,14 +538,14 @@ def test_with_mathlib_the_two_facts_as_cited_prove_the_log_of_the_modulus(
     assert closed, f"{detail}\n{source}"
 
 
-def test_with_mathlib_lean_alone_does_not_prove_the_demonstration_and_says_what_fits(
-    mathlib_project: str | None, monkeypatch, capsys
+def test_with_mathlib_the_demonstration_is_proved_by_its_proof_citing_two_known_facts(
+    mathlib_project: str | None, monkeypatch
 ) -> None:
-    """Today's search fails on the claim, and the check names modulus_squared.
+    """Lean's search alone fails on the claim; the demonstration's proof proves it.
 
-    Once proof bodies are read (the chains of written proofs), the
-    demonstration's own proof proves it, citing the two facts; the test
-    then checks that instead.
+    The proof is a chain that cites two facts of :mod:`lanky.known`, which
+    are established into the demonstration's ledger, as rows marked with
+    their module, and the claim rests on them.
     """
     pytest.importorskip("lean_interact", reason="the Lean oracle needs lean-interact")
     if mathlib_project is None:
@@ -553,21 +553,18 @@ def test_with_mathlib_lean_alone_does_not_prove_the_demonstration_and_says_what_
     if os.environ.get("LANKY_LEAN_DISABLE"):
         _without_mathlib("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
     monkeypatch.setenv("LANKY_LEAN_MATHLIB", mathlib_project)
-    from lanky import cli
-
-    (claim,) = [fact for fact in claims(check_path(DEMO)) if fact.owner == "log_of_the_modulus"]
-    if hasattr(Var("alpha"), "equals"):
-        # written proofs are read: the proof cites the two facts, and Lean checks it
-        assert claim.status is Status.PROVED, claim.provenance
-        return
-    assert claim.status is Status.TESTED
-    assert claim.provenance["lean_tried"] > 0
-    cli.main(["check", str(DEMO)])
-    printed = capsys.readouterr().out
-    assert (
-        "    modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)), at z = alpha"
-    ) in printed
-    assert "  A proof cites them by name: from lanky.known import modulus_squared" in printed
+    ledger = check_path(DEMO)
+    (claim,) = [fact for fact in claims(ledger) if fact.owner == "log_of_the_modulus"]
+    assert claim.status is Status.PROVED, claim.provenance
+    proof = claim.provenance["proof"]
+    assert proof["closed"] is True, proof
+    assert claim.provenance["lean_tried"] > 0  # the ladder was asked first, and failed
+    assert "using log_of_a_power and modulus_squared from lanky.known" in proof["summary"]
+    known_rows = [fact for fact in claims(ledger) if fact.where == "lanky.known"]
+    assert {fact.owner for fact in known_rows} == {"log_of_a_power", "modulus_squared"}
+    assert all(fact.status is Status.PROVED for fact in known_rows)
+    assert set(claim.rests_on) >= {fact.id for fact in known_rows}
+    assert claim.provenance["lean_as_cited"].startswith("∀ alpha : ℂ, alpha ≠ 0 →")
 
 
 # }}}

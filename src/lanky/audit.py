@@ -48,7 +48,7 @@ for anything the list misses.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 __all__ = [
     "REFUSED_WORDS",
@@ -115,12 +115,17 @@ def _plain(name: str) -> str:
     return name.replace("«", "").replace("»", "")
 
 
-def audit_failure(messages: Sequence[str], names: Sequence[str]) -> str | None:
+def audit_failure(
+    messages: Sequence[str], names: Sequence[str], allowed: Collection[str] = TRUSTED_AXIOMS
+) -> str | None:
     """Why Lean's answers do not pass the audit of ``names``; ``None`` when they do.
 
     ``messages`` are the texts of every message Lean gave the command. Each
     name needs exactly one answer about exactly that theorem (see the module
-    docstring), resting on nothing beyond :data:`TRUSTED_AXIOMS`.
+    docstring), resting on nothing beyond :data:`TRUSTED_AXIOMS`, or beyond
+    ``allowed``: a written proof with steps left open, ``by=...``, which
+    closes "with holes", may rest on ``sorryAx`` as well, and reads assumed
+    (:mod:`lanky.proofs`).
     """
     answers: dict[str, list[tuple[str, ...]]] = {}
     for message in messages:
@@ -144,7 +149,7 @@ def audit_failure(messages: Sequence[str], names: Sequence[str]) -> str | None:
             return (
                 f"Lean answered the axiom audit of {name} {len(got)} times, where lanky asked once"
             )
-        untrusted = [axiom for axiom in got[0] if axiom not in TRUSTED_AXIOMS]
+        untrusted = [axiom for axiom in got[0] if axiom not in allowed]
         if untrusted:
             listing = ", ".join(untrusted)
             return (

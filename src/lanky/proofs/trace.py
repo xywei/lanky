@@ -50,7 +50,7 @@ import types as pytypes
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from lanky.proofs.match import decide, negated, shape_of
@@ -72,10 +72,13 @@ __all__ = [
     "ClaimDef",
     "Given",
     "Leaf",
+    "LinkStep",
+    "Named",
     "Node",
     "Proof",
     "ProofError",
     "Question",
+    "TracedChain",
     "active",
     "namespace",
     "trace_proof",
@@ -268,7 +271,7 @@ class Citation:
 
 def _source_name(source: Any) -> str:
     """The name a fact is cited by."""
-    if isinstance(source, Given | ClaimDef):
+    if isinstance(source, Given | ClaimDef | Named):
         return source.name
     return getattr(source, "__name__", None) or getattr(source, "qualname", None) or repr(source)
 
@@ -301,24 +304,124 @@ class Question:
 
 
 @dataclass(frozen=True, eq=False)
+class LinkStep:
+    """One link of a chain as the trace read it: the relation, the term, and its reasons.
+
+    Attributes:
+        relation: ``"=="``, ``"<="``, ``"<"``, ``">="`` or ``">"``.
+        term: The term the link reaches.
+        facts: Its reasons, each a :class:`Citation`; empty for algebra alone.
+        hole: Whether the link was written ``by=...``, left open.
+        line: The line the link was written on.
+    """
+
+    relation: str
+    term: Any
+    facts: tuple[Citation, ...]
+    hole: bool
+    line: int | None
+
+
+@dataclass(frozen=True, eq=False)
+class TracedChain:
+    """A chain of a proof (:class:`lanky.chains.Chain`), its reasons read as citations.
+
+    Attributes:
+        start: The term it starts at.
+        links: Its links, in order.
+        name: The Python name it is assigned to, for a fact on the way;
+            ``None`` for one returned or cited as it is.
+        line: The line of its first link.
+    """
+
+    start: Any
+    links: tuple[LinkStep, ...]
+    name: str | None
+    line: int | None
+
+    @property
+    def end(self) -> Any:
+        """The term the chain ends at."""
+        return self.links[-1].term
+
+    @property
+    def relation(self) -> str:
+        """The relation the chain states between its ends."""
+        from lanky.chains import combined_relation
+
+        return combined_relation(link.relation for link in self.links)
+
+    @property
+    def claim(self) -> Any:
+        """What the chain shows: its start, its relation, its end."""
+        from lanky.terms import Comparison
+
+        return Comparison(self.start, self.relation, self.end)
+
+    def steps(self) -> Iterator[tuple[Any, LinkStep]]:
+        """Each link with the term it starts from, in order."""
+        left = self.start
+        for link in self.links:
+            yield left, link
+            left = link.term
+
+    @property
+    def holes(self) -> tuple[int | None, ...]:
+        """The lines of the links left open."""
+        return tuple(link.line for link in self.links if link.hole)
+
+
+@dataclass(frozen=True, eq=False)
+class Named:
+    """A fact on the way, ``recurrence = a[n].equals(..., by=ode)``, as a later step cites it."""
+
+    chain: TracedChain
+
+    @property
+    def name(self) -> str:
+        """The Python name it was given, or ``fact`` for a chain cited as it is."""
+        return self.chain.name or "fact"
+
+
+@dataclass(frozen=True, eq=False)
 class Leaf:
     """One path of a proof, ending at a ``return``.
 
     Attributes:
         questions: The case splits on the way, in order, each with its answer.
         facts: The facts the ``return`` gives, ``None`` for a bare ``return``,
-            which leaves the case to lanky.
+            which leaves the case to lanky; empty for a returned chain.
         line: The line of the ``return``.
+        chain: The chain the ``return`` gives, which is the case's proof.
+        named: The facts on the way the case's steps cite, in the order
+            they were written, each proved before the step that cites it.
     """
 
     questions: tuple[Question, ...]
     facts: tuple[Citation, ...] | None
     line: int | None
+    chain: TracedChain | None = None
+    named: tuple[TracedChain, ...] = ()
 
     @property
     def conditions(self) -> list[tuple[Any, int]]:
         """What holds in this case, each with the line of its ``if``."""
         return [(question.condition, question.line) for question in self.questions]
+
+    @property
+    def citations(self) -> list[Citation]:
+        """Every citation of the case: the return's, and every link's of its chains."""
+        out = list(self.facts or ())
+        for chain in (*self.named, *((self.chain,) if self.chain is not None else ())):
+            for link in chain.links:
+                out.extend(link.facts)
+        return out
+
+    @property
+    def holes(self) -> tuple[int | None, ...]:
+        """The lines of the links of its chains left open, ``by=...``."""
+        chains = (*self.named, *((self.chain,) if self.chain is not None else ()))
+        return tuple(line for chain in chains for line in chain.holes)
 
 
 @dataclass(eq=False)
@@ -355,7 +458,7 @@ class Proof:
     def calls(self) -> list[Citation]:
         """Every citation of the claim at a point, in the order they were traced."""
         return [
-            citation for leaf in self.leaves for citation in (leaf.facts or ()) if citation.is_claim
+            citation for leaf in self.leaves for citation in leaf.citations if citation.is_claim
         ]
 
     @property
@@ -363,13 +466,20 @@ class Proof:
         """The theorems the proof cites, each once, in order."""
         out: list[Any] = []
         for leaf in self.leaves:
-            for citation in leaf.facts or ():
+            for citation in leaf.citations:
                 source = citation.source
-                if not isinstance(source, Given | ClaimDef) and all(
+                if not isinstance(source, Given | ClaimDef | Named) and all(
                     source is not seen for seen in out
                 ):
                     out.append(source)
         return out
+
+    @property
+    def holes(self) -> list[int]:
+        """The lines of the steps left open, ``by=...``, each once, in order."""
+        return list(
+            dict.fromkeys(line for leaf in self.leaves for line in leaf.holes if line is not None)
+        )
 
     @property
     def where(self) -> str:
@@ -519,6 +629,8 @@ class _Tracer:
         self.claim: ClaimDef | None = None
         self.claim_code: Any = None
         self.path: _Path | None = None
+        # the chains of the path being traced, each read once (see _chain)
+        self._chains: dict[int, TracedChain] = {}
 
     # {{{ what the body sees
 
@@ -733,7 +845,9 @@ class _Tracer:
                     path.returns.get(code),
                 )
             path.leaf = self._leaf(result, path)
-            path.leaf = Leaf(tuple(path.questions), path.leaf.facts, path.returns.get(code))
+            path.leaf = replace(
+                path.leaf, questions=tuple(path.questions), line=path.returns.get(code)
+            )
         return path
 
     def _call(self, function: Any, values: tuple, named: dict[str, Any]) -> Any:
@@ -852,24 +966,55 @@ class _Tracer:
         return ClaimDef(function.__name__, tuple(params), tuple(domains), tuple(generalized), line)
 
     def _leaf(self, result: Any, path: _Path) -> Leaf:
-        """What a ``return`` gives: facts, or nothing for a bare one."""
+        """What a ``return`` gives: facts, a chain, or nothing for a bare one.
+
+        A chain returned (:class:`lanky.chains.Chain`) is the case's proof; a
+        chain among a tuple of facts, ``return recurrence, claim(n - 1)``, is a
+        fact on the way, cited by the name it was assigned to. Each chain's
+        reasons are read as citations here, and every fact on the way a step
+        of the case cites is proved, in the order written, before the step.
+        """
+        from lanky.chains import Chain
+
         code = self.claim_code if self.claim is not None else self.fn.__code__
         line = path.returns.get(code)
+        self._chains = {}
         if result is None:
             return Leaf((), None, line)
+        if isinstance(result, Chain) and result.name is None:
+            chain = self._chain(result, line)
+            cited = [citation for link in chain.links for citation in link.facts]
+            return Leaf((), (), line, chain, _named_on_the_way(cited))
         items = result if isinstance(result, tuple | list) else (result,)
         if not items:
             return Leaf((), None, line)
-        return Leaf((), tuple(self._fact(item, line) for item in items), line)
+        facts = tuple(self._fact(item, line) for item in items)
+        return Leaf((), facts, line, None, _named_on_the_way(facts))
+
+    def _chain(self, chain: Any, line: int | None) -> TracedChain:
+        """A chain with its reasons read as citations, once per chain object on a path."""
+        known = self._chains
+        if id(chain) in known:
+            return known[id(chain)]
+        links = []
+        for link in chain.links:
+            facts = tuple(self._fact(reason, link.line or line) for reason in link.reasons)
+            links.append(LinkStep(link.relation, link.term, facts, link.hole, link.line))
+        traced = TracedChain(chain.start, tuple(links), chain.name, chain.line)
+        known[id(chain)] = traced
+        return traced
 
     def _fact(self, item: Any, line: int | None) -> Citation:
-        """One thing a ``return`` gives, as a citation; anything but a fact is refused."""
+        """What a ``return`` or a ``by=`` gives, as a citation; anything but a fact is refused."""
+        from lanky.chains import Chain
         from lanky.theory import Theorem
 
         if isinstance(item, Citation):
             return item
         if isinstance(item, Given):
             return Citation(item, None, line)
+        if isinstance(item, Chain):
+            return Citation(Named(self._chain(item, line)), None, line)
         if isinstance(item, Theorem):
             if item is self.theorem:
                 raise self._self_reference(line)
@@ -887,12 +1032,26 @@ class _Tracer:
         described = shown(item) if hasattr(item, "mapper_method") else f"a {what}"
         raise ProofError(
             "return",
-            f"a proof returns the facts that give the case's claim, claim, or nothing; "
-            f"this returns {described}",
+            f"a proof returns the facts that give the case's claim, a chain, claim, or "
+            f"nothing; this returns {described}",
             line,
         )
 
     # }}}
+
+
+def _named_on_the_way(citations: Any) -> tuple[TracedChain, ...]:
+    """The facts on the way ``citations`` cite, and those they cite, in the order written."""
+    found: dict[int, TracedChain] = {}
+    stack = list(citations)
+    while stack:
+        citation = stack.pop()
+        if isinstance(citation.source, Named):
+            chain = citation.source.chain
+            if id(chain) not in found:
+                found[id(chain)] = chain
+                stack.extend(fact for link in chain.links for fact in link.facts)
+    return tuple(sorted(found.values(), key=lambda chain: chain.line or 0))
 
 
 def _tree(leaves: list[Leaf]) -> Node:

@@ -26,13 +26,13 @@ exactly the theorem, with no axiom outside Lean's own three.
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.audit import TRUSTED_AXIOMS, audit_failure
 from lanky.proofs.match import (
     Shape,
     affine,
@@ -45,6 +45,7 @@ from lanky.proofs.trace import Citation, ClaimDef, Given, Leaf, Proof, ProofErro
 from lanky.terms import Forall, Var, init_args, render
 
 __all__ = [
+    "CLOSED_WITH_HOLES",
     "Failure",
     "audit",
     "case_text",
@@ -54,6 +55,7 @@ __all__ = [
     "left_over",
     "read",
     "tidy",
+    "verdict",
 ]
 
 
@@ -397,43 +399,54 @@ def _smaller(claim: ClaimDef, values: Sequence[Any], measure: Any) -> bool:
 # {{{ reading Lean's answer
 
 
-_DEPENDS = re.compile(r"'(?P<name>[^']+)' depends on axioms: \[(?P<axioms>[^\]]*)\]")
-_INDEPENDENT = re.compile(r"'(?P<name>[^']+)' does not depend on any axioms")
+#: The axioms a proof may rest on: Lean's own three (:data:`lanky.audit.TRUSTED_AXIOMS`).
+ALLOWED_AXIOMS = TRUSTED_AXIOMS
 
-#: The axioms a proof may rest on.
-ALLOWED_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
-
-
-def _plain(name: str) -> str:
-    """A Lean name without its quotes: ``Lanky.every_box`` for ``Lanky.«every_box»``."""
-    return name.replace("«", "").replace("»", "")
+#: What a proof's verdict is when every ``sorry`` Lean found is at a step the
+#: proof left open, ``by=...``, and nothing else is wrong: the claim reads
+#: assumed there, and the ledger names the lines.
+CLOSED_WITH_HOLES = "closed with holes"
 
 
-def audit(messages: Sequence[Mapping[str, Any]], declared: str) -> str | None:
+def audit(
+    messages: Sequence[Mapping[str, Any]], declared: str | Sequence[str], holes: bool = False
+) -> str | None:
     """Why the axiom audit of ``declared`` is not positive; ``None`` when it is.
 
-    The command ends with ``#print axioms _root_.<declared>``, and the answer
-    has to be exactly one message naming exactly the theorem, with its
-    axioms among Lean's own three, or none. A missing answer is a failure: a
-    command that stopped Lean before the audit says nothing, and a theorem
-    of the same name in another namespace is named otherwise.
+    The command ends with ``#print axioms _root_.<name>`` for each theorem it
+    declares, and the answers are read as every command's are
+    (:func:`lanky.audit.audit_failure`): exactly one answer naming exactly
+    the theorem, its axioms among Lean's own three. A missing answer is a
+    failure: a command that stopped Lean before the audit says nothing, and
+    a theorem of the same name in another namespace is named otherwise.
+    ``holes`` allows ``sorryAx`` too, for a proof whose steps left open are
+    its only ``sorry``.
     """
-    wanted = _plain(declared)
-    answers: list[tuple[str, list[str]]] = []
-    for message in messages:
-        data = str(message.get("data", ""))
-        for match in _DEPENDS.finditer(data):
-            axioms = [item.strip() for item in match.group("axioms").split(",") if item.strip()]
-            answers.append((_plain(match.group("name")), axioms))
-        for match in _INDEPENDENT.finditer(data):
-            answers.append((_plain(match.group("name")), []))
-    named = [axioms for name, axioms in answers if name == wanted]
-    if len(named) != 1 or len(answers) != 1:
-        return f"Lean's axiom audit did not answer for {wanted} alone"
-    extra = [axiom for axiom in named[0] if axiom not in ALLOWED_AXIOMS]
-    if extra:
-        return f"{wanted} rests on {', '.join(extra)}, which no proof lanky accepts may use"
-    return None
+    names = (declared,) if isinstance(declared, str) else tuple(declared)
+    allowed = TRUSTED_AXIOMS | {"sorryAx"} if holes else TRUSTED_AXIOMS
+    return audit_failure([str(message.get("data", "")) for message in messages], names, allowed)
+
+
+def verdict(proof: Proof, command: Any, record: Mapping[str, Any]) -> tuple[str, list[Failure]]:
+    """Lean's answer to a written proof: ``closed``, ``closed with holes`` or ``failed``.
+
+    Closed is no error, no ``sorry`` and a positive audit. Closed with holes
+    is the same, except that Lean found a ``sorry`` at each step the proof
+    left open, ``by=...``, and nowhere else (:data:`CLOSED_WITH_HOLES`). A
+    ``sorry`` anywhere else fails the proof, as an error does.
+    """
+    messages = list(record.get("messages") or ())
+    errors = [message for message in messages if message.get("severity") == "error"]
+    sorries = list(record.get("sorries") or ())
+    allowed = set(getattr(command, "hole_lines", ()) or ())
+    stray = [item for item in sorries if item.get("line") not in allowed]
+    names = getattr(command, "audited", ()) or (command.declared,)
+    if not errors and not sorries and audit(messages, names) is None:
+        return "closed", []
+    if not errors and sorries and not stray and audit(messages, names, holes=True) is None:
+        return CLOSED_WITH_HOLES, []
+    closed, failures = read(proof, command, record)
+    return ("closed" if closed else "failed"), failures
 
 
 def read(proof: Proof, command: Any, record: Mapping[str, Any]) -> tuple[bool, list[Failure]]:
@@ -447,7 +460,7 @@ def read(proof: Proof, command: Any, record: Mapping[str, Any]) -> tuple[bool, l
     messages = list(record.get("messages") or ())
     errors = [message for message in messages if message.get("severity") == "error"]
     sorries = list(record.get("sorries") or ())
-    problem = audit(messages, command.declared)
+    problem = audit(messages, getattr(command, "audited", ()) or (command.declared,))
     if not errors and not sorries and problem is None:
         return True, []
     failures: list[Failure] = []
@@ -522,6 +535,24 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
             "lean",
             origin.line,
             f"Lean could not apply {named}",
+            ("--show-lean shows what Lean said",),
+        )
+    if origin.kind == "chain-end":
+        chain = detail.get("chain")
+        claim = detail.get("claim")
+        ends = f"{render(chain.start)} {chain.relation} {render(chain.end)}" if chain else "it"
+        return Failure(
+            "chain",
+            origin.line,
+            "the chain does not give the claim",
+            (f"The chain shows {ends}; the claim of this case is {render(claim)}.",),
+            "end the chain at the claim's other side",
+        )
+    if origin.kind in ("chain", "link", "named"):
+        return Failure(
+            "lean",
+            origin.line,
+            "Lean could not read a step of the chain",
             ("--show-lean shows what Lean said",),
         )
     if origin.kind in ("split", "pin"):
@@ -606,7 +637,7 @@ def _step(proof: Proof, command: Any, step: Any) -> Failure:
         _index, citation = found
         fix = f"{citation.text()} makes the step follow"
     del leaf
-    return Failure("step", step.leaf.line, "a step of its proof does not follow", tuple(lines), fix)
+    return Failure("step", step.where, "a step of its proof does not follow", tuple(lines), fix)
 
 
 # }}}

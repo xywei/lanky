@@ -727,13 +727,23 @@ def statement_lines(fact: Fact, width: int = 100) -> list[str]:
 
 
 def _proof_line(fact: Fact) -> str | None:
-    """``by its proof, file.py:41-48: ...``, for a claim its written proof proved."""
+    """``by its proof, file.py:41-48: ...``, for a claim its written proof proved.
+
+    A proof Lean accepted with steps left open, ``by=...``, names them:
+    ``its proof, file.py:41-48, ...; left open at file.py:44, assumed there``.
+    """
     provenance = fact.provenance if isinstance(fact.provenance, dict) else {}
     proof = provenance.get("proof")
-    if not isinstance(proof, dict) or proof.get("closed") is not True:
+    if not isinstance(proof, dict):
         return None
     summary = proof.get("summary")
     where = proof.get("where") or ""
+    if proof.get("closed") == "holes":
+        holes = ", ".join(str(hole) for hole in proof.get("holes") or ())
+        said = f"its proof, {where}: {summary}" if summary else f"its proof, {where}"
+        return f"{said}; left open at {holes}, assumed there" if holes else said
+    if proof.get("closed") is not True:
+        return None
     return f"by its proof, {where}: {summary}" if summary else f"by its proof, {where}"
 
 

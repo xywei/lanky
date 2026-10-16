@@ -94,6 +94,7 @@ __all__ = [
     "citation_of",
     "fact_lemma",
     "premises_of",
+    "proved_text",
     "proved_texts",
     "restated_text",
     "restatements",
@@ -395,6 +396,16 @@ def proved_texts(texts: Mapping[str, Any] | ProvedTexts) -> Iterator[None]:
         yield
     finally:
         _PROVED_TEXTS.reset(token)
+
+
+def proved_text(fact_id: str | None) -> CitedText | None:
+    """The text a theorem's own command proved, as the check recorded it; ``None`` for none.
+
+    What :func:`proved_texts` set, for the theorem with this fact id, read
+    as a :class:`CitedText`: its name, its ``as_cited`` text and the
+    theorems that text takes as premises.
+    """
+    return _proved(fact_id)
 
 
 def _proved(fact_id: str | None) -> CitedText | None:

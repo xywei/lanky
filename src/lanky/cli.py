@@ -982,7 +982,9 @@ def report_written(ledger: Ledger) -> bool:
     your proof fails at every_box.py:52; lanky proved the claim without it``.
     Either fails the check, since a broken proof is a failing test. A proof
     not checked, on a machine without Lean, or without Mathlib for a claim
-    only Mathlib states, gets a ``NOT CHECKED`` line, which does not.
+    only Mathlib states, gets a ``NOT CHECKED`` line, which does not, and so
+    does a proof Lean accepted with steps left open, ``by=...``, whose
+    ``LEFT OPEN`` line names them.
     """
     broken = False
     for fact in ledger:
@@ -994,6 +996,15 @@ def report_written(ledger: Ledger) -> bool:
             print(
                 f"NOT CHECKED {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
                 f"was not checked: {proof['reason']}"
+            )
+            continue
+        if proof.get("closed") == "holes":
+            holes = ", ".join(str(hole) for hole in proof.get("holes") or ())
+            print()
+            print(
+                f"LEFT OPEN {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
+                f"holds but for the steps left open at {holes} (by=...); until they are "
+                "written, the claim reads as the other oracles leave it"
             )
             continue
         if proof.get("closed") is not False:
@@ -1190,7 +1201,11 @@ def _report_found(ledger: Ledger, text: str, word: str, lines_of: Any) -> None:
     """Print ``lines_of`` each proved theorem whose name, id or statement contains ``text``."""
     blocks = []
     for fact in ledger:
-        if fact.kind != "theorem" or fact.status not in (Status.PROVED, Status.CERTIFIED):
+        if fact.kind != "theorem":
+            continue
+        proof = fact.provenance.get("proof")
+        written = word == "STEPS" and isinstance(proof, dict) and proof.get("outline")
+        if fact.status not in (Status.PROVED, Status.CERTIFIED) and not written:
             continue
         fields = (fact.owner, fact.id, fact.statement)
         if text and not any(text in str(field) for field in fields):

@@ -779,7 +779,16 @@ def test_the_axiom_audit_is_read_positively() -> None:
     assert audit(said("'Lanky.t' depends on axioms: [propext, Quot.sound]"), "Lanky.t") is None
     assert audit(said("'Lanky.t' does not depend on any axioms"), "Lanky.t") is None
     assert "sorryAx" in audit(said("'Lanky.t' depends on axioms: [sorryAx]"), "Lanky.t")
-    assert audit([], "Lanky.t") == "Lean's axiom audit did not answer for Lanky.t alone"
+    assert "did not answer the axiom audit of Lanky.t" in audit([], "Lanky.t")
+    holed = said("'Lanky.t' depends on axioms: [propext, sorryAx]")
+    assert audit(holed, "Lanky.t", holes=True) is None
+    assert audit(holed, "Lanky.t") is not None
+    both = [
+        *said("'Lanky.t' does not depend on any axioms"),
+        *said("'Lanky.t.as_cited' does not depend on any axioms"),
+    ]
+    assert audit(both, ("Lanky.t", "Lanky.t.as_cited")) is None
+    assert audit(said("'Lanky.t' does not depend on any axioms"), ("Lanky.t", "Lanky.t.as_cited"))
     decoy = said("'Decoy.Lanky.t' does not depend on any axioms")
     assert audit(decoy, "Lanky.t") is not None
     assert audit(said("'Lanky.«t»' does not depend on any axioms"), "Lanky.«t»") is None
