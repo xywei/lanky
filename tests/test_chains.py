@@ -44,7 +44,7 @@ from lanky.oracles.steps import (
     shift_lines,
     step_script,
 )
-from lanky.prelude import Complex, Fin, Fn, Nat, Real
+from lanky.prelude import Complex, Fin, Fn, Int, Nat, Real
 from lanky.terms import Comparison, LogicalNot, Sum, Var, log, render
 
 D, R, a, b = Var("D"), Var("R"), Var("a"), Var("b")
@@ -704,6 +704,87 @@ def test_line_taylor_by_its_named_step_closes_in_lean(mathlib_session) -> None:
     body = named.text(indent=4).lstrip() + "\n" + final.text(indent=4)
     source = line_taylor_lean(body) + "\n#print axioms Lanky.line_taylor.claim\n"
     verdict, messages, answered = mathlib_session.answer_with_holes(source)
+    assert answered and (verdict, messages) == ("closed", [])
+
+
+# }}}
+
+
+# {{{ core Lean: a claim over integers alone
+
+
+@theorem
+def compressed_taylor_over_integers(
+    D: Fn[Nat, Nat, Int],
+    R: Fn[Nat, Nat, Int],
+    pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
+    stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
+    recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
+) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
+    """1.1 over integer tables: core Lean checks it, with no Mathlib."""
+
+
+@pytest.fixture(scope="module")
+def core_session():
+    """A core Lean session, or a skip that says why not."""
+    if os.environ.get("LANKY_LEAN_DISABLE"):
+        if os.environ.get("LANKY_LEAN_TEST_REQUIRED"):
+            pytest.fail("LANKY_LEAN_TEST_REQUIRED is set, but the Lean oracle is disabled")
+        pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
+    timeout = float(os.environ.get("LANKY_LEAN_TEST_TIMEOUT", "120"))
+    oracle = LeanOracle(session=LeanSession(timeout))
+    available, reason = oracle.availability()
+    if not available or not oracle.session.start():
+        if os.environ.get("LANKY_LEAN_TEST_REQUIRED"):
+            pytest.fail(f"LANKY_LEAN_TEST_REQUIRED is set, but {reason or oracle.session.error}")
+        pytest.skip(f"no Lean session here: {reason or oracle.session.error}")
+    yield oracle.session
+    oracle.session.close()
+
+
+def test_a_chain_over_integers_closes_in_core_lean(core_session) -> None:
+    """Without Mathlib a chain over integers is checked by ``omega``, its indices normalized."""
+    facts = hypotheses(compressed_taylor_over_integers)
+    claim = Claim(
+        Citation(
+            "the claim",
+            compressed_taylor_over_integers.goal,
+            "Lanky.compressed_taylor_over_integers.claim D R pde stored recurrence",
+            kind="claim",
+        )
+    )
+    # fmt: off
+    chain = (
+        R[a, b]
+        .equals(-R[a - 2, b + 2], by=facts["recurrence"])
+        .equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))
+        .equals(D[a, b], by=facts["pde"])
+    )
+    # fmt: on
+    types = {**dict(compressed_taylor_over_integers.variables), "a": Nat, "b": Nat}
+    scope = StepScope(types=types, facts=(LogicalNot(a < 2),), mathlib=False)
+    script = chain_script(chain, scope, claim=R[a, b] == D[a, b])
+    assert "omega" in script.text() and "linear_combination" not in script.text()
+    parameters = " ".join(
+        [
+            f"({name} : {lean_type(sort)})"
+            for name, sort in compressed_taylor_over_integers.variables
+        ]
+        + [
+            f"({name} : {print_lean(prop)})"
+            for name, prop in compressed_taylor_over_integers.hypotheses
+        ]
+    )
+    source = f"""set_option autoImplicit false in
+theorem Lanky.compressed_taylor_over_integers.claim {parameters}
+    (a : Int) (ha : 0 ≤ a) (b : Int) (hb : 0 ≤ b) : R a b = D a b := by
+  by_cases case_1 : a < 2
+  · exact stored a ha b hb case_1
+  · {script.text(indent=4).lstrip()}
+termination_by a.toNat
+decreasing_by omega
+"""
+    verdict, messages, answered = core_session.answer_with_holes(source)
     assert answered and (verdict, messages) == ("closed", [])
 
 
