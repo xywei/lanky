@@ -94,7 +94,19 @@ def check_written_proofs(ledger: Ledger, objects: Any, verbose: bool = False) ->
             continue
         fact = ledger[obj.fact_id]
         started = time.monotonic()
-        checked = prove(obj, fact)
+        try:
+            checked = prove(obj, fact)
+        except Exception as exc:  # noqa: BLE001 - lanky's own failure is no verdict on the proof
+            if verbose:
+                import traceback
+
+                traceback.print_exc()
+            checked = _not_checked(
+                fact,
+                _where(obj),
+                f"lanky raised {type(exc).__name__} while it checked the proof: {exc} "
+                "(--verbose prints where)",
+            )
         ledger.add(checked)
         if verbose:
             said = checked.provenance.get("proof") or {}
@@ -126,14 +138,9 @@ def prove(theorem: Any, fact: Fact) -> Fact:
     ``kind``, ``line``, ``headline``, ``lines``, ``fix``, ``source`` and
     ``where``, and the ``lean_source``.
     """
-    lines = written_lines(theorem.fn)
-    if lines is None:
+    if written_lines(theorem.fn) is None:
         return fact
-    from os.path import basename
-
-    first, last = lines
-    span = f"{first}-{last}" if last != first else f"{first}"
-    where = f"{basename(theorem.path)}:{span}"
+    where = _where(theorem)
     if fact.status is Status.REFUTED or fact.provenance.get("unfaithful"):
         why = (
             "the claim is refuted"
@@ -181,6 +188,18 @@ def prove(theorem: Any, fact: Fact) -> Fact:
         return _closed(fact, where, proof, command, oracle)
     failures = [_checked_fix(failure, proof, command, oracle, fact) for failure in failures]
     return _failed(fact, where, command, failures, theorem.path)
+
+
+def _where(theorem: Any) -> str:
+    """``file.py:41-48``: where a theorem's written proof is."""
+    from os.path import basename
+
+    lines = written_lines(theorem.fn)
+    if lines is None:
+        return basename(theorem.path)
+    first, last = lines
+    span = f"{first}-{last}" if last != first else f"{first}"
+    return f"{basename(theorem.path)}:{span}"
 
 
 def _source(command: Command) -> str:
@@ -257,7 +276,7 @@ def _checked_fix(
     step = next((step for step in command.steps if step.leaf.line == failure.line), None)
     if step is None:
         return failure
-    found = fix_for(step, proof)
+    found = fix_for(step, proof, command.measure)
     if found is None:
         return failure
     index, citation = found

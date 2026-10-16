@@ -870,7 +870,8 @@ class _Compiler:
     def _pins(self, prop: Any, context: _Context, line: int) -> list[_Line]:
         """``have`` and ``subst`` for each integer the branch's equation fixes (:func:`pins`)."""
         here = substitute(prop, context.pins)
-        found = pins(here, self.types)
+        local = list(self.proof.claim.params) if self.proof.claim is not None else []
+        found = pins(here, self.types, [name for name in local if name not in context.pins])
         out: list[_Line] = []
         origin = Origin("pin", line, {"condition": prop})
         for name, value in found:
@@ -882,7 +883,7 @@ class _Compiler:
                     origin,
                 )
             )
-            out.append(_Line(f"subst {lean_identifier(pin)}", origin))
+            out.append(_Line(f"subst {lean_identifier(name)}", origin))
             context.pins[name] = value
             context.pins = {
                 key: substitute(term, {name: value}) for key, term in context.pins.items()

@@ -476,14 +476,17 @@ def _sharpened(facts: Sequence[Any], types: Mapping[str, Any]) -> list[Any]:
     return out
 
 
-def pins(prop: Any, types: Mapping[str, Any]) -> list[tuple[str, Any]]:
+def pins(
+    prop: Any, types: Mapping[str, Any], local: Sequence[str] = ()
+) -> list[tuple[str, Any]]:
     """The integer variables an equation fixes, with the value each is fixed at.
 
     ``n == 1`` fixes ``n`` at ``1``, ``2 - k == 0`` fixes ``k`` at ``2``,
     and ``a + b == 0`` among naturals fixes both at ``0``, since naturals
     that sum to nothing are each nothing. Anything else fixes nothing. Only
-    an integer variable is fixed, at an integer, since the proof
-    substitutes it.
+    an integer variable is fixed, since the proof substitutes it. And ``k ==
+    p`` fixes ``k`` at ``p`` when ``k`` is among ``local``, the claim's own
+    variables, which are the ones a case may fix at another's value.
     """
     if not (isinstance(prop, prim.Comparison) and prop.operator == "=="):
         return []
@@ -509,6 +512,13 @@ def pins(prop: Any, types: Mapping[str, Any]) -> list[tuple[str, Any]]:
     signs = {form[name] > 0 for name in names}
     if constant == 0 and len(signs) == 1 and all(_natural(types[name]) for name in names):
         return [(name, 0) for name in names]
+    for name in local:
+        if name in form and form[name] in (1, -1):
+            rest: dict[str | None, Fraction] = {}
+            _accumulate(rest, {key: value for key, value in form.items() if key != name},
+                        -1 / form[name])
+            if all(value.denominator == 1 for value in rest.values()):
+                return [(name, from_affine(rest))]
     return []
 
 

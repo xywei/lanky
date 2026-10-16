@@ -38,7 +38,6 @@ from lanky.proofs.match import (
     affine,
     applications,
     from_affine,
-    negated,
     shape_of,
     unify,
 )
@@ -216,7 +215,32 @@ def left_over(claim: Any, bodies: Sequence[Any], types: Mapping[str, Any]) -> An
                 break
     if remainder == 0:
         return 0
-    return algebra.back(remainder)
+    return back(algebra, remainder)
+
+
+def back(algebra: Any, expr: Any) -> Any:
+    """A sympy expression of the step's algebra as a lanky term, a family's application included.
+
+    :meth:`lanky.induction._Algebra.back` reads an expression with no
+    application in it, a multiplier; what is left over of a step has them,
+    ``D(a - 2, b + 3)``, each of which is read back as the family at its
+    arguments, ``D[a - 2, b + 3]``.
+    """
+    from lanky.cas import from_sympy
+
+    sympy = algebra.sympy
+    atoms = sorted(algebra.applications(expr), key=str)
+    variables: dict[str, Any] = {name: Var(name) for name in algebra.case.variables}
+    marks = {}
+    for index, atom in enumerate(atoms):
+        mark = sympy.Symbol(f"lanky_application_{index}")
+        marks[atom] = mark
+        arguments = tuple(
+            _tidy_argument(from_sympy(argument, variables)) for argument in atom.args
+        )
+        family = Var(str(atom.func))
+        variables[mark.name] = family[arguments if len(arguments) > 1 else arguments[0]]
+    return from_sympy(expr.xreplace(marks), variables)
 
 
 def tidy(term: Any) -> Any:
@@ -288,7 +312,7 @@ def _shapes(source: Any, proof: Proof) -> list[Shape]:
     return [shape_of(source.term)]
 
 
-def fix_for(step: Any, proof: Proof) -> tuple[int, Citation] | None:
+def fix_for(step: Any, proof: Proof, measure: Any = None) -> tuple[int, Citation] | None:
     """A fact of the step cited at another point that makes the step follow, as Python finds it.
 
     Each fact cited at a point is put, in turn, at every point at which one
@@ -296,7 +320,10 @@ def fix_for(step: Any, proof: Proof) -> tuple[int, Citation] | None:
     the step is tried again with the multiplier search
     (:func:`combination`): the first that works is the fix, as the index of
     the fact among the step's and the citation at the new point. Lean is
-    asked to confirm it before the report calls it checked.
+    asked to confirm it before the report calls it checked. The claim is put
+    only at points closer to a base case, by ``measure``
+    (:class:`lanky.proofs.compile.Measure`): never at its own point, which
+    would make the step a circle.
     """
     instances = list(step.instances)
     claim = step.claim
@@ -311,7 +338,7 @@ def fix_for(step: Any, proof: Proof) -> tuple[int, Citation] | None:
         unknowns = [var.name for var, _ in shape.binders]
         others = [other.body for position, other in enumerate(instances) if position != index]
         targets: list[Any] = []
-        for term in (claim, *others):
+        for term in (*others, claim):
             for atom in applications(term):
                 if all(render(atom) != render(seen) for seen in targets):
                     targets.append(atom)
@@ -325,11 +352,32 @@ def fix_for(step: Any, proof: Proof) -> tuple[int, Citation] | None:
                 key = tuple(render(value) for value in values)
                 if key in tried:
                     continue
+                if citation.is_claim and not _smaller(citation.source, values, measure):
+                    continue
                 tried.add(key)
                 body, _guards = shape.at(solution)
                 if combination(claim, [*others, body], step.types) is not None:
                     return index, Citation(citation.source, values, citation.line)
     return None
+
+
+def _smaller(claim: ClaimDef, values: Sequence[Any], measure: Any) -> bool:
+    """Whether the claim at ``values`` is closer to a base case than at its own variables."""
+    from lanky.proofs.compile import _change
+
+    at = dict(zip(claim.params, values, strict=True))
+    if measure is None:
+        changes = [_change(value, name) for name, value in at.items()]
+        return any(change is not None and change <= -1 for change in changes)
+    first = _change(at[measure.names[0]], measure.names[0])
+    if measure.kind == "down":
+        return first is not None and first <= -1
+    if measure.kind == "up":
+        return first is not None and first >= 1
+    second = _change(at[measure.names[1]], measure.names[1])
+    return (first is not None and first <= -1) or (
+        first == 0 and second is not None and second <= -1
+    )
 
 
 # }}}
@@ -401,6 +449,11 @@ def read(proof: Proof, command: Any, record: Mapping[str, Any]) -> tuple[bool, l
             continue
         seen.add(key)
         failures.append(failure)
+    # a call at a negative argument is what makes the measure fail too, and
+    # says how to fix it; otherwise a failing measure is reported alone
+    negative = [failure for failure in failures if failure.kind == "negative"]
+    if negative:
+        return False, negative
     measured = [failure for failure in failures if failure.kind == "measure"]
     if measured:
         return False, measured[:1]
@@ -426,7 +479,7 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
     if origin.kind == "condition":
         return _condition(proof, origin)
     if origin.kind == "step":
-        return _step(proof, detail["step"])
+        return _step(proof, command, detail["step"])
     if origin.kind == "routine":
         claim = detail.get("claim")
         case = case_text(detail.get("conditions") or (), proof.path)
@@ -520,7 +573,7 @@ def _condition(proof: Proof, origin: Any) -> Failure:
     )
 
 
-def _step(proof: Proof, step: Any) -> Failure:
+def _step(proof: Proof, command: Any, step: Any) -> Failure:
     """A step whose facts do not give the case's claim: what each says, and what is left over."""
     leaf: Leaf = step.leaf
     case = case_text(step.conditions, proof.path)
@@ -532,11 +585,11 @@ def _step(proof: Proof, step: Any) -> Failure:
     for label, instance in zip(labels, step.instances, strict=True):
         lines.append(f"  {label.ljust(width)} says   {render(tidy(instance.body))}")
     remainder = left_over(step.claim, [instance.body for instance in step.instances], step.types)
-    if remainder is not None and remainder != 0:
+    if remainder is not None and not _is_zero(remainder):
         lines.append("Left over:")
         lines.append(f"    {render(tidy(remainder))} == 0")
     fix = None
-    found = fix_for(step, proof)
+    found = fix_for(step, proof, command.measure)
     if found is not None:
         _index, citation = found
         fix = f"{citation.text()} makes the step follow"
@@ -547,5 +600,6 @@ def _step(proof: Proof, step: Any) -> Failure:
 # }}}
 
 
-def _unused() -> None:  # pragma: no cover
-    _ = negated
+def _is_zero(term: Any) -> bool:
+    """Whether a term is the number zero; a term compared with ``0`` would build a proposition."""
+    return isinstance(term, int | float) and not isinstance(term, bool) and term == 0
