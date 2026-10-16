@@ -93,6 +93,57 @@ All notable changes to lanky are recorded here. The format follows
   inside a proof; `lanky.cli.report_written` prints the reports for a
   plugin's verb.
 
+- **Chains, the steps of a written proof** (the proof interface of
+  2026-10-16, increment I2). A proof body writes a calculation as a textbook
+  does, a link to a line, each with its reason:
+
+  ```python
+  return (
+      R[a, b]
+      .equals(-R[a - 2, b + 2], by=recurrence)
+      .equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))
+      .equals(D[a, b], by=pde)
+  )
+  ```
+
+  `.equals`, `.at_most`, `.less_than`, `.at_least` and `.more_than` are on
+  every term and on a chain (`lanky.chains`). `by=` takes a fact, a tuple of
+  facts, or `...`, a step left open; with no `by=` the link is algebra alone.
+  A chain assigned to a name, `recurrence = a[n].equals(..., by=ode)`, is a
+  fact later lines cite by that name. A fact left uncalled is cited at the
+  one point that lines it up with the step (`lanky.matching`): offsets are
+  solved (`R[x + 2, y]` against `R[a, b]` is `x = a - 2`), values are bound
+  by type, and a family of a fact's own binds to a function of the
+  variables a sum binds (`sum(f[k] for k in Fin[n + 1])` against `sum(r**k
+  for k in Fin[n])`), the rule loopty's matcher shares. Where no single
+  point fits, or several do, the message names them and says to write it.
+
+- **The Lean of a step** (`lanky.oracles.steps`). A chain is a `calc`, each
+  link closed by its facts at their points: `exact`, then a
+  `linear_combination` whose multipliers lanky's search finds among the
+  facts cited, then `linarith`; in core Lean `omega` and `grind`. The
+  compiler adds what a reader never writes: that an integer denominator the
+  case shows is not zero is not zero in the field, and the shift
+  `n.toNat = (n - 1).toNat + 1` where a fact has the power one order down.
+  Where the chain's ends print as the claim's sides the `calc` is the proof,
+  and otherwise the claim follows from it by `linear_combination`; a chain
+  about something else is refused, naming its end and the claim's side. A
+  named chain is a `have`. `by=...` is a `sorry` at a recorded line, and a
+  command whose only `sorry` are those closes "with holes"
+  (`holes_verdict`, `LeanSession.answer_with_holes`). Without Lean, each link
+  is drawn at points, so a wrong step is caught at its line, and a link over
+  a family that cannot be drawn says so (`draw_links`). A theorem cited is
+  restated by the text its own command proved where the check recorded one
+  (`lanky.citations.proved_texts`), and its id is what the citing claim rests
+  on. The proof-trace mode that runs a body, `if` as a case split and
+  `claim` as the induction, is the next increment's; the design's examples
+  1.1 and 1.2, compiled by this one into the recursive theorems the
+  prototypes checked, close in Lean with Mathlib with clean axioms.
+
+- **`examples/line_taylor.py` writes its proof** in the theorem's body, the
+  recurrence named on the way, and its names are the design's: the
+  coefficient family is `a`, the hypotheses `nonzero` and `first_term`.
+
 ### Changed
 
 - **A theorem's hypotheses have their Python names in Lean.** The printed

@@ -684,6 +684,45 @@ class SymbolicMixin:
         """Build a subscript ``self[...]``."""
         return Subscript(self, index)
 
+    # {{{ the words of a chain, which a proof body writes (lanky.chains)
+
+    def equals(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term equals ``term``, by ``by``.
+
+        ``R[a, b].equals(-R[a - 2, b + 2], by=recurrence)`` is one link of a
+        calculation, with its reason (see :mod:`lanky.chains`). It builds a
+        record of the step, and proves nothing until a proof is checked.
+        """
+        from lanky.chains import link
+
+        return link(self, "==", term, by, sys._getframe(1))
+
+    def at_most(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is at most ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, "<=", term, by, sys._getframe(1))
+
+    def less_than(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is less than ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, "<", term, by, sys._getframe(1))
+
+    def at_least(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is at least ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, ">=", term, by, sys._getframe(1))
+
+    def more_than(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is more than ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, ">", term, by, sys._getframe(1))
+
+    # }}}
+
 
 for _name in (
     "add", "radd", "sub", "rsub", "mul", "rmul",

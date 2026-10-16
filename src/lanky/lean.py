@@ -282,6 +282,7 @@ __all__ = [
     "number_type",
     "print_lean",
     "render_prop",
+    "proof_exponents",
     "render_term",
     "statement_of",
 ]
@@ -938,11 +939,42 @@ def _render_exponent(expr: Any, types: _Types) -> str:
         _application_type(expr, types)
     ):
         return _application_text(expr, types)
+    shown_natural = _PROOF_EXPONENTS.get()
+    if shown_natural is not None and shown_natural(expr):
+        # inside a step of a proof, where the case shows the exponent is a
+        # natural (see proof_exponents)
+        return f"({_render(expr, _QUANT, types)}).toNat"
     raise UnsupportedTerm(
         f"the exponent {render(expr)} is not a literal, a natural variable or a "
         "natural value: Lean's ^ on Int takes a Nat, and a negative exponent is "
         "a float in Python"
     )
+
+
+#: Inside a step of a written proof, what says an exponent is a natural; ``None``
+#: in a statement, which declines such an exponent (see proof_exponents).
+_PROOF_EXPONENTS: ContextVar[Any] = ContextVar("lanky_lean_proof_exponents", default=None)
+
+
+@contextmanager
+def proof_exponents(shown_natural: Any) -> Iterator[None]:
+    """Print an exponent ``shown_natural`` says is a natural as ``(e).toNat``, inside a step.
+
+    A statement declines an exponent that is not a literal, a natural
+    variable or a natural value (:func:`_render_exponent`): ``x ** (n - 1)``
+    could be a negative power, where Python's ``**`` answers a float. Inside
+    a step of a proof the case may show ``n - 1 >= 0``, and the step is
+    printed under this, with ``shown_natural`` the case's judgement
+    (:meth:`lanky.oracles.steps.StepScope.natural`). A wrong judgement prints
+    a term Lean reads as another power, which can only make the step fail:
+    the step's goal and its facts are the claim's and the hypotheses',
+    stated by the printer without this.
+    """
+    token = _PROOF_EXPONENTS.set(shown_natural)
+    try:
+        yield
+    finally:
+        _PROOF_EXPONENTS.reset(token)
 
 
 def _render_base(expr: Any, types: _Types) -> str:
