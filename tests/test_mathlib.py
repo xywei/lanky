@@ -743,6 +743,7 @@ def test_a_complex_logarithm_carries_the_claim_that_it_is_off_the_cut() -> None:
         "theorem Lanky.across_branch_cut_0 (x : ℝ) (h0 : x > 0) : "
         f"0 < Complex.re ({argument}) ∨ Complex.im ({argument}) ≠ 0 := by\n"
         "  intros\n  norm_num\n"
+        "\n#print axioms _root_.Lanky.across_branch_cut_0\n"
     )
     # a square root's cut is the negative axis, and zero is on neither side of it
     root = statement_of(Forall(((z, Complex),), sqrt(z + 1j) == sqrt(z + 1j)), "r", mathlib=True)
