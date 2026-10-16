@@ -100,6 +100,7 @@ __all__ = [
     "refutation_lines",
     "report_lean",
     "report_missing",
+    "report_proofs",
     "report_proved",
     "report_raised",
     "report_unproved",
@@ -397,6 +398,7 @@ class CheckVerb:
         vacuous = CheckVerb._report_hypotheses(ledger)
         CheckVerb._report_unresolved(ledger)
         duplicated = CheckVerb._report_duplicates(ledger)
+        broken = report_proofs(ledger)
         refuted = ledger.by_status(Status.REFUTED)
         if refuted:
             print()
@@ -406,7 +408,7 @@ class CheckVerb:
                 print(f"  {line}")
         if show_lean is not None:
             CheckVerb._report_lean(ledger, show_lean)
-        return bool(refuted) or vacuous or duplicated
+        return bool(refuted) or vacuous or duplicated or broken
 
     @staticmethod
     def _report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
@@ -896,6 +898,69 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
         print(f"NOT PROVED {fact.owner} at {fact.where}: {fact.statement}")
         for line in str(reason).splitlines():
             print(f"  {line}")
+
+
+def report_proofs(ledger: Ledger) -> bool:
+    """Report each written proof that fails, or was not checked; whether one fails.
+
+    A theorem's body that is a proof is checked by Lean (:mod:`lanky.proofs`).
+    One that fails gets a block at the line of the body that fails, in
+    lanky's notation, with the fix where one can be named::
+
+        UNPROVED every_box at every_box.py:30: a step of its proof does not follow.
+
+          every_box.py:52    return recurrence(i, a - 2, b), claim(i, a - 2, b + 3), ...
+
+          When a + b != 0 and a >= 2 (every_box.py:48, 50), the step needs
+          R[i, a, b] == D[i, a, b]
+          ...
+          Fix: claim(i, a - 2, b + 2) makes the step follow (checked).
+
+    A claim lanky proved alone keeps its row, proved by lanky's own proof,
+    and the block says so instead: ``WARNING every_box at every_box.py:30:
+    your proof fails at every_box.py:52; lanky proved the claim without it``.
+    Either fails the check, since a broken proof is a failing test. A proof
+    not checked, on a machine without Lean, or without Mathlib for a claim
+    only Mathlib states, gets a ``NOT CHECKED`` line, which does not.
+    """
+    broken = False
+    for fact in ledger:
+        proof = fact.provenance.get("proof") if isinstance(fact.provenance, dict) else None
+        if not isinstance(proof, dict):
+            continue
+        if proof.get("closed") is None and _recorded(proof.get("reason")):
+            print()
+            print(
+                f"NOT CHECKED {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
+                f"was not checked: {proof['reason']}"
+            )
+            continue
+        if proof.get("closed") is not False:
+            continue
+        broken = True
+        failures = [item for item in proof.get("failures") or () if isinstance(item, dict)]
+        first = failures[0] if failures else {}
+        print()
+        if fact.status in (Status.PROVED, Status.CERTIFIED):
+            at = first.get("where") or proof.get("where")
+            print(
+                f"WARNING {fact.owner} at {fact.where}: your proof fails at {at}; "
+                "lanky proved the claim without it"
+            )
+        else:
+            headline = first.get("headline") or "its proof does not hold"
+            more = f" (and {len(failures) - 1} more)" if len(failures) > 1 else ""
+            print(f"UNPROVED {fact.owner} at {fact.where}: {headline}{more}.")
+        for failure in failures:
+            print()
+            if failure.get("where") and failure.get("source"):
+                print(f"  {failure['where']}    {failure['source']}")
+                print()
+            for line in failure.get("lines") or ():
+                print(f"  {line}")
+            if failure.get("fix"):
+                print(f"  Fix: {failure['fix']}.")
+    return broken
 
 
 def report_raised(ledger: Ledger) -> None:
@@ -1635,8 +1700,23 @@ def _numbered(name: str, index: int) -> str:
 def _lean_lines(fact: Fact) -> list[str]:
     """What ``--show-lean`` prints under one row; empty for a row with no Lean form.
 
-    See :meth:`CheckVerb._report_lean`.
+    See :meth:`CheckVerb._report_lean`. A claim with a written proof
+    (:mod:`lanky.proofs`) shows that proof's command too, after what proved
+    the row, when it is not the same, with whether Lean accepted it.
     """
+    lines = _row_lean_lines(fact)
+    proof = fact.provenance.get("proof") if isinstance(fact.provenance, dict) else None
+    if not isinstance(proof, dict) or not _recorded(proof.get("lean_source")):
+        return lines
+    if proof["lean_source"] == fact.provenance.get("lean_source") and lines:
+        return lines
+    state = "accepted by Lean" if proof.get("closed") else "not accepted by Lean"
+    return [*lines, f"  its written proof, {proof.get('where')}, {state}",
+            *_indented(proof["lean_source"])]
+
+
+def _row_lean_lines(fact: Fact) -> list[str]:
+    """What ``--show-lean`` prints for a row's own Lean (see :func:`_lean_lines`)."""
     provenance = fact.provenance
     source = provenance.get("lean_source")
     if fact.status in (Status.PROVED, Status.CERTIFIED) and _recorded(source):

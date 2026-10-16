@@ -10,8 +10,11 @@ expressions that happen to build terms.
 The decorator is inert and registering: it returns a :class:`Theorem` that runs
 natively (evaluating the statement at concrete values, and sampling it as a
 property test) and records itself in :data:`lanky.plugins.registry`, so that
-``lanky check FILE`` only has to import the file. The body is a proof script for
-a future oracle and is never executed by lanky.
+``lanky check FILE`` only has to import the file. The body is the proof: a body
+that holds only a docstring, ``...`` or ``pass`` leaves the proof to lanky, and
+any other is a written proof, which ``lanky check`` traces after every run and
+draw of the check and has Lean check (:mod:`lanky.proofs`). Running the file
+never calls the body.
 
 Two more things are said the same way. ``@axiom(cite=...)`` states a result
 lanky takes on a citation rather than establishes: its fact is ``assumed``,
@@ -29,6 +32,7 @@ import builtins
 import functools
 import inspect
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -457,14 +461,21 @@ class Theorem:
 
     # }}}
 
-    def __call__(self, **concrete: Any) -> Verdict:
-        """Evaluate the hypotheses and the goal at concrete values.
+    def __call__(self, *values: Any, **concrete: Any) -> Any:
+        """Evaluate the hypotheses and the goal at concrete values; or, in a proof, cite it.
 
-        The proof body is not run: it is a script for an oracle, not code. What
+        The proof body is not run: it is a proof for Lean, not code. What
         running a theorem means is checking what it says. A value for a family
         parameter may be given as a sequence, which is read as a table, and
         one for a family with several indices as nested sequences or an
         array, ``F=[[1, 2], [3, 4]]`` for ``F: Fn[Fin[2], Fin[2], Nat]``.
+
+        Inside the trace of a written proof (:mod:`lanky.proofs`), which only
+        ``lanky check`` runs, calling a theorem is citing it, at the values
+        given, its variables outermost first and then the goal's, positional
+        or by name. What decides is whether a trace is running, not the
+        arguments' types. A theorem that calls itself in its own proof is
+        refused, with ``def claim`` as the fix.
 
         Raises:
             lanky.terms.Undecided: If the statement applies a family outside
@@ -476,7 +487,20 @@ class Theorem:
                 quantifier), evaluates to something other than a truth value
                 (:func:`lanky.terms.truth_value`): such a statement claims
                 nothing, and the property tester refuses it the same way.
+                And outside a proof, if a value is given by position: a
+                theorem is evaluated at values given by name.
         """
+        from lanky.proofs.trace import active
+
+        tracer = active()
+        if tracer is not None:
+            return tracer.cite_theorem(self, values, concrete, sys._getframe(1))
+        if values:
+            raise TypeError(
+                f"{self.__name__} is evaluated at values given by name, as "
+                f"{self.__name__}({', '.join(f'{name}=...' for name, _ in self.variables)}); "
+                "a call at symbolic values is a citation, inside a written proof"
+            )
         missing = [name for name, _ in self.variables if name not in concrete]
         if missing:
             raise TypeError(f"{self.__name__} needs values for {', '.join(missing)}")

@@ -6,6 +6,54 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A theorem's body is its proof** (proof interface, increment I1;
+  #140). A body that holds more than a docstring, `...` or `pass` is a
+  written proof, in ordinary Python: `return f, g` gives the facts this
+  case's claim follows from, a bare `return` leaves the case to lanky, a
+  hypothesis or a theorem called at symbolic values, `pde(i, a - 2, b)`, is
+  that fact at a point, and one written alone, `return stored`, is the fact
+  at the point matched against the case's claim; a hypothesis written `p &
+  q` is cited as both parts. `if` is a case split, and a returned `def
+  claim(i, a, b)` is the claim at a point, whose call at smaller values
+  inside it is induction; a parameter of `claim` that names one of the
+  theorem's generalizes it. `python file.py` never calls a body. `lanky
+  check` traces it after every run and draw of the check, in the module's
+  live globals with the claim's snapshot over them (a theorem defined later
+  in the file can be cited), on the symbolic values the annotations were
+  read with: an `if` of the body's own is answered by a schedule, one run
+  per path, and a question asked anywhere else raises as it always did;
+  `claim` calling itself calls a stub put in its closure cell; a theorem
+  called inside the trace is cited, not evaluated, and one that calls
+  itself is refused with `def claim` as the fix. The proof compiles to one
+  Lean command (`lanky.proofs`): the hypotheses under their Python names,
+  `claim` a recursive theorem of its own with the measure lanky finds (an
+  argument that gets smaller, one that climbs toward a bound, or a pair),
+  `if` a `by_cases` that substitutes the integers a branch fixes, each
+  fact's conditions shown by `omega` or, over the reals, by a few rules,
+  each step closed by `exact`, `linear_combination` with multipliers Python
+  finds, `linarith`, or, in core Lean, `omega` and `grind`, and a positive
+  `#print axioms` audit at the end. A proof Lean accepts adds a line to its
+  claim's row, `by its proof, every_box.py:106-113: induction on a, 3
+  cases, 3 steps`, and proves a claim lanky's search did not. One it does
+  not is reported at the Python line, in lanky's notation: a step that does
+  not follow, with what each fact says in the case, what is left over, and
+  the fact at another point that makes it follow, checked by Lean; a
+  condition not met; a call of the claim below zero; a call not at smaller
+  values; a theorem that calls itself; a fact cited by name that no single
+  point fits. A broken proof fails the check, also for a claim lanky proves
+  alone, whose row still reads `proved` by lanky's own proof, with a
+  `WARNING` naming the broken line. Without Lean, or without Mathlib for a
+  claim only Mathlib states, the proof is not checked, and a `NOT CHECKED`
+  line says why. `examples/every_box.py` is lanky #140's claim, which read
+  `assumed`, proved by its body. `Theorem.__call__` takes positional values
+  only inside a proof, where it cites; `LeanSession.said` and
+  `LeanOracle.written` give every message of a command with its position,
+  kept in the proof cache; `lanky.lean.render_prop` prints a proposition
+  inside a proof; `lanky.cli.report_proofs` prints the reports for a
+  plugin's verb.
+
 ### Fixed
 
 - **`python -m lanky.mathlib DIR` starts without a warning** (#162). The
