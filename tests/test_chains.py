@@ -359,6 +359,34 @@ def test_the_higher_order_rule_binds_a_family_to_a_function() -> None:
     assert higher_order_value((n,), r**k, {"j": "k"}) is None
 
 
+def test_an_index_with_two_unknowns_waits_for_one_of_them() -> None:
+    """``R[x + y, y]`` against ``R[a, b]``: ``y`` from the second index, then ``x = a - b``."""
+    xx, yy = Var("xx"), Var("yy")
+    lemma = Lemma(
+        "f",
+        ((xx, Nat), (yy, Nat)),
+        (("value", "xx"), ("value", "yy")),
+        Comparison(R[xx + yy, yy], "==", 0),
+    )
+    types = {"R": Fn[Nat, Nat, Real], "a": Nat, "b": Nat}
+    (point,) = candidate_points(lemma, [R[a, b]], types)
+    assert [render(value) for value in point] == ["a - b", "b"]
+
+
+def test_a_family_of_the_fact_binds_to_a_family_of_the_scope_first() -> None:
+    """``f[j]`` against ``x[j]`` under a sum binds ``f`` to ``x``, not to ``j ↦ x[j]``."""
+    f, m, j = Var("f"), Var("m"), Var("j")
+    lemma = Lemma(
+        "total",
+        ((f, Fn[Nat, Real]), (m, Nat)),
+        (("value", "f"), ("value", "m")),
+        Comparison(Sum(((j, Fin[m]),), f[j]), "==", 0),
+    )
+    types = {"x": Fn[Nat, Real], "n": Nat}
+    (point,) = candidate_points(lemma, [Sum(((k, Fin[n]),), Var("x")[k])], types)
+    assert render(point[0]) == "x" and render(point[1]) == "n"
+
+
 def test_same_reads_indices_as_integers() -> None:
     """``R[a - 2 + 2, b]`` is ``R[a, b]``."""
     assert same(R[(a - 2) + 2, b], R[a, b])

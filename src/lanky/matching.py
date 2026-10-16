@@ -533,30 +533,40 @@ def _match_application(
     bound: Mapping[str, str],
     local: frozenset[str],
 ) -> Iterator[dict[str, Any]]:
-    """A family applied, against a target: by its value, by the higher-order rule, or by name."""
+    """A family applied, against a target: by its value, by name, or by the higher-order rule.
+
+    A family of the fact bound already is applied, and has to give the
+    target. One still unbound is bound to a family of the scope where the
+    target applies one at matching indices, and to a function of the
+    arguments by the higher-order rule only where it does not: ``f[k]``
+    against ``x[k]`` binds ``f`` to ``x``, not to ``k ↦ x[k]``.
+    """
     head, arguments = spine
+    renaming = {key: Var(item) for key, item in bound.items()}
     if head in unknowns:
         value = sigma.get(head)
         if isinstance(value, FamilyValue):
-            reduced = value.apply([substitute(argument, sigma) for argument in arguments])
-            if same(reduced, target):
+            plain = {key: item for key, item in sigma.items() if not isinstance(item, FamilyValue)}
+            values = [substitute(substitute(argument, renaming), plain) for argument in arguments]
+            if same(value.apply(values), target):
                 yield dict(sigma)
             return
-        if value is None:
-            found = higher_order_value(arguments, target, bound)
-            if found is not None:
-                yield {**sigma, head: found}
-                return
+        matched = False
         target_spine = _spine(target)
-        if target_spine is None:
-            return
-        name, values = target_spine
-        if value is not None and not (isinstance(value, prim.Variable) and value.name == name):
-            return
-        if len(values) != len(arguments) or name in local:
-            return
-        extended = {**sigma, head: Var(name)}
-        yield from _match_indices(arguments, values, unknowns, extended, types, bound, local)
+        if target_spine is not None:
+            name, values = target_spine
+            fits_value = value is None or (isinstance(value, prim.Variable) and value.name == name)
+            if fits_value and len(values) == len(arguments) and name not in local:
+                extended = {**sigma, head: Var(name)}
+                for found in _match_indices(
+                    arguments, values, unknowns, extended, types, bound, local
+                ):
+                    matched = True
+                    yield found
+        if not matched and value is None:
+            function = higher_order_value(arguments, target, bound)
+            if function is not None:
+                yield {**sigma, head: function}
         return
     target_spine = _spine(target)
     if target_spine is None or target_spine[0] != head or len(target_spine[1]) != len(arguments):
