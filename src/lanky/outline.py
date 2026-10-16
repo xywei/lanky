@@ -1102,6 +1102,10 @@ def proof_lines(fact: Any) -> list[str]:
     that it pastes under the theorem's docstring.
     """
     found = fact.provenance.get("found_proof")
+    proof = fact.provenance.get("proof")
+    if not isinstance(found, dict) and isinstance(proof, dict) and proof.get("closed") is True:
+        # proved by the body the file holds: it is already written out
+        return [f"PROOF {_head(fact)}, by its proof as written, {proof.get('where')}"]
     if not isinstance(found, dict):
         return [f"PROOF {_head(fact)}, by {fact.decided_by or 'an oracle'}"]
     how = found.get("how") or "by lanky's ladder"

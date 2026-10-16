@@ -367,3 +367,20 @@ def test_lean_accepts_a_proof_with_a_step_left_open_and_names_it(checked) -> Non
 
 
 # }}}
+
+
+def test_proofs_names_a_written_proof_where_the_search_found_none() -> None:
+    from lanky.ledger import Fact
+    from lanky.outline import proof_lines
+
+    fact = Fact(
+        id="theorem:m.t@3",
+        kind="theorem",
+        statement="t",
+        status=Status.PROVED,
+        decided_by="lean",
+        provenance={"proof": {"closed": True, "where": "m.py:5-9"}},
+        where="m.py:3",
+        owner="t",
+    )
+    assert proof_lines(fact) == ["PROOF t at m.py:3, by its proof as written, m.py:5-9"]
