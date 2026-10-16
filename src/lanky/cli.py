@@ -1590,12 +1590,15 @@ def _named_apart(bodies: list[list[str]]) -> list[list[str]]:
     """``--show-lean``'s rows with every theorem declared under a name of its own (#120).
 
     ``bodies`` are the rows' lines (:func:`_lean_lines`), in the ledger's
-    order. A theorem whose name a row before it declared is renamed, on the
-    line that declares it, to the name with the first of ``_2``, ``_3``, and
-    on, that no row declares and no rename took: ``Lanky.jacobi_in_bounds``
-    becomes ``Lanky.jacobi_in_bounds_2``, and a quoted name ``Lanky.«fun»``
-    becomes ``Lanky.«fun_2»``. Nothing in a row names its own theorem, so
-    the declaration is all there is to rename.
+    order. A theorem whose name a row before it declared is renamed to the
+    name with the first of ``_2``, ``_3``, and on, that no row declares and
+    no rename took: ``Lanky.jacobi_in_bounds`` becomes
+    ``Lanky.jacobi_in_bounds_2``, and a quoted name ``Lanky.«fun»`` becomes
+    ``Lanky.«fun_2»``. A row names its own theorems besides declaring them,
+    in the axiom audit that ends each command (``#print axioms
+    _root_.Lanky.name``) and in the ``as_cited`` theorem proved from the
+    claim's, ``Lanky.name.as_cited``, so a rename is made everywhere in the
+    row: the name itself, and the names under it, ``Lanky.name_2.as_cited``.
     """
     declared = {
         match.group(2)
@@ -1606,23 +1609,46 @@ def _named_apart(bodies: list[list[str]]) -> list[list[str]]:
     taken: set[str] = set()
     out: list[list[str]] = []
     for body in bodies:
-        lines: list[str] = []
+        renames: dict[str, str] = {}
         for line in body:
             match = _DECLARATION.match(line)
             if match is None:
-                lines.append(line)
                 continue
             name = match.group(2)
+            if any(name.startswith(f"{old}.") for old in renames):
+                # a theorem under a renamed one, which moves with it
+                continue
             if name in taken:
                 index = 2
                 while (renamed := _numbered(name, index)) in declared | taken:
                     index += 1
-                line = f"{match.group(1)}{renamed}{line[match.end(2) :]}"
+                renames[name] = renamed
                 name = renamed
             taken.add(name)
-            lines.append(line)
-        out.append(lines)
+        out.append([_renamed(line, renames) for line in body] if renames else list(body))
     return out
+
+
+#: A character a Lean name goes on with, after or before one it contains.
+_NAME_CHARACTER = r"[\w'!?«»]"
+
+
+def _renamed(line: str, renames: dict[str, str]) -> str:
+    """``line`` with each name ``renames`` renames, and each name under it, renamed.
+
+    ``Lanky.x`` is renamed where it is the whole name or the start of one,
+    ``Lanky.x.as_cited``, named from the root or not, ``_root_.Lanky.x``,
+    and not where it is part of another, ``Lanky.x_branch_cut_0`` or
+    ``Decoy.Lanky.x``.
+    """
+    for old, new in renames.items():
+        pattern = (
+            rf"(?<![\w.'!?«»])(?P<root>_root_\.)?{re.escape(old)}(?!{_NAME_CHARACTER})"
+        )
+        line = re.sub(
+            pattern, lambda match, new=new: f"{match.group('root') or ''}{new}", line
+        )
+    return line
 
 
 def _numbered(name: str, index: int) -> str:
@@ -1665,14 +1691,14 @@ def _lean_lines(fact: Fact) -> list[str]:
     term = fact.term
     if term is None or callable(getattr(term, "lean_obligation", None)):
         return []
-    from lanky.lean import statement_of
+    from lanky.oracles.lean import claim_statement
 
     statement = None
     for mathlib in (False, True):
         # core Lean first, and Mathlib's dialect for a claim only it can state,
         # a real or complex one the Mathlib oracle tried (Codex)
         try:
-            statement = statement_of(term, fact.owner or fact.id, mathlib=mathlib)
+            statement = claim_statement(fact, mathlib)
         except Exception:  # noqa: BLE001 - a statement the printer declines has no Lean form
             continue
         break

@@ -46,6 +46,7 @@ from lanky.terms import (
     LogicalAnd,
     Sum,
     Var,
+    conjuncts,
     evaluate,
     evaluate_annotations,
     init_args,
@@ -412,6 +413,33 @@ class Theorem:
         }
 
     @property
+    def hypothesis_names(self) -> tuple[str, ...]:
+        """A name for each conjunct of the term's guard: the parameter's, as Python has it.
+
+        ``pde``, ``stored`` and ``recurrence`` are what the Lean theorem calls
+        its hypotheses (:func:`lanky.lean.statement_of`), so that the printed
+        theorem, and a proof that cites a hypothesis, read as the file does.
+        A hypothesis written ``p & q`` is two conjuncts of the guard, which
+        are its name with ``_1`` and ``_2`` after it, ``stored_1`` and
+        ``stored_2``; a name another parameter already has gets ``_`` after
+        it until it is its own.
+        """
+        taken = {name for name, _ in self.variables} | {name for name, _ in self.hypotheses}
+        names: list[str] = []
+        for name, prop in self.hypotheses:
+            parts = conjuncts(prop)
+            if len(parts) == 1:
+                names.append(name)
+                continue
+            for index in range(1, len(parts) + 1):
+                part = f"{name}_{index}"
+                while part in taken:
+                    part += "_"
+                taken.add(part)
+                names.append(part)
+        return tuple(names)
+
+    @property
     def term(self) -> Any:
         """The statement as one closed term: the goal under its binders and guard.
 
@@ -553,11 +581,15 @@ class Theorem:
         variables, each hypothesis with the name of its parameter, and the
         goal, as text, so that the ledger can print a statement too long for
         one line a part to a line (see :func:`lanky.ledger.statement_lines`).
+        It carries as ``hypothesis_names`` the name of each conjunct of the
+        term's guard (:attr:`hypothesis_names`), which the Lean oracle names
+        the theorem's hypotheses by.
         """
         provenance: dict[str, Any] = {
             "path": self.path,
             "line": self.line,
             "sequent": self.sequent,
+            "hypothesis_names": list(self.hypothesis_names),
         }
         if reading is not None:
             provenance["faithful"] = reading.id
