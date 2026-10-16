@@ -780,8 +780,8 @@ mode on, and `LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT` caps the Mathlib import
 (600 s).
 
 Lean's answers are kept in `$XDG_CACHE_HOME/lanky/proofs`
-(`LANKY_LEAN_PROOF_CACHE` moves it, `off` turns it off), so a check after the
-first starts no Lean. A question the first check ran out of time on, its
+(`~/.cache/lanky/proofs` by default; `LANKY_LEAN_PROOF_CACHE` moves it, and
+`off` turns it off), so a check after the first starts no Lean. A question the first check ran out of time on, its
 budget spent or an attempt timed out, is kept as where it stopped: the next
 check reads the same row back, and asks Lean again only when it is given more
 time, a larger budget or timeout.
