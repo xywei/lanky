@@ -473,10 +473,11 @@ def _setting_up(cache_dir: str) -> Iterator[None]:
     lean_interact builds the REPL with ``lake build`` in the REPL's directory
     in the cache, and locks the checkout but not the build. So processes that
     opened sessions at once in an empty cache, pytest's workers or ``lanky
-    check`` runs side by side, built it at once, and some failed (#122); a run
-    that later met the build they left could fail to open a session with that
-    Lean and settle on the next one it tried (see :func:`candidate_versions`).
-    Now the others wait here while one builds, and then find its build.
+    check`` runs side by side, built it at once, and some of the builds
+    failed (#122). Where the Lean is not pinned, a process whose build failed
+    went on to the next Lean on its list (see :func:`candidate_versions`) and
+    checked with that one. Now the others wait here while one builds, and
+    then find its build.
 
     The lock is ``flock`` on a file in the cache, which the system lets go of
     when the process ends, however it ends. Where it cannot be had, on Windows
