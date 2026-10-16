@@ -316,3 +316,93 @@ jobs:
           uv run lanky check examples/line_taylor.py | tee ledger.txt
           grep -q '^proved under line_ode  *assumed  *lean ' ledger.txt
           grep -q '^decided (heuristic)  *decided (heuristic)  *cas ' ledger.txt
+
+  known:
+    name: prove lanky.known with Mathlib
+    runs-on: ubuntu-latest
+    # Not optional, unlike the job above: each fact of lanky.known has its Lean
+    # proof written once against the statement lanky prints, and this job is
+    # what tells a change to the printer that a proof no longer holds, which
+    # would otherwise turn the library into `tested` without a word.
+    timeout-minutes: 45
+    env:
+      LANKY_LEAN_VERSION: v4.29.1
+      ELAN_VERSION: v4.2.4
+      LANKY_LEAN_TEST_REQUIRED: "1"
+      LANKY_LEAN_MATHLIB_TEST_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: lean
+
+      - name: Cache the Lean toolchain
+        id: elan-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.elan
+          key: elan-${{ runner.os }}-${{ env.ELAN_VERSION }}-lean-${{ env.LANKY_LEAN_VERSION }}
+
+      - name: Install elan and the Lean toolchain
+        if: steps.elan-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/leanprover/elan/releases/download/${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "${RUNNER_TEMP}"
+          "${RUNNER_TEMP}/elan-init" -y --no-modify-path --default-toolchain none
+          "${HOME}/.elan/bin/elan" toolchain install "leanprover/lean4:${LANKY_LEAN_VERSION}"
+          "${HOME}/.elan/bin/elan" default "leanprover/lean4:${LANKY_LEAN_VERSION}"
+
+      - name: Put Lean on PATH, and name the REPL cache, the Mathlib project and its downloads
+        run: |
+          set -euo pipefail
+          echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
+          echo "LANKY_LEAN_CACHE_DIR=${HOME}/.cache/lanky/lean-repl" >> "${GITHUB_ENV}"
+          echo "LANKY_LEAN_MATHLIB=${RUNNER_TEMP}/mathlib" >> "${GITHUB_ENV}"
+          echo "MATHLIB_CACHE_DIR=${HOME}/.cache/mathlib" >> "${GITHUB_ENV}"
+
+      - name: Sync dependencies, with the lean extra
+        run: uv sync --group dev --extra lean --python 3.13
+
+      - name: Read the driver's version
+        id: driver
+        run: |
+          set -euo pipefail
+          version=$(uv run python -c 'from importlib.metadata import version; print(version("lean-interact"))')
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache the Lean REPL build
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/lanky/lean-repl
+          key: lean-repl-${{ runner.os }}-lean-${{ env.LANKY_LEAN_VERSION }}-lean-interact-${{ steps.driver.outputs.version }}
+
+      - name: Cache Mathlib's compiled files
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/mathlib
+          key: mathlib-${{ runner.os }}-${{ hashFiles('src/lanky/mathlib-project/lake-manifest.json') }}
+
+      - name: Set up the pinned Mathlib project
+        run: uv run python -m lanky.mathlib "${LANKY_LEAN_MATHLIB}"
+
+      # Every fact proved by its own proof in the table, the screen, the
+      # suggestions, and the demonstration's two facts restated as a written
+      # proof restates them.
+      - name: Test lanky.known
+        run: uv run pytest -q tests/test_known.py
+
+      # The ledger a user gets: every claim of the library proved by Lean.
+      - name: Check lanky.known, every row proved
+        run: |
+          set -euo pipefail
+          uv run lanky check src/lanky/known.py | tee ledger.txt
+          facts=$(uv run python -c 'import lanky.known as known; print(len(known.__all__))')
+          proved=$(grep -cE '^proved +tested +lean ' ledger.txt)
+          if (( proved != facts )); then
+            echo "expected all ${facts} facts of lanky.known proved by lean, found ${proved}" >&2
+            exit 1
+          fi

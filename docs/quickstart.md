@@ -1337,6 +1337,83 @@ ties the theorem to the code pytential runs. Without Mathlib the claim for
 every order reads `assumed under line_ode`: the property tester draws no
 family over `Nat`.
 
+### What lanky knows
+
+Some claims are one known fact away from a proof. sumpy evaluates the 2-D
+Laplace kernel `log|alpha|` as half the log of `alpha` times its conjugate,
+one logarithm and no square root, and `examples/log_of_the_modulus.py` says
+why that is right:
+
+```python
+from lanky.known import log_of_a_power, modulus_squared
+
+
+@theorem
+def log_of_the_modulus(alpha: Complex, nonzero: alpha != 0) -> (
+    log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
+):
+    """log|alpha| with no square root: half the log of alpha times its conjugate."""
+    return (
+        log(abs(alpha))
+        .equals(log(abs(alpha) ** 2) / 2, by=log_of_a_power)
+        .equals(log(real(alpha * conj(alpha))) / 2, by=modulus_squared)
+    )
+```
+
+Read aloud: "log|alpha| equals half the log of |alpha| squared, by the log of
+a power, then half the log of alpha times its conjugate, by the modulus
+squared." The two facts come from `lanky.known`, under plain names. Each is a
+theorem stated in Python, like any other, with a docstring that cites the
+Mathlib lemma it is:
+
+```python
+@theorem
+def log_of_a_power(x: Real, n: Nat) -> log(x**n) == n * log(x):
+    """The log of a power is the exponent times the log (Mathlib: Real.log_pow)."""
+
+
+@theorem
+def modulus_squared(z: Complex) -> real(z * conj(z)) == abs(z) ** 2:
+    """z times its conjugate is |z| squared, a real number
+    (Mathlib: Complex.mul_conj, Complex.normSq_eq_norm_sq)."""
+```
+
+Each fact's Lean proof is written once, against the statement lanky prints,
+and kept in a table the Lean oracle reads (`lanky.oracles.known`), so the
+library itself is checked like a file of yours, and with Mathlib every row is
+proved:
+
+```console
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check src/lanky/known.py
+STATUS  EFFECTIVE  BY      WHERE         OWNER                         STATEMENT
+------  ---------  ------  ------------  ----------------------------  ------------------------------------------
+proved  tested     lean    known.py:84   log_of_a_power                x : Real, n : Nat |- log(x**n) == n*log(x)
+tested  tested     python  known.py:84   log_of_a_power                the term computes what the annotations ...
+...
+proved  tested     lean    known.py:124  modulus_squared               z : Complex |- real(z*conj(z)) == abs(z)**2
+...
+
+40 facts: 20 proved, 20 tested
+```
+
+`log_of_a_power` has no hypothesis that `x` is positive, because Lean's
+logarithm is total and agrees with Python's wherever Python's has a value.
+The claim keeps its own `nonzero`, which says where `log` means what its
+reader thinks.
+
+Lean's search alone does not prove `log_of_the_modulus`: no power is in
+sight for the log of a power to apply to, which is why the proof writes the
+term where the two facts meet as the middle of its chain. Where Lean has
+found no proof alone, `lanky check` names the known facts whose shape occurs
+in the claim, the term each fits, and its values there:
+
+```console
+NOT PROVED log_of_the_modulus at log_of_the_modulus.py:42: alpha : Complex | alpha != 0 |- log(abs(alpha)) == ...
+  Lean found no proof alone. What lanky knows of its shape:
+    modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)), at z = alpha
+  A proof cites them by name: from lanky.known import modulus_squared
+```
+
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
@@ -1521,3 +1598,7 @@ family over `Nat`.
 | the sumpy demonstration, and its `mpmath` oracle | `examples/sumpy_recurrence.py` |
 | sum factorization on hexahedra, grudge's tensor-product operators | `examples/sum_factorization.py` |
 | the line-Taylor expansion pytential's QBX evaluates with | `examples/line_taylor.py` |
+| what lanky knows: library facts under plain names, and their Lean proofs | `src/lanky/known.py`, `src/lanky/oracles/known.py` |
+| the screen for Lean text lanky did not write | `src/lanky/oracles/screen.py` |
+| the known facts that fit a claim, by shape | `src/lanky/suggest.py` |
+| `log|alpha|` with no square root, by two known facts | `examples/log_of_the_modulus.py` |

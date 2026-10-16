@@ -116,6 +116,7 @@ from lanky.obligations import (
     part_statement,
     theorem_name,
 )
+from lanky.oracles.known import proof_of as known_proof
 from lanky.prelude import FinType, FnType, Nat, Refined
 from lanky.terms import (
     Add,
@@ -3270,6 +3271,12 @@ class LeanOracle:
         Mathlib mode. The propositions the side conditions proved are listed
         as ``lean_side_conditions``.
 
+        A fact of :mod:`lanky.known` is not sent up the ladder: its proof is
+        the one the library's table keeps (:mod:`lanky.oracles.known`),
+        screened for raw text first, as a script :func:`use_tactic` pins is
+        tried alone. A table proof the screen refuses declines the fact, with
+        the reason.
+
         Lean's answer to each attempt is kept in the :class:`ProofCache`, as
         an obligation's are, and a claim every answer of which is kept is
         read back without starting a session (#118): the ladder is Python's,
@@ -3311,6 +3318,14 @@ class LeanOracle:
             self.proofs = ProofCache(default_proof_cache_dir())
         # the ladder is Python's, and the same whether Lean is asked or the cache
         override = self.tactics.get(fact.id)
+        if override is None:
+            # a fact of lanky.known is proved by its proof in the table
+            try:
+                override = known_proof(fact)
+            except ValueError as exc:
+                return fact.with_status(
+                    fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
+                )
         if override is not None:
             ladder = [override]
         else:
