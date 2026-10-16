@@ -490,6 +490,10 @@ def test_t4_a_misrestated_citation_is_refused_before_lean(monkeypatch, tmp_path)
     result = oracle.establish(_cited_fact(_cited(T4_TERM, T4_HINTS)))
     assert result.status is Status.DECIDED
     assert sent == []
+    assert result.provenance["lean_reason"] == (
+        "Lean was not asked, since the part restates a cited theorem other than as "
+        "Lean proved it"
+    )
     (record,) = result.provenance["lean_parts"]
     assert not record["proved"]
     assert record["reason"].startswith(

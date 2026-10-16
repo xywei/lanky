@@ -4177,7 +4177,10 @@ class LeanOracle:
             record["cited"] = list(restated.notes)
         if restated.refused:
             record["reason"] = restated.refused
-            record["short"] = "restates a theorem other than as it was proved"
+            record["short"] = (
+                "was not asked, since the part restates a cited theorem other than as "
+                "Lean proved it"
+            )
             return record
         try:
             statement = part_statement(part, theorem_name(owner, part), restated.texts)

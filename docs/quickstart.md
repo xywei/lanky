@@ -228,9 +228,9 @@ statement on one line):
 lean_version: v4.29.1
 
 set_option autoImplicit false in
-theorem Lanky.scan_monotone (n : Int) (h0 : 0 ≤ n) (cnt : Int → Nat) (off : Int → Nat)
-    (h1 : (off 0 : Int) = 0)
-    (h2 : ∀ r : Int, 0 ≤ r → r < n → (off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) :
+theorem Lanky.scan_monotone (n : Int) (h0_1 : 0 ≤ n) (cnt : Int → Nat) (off : Int → Nat)
+    (h0 : (off 0 : Int) = 0)
+    (hs : ∀ r : Int, 0 ≤ r → r < n → (off (r + 1) : Int) = (off r : Int) + (cnt r : Int)) :
     ∀ a : Int, 0 ≤ a → a < n + 1 → ∀ b : Int, 0 ≤ b → b < n + 1 → a ≤ b →
       (off a : Int) ≤ (off b : Int) := by
   intro a hd hd_1 b hd_2 hd_3 hg
@@ -241,15 +241,39 @@ theorem Lanky.scan_monotone (n : Int) (h0 : 0 ≤ n) (cnt : Int → Nat) (off : 
   | succ k ih =>
     have hcast : ((k + 1 : Nat) : Int) = (k : Int) + 1 := (by omega)
     try simp only [hcast] at *
-    first | (have hstep := h2 k (by omega) (by omega)) | skip
+    first | (have hstep := hs k (by omega) (by omega)) | skip
     by_cases hlt : (k : Int) < a
     ...
+
+set_option autoImplicit false in
+theorem Lanky.scan_monotone.as_cited :
+    ∀ n : Int, 0 ≤ n → ∀ cnt : Int → Nat, ∀ off : Int → Nat, (off 0 : Int) = 0 →
+      (∀ r : Int, 0 ≤ r → r < n → ...) → ∀ a : Int, ... → (off a : Int) ≤ (off b : Int) :=
+  Lanky.scan_monotone
+
+#print axioms _root_.Lanky.scan_monotone
+#print axioms _root_.Lanky.scan_monotone.as_cited
 ```
 
 The first line keeps Lean from binding a name the theorem does not, at a
 type it would pick: lanky declines a statement with such a name before Lean
 sees it, and with `autoImplicit` off Lean would refuse one too, as an unknown
 identifier.
+
+The hypotheses have the names the file gives them, `h0` and `hs`, so the
+script cites `hs k` where the file says `hs`. The ones lanky adds, the `0 ≤
+n` that makes `n` a natural, take a name no parameter has, here `h0_1`. A
+hypothesis written `p & q` is two, `name_1` and `name_2`.
+
+The command proves two more things. `Lanky.scan_monotone.as_cited` is the
+claim as one proposition, proved from the theorem: a proof or a kernel that
+cites `scan_monotone` restates exactly that text, which Lean has proved, and
+never prints the claim again. And the last lines are an axiom audit. A claim
+reads proved only when Lean answers it, once for each theorem and about that
+theorem, with nothing beyond `propext`, `Classical.choice` and `Quot.sound`:
+a proof resting on `sorry`, or on `native_decide`, which trusts the compiler,
+is not a proof, and neither is a command that stopped Lean before the audit,
+or declared the theorem somewhere else (`lanky.audit`).
 
 Three representation choices are visible there. A natural is an `Int` with
 `0 ≤ n` as a hypothesis, which is the integer reading every oracle shares (see
@@ -279,7 +303,10 @@ that. When the ladder runs out, the fact comes back unchanged with
 
 `lanky.oracles.lean.use_tactic(scan_monotone, "...")` pins a script by hand when
 the ladder cannot find one, and the ledger records a pinned script exactly the
-way it records a found one.
+way it records a found one. The script is the proof that follows `:= by`, and
+lanky writes every command around it, so a script with a `#` command such as
+`#exit`, `set_option`, `native_decide`, a `namespace` or a declaration is
+refused where `use_tactic` is called, with what was found.
 
 The same source is one flag away without the JSON: `lanky check
 examples/gauss.py --show-lean` prints, after everything else, the Lean of every
