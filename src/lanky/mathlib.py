@@ -31,11 +31,12 @@ fetch failed is reported as not ready (:func:`problem`) rather than built.
 
 Everything the command fetches stays in the project, so deleting the
 directory deletes all of it. Mathlib's cache tool keeps the packed files it
-downloads, about 400 MB, apart from the project, in ``~/.cache/mathlib`` when
-nothing says otherwise; the command has it keep them in the project instead,
+downloads, about 400 MB, apart from the project, in ``$XDG_CACHE_HOME/mathlib``
+or ``~/.cache/mathlib``; the command has it keep them in the project instead,
 in ``.lake/mathlib-cache`` (:func:`archive_directory`), unless
 ``MATHLIB_CACHE_DIR`` names a place for them, which is then the user's
-choice and is kept. A second project downloads them again.
+choice and is kept. The command's last lines say where they went. A second
+project downloads them again.
 """
 
 from __future__ import annotations

@@ -212,12 +212,16 @@ jobs:
           "${HOME}/.elan/bin/elan" toolchain install "leanprover/lean4:${LANKY_LEAN_VERSION}"
           "${HOME}/.elan/bin/elan" default "leanprover/lean4:${LANKY_LEAN_VERSION}"
 
-      - name: Put Lean on PATH, and name the REPL cache and the Mathlib project
+      # python -m lanky.mathlib keeps Mathlib's packed downloads in the project
+      # unless MATHLIB_CACHE_DIR names a place (#151); naming one keeps them
+      # where the cache step below restores them from.
+      - name: Put Lean on PATH, and name the REPL cache, the Mathlib project and its downloads
         run: |
           set -euo pipefail
           echo "${HOME}/.elan/bin" >> "${GITHUB_PATH}"
           echo "LANKY_LEAN_CACHE_DIR=${HOME}/.cache/lanky/lean-repl" >> "${GITHUB_ENV}"
           echo "LANKY_LEAN_MATHLIB=${RUNNER_TEMP}/mathlib" >> "${GITHUB_ENV}"
+          echo "MATHLIB_CACHE_DIR=${HOME}/.cache/mathlib" >> "${GITHUB_ENV}"
 
       - name: Sync dependencies, with the lean and cas extras
         run: uv sync --group dev --extra lean --extra cas --python 3.13

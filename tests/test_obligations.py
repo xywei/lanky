@@ -1093,7 +1093,7 @@ def _answering(monkeypatch: pytest.MonkeyPatch, answers: list[tuple]) -> list[st
     return asked
 
 
-def _without_lean(monkeypatch: pytest.MonkeyPatch, oracle: LeanOracle) -> LeanOracle:
+def _second_check(monkeypatch: pytest.MonkeyPatch, oracle: LeanOracle) -> LeanOracle:
     """A second check: another oracle on the same cache, whose sessions do not start.
 
     The ``no_session`` fixture's ``start`` records the session and fails, and
@@ -1139,7 +1139,7 @@ def test_a_claim_whose_budget_ran_out_is_left_open_again_without_lean(
     assert len(asked) == 2  # the second one found the budget spent
     reason = cold.provenance["lean_reason"]
     assert reason.startswith("the ladder's budget of 120 s ran out after 1 of"), reason
-    warm = _without_lean(monkeypatch, oracle).establish(_claim_fact(term))
+    warm = _second_check(monkeypatch, oracle).establish(_claim_fact(term))
     assert started == []
     assert warm.status is Status.ASSUMED
     assert {k: warm.provenance.get(k) for k in _STOPPED} == {
@@ -1156,12 +1156,12 @@ def test_more_time_asks_lean_again(no_session, monkeypatch: pytest.MonkeyPatch) 
     term = claim((n,), [n >= 0], n + 1 > n)
     oracle.establish(_claim_fact(term))
     monkeypatch.setenv("LANKY_LEAN_BUDGET", "121")
-    larger = _without_lean(monkeypatch, oracle).establish(_claim_fact(term))
+    larger = _second_check(monkeypatch, oracle).establish(_claim_fact(term))
     assert started
     assert larger.provenance["lean_reason"] == "no Lean in this test"
     started.clear()
     monkeypatch.setenv("LANKY_LEAN_BUDGET", "100")
-    assert "ran out" in _without_lean(monkeypatch, oracle).establish(
+    assert "ran out" in _second_check(monkeypatch, oracle).establish(
         _claim_fact(term)
     ).provenance["lean_reason"]
     assert started == []
@@ -1186,7 +1186,7 @@ def test_a_claim_proved_after_an_attempt_timed_out_is_proved_without_lean(
     cold = oracle.establish(_claim_fact(term))
     ladder = tactic_ladder(statement_of(term, "succ", mathlib=False))
     assert cold.status is Status.PROVED and cold.provenance["tactic"] == ladder[1]
-    again = _without_lean(monkeypatch, oracle)
+    again = _second_check(monkeypatch, oracle)
     warm = again.establish(_claim_fact(term))
     assert started == []
     assert warm.status is Status.PROVED and warm.provenance["tactic"] == ladder[1]
@@ -1207,7 +1207,7 @@ def test_a_repl_that_could_not_be_reached_keeps_no_record(
     _answering(monkeypatch, [(False, lost, False)] * 40)
     term = claim((n,), [n >= 0], n + 1 > n)
     oracle.establish(_claim_fact(term))
-    _without_lean(monkeypatch, oracle).establish(_claim_fact(term))
+    _second_check(monkeypatch, oracle).establish(_claim_fact(term))
     assert started
 
 
@@ -1223,7 +1223,7 @@ def test_a_part_whose_time_ran_out_is_left_open_again_without_lean(
     assert len(asked) >= 2
     reason = cold.provenance["lean_reason"]
     assert reason.startswith("Lean proved 1 of its 2 parts, and ran out of time for "), reason
-    warm = _without_lean(monkeypatch, oracle).establish(fact_of(obligation))
+    warm = _second_check(monkeypatch, oracle).establish(fact_of(obligation))
     assert started == []
     assert warm.provenance["lean_reason"] == cold.provenance["lean_reason"]
     parts = warm.provenance["lean_parts"]
@@ -1242,7 +1242,7 @@ def test_a_counterexample_whose_time_ran_out_is_read_back_without_lean(
     )
     cold = oracle.establish(fact_of(obligation, Status.REFUTED))
     assert "it ran out of time" in cold.provenance["lean_counterexample"]
-    warm = _without_lean(monkeypatch, oracle).establish(fact_of(obligation, Status.REFUTED))
+    warm = _second_check(monkeypatch, oracle).establish(fact_of(obligation, Status.REFUTED))
     assert started == []
     assert warm.provenance["lean_counterexample"] == cold.provenance["lean_counterexample"]
 
