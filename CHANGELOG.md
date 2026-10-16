@@ -6,7 +6,50 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A theorem's hypotheses have their Python names in Lean.** The printed
+  theorem calls them what the file does, `(pde : ∀ a : Int, ...)`,
+  `(stored : ...)`, and a hypothesis written `p & q` is `stored_1` and
+  `stored_2`; the hypotheses lanky adds (a natural's `0 ≤ n`) are `h0`,
+  `h1`, ... and keep clear of them. A name Lean reserves is quoted, `«fun»`,
+  and one spelled like a root name (`Int`, `Real`, `Finset`, `Lanky`) has
+  that root printed from `_root_`. A goal variable named like a hypothesis
+  is introduced as `k_1`. The names are in each fact's provenance as
+  `hypothesis_names`, and in `--show-lean`.
+- **Every proof cache entry goes cold once.** The names, the audit and the
+  `as_cited` theorem below change the source of every command, and the
+  cache is keyed by the source: the first check after the upgrade asks Lean
+  again, and every check after it reads the cache as before.
+
 ### Fixed
+
+- **A claim reads proved only on a positive axiom audit.** Every command
+  ends with `#print axioms _root_.Lanky.<name>` of each theorem it declares,
+  and Lean has to answer, once per theorem and about exactly that theorem,
+  that it rests on nothing beyond `propext`, `Classical.choice` and
+  `Quot.sound`. A script that ended in `#exit` used to skip whatever came
+  after it, so `native_decide` closed a claim with the compiler trusted; a
+  script that opened a namespace could declare a decoy of the same name.
+  Both now read not proved, and so does a proof resting on `sorryAx` or on
+  `native_decide`'s axiom (`lanky.audit`).
+- **`use_tactic` screens the script it is given.** A script is the proof
+  after `:= by`, and lanky writes every command around it, so a `#`
+  command, `set_option`, `native_decide`, `decide +native`, a `namespace`,
+  `end`, a declaration, a definition of syntax and a block comment left
+  open are refused where `use_tactic` is called, with what was found.
+- **A cited theorem is restated only from the text its own command proved.**
+  A claim's command now proves one more theorem after its own,
+  `Lanky.<name>.as_cited`, the claim as one proposition, from the claim's
+  theorem; the oracle keeps that text (`lean_as_cited` in the provenance). A
+  plugin's part that cites the claim (`lanky.obligations.Citation`, which
+  loopty's applications, series and unfolded postconditions name) restates
+  exactly that text, before any variable of its own, and a part whose
+  citation is not the claim's statement is refused before Lean is asked. A
+  citation restated without a condition proves `1 = 0` with no error and no
+  axiom beyond Lean's own (`lanky.citations`). A citation whose claim has
+  no proved text, an axiom or a claim only tested, is restated by the
+  printer as before, and the fact says so (`lean_restated_by_printer`).
 
 - **`python -m lanky.mathlib DIR` starts without a warning** (#162). The
   command the `WITHOUT MATHLIB` line and the README give printed a

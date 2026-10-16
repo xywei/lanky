@@ -290,12 +290,14 @@ def test_a_statement_becomes_lean_binders_and_hypotheses() -> None:
     assert statement.binders == (("x", "Int"), ("y", "Int"))
     assert statement.hypotheses == (("h0", "0 ≤ x"), ("h1", "0 ≤ y"))
     assert statement.goal == "x + y = y + x"
-    # each binder's guard follows it, as it does in print_lean, and the
-    # declaration is elaborated with auto-bound implicits off (#68)
+    # each binder's guard follows it, as it does in print_lean, the
+    # declaration is elaborated with auto-bound implicits off (#68), and the
+    # command ends with the axiom audit of the theorem, named from the root
     assert statement.source("omega") == (
         "set_option autoImplicit false in\n"
         "theorem Lanky.commutes (x : Int) (h0 : 0 ≤ x) (y : Int) (h1 : 0 ≤ y) : "
         "x + y = y + x := by\n  omega\n"
+        "\n#print axioms _root_.Lanky.commutes\n"
     )
 
 
@@ -3881,10 +3883,16 @@ def test_lean_leaves_the_quickstart_guard_the_sampler_misses_to_a_warning(
 def test_the_statement_the_oracle_sends_is_the_one_it_records(
     lean_oracle: LeanOracle,
 ) -> None:
-    proved = lean_oracle.establish(scan_monotone.fact())
-    statement = statement_of(scan_monotone.term, "scan_monotone")
+    from lanky.oracles.lean import claim_statement
+
+    fact = scan_monotone.fact()
+    proved = lean_oracle.establish(fact)
+    statement = claim_statement(fact, False)
     assert isinstance(statement, LeanStatement)
     assert proved.provenance["lean_source"] == statement.source(proved.provenance["tactic"])
+    # the hypotheses have the theorem's names, and the command proves its as_cited text
+    assert proved.provenance["lean_as_cited"] == statement.as_cited
+    assert "theorem Lanky.scan_monotone.as_cited :" in proved.provenance["lean_source"]
 
 
 # }}}
