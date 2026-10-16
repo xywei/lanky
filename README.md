@@ -229,7 +229,12 @@ raises its floor to match.
   under the table in a `CITED` line with its citation, and a fact left
   `assumed` that an oracle looked at and declined, saying why, in a
   `DECLINED` line with the reason it gave as `declined`, a standard provenance
-  key too; neither changes the exit code. A statement that mentions a name
+  key too. An oracle that raised over a fact is named in a `RAISED` line with
+  the exception (`raised` in the provenance; `--verbose` prints where it
+  raised), so that a crash is not read as a claim it was never offered, and
+  `--verbose` says of a claim Lean's printer cannot state that Lean was not
+  asked, and why (`lean_declined`). None of these changes the exit code. A
+  statement that mentions a name
   nothing in it binds, a misspelt parameter or sort, gets one from the
   property tester, which names the name and draws nothing. Two claims with
   one fact id, which a factory gives the claims it makes since an id names a
@@ -502,7 +507,10 @@ raises its floor to match.
 - `--show-lean` prints the Lean of every row that has some, or of the rows
   whose owner, id or statement contains the text it is given: the file that
   replays a proof, a plugin's parts as they were tried, a refutation's
-  theorem. It is the one place Lean's words appear.
+  theorem. It is the one place Lean's words appear. Each theorem is shown
+  under a name of its own in the ledger: the facts of one owner whose parts
+  have one name, a kernel's accesses, are told apart as
+  `Lanky.jacobi_in_bounds`, `Lanky.jacobi_in_bounds_2` and on.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
 
@@ -752,7 +760,11 @@ Mathlib publishes. Everything it fetches stays in the project, the packed
 downloads (about 400 MB) included, in `.lake/mathlib-cache`, so deleting
 `~/mathlib` deletes all of it; a `MATHLIB_CACHE_DIR` you set keeps them
 there instead, and the command says where they went. The first session of a
-process imports Mathlib, which takes seconds and about 1.5 GB of memory. The induction over families finds its
+process imports Mathlib, which takes seconds and about 1.5 GB of memory, and
+checks that it did: a project whose compiled files are damaged, by a `lake
+exe cache get` that stopped half way, say, makes the oracle unavailable, and
+the `WITHOUT LEAN` line says what Lean said and to run `lake exe cache get!`
+in the project. The induction over families finds its
 combinations with sympy, so a claim for every order wants both extras,
 `pip install "lanky[lean,cas]"`.
 
