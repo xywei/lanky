@@ -68,6 +68,7 @@ __all__ = [
     "modulus_of_a_product",
     "modulus_squared",
     "one_more_term",
+    "shifted_sum",
     "square_root_squared",
     "sum_exchange",
     "sum_of_a_constant",
@@ -153,6 +154,17 @@ def one_more_term(f: Fn[Nat, Real], n: Nat) -> (
     sum(f[k] for k in Fin[n + 1]) == sum(f[k] for k in Fin[n]) + f[n]
 ):
     """The sum to n + 1 is the sum to n plus its last term (Mathlib: Finset.sum_range_succ)."""
+
+
+@theorem
+def shifted_sum(m: Nat, n: Nat, f: Fn[Nat, Real]) -> (
+    sum(f[k] for k in Fin[n] if k >= m) == sum(f[k + m] for k in Fin[n - m])
+):
+    """The terms from m on, picked out by a guard, are a sum from 0 of the terms shifted
+    by m (Mathlib: Finset.sum_filter, Finset.sum_nbij').
+
+    The shape of a series that starts at order 1, ``for k in Fin[p + 1] if k >= 1``.
+    """
 
 
 @theorem

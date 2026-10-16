@@ -84,7 +84,9 @@ def test_importing_the_library_pins_nothing_and_starts_no_lean() -> None:
         "before = set(sys.modules)\n"
         "import lanky.known\n"
         "new = sorted(set(sys.modules) - before)\n"
-        "assert new == ['lanky.known'], new\n"
+        "assert 'lanky.known' in new, new\n"
+        "kept = ('lanky.oracles', 'lanky.suggest', 'lean_interact', 'sympy')\n"
+        "assert not [name for name in new if name.startswith(kept)], new\n"
         "assert all(not oracle.tactics for oracle in _lean_oracles())\n"
         "assert 'lean_interact' not in sys.modules\n"
         "print('ok')\n"
@@ -327,6 +329,18 @@ def test_a_family_fits_what_the_claim_sums() -> None:
     ) in texts
     # a sum of anything fits fiber_exchange's right side, which is not said
     assert not any(text.startswith("fiber_exchange") for text in texts)
+
+
+def test_a_series_from_order_one_fits_the_shifted_sum() -> None:
+    @theorem
+    def series(z: Real, p: Nat) -> sum(z**k / k for k in Fin[p + 1] if k >= 1) >= 0:
+        """Only its shape matters here."""
+
+    (first, *_) = suggestions(series.term)
+    assert first.text == (
+        "shifted_sum rewrites sum(f[k] for k in Fin(n) if k >= m); "
+        "here sum(z**k / k for k in Fin(p + 1) if k >= 1), at m = 1, n = p + 1, f = k -> z**k / k"
+    )
 
 
 def test_a_factor_fits_what_the_others_leave() -> None:

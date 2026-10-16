@@ -62,6 +62,13 @@ PROOFS: dict[str, str] = {
         "rw [last, Finset.sum_insert (by simp)]\n"
         "ring"
     ),
+    "shifted_sum": (
+        "symm\n"
+        "refine Finset.sum_nbij' (fun k => k + m) (fun k => k - m) ?_ ?_ ?_ ?_ ?_\n"
+        "all_goals intro k held\n"
+        "all_goals simp only [Finset.mem_Ico, Finset.mem_filter] at held ⊢\n"
+        "all_goals omega"
+    ),
     "geometric_sum": (
         "obtain ⟨n, rfl⟩ := Int.eq_ofNat_of_zero_le ‹0 ≤ n›\n"
         "induction n with\n"

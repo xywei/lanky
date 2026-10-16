@@ -335,7 +335,6 @@ class _Match:
             return binding
         return None
 
-    # the claim's binders that the fact's binders stand for, by the fact's name
     def _match(
         self,
         pattern: Any,
@@ -344,7 +343,12 @@ class _Match:
         bound: dict[str, str],
         scope: dict[str, Any],
     ) -> Iterator[_Binding]:
-        """Every binding that extends ``binding`` and makes ``pattern`` the term."""
+        """Every binding that extends ``binding`` and makes ``pattern`` the term.
+
+        ``bound`` names, for each binder of a sum of the fact the match is
+        inside, the binder of the claim's sum it stands for; ``scope`` gives
+        the type of every name of the claim in scope there.
+        """
         if isinstance(pattern, Var | prim.Variable):
             name = pattern.name
             if name in bound:
