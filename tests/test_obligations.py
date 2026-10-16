@@ -2061,3 +2061,55 @@ def test_a_wrong_product_fails_the_part(lean: LeanOracle) -> None:
 
 
 # }}}
+
+
+
+def test_a_condition_of_a_rewrite_under_a_sum_is_shown_at_the_sums_point() -> None:
+    """The discharger takes a condition stated for every point of the sum at its point.
+
+    A rewrite under a sum whose theorem has a condition, ``alpha != 0``,
+    which the part states for every point of the sum, ``c[t] - y[s] != 0``
+    for every ``s``: ``refine`` unifies the condition's conclusion with the
+    premise first, and ``omega`` shows the point is in the sum's range once
+    ``Finset.mem_Ico`` has read the membership. A part with no condition
+    keeps the discharger it had (see the test above).
+    """
+    from lanky.lean import dialect
+    from lanky.prelude import Complex
+    from lanky.terms import conj, real
+
+    alpha, z, c, y, ns, t, s = (
+        Var(name) for name in ("alpha", "z", "c", "y", "ns", "t", "s")
+    )
+    inverse = Forall(
+        ((x, Complex), (alpha, Complex)),
+        x / alpha == x * conj(alpha) * (1 / real(alpha * conj(alpha))),
+        alpha != 0,
+    )
+    apart = Forall(((s, FinType(ns)),), c[t] - y[s] != 0)
+    numbers = Fn[Int, Complex]
+    part = Part(
+        "rewrite_S0",
+        "the conjugate form under the sum over s",
+        claim(
+            (ns, (c, numbers), (y, numbers), (z, numbers), t),
+            [inverse, ns >= 0, apart],
+            Sum(((s, FinType(ns)),), (z[t] - c[t]) / (c[t] - y[s]))
+            == Sum(
+                ((s, FinType(ns)),),
+                (z[t] - c[t])
+                * conj(c[t] - y[s])
+                * (1 / real((c[t] - y[s]) * conj(c[t] - y[s]))),
+            ),
+        ),
+        Hints(rewrites=(Rewrite(0),)),
+        mathlib=True,
+    )
+    with dialect(True):
+        statement = part_statement(part, "rewrite_S0")
+        _how, script = attempts(part, statement)[-1]
+    assert script.splitlines()[0] == (
+        "all_goals simp (disch := (first | omega | (simp only [Finset.mem_Ico] at *; "
+        "omega) | ((try simp only [Finset.mem_Ico] at *); refine h2 _ ?_ ?_ <;> omega)"
+        ")) only [h0]"
+    )
