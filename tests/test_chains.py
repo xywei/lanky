@@ -53,7 +53,16 @@ from lanky.oracles.steps import (
     step_script,
 )
 from lanky.prelude import Complex, Fin, Fn, Int, Nat, Real
-from lanky.terms import Comparison, LogicalNot, Sum, Var, log, render, structurally_equal
+from lanky.terms import (
+    Comparison,
+    Forall,
+    LogicalNot,
+    Sum,
+    Var,
+    log,
+    render,
+    structurally_equal,
+)
 
 D, R, a, b = Var("D"), Var("R"), Var("a"), Var("b")
 n, r, k = Var("n"), Var("r"), Var("k")
@@ -385,6 +394,22 @@ def test_a_family_of_the_fact_binds_to_a_family_of_the_scope_first() -> None:
     types = {"x": Fn[Nat, Real], "n": Nat}
     (point,) = candidate_points(lemma, [Sum(((k, Fin[n]),), Var("x")[k])], types)
     assert render(point[0]) == "x" and render(point[1]) == "n"
+
+
+def test_a_family_bound_to_a_function_is_applied_as_a_fun() -> None:
+    """``one_more_term`` at ``(k ↦ r ** k, n - 1)`` is applied to ``(fun k => r ^ k.toNat)``."""
+    from lanky.oracles.steps import _application
+
+    f, m, j = Var("f"), Var("m"), Var("j")
+    statement = Forall(
+        ((f, Fn[Nat, Real]), (m, Nat)),
+        Comparison(Sum(((j, Fin[m + 1]),), f[j]), "==", Sum(((j, Fin[m]),), f[j]) + f[m]),
+    )
+    uncalled = Citation("one_more_term", statement, "one_more_term")
+    scope = StepScope(types={"r": Real, "n": Nat}, facts=(n >= 1,))
+    (point,) = candidate_points(uncalled.lemma, [Sum(((k, Fin[n]),), r**k)], scope.types)
+    text = _application(uncalled.at(point), scope)
+    assert text == "one_more_term (fun k => r ^ k.toNat) (n - 1) (by omega)"
 
 
 def test_same_reads_indices_as_integers() -> None:

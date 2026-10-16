@@ -160,13 +160,30 @@ class StepScope:
         return name
 
     def render(
-        self, term: Any, atomic: bool = False, types: Mapping[str, Any] | None = None
+        self,
+        term: Any,
+        atomic: bool = False,
+        types: Mapping[str, Any] | None = None,
+        sort: Any = None,
     ) -> str:
-        """A term as Lean source, in the scope's dialect, its natural exponents as ``.toNat``."""
+        """A term as Lean source, in the scope's dialect, its natural exponents as ``.toNat``.
+
+        A family's value the higher-order rule bound (:class:`FamilyValue`) is
+        a ``fun``, its parameters typed by ``sort``, the family's own type, so
+        that ``k ↦ r ** k`` for an ``f: Fn[Nat, Real]`` is ``(fun k => r ^
+        k.toNat)``.
+        """
         scope = dict(self.types if types is None else types)
         if isinstance(term, FamilyValue):
             inner = dict(scope)
-            text = render_term(term.body, inner, self.mathlib, self.shadowed)
+            current = _base(sort)
+            for var in term.parameters:
+                if not isinstance(current, FnType):
+                    break
+                inner[var.name] = current.domain
+                current = _base(current.codomain)
+            with proof_exponents(lambda exponent: self.natural(exponent)):
+                text = render_term(term.body, inner, self.mathlib, self.shadowed)
             names = " ".join(var.name for var in term.parameters)
             return f"(fun {names} => {text})"
         with proof_exponents(lambda exponent: self.natural(exponent)):
@@ -330,10 +347,11 @@ def _application(citation: Citation, scope: StepScope) -> str:
     """The Lean that applies a cited fact at its point, each condition discharged."""
     lemma = citation.lemma
     values = dict(zip((var.name for var, _ in lemma.binders), citation.point or (), strict=True))
+    sorts = {var.name: domain for var, domain in lemma.binders}
     parts = [citation.head]
     for kind, item in lemma.premises:
         if kind == "value":
-            parts.append(scope.render(values[item], atomic=True))
+            parts.append(scope.render(values[item], atomic=True, sort=sorts.get(item)))
         else:
             parts.append(_discharger(instantiate(item, values), scope))
     return " ".join(parts)
