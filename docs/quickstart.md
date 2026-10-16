@@ -1387,13 +1387,13 @@ proved:
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check src/lanky/known.py
 STATUS  EFFECTIVE  BY      WHERE         OWNER                         STATEMENT
 ------  ---------  ------  ------------  ----------------------------  ------------------------------------------
-proved  tested     lean    known.py:83   log_of_a_power                x : Real, n : Nat |- log(x**n) == n*log(x)
-tested  tested     python  known.py:83   log_of_a_power                the term computes what the annotations ...
+proved  tested     lean    known.py:84   log_of_a_power                x : Real, n : Nat |- log(x**n) == n*log(x)
+tested  tested     python  known.py:84   log_of_a_power                the term computes what the annotations ...
 ...
-proved  tested     lean    known.py:123  modulus_squared               z : Complex |- real(z*conj(z)) == abs(z)**2
+proved  tested     lean    known.py:124  modulus_squared               z : Complex |- real(z*conj(z)) == abs(z)**2
 ...
 
-38 facts: 19 proved, 19 tested
+40 facts: 20 proved, 20 tested
 ```
 
 `log_of_a_power` has no hypothesis that `x` is positive, because Lean's
