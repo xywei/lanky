@@ -1422,7 +1422,7 @@ def test_a_pinned_version_that_is_not_the_projects_is_refused(monkeypatch, tmp_p
 class _Answers:
     """A REPL whose ``import Mathlib`` says nothing, as the REPL answers an import that failed."""
 
-    def __init__(self, config, probe: list[str]) -> None:
+    def __init__(self, config, probe: list[str] | Exception) -> None:
         self.config = config
         self.probe = probe
         self.commands: list[tuple[str, object]] = []
@@ -1433,6 +1433,8 @@ class _Answers:
         self.commands.append((command.cmd, getattr(command, "env", None)))
         if command.cmd == "import Mathlib":
             return SimpleNamespace(env=0, messages=[])
+        if isinstance(self.probe, Exception):
+            raise self.probe
         errors = [SimpleNamespace(severity="error", data=text) for text in self.probe]
         return SimpleNamespace(env=1, messages=errors)
 
@@ -1440,7 +1442,7 @@ class _Answers:
         pass
 
 
-def _session_with(monkeypatch, tmp_path, probe: list[str], said: str | None):
+def _session_with(monkeypatch, tmp_path, probe: list[str] | Exception, said: str | None):
     """A Mathlib session started on a REPL that answers the probe with ``probe``.
 
     Lean asked to import Mathlib on its own says ``said``.
@@ -1518,6 +1520,14 @@ def test_a_mathlib_lean_does_not_import_is_named_once_with_the_fix(monkeypatch, 
     assert started
     assert session.error is None
     assert session.environment == 0
+    assert asked == []
+    session.close()
+
+    # as is one whose probe was not answered, which says nothing of the import (Codex)
+    timeout = TimeoutError("The Lean server did not respond in time and is now killed.")
+    session, started, _server, asked = _session_with(monkeypatch, tmp_path, timeout, damaged)
+    assert started
+    assert session.error is None
     assert asked == []
     session.close()
 

@@ -684,6 +684,9 @@ class LeanSession:
         ``lanky check`` prints it in its ``WITHOUT LEAN`` line, and the claims
         stay ``tested``. An import that takes longer than
         :data:`MATHLIB_IMPORT_TIMEOUT` says so, and how to give it more time.
+        A probe the REPL does not answer, one that times out or a REPL that
+        stops, is no answer about the import, and the session goes on as it
+        does after any command that was not answered.
         """
         from lean_interact import Command
 
@@ -711,11 +714,15 @@ class LeanSession:
             return False
         environment = getattr(response, "env", None)
         try:
+            # the import's time: the first command after it may load what it deferred
             probe = self.server.run(
-                Command(cmd=MATHLIB_PROBE, env=environment), timeout=self.timeout
+                Command(cmd=MATHLIB_PROBE, env=environment), timeout=MATHLIB_IMPORT_TIMEOUT
             )
-        except Exception as exc:  # noqa: BLE001 - as above
-            failed = [f"{type(exc).__name__}: {exc}"]
+        except Exception:  # noqa: BLE001 - a probe the REPL did not answer says nothing
+            # of the import, which reported no error: the session goes on, and starts
+            # the REPL again before its next command if it has to, as after a timeout
+            # (Codex)
+            failed = []
         except BaseException:
             self._interrupted()
             raise
