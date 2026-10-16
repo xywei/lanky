@@ -2688,11 +2688,15 @@ class LeanOracle:
 
         The question asked here is the cheap one, and the reason says so: until
         a fact has been offered, nothing has tried to build the REPL, so the
-        honest answer is "available, untested". Whether the REPL can actually be
-        built is discovered on the first fact and remembered, and from then on
-        this line names either the Lean version in use or the reason there is
-        none. In Mathlib mode the project is looked at too, which is cheap, and
-        the line names the Mathlib revision once the session is open.
+        honest answer is "available, untested". It names the Lean the REPL
+        would run, which is known without one (#152): ``LANKY_LEAN_VERSION``
+        when it pins one, else the ``lean`` on the ``PATH``, asked once, as the
+        proof cache's key is (:meth:`_cache_version`). Whether the REPL can
+        actually be built is discovered on the first fact and remembered, and
+        from then on this line names either the Lean version in use or the
+        reason there is none. In Mathlib mode the project is looked at too,
+        which is cheap: the Lean is the project's toolchain, the line names the
+        Mathlib it pins, and the full revision once the session is open.
         """
         if os.environ.get("LANKY_LEAN_DISABLE"):
             return False, "disabled by LANKY_LEAN_DISABLE"
@@ -2706,12 +2710,19 @@ class LeanOracle:
         if session.error is not None:
             return False, session.error
         if session.server is None:
-            return True, "untested until the first fact: the REPL is built on demand"
+            version = session.version or self._cache_version()
+            built = "untested until the first fact: the REPL is built on demand"
+            return True, f"{built}, Lean {version}" if version else built
         return True, f"Lean {session.version}" if session.version else ""
 
     @staticmethod
     def _mathlib_availability(session: LeanSession) -> tuple[bool, str]:
-        """:meth:`availability` for a Mathlib session."""
+        """:meth:`availability` for a Mathlib session.
+
+        A ``LANKY_LEAN_VERSION`` that is not the project's toolchain is the
+        reason the session will refuse to start (:meth:`LeanSession.start`),
+        and is said here already, rather than a Lean the REPL will not run.
+        """
         assert session.mathlib is not None
         if session.error is not None:
             return False, session.error
@@ -2719,9 +2730,21 @@ class LeanOracle:
         if problem is not None:
             return False, problem
         if session.server is None:
+            version = mathlib_mode.toolchain(session.mathlib)
+            pinned = os.environ.get("LANKY_LEAN_VERSION")
+            if pinned and version and pinned.lstrip("v") != version.lstrip("v"):
+                return False, (
+                    f"LANKY_LEAN_VERSION is {pinned}, but the Mathlib project at "
+                    f"{session.mathlib} runs Lean {version}"
+                )
+            revision = mathlib_mode.revision(session.mathlib)
+            # the tag alone: the commit it stands for is in the open session's line
+            tag = revision.split(" (", 1)[0] if revision else None
+            lean = f"Lean {version}, " if version else ""
+            mathlib = f"Mathlib {tag}" if tag else "Mathlib"
             return True, (
                 "untested until the first fact: the REPL is built on demand, "
-                f"with Mathlib from {session.mathlib}"
+                f"{lean}with {mathlib} from {session.mathlib}"
             )
         return True, f"Lean {session.version} with Mathlib {session.mathlib_revision}"
 

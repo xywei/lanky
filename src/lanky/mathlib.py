@@ -21,13 +21,21 @@ one lanky's CI uses for core Lean as well.
 
 Setting it up is one command, :func:`main`, and then the variable::
 
-    python -m lanky.mathlib ~/.cache/lanky/mathlib
-    export LANKY_LEAN_MATHLIB=~/.cache/lanky/mathlib
+    python -m lanky.mathlib ~/mathlib
+    export LANKY_LEAN_MATHLIB=~/mathlib
 
 The command writes the three files and runs ``lake exe cache get``, which clones
 Mathlib and fetches its compiled files (about 7 GB on disk, a few minutes). It
 never builds Mathlib from source, which would take hours: a project whose cache
 fetch failed is reported as not ready (:func:`problem`) rather than built.
+
+Everything the command fetches stays in the project, so deleting the
+directory deletes all of it. Mathlib's cache tool keeps the packed files it
+downloads, about 400 MB, apart from the project, in ``~/.cache/mathlib`` when
+nothing says otherwise; the command has it keep them in the project instead,
+in ``.lake/mathlib-cache`` (:func:`archive_directory`), unless
+``MATHLIB_CACHE_DIR`` names a place for them, which is then the user's
+choice and is kept. A second project downloads them again.
 """
 
 from __future__ import annotations
@@ -40,11 +48,14 @@ import subprocess
 from pathlib import Path
 
 __all__ = [
+    "ARCHIVES",
+    "ARCHIVE_VARIABLE",
     "ENVIRONMENT_VARIABLE",
     "MATHLIB_REVISION",
     "PROJECT_FILES",
     "TEMPLATE",
     "TOOLCHAIN",
+    "archive_directory",
     "fetch_cache",
     "main",
     "problem",
@@ -68,6 +79,13 @@ MATHLIB_REVISION = "v4.29.1"
 
 #: The Lean toolchain the project, and so the REPL, runs on.
 TOOLCHAIN = f"leanprover/lean4:{MATHLIB_REVISION}"
+
+#: The variable Mathlib's cache tool reads for where to keep what it downloads.
+ARCHIVE_VARIABLE = "MATHLIB_CACHE_DIR"
+
+#: Where in a project the cache tool keeps what it downloads, when
+#: :data:`ARCHIVE_VARIABLE` does not name a place (see :func:`archive_directory`).
+ARCHIVES = Path(".lake") / "mathlib-cache"
 
 
 def project_directory() -> str | None:
@@ -151,29 +169,78 @@ def write_project(directory: str | os.PathLike[str]) -> Path:
     return path
 
 
+def archive_directory(directory: str | os.PathLike[str]) -> Path:
+    """Where :func:`fetch_cache` has Mathlib's cache tool keep the packed files it downloads.
+
+    The tool's own default is outside the project, ``$XDG_CACHE_HOME/mathlib``
+    or ``~/.cache/mathlib``, so a user who deleted the project when done kept
+    some 400 MB of archives elsewhere (#151). The default here is
+    :data:`ARCHIVES` in the project, which goes when the project goes.
+    ``MATHLIB_CACHE_DIR``, when it names a place, is the user's choice and
+    wins, as it does for the tool; an empty one is unset.
+    """
+    chosen = os.environ.get(ARCHIVE_VARIABLE)
+    if chosen:
+        return Path(chosen).expanduser()
+    return Path(directory).expanduser() / ARCHIVES
+
+
 def fetch_cache(directory: str | os.PathLike[str], lake: str = "lake") -> int:
     """Fetch Mathlib's compiled files into a project with ``lake exe cache get``.
 
     Lake clones Mathlib and its dependencies at the commits the manifest pins
-    first, which is the network part; then the cache tool downloads and unpacks
-    the compiled files. Its output goes to the terminal, since it is a long
+    first, which is the network part; then the cache tool downloads the
+    compiled files, packed, into :func:`archive_directory`, and unpacks them
+    into the project. Its output goes to the terminal, since it is a long
     command and says how far it has got. Returns its exit code.
     """
+    environment = dict(os.environ)
+    environment[ARCHIVE_VARIABLE] = str(archive_directory(directory))
     try:
         return subprocess.run(
-            [lake, "exe", "cache", "get"], cwd=Path(directory).expanduser(), check=False
+            [lake, "exe", "cache", "get"],
+            cwd=Path(directory).expanduser(),
+            env=environment,
+            check=False,
         ).returncode
     except FileNotFoundError:
         print(f"{lake} is not on PATH: install elan and the {TOOLCHAIN} toolchain first")
         return 127
 
 
+def _size(path: Path) -> int:
+    """The bytes the files under ``path`` take, ``0`` for nothing there."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _archives_line(directory: Path) -> str:
+    """Where the cache tool left its packed files, and how much they take, for :func:`main`."""
+    archives = archive_directory(directory)
+    size = f"{_size(archives) / 1e6:.0f} MB"
+    if archives.resolve().is_relative_to(directory.resolve()):
+        return (
+            f"Mathlib's packed downloads ({size}) are in {archives}, inside the "
+            "project: deleting the project deletes them"
+        )
+    return (
+        f"Mathlib's packed downloads ({size}) are in {archives}, which "
+        f"{ARCHIVE_VARIABLE} names, outside the project: delete them there when done"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m lanky.mathlib DIR``: write the pinned project, fetch the cache.
 
-    Exit code 0 when the project is ready, with the line that turns Mathlib
-    mode on; otherwise the cache tool's exit code, or 1 when the project is
-    still not ready after it ran.
+    Exit code 0 when the project is ready, with where the cache tool left its
+    packed files and the line that turns Mathlib mode on; otherwise the cache
+    tool's exit code, or 1 when the project is still not ready after it ran.
     """
     parser = argparse.ArgumentParser(
         prog="python -m lanky.mathlib",
@@ -202,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     if reason is not None:
         print(reason)
         return 1
+    print(_archives_line(path))
     print(f"ready: export {ENVIRONMENT_VARIABLE}={path}")
     return 0
 
