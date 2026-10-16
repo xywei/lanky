@@ -38,6 +38,32 @@ All notable changes to lanky are recorded here. The format follows
   Mathlib it pins, or in core mode the pinned Lean or the one on `PATH`. A
   `LANKY_LEAN_VERSION` that is not the Mathlib project's toolchain is the
   reason the line gives, as the session gives it when it refuses to start.
+- **Processes that start Lean at once on an empty cache build the REPL
+  once** (#122). lean-interact builds the REPL with `lake build` in its
+  directory in the cache, and locks the checkout but not the build, so
+  pytest's workers, or `lanky check` runs side by side, built it at once,
+  and some failed with `the Lean REPL could not be built`. Where the Lean
+  is not pinned, a process whose build failed opened its session with the
+  next toolchain elan had: the suite's keyword test, run in one, read the
+  sixteen words Lean v4.33.0-rc1 reserves that v4.29.1 does not. A session
+  now holds a lock on a file in the cache while it sets its REPL up, so the
+  others wait for the first build and use it.
+- **With `pytest -n`, the Mathlib tests find the project** (#148). The
+  suite's conftest takes `LANKY_LEAN_MATHLIB` out of the environment, which
+  under pytest-xdist happened before the workers started, so in every
+  worker the Mathlib tests skipped, or failed under
+  `LANKY_LEAN_MATHLIB_TEST_REQUIRED`. Each worker is now handed the
+  project.
+- **The test of an interrupted child holds on a loaded machine** (#149).
+  The child's `SIGTERM` handler printed, and a signal that came while the
+  child's own `print("ready")` still held standard output made that print
+  raise `RuntimeError: reentrant call`, so the child exited 1: one run in
+  eight on a host running twice as many processes as it has threads. The
+  handler now writes past `sys.stdout`, and is given more than a second.
+- **The suite passes where loopty is installed beside lanky** (#147).
+  `test_the_built_in_plugins_are_registered` asserted that lanky's two
+  theories were the only ones, and loopty's entry point adds `kernel`. It
+  now asserts that lanky's come first.
 
 ## [0.3.0] - 2026-10-15
 

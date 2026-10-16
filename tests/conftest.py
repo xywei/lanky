@@ -11,7 +11,8 @@ ledgers read ``tested`` for Gauss's sum, which Mathlib proves. So the variable
 is taken out of the environment before any test runs, whatever the shell that
 started the suite exported, and handed to the tests in ``tests/test_mathlib.py``
 through the ``mathlib_project`` fixture; those set it again where they want
-Mathlib mode, and skip when there is none.
+Mathlib mode, and skip when there is none. Under pytest-xdist the workers start
+once it is gone, so it is handed to each of them as well.
 
 The CAS oracle (:mod:`lanky.oracles.cas`) is on wherever sympy imports, and the
 suite is written without it for the same reason: the documented ledgers, and
@@ -35,9 +36,25 @@ pytest_plugins = ["pytester"]
 MATHLIB_PROJECT = os.environ.pop("LANKY_LEAN_MATHLIB", None) or None
 
 
+@pytest.hookimpl(optionalhook=True)
+def pytest_configure_node(node) -> None:
+    """Hand the Mathlib project to a pytest-xdist worker (#148).
+
+    The workers start with this process's environment, from which the
+    variable is gone by then, so each was a run without Mathlib.
+    """
+    node.workerinput["lanky_mathlib_project"] = MATHLIB_PROJECT
+
+
 @pytest.fixture(scope="session")
-def mathlib_project() -> str | None:
-    """The Lake project with Mathlib that ``LANKY_LEAN_MATHLIB`` named, or ``None``."""
+def mathlib_project(request) -> str | None:
+    """The Lake project with Mathlib that ``LANKY_LEAN_MATHLIB`` named, or ``None``.
+
+    In a pytest-xdist worker, the one the run was started with.
+    """
+    workerinput = getattr(request.config, "workerinput", None)
+    if workerinput is not None:
+        return workerinput.get("lanky_mathlib_project")
     return MATHLIB_PROJECT
 
 

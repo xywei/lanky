@@ -44,8 +44,23 @@ def test_the_package_re_exports_the_interface() -> None:
         assert hasattr(lanky, name), name
 
 
-def test_the_built_in_plugins_are_registered() -> None:
-    assert [theory.name for theory in lanky.registry.theories] == ["theorem", "rewrite"]
+@pytest.mark.parametrize("installed", [(), ("kernel",)], ids=["alone", "with-a-plugin"])
+def test_the_built_in_plugins_are_registered(monkeypatch, installed) -> None:
+    """lanky's own theories are registered, first; an installed plugin's may follow (#147).
+
+    loopty, installed beside lanky, registers a ``kernel`` theory through
+    the ``lanky.theories`` entry point, which reaches the shared registry as
+    soon as a test loads the entry points, so this test failed in loopty's
+    environment. ``with-a-plugin`` registers such a theory here.
+    """
+
+    class PluginTheory:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    plugins = [PluginTheory(name) for name in installed]
+    monkeypatch.setattr(lanky.registry, "theories", [*lanky.registry.theories, *plugins])
+    assert [theory.name for theory in lanky.registry.theories][:2] == ["theorem", "rewrite"]
     assert {oracle.name for oracle in lanky.registry.oracles} >= {
         "lean",
         "property-test",
