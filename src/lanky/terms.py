@@ -559,14 +559,52 @@ class SymbolicMixin:
         variable in it is read as Python reads it (:func:`evaluate`), which is
         what the file run as a program computes, and the faithfulness check's
         rerun; a term with a variable has no value until it is evaluated, and
-        raises as pymbolic does.
+        raises as pymbolic does, except to an annotation's own code, which is
+        told what to write instead (:func:`_refuse_a_number`, #112).
+
+        Raises:
+            TypeError: If the term has a variable in it and the float is
+                asked for by the code of an annotation being evaluated, as
+                ``math.sqrt`` or ``math.isclose`` there asks for it.
         """
+        if _ANNOTATION_CODE.get():
+            _refuse_a_number(self, sys._getframe(1))
         try:
             return super().__float__()  # type: ignore[misc]
         except UnsupportedExpressionError:
             if free_variables(self):
                 raise
             return float(evaluate(self, {}))
+
+    def __floor__(self) -> int:
+        """``math.floor`` of a term with no variable in it, which is the floor of its float.
+
+        Python asks a value for ``__floor__`` before it asks for its float, so
+        this is where ``math.floor`` of a term is named as the call it is
+        (#112): a term with a variable has no floor until it is evaluated, and
+        the code of an annotation being evaluated is told to write ``x // 1``,
+        which is the floor as a term.
+
+        Raises:
+            TypeError: If the term has a variable in it and ``math.floor`` is
+                called on it by the code of an annotation being evaluated.
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_a_number(self, sys._getframe(1), "math.floor")
+        return math.floor(self.__float__())
+
+    def __ceil__(self) -> int:
+        """``math.ceil`` of a term with no variable in it, which is the ceiling of its float.
+
+        As :meth:`__floor__`, with ``-(-x // 1)`` the ceiling as a term.
+
+        Raises:
+            TypeError: If the term has a variable in it and ``math.ceil`` is
+                called on it by the code of an annotation being evaluated.
+        """
+        if _ANNOTATION_CODE.get():
+            _refuse_a_number(self, sys._getframe(1), "math.ceil")
+        return math.ceil(self.__float__())
 
     # {{{ comparisons build propositions
 
@@ -1138,6 +1176,53 @@ def _refuse_truth(term: Any, frame: Any) -> None:
         "the same at every value it takes and say something else than what was "
         f"written. Compare it instead, as in {render(term)} != 0, and join "
         "propositions with &, | and ~"
+    )
+
+
+def _refuse_a_number(term: Any, frame: Any, call: str | None = None) -> None:
+    """Refuse to make a term with a variable a Python number for an annotation's own code (#112).
+
+    ``math.floor``, ``math.sqrt``, ``math.isclose`` and the other functions
+    of Python's ``math`` module compute on numbers, and ask their argument
+    for one: ``math.floor`` for its floor, the others for its float. A term
+    with no variable in it gives the number Python computes
+    (:meth:`SymbolicMixin.__float__`); one with a variable has none until it
+    is evaluated, and the annotation ``math.floor(x) >= x - 1`` raised
+    pymbolic's ``UnknownVariableError: x``, which names neither the call nor
+    what to write instead. It is refused here with both, in the frames
+    :func:`_refuse_hashing` refuses a hash to: ``call`` names the function
+    when it is known, ``math.floor`` and ``math.ceil``, which have terms to
+    write in their place, and otherwise the message names the functions that
+    ask for a float. Code that is not an annotation's, a kernel's body that
+    loopty traces among it, gets pymbolic's error as before.
+
+    Raises:
+        TypeError: If ``term`` has a variable in it and ``frame`` runs the
+            code of an annotation being evaluated, or calls a builtin for it.
+    """
+    if not _asked_by_annotation(frame) or not free_variables(term):
+        return
+    shown = render(term)
+    operand = (
+        shown if isinstance(term, prim.Variable | prim.Subscript | prim.Call | Elementary)
+        else f"({shown})"
+    )
+    instead = {"math.floor": f"{operand} // 1", "math.ceil": f"-(-{operand} // 1)"}
+    if call in instead:
+        what = "floor" if call == "math.floor" else "ceiling"
+        raise TypeError(
+            f"{call}({shown}) applies Python's {call} to a symbolic value, which "
+            f"lanky has no term for: {call} computes on a number, and {shown} is "
+            f"no number until it is evaluated. Write {instead[call]}, which is the "
+            f"{what} of {shown} as a term"
+        )
+    raise TypeError(
+        f"{shown} was made a Python number by the annotation, as math.sqrt, "
+        "math.isclose and the other functions of Python's math module make their "
+        f"arguments: they compute on numbers, and {shown} is no number until it is "
+        "evaluated, so lanky has no term for them. Write what is meant with terms: "
+        "lanky.exp, lanky.log and lanky.sqrt are terms, and so is "
+        f"{operand} // 1, the floor of {shown}"
     )
 
 

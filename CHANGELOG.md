@@ -8,6 +8,58 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Fixed
 
+- **An oracle that raises is named in the ledger** (#137). One that raised
+  over a fact was passed over without a word except under `--verbose`: a bug
+  in one of Lean's strategies made the oracle raise on a claim, and the row
+  read `tested`, with nothing in the JSON saying that Lean was asked at all.
+  The fact now records the oracle and the exception as `raised`, and `lanky
+  check` prints them under the table, in a `RAISED` line that says the
+  oracle failed and not the claim, and that `--verbose` prints where: it
+  prints the traceback now. An oracle that raises while it samples a claim
+  again, or while it is asked whether a claim is vacuous, is named the same
+  way, with what it was asked. `lanky.cli.report_raised` prints the lines for
+  a plugin's verb.
+- **A theorem Lean's printer declines says so under `--verbose`** (#132).
+  The Lean oracle is not offered a statement its printer cannot state, and the
+  row read `tested` with nothing saying that Lean was not asked, or why:
+  `flattening` in `examples/sum_factorization.py`, which applies a family at
+  `i // n**2`, had its reason in the example's docstring alone. An oracle may
+  now say why it will not take a fact (`not_taken`, beside `availability`),
+  and Lean's gives the printer's reason as `lean_declined`, which `--json`
+  carries, `--verbose` prints in a `NOT PROVED` line (`property-test tested
+  it; Lean was not asked: ...`), and `--show-lean` prints beside a statement
+  only Mathlib can state.
+- **A Mathlib project Lean cannot import says so, once** (#138). The REPL
+  answers an `import Mathlib` that fails with an empty environment and no
+  error, so a project whose compiled files a `lake exe cache get` that
+  stopped half way had damaged started a session with no Mathlib in it, and
+  every claim about reals read `not proved by Lean: expected token`. A
+  Mathlib session now checks the import with a command only Mathlib
+  elaborates, and when it fails asks Lean to import Mathlib on its own, which
+  says why. The oracle is then unavailable, the `WITHOUT LEAN` line gives the
+  reason, `Mathlib could not be imported from DIR: failed to read file
+  '...', invalid header; run `lake exe cache get!` there`, and the claims stay
+  `tested`. An import that runs out of time says how to give it more.
+- **`--show-lean` names each theorem apart** (#120). The theorem of a part
+  is named after the claim's owner and the part, so the facts of one owner
+  declared theorems of one name: loopty's stencil printed `theorem
+  Lanky.jacobi_in_bounds` once for each of its three accesses, which a reader
+  could not tell apart and Lean would not take in one file. A theorem a row
+  above it named is shown as `Lanky.jacobi_in_bounds_2`, `_3` and on, counted
+  over the whole ledger, so a theorem has one name whatever `--show-lean TEXT`
+  keeps. The provenance and the proof cache keep the source Lean was given.
+- **`math.floor` of a variable in an annotation names the call and what to
+  write** (#112). `math.floor(x) >= x - 1` failed while the file was read
+  with pymbolic's `UnknownVariableError: x`, and `math.floor(exp(x))` with
+  its `UnsupportedExpressionError`, neither naming the call. Both are now a
+  `TypeError` that does: `math.floor(x) applies Python's math.floor to a
+  symbolic value, which lanky has no term for: ... Write x // 1, which is the
+  floor of x as a term`, and `math.ceil` the same, with `-(-x // 1)`. Every
+  other function of Python's `math` module asks for a float, and is refused
+  naming the term and the terms to write instead. Code that is not an
+  annotation's, a kernel's body that loopty traces among it, gets pymbolic's
+  error as before.
+
 - **A check after the first starts no Lean, also where the first ran out of
   time** (#134). An attempt the budget cut short, or one that timed out, was
   not kept in the proof cache, since asked again it may be answered, so the

@@ -1455,6 +1455,147 @@ def test_a_pinned_version_that_is_not_the_projects_is_refused(monkeypatch, tmp_p
     assert "runs Lean v4.29.1" in session.error
 
 
+class _Answers:
+    """A REPL whose ``import Mathlib`` says nothing, as the REPL answers an import that failed."""
+
+    def __init__(self, config, probe: list[str] | Exception) -> None:
+        self.config = config
+        self.probe = probe
+        self.commands: list[tuple[str, object]] = []
+
+    def run(self, command, timeout=None):
+        from types import SimpleNamespace
+
+        self.commands.append((command.cmd, getattr(command, "env", None)))
+        if command.cmd == "import Mathlib":
+            return SimpleNamespace(env=0, messages=[])
+        if isinstance(self.probe, Exception):
+            raise self.probe
+        errors = [SimpleNamespace(severity="error", data=text) for text in self.probe]
+        return SimpleNamespace(env=1, messages=errors)
+
+    def kill(self) -> None:
+        pass
+
+
+def _session_with(monkeypatch, tmp_path, probe: list[str] | Exception, said: str | None):
+    """A Mathlib session started on a REPL that answers the probe with ``probe``.
+
+    Lean asked to import Mathlib on its own says ``said``.
+    """
+    import lanky.oracles.lean as lean_oracle
+
+    pytest.importorskip("lean_interact")
+    mathlib_mode.write_project(tmp_path)
+    (tmp_path / ".lake" / "packages" / "mathlib").mkdir(parents=True, exist_ok=True)
+
+    class Config:
+        lake_path = "lake"
+
+        def __init__(self, project, **options) -> None:
+            self.lean_version = "v4.29.1"
+
+    servers: list[_Answers] = []
+
+    def server(config):
+        servers.append(_Answers(config, probe))
+        return servers[-1]
+
+    asked: list[tuple[str, str]] = []
+
+    def failure(directory: str, lake: str = "lake") -> str | None:
+        asked.append((directory, lake))
+        return said
+
+    monkeypatch.setattr(lean_oracle, "_import_failure", failure, raising=False)
+    monkeypatch.delenv("LANKY_LEAN_VERSION", raising=False)
+    session = LeanSession(mathlib=str(tmp_path))
+    started = session._start_with_mathlib(Config, server, {})
+    return session, started, servers[0], asked
+
+
+def test_a_mathlib_lean_does_not_import_is_named_once_with_the_fix(monkeypatch, tmp_path) -> None:
+    """#138: the REPL answers an import that fails with an empty environment and no error.
+
+    A ``lake exe cache get`` that stopped half way left damaged compiled
+    files, the session started with no Mathlib in it, and every claim about
+    reals read ``not proved by Lean: expected token``. The import is checked,
+    and Lean says why it failed when it imports Mathlib on its own, which the
+    session's error, the oracle's reason, gives with the fix.
+    """
+    damaged = "failed to read file '/m/Batteries/Tactic/Lint/Basic.ir', invalid header"
+    session, started, server, asked = _session_with(
+        monkeypatch, tmp_path, ["expected token"], damaged
+    )
+    assert not started
+    assert session.error == (
+        f"Mathlib could not be imported from {tmp_path}: {damaged}; "
+        "run `lake exe cache get!` there"
+    )
+    from lanky.oracles.lean import MATHLIB_PROBE
+
+    # the probe runs where the import left the session
+    assert server.commands == [("import Mathlib", None), (MATHLIB_PROBE, 0)]
+    assert asked == [(str(tmp_path), "lake")]
+    oracle = LeanOracle(session=session)
+    monkeypatch.setattr("lanky.oracles.lean._lean_interact_installed", lambda: True)
+    monkeypatch.setattr("lanky.oracles.lean.shutil.which", lambda name: f"/bin/{name}")
+    monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
+    assert oracle.availability() == (False, session.error)
+
+    # a Mathlib Lean imports on its own and that does not read lanky's statements
+    session, started, _server, _asked = _session_with(
+        monkeypatch, tmp_path, ["expected token"], None
+    )
+    assert not started
+    assert session.error.startswith(f"Mathlib from {tmp_path} does not read what lanky prints: ")
+    assert f"with expected token; `python -m lanky.mathlib {tmp_path}` sets up" in session.error
+
+    # and one that imports is the session it was
+    session, started, _server, asked = _session_with(monkeypatch, tmp_path, [], damaged)
+    assert started
+    assert session.error is None
+    assert session.environment == 0
+    assert asked == []
+    session.close()
+
+    # as is one whose probe was not answered, which says nothing of the import (Codex)
+    timeout = TimeoutError("The Lean server did not respond in time and is now killed.")
+    session, started, _server, asked = _session_with(monkeypatch, tmp_path, timeout, damaged)
+    assert started
+    assert session.error is None
+    assert asked == []
+    session.close()
+
+
+def test_lean_on_its_own_says_why_mathlib_does_not_import(tmp_path) -> None:
+    """#138: ``lake env lean --stdin`` on ``import Mathlib`` reports what the REPL loses."""
+    import stat
+    import sys
+
+    from lanky.oracles.lean import _import_failure
+
+    if sys.platform == "win32":
+        pytest.skip("the stand-in for lake is a shell script")
+    lake = tmp_path / "lake"
+    lake.write_text(
+        "#!/bin/sh\n"
+        'test "$*" = "env lean --stdin" || exit 2\n'
+        "read line\n"
+        'test "$line" = "import Mathlib" || exit 3\n'
+        "echo \"<stdin>:1:0: error: failed to read file 'Basic.ir', invalid header\"\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    lake.chmod(lake.stat().st_mode | stat.S_IXUSR)
+    assert _import_failure(str(tmp_path), str(lake)) == (
+        "failed to read file 'Basic.ir', invalid header"
+    )
+    lake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    assert _import_failure(str(tmp_path), str(lake)) is None
+    assert _import_failure(str(tmp_path), str(tmp_path / "no-lake")) is None
+
+
 # }}}
 
 

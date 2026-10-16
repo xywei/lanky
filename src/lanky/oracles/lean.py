@@ -317,6 +317,11 @@ def _peel_sum(statement: LeanStatement) -> str:
 #: first import on a machine reads several gigabytes; later ones are quicker.
 MATHLIB_IMPORT_TIMEOUT = float(os.environ.get("LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT", "600"))
 
+#: A command only an environment with Mathlib elaborates, which a Mathlib
+#: session runs after ``import Mathlib`` (#138): a sum over a ``Finset`` of
+#: real numbers, written with the notation lanky prints its sums with.
+MATHLIB_PROBE = "#check (∑ i ∈ Finset.range 2, (i : ℝ))"
+
 
 # {{{ choosing a Lean version
 
@@ -711,26 +716,99 @@ class LeanSession:
             _forget_group(group)
 
     def _import_mathlib(self) -> bool:
-        """``import Mathlib`` in the running server, keeping the environment it leaves."""
+        """``import Mathlib`` in the running server, keeping the environment it leaves.
+
+        The import is then checked with a command only Mathlib elaborates
+        (:data:`MATHLIB_PROBE`). The REPL answers an import that fails with
+        an empty environment and no error, so a project whose compiled files
+        a ``lake exe cache get`` that stopped half way left damaged started
+        a session with no Mathlib in it, and every claim about reals read
+        ``not proved by Lean: expected token``, from a ``∑`` that did not
+        parse (#138). Lean asked to import Mathlib on its own says why the
+        import failed (:func:`_import_failure`), and the session's error, the
+        oracle's reason from then on, says that once, with the command that
+        fetches the compiled files again::
+
+            Mathlib could not be imported from ~/mathlib: failed to read file
+            '.../Batteries/Tactic/Lint/Basic.ir', invalid header; run `lake exe
+            cache get!` there
+
+        ``lanky check`` prints it in its ``WITHOUT LEAN`` line, and the claims
+        stay ``tested``. An import that takes longer than
+        :data:`MATHLIB_IMPORT_TIMEOUT` says so, and how to give it more time.
+        A probe the REPL does not answer, one that times out or a REPL that
+        stops, is no answer about the import, and the session goes on as it
+        does after any command that was not answered.
+        """
         from lean_interact import Command
 
         try:
             response = self.server.run(
                 Command(cmd="import Mathlib"), timeout=MATHLIB_IMPORT_TIMEOUT
             )
+        except TimeoutError:
+            self.error = (
+                f"Mathlib could not be imported from {self.mathlib} in "
+                f"{MATHLIB_IMPORT_TIMEOUT:g} s; LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT "
+                "gives the import more seconds"
+            )
+            return False
         except Exception as exc:  # noqa: BLE001 - a failed import is a reason, not a crash
-            self.error = f"importing Mathlib failed ({type(exc).__name__}: {exc})"
+            said = self._import_failure() or f"{type(exc).__name__}: {exc}"
+            self.error = self._not_imported(said)
             return False
         except BaseException:
             self._interrupted()
             raise
-        message = getattr(response, "message", None)
-        problems = [str(message)] if message is not None else _errors(response)
+        problems = _problems(response)
         if problems:
-            self.error = f"importing Mathlib failed: {problems[0]}"
+            self.error = self._not_imported(problems[0])
             return False
-        self.environment = getattr(response, "env", None)
+        environment = getattr(response, "env", None)
+        try:
+            # the import's time: the first command after it may load what it deferred
+            probe = self.server.run(
+                Command(cmd=MATHLIB_PROBE, env=environment), timeout=MATHLIB_IMPORT_TIMEOUT
+            )
+        except Exception:  # noqa: BLE001 - a probe the REPL did not answer says nothing
+            # of the import, which reported no error: the session goes on, and starts
+            # the REPL again before its next command if it has to, as after a timeout
+            # (Codex)
+            failed = []
+        except BaseException:
+            self._interrupted()
+            raise
+        else:
+            failed = _problems(probe)
+        if failed:
+            said = self._import_failure()
+            if said is not None:
+                self.error = self._not_imported(said)
+            else:
+                # Lean imports it on its own, and it is not the Mathlib lanky writes for
+                self.error = (
+                    f"Mathlib from {self.mathlib} does not read what lanky prints: "
+                    f"Lean answered `{MATHLIB_PROBE}` with {failed[0]}; "
+                    f"`python -m lanky.mathlib {self.mathlib}` sets up the Mathlib "
+                    "lanky's statements are written for"
+                )
+            return False
+        self.environment = environment
         return True
+
+    def _not_imported(self, said: str) -> str:
+        """The session's error for a Mathlib Lean could not import, with what Lean said."""
+        return (
+            f"Mathlib could not be imported from {self.mathlib}: {said}; "
+            "run `lake exe cache get!` there"
+        )
+
+    def _import_failure(self) -> str | None:
+        """What Lean says of importing this project's Mathlib on its own, if it fails."""
+        config = getattr(self.server, "config", None)
+        lake = str(getattr(config, "lake_path", None) or "lake")
+        assert self.mathlib is not None
+        return _import_failure(os.path.expanduser(self.mathlib), lake)
 
     def _revive(self) -> bool:
         """Start again a server the driver killed; a Mathlib session imports Mathlib again.
@@ -1079,6 +1157,62 @@ def _errors(response: Any) -> list[str]:
         for item in getattr(response, "messages", ())
         if str(getattr(item, "severity", "")).endswith("error")
     ]
+
+
+def _problems(response: Any) -> list[str]:
+    """What went wrong with a REPL command: the REPL's own error, or Lean's errors."""
+    message = getattr(response, "message", None)
+    return [str(message)] if message is not None else _errors(response)
+
+
+def _import_failure(directory: str, lake: str = "lake") -> str | None:
+    """What Lean says when it imports Mathlib on its own in ``directory``; ``None`` for nothing.
+
+    The REPL loses the error of an import that fails (see
+    :meth:`LeanSession._import_mathlib`), and Lean run on ``import Mathlib``
+    in the project's environment, ``lake env lean --stdin``, reports it:
+    ``failed to read file '.../Basic.ir', invalid header``. The first error
+    it reports is returned, without the position Lean puts before it.
+    ``None`` when it reports none, does not finish in
+    :data:`MATHLIB_IMPORT_TIMEOUT`, or cannot be started; the process and
+    whatever it started are killed if they have to be.
+    """
+    try:
+        process = subprocess.Popen(
+            [lake, "env", "lean", "--stdin"],
+            cwd=directory,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        return None
+
+    def kill() -> None:
+        killpg = getattr(os, "killpg", None)
+        with contextlib.suppress(OSError):
+            if killpg is not None:
+                killpg(process.pid, signal.SIGKILL)
+            else:  # pragma: no cover - Windows, where there is no process group
+                process.kill()
+
+    try:
+        output, _ = process.communicate("import Mathlib\n", timeout=MATHLIB_IMPORT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        kill()
+        process.communicate()
+        return None
+    except BaseException:
+        kill()
+        raise
+    marker = "error: "
+    for line in (output or "").splitlines():
+        at = line.find(marker)
+        if at >= 0 and line[at + len(marker) :].strip():
+            return line[at + len(marker) :].strip()
+    return None
 
 
 # }}}
@@ -2939,6 +3073,37 @@ class LeanOracle:
         except (UnsupportedTerm, AttributeError, TypeError, ValueError):
             return False
         return True
+
+    def not_taken(self, fact: Fact, /) -> dict[str, Any]:
+        """Why :meth:`can_establish` said no to ``fact``, as provenance for it (#132).
+
+        A claim whose statement the printer declines in the session's
+        dialect, core Lean's or Mathlib's, is not offered to Lean, and its
+        row reads ``tested`` or ``assumed`` with nothing saying that Lean was
+        not asked, or why: ``flattening`` in ``examples/sum_factorization.py``
+        applies a family at ``i // n**2`` of a variable ``n``, which the
+        printer declines, and the reason was in the example's docstring
+        alone. The check records what this gives (:func:`lanky.check.establish`):
+        the printer's reason as ``lean_declined``, which ``lanky check
+        --verbose`` prints as Lean's reason for not being asked
+        (:func:`lanky.cli.report_unproved`) and ``--show-lean`` beside a
+        statement it can print. A printer that fails on the statement
+        otherwise is named with what it raised. Nothing for a fact with no
+        term, or a plugin's claim, which Lean always takes.
+        """
+        if fact.term is None or callable(getattr(fact.term, "lean_obligation", None)):
+            return {}
+        try:
+            statement_of(fact.term, fact.owner or fact.id, mathlib=self._mathlib())
+        except UnsupportedTerm as exc:
+            return {"lean_declined": str(exc)}
+        except (AttributeError, TypeError, ValueError) as exc:
+            return {
+                "lean_declined": (
+                    f"the Lean printer could not state it ({type(exc).__name__}: {exc})"
+                )
+            }
+        return {}
 
     def missing(self, fact: Fact, /) -> tuple[str, ...]:
         """What this machine lacks for Lean to be asked to prove ``fact``; ``()`` for nothing.

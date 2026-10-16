@@ -32,6 +32,7 @@ import importlib.util
 import inspect
 import keyword
 import sys
+import traceback
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -326,6 +327,14 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
     (:attr:`~lanky.ledger.Fact.is_reading`) was established when it was
     made, by running the annotations, and is returned as it is.
 
+    An oracle that raises is passed over, as one that declines is, and the
+    fact records it as ``raised``, with the oracle's name and the exception,
+    which ``lanky check`` prints under the table (:func:`_with_raise`, #137):
+    a crash in a strategy is not a claim the oracle was not offered. An
+    oracle that is not willing to try the fact may say why, and that is
+    recorded too (:func:`_not_taken`, #132): the reason Lean's printer
+    declines a statement, which ``--verbose`` prints.
+
     A plugin may hand over a fact its own checker settled when the fact was
     made: loopty's casts are decided by isl as each schedule step is taken.
     Such a fact is offered to the oracles as any other, and an oracle that
@@ -354,14 +363,16 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
             continue
         try:
             if not oracle.can_establish(fact):
+                fact = _not_taken(oracle, fact)
                 continue
             result = oracle.establish(fact)
         except Exception as exc:  # noqa: BLE001 - one oracle must not stop the rest
-            if verbose:
-                print(f"  {oracle.name} raised {type(exc).__name__}: {exc}")
+            fact = _with_raise(fact, oracle, exc, verbose=verbose)
             continue
         if result is None:
             continue
+        # an oracle that raised before this one is named whatever this one returns
+        result = _with_raised(result, _declines(fact.provenance.get("raised")))
         if _settles(oracle, fact, result):
             result = result.with_status(result.status, trust_class=oracle.trust_class())
             fact = _cross_check(result, gaps, handed=fact, verbose=verbose)
@@ -443,6 +454,78 @@ def _keep_declines(handed: Fact, result: Fact) -> Fact:
     return result.with_status(result.status, declined=reasons)
 
 
+def _not_taken(oracle: Any, fact: Fact) -> Fact:
+    """``fact``, with what ``oracle`` says of why it is not willing to try it (#132).
+
+    An oracle that says no in ``can_establish`` records nothing, so a fact
+    it would have been asked about read as if it had never been offered to
+    it: Lean's printer declines a theorem that applies a family at ``i //
+    n**2``, and the row read ``tested`` with nothing anywhere saying that
+    Lean was not asked, or why. An oracle may say why through an optional
+    ``not_taken(fact)``, which gives the provenance entries to record, or
+    an empty mapping for nothing to say (see :class:`lanky.plugins.Oracle`).
+    Lean's gives the printer's reason as ``lean_declined``, which ``lanky
+    check --verbose`` prints (:func:`lanky.cli.report_unproved`); it is not
+    the standard ``declined``, since the oracle was not willing to try the
+    fact, which is not having looked at it and declined.
+    """
+    explain = getattr(oracle, "not_taken", None)
+    if not callable(explain):
+        return fact
+    marks = explain(fact)
+    if not isinstance(marks, dict) or not marks:
+        return fact
+    return fact.with_status(fact.status, **marks)
+
+
+def _raise_entry(oracle: Any, exc: BaseException, context: str = "") -> str:
+    """What an oracle that raised says in the ledger: ``lean raised ValueError: ...``.
+
+    ``context`` says what it was doing, when that was not trying the fact
+    itself: sampling it again after a stronger oracle established it, or
+    answering whether it is vacuous.
+    """
+    entry = f"{oracle.name} raised {type(exc).__name__}: {exc}"
+    return f"{entry}, {context}" if context else entry
+
+
+def _print_raise(entry: str, exc: BaseException) -> None:
+    """``--verbose``'s account of an oracle that raised: the entry, and where it raised."""
+    print(f"  {entry}")
+    for line in "".join(traceback.format_exception(exc)).rstrip().splitlines():
+        print(f"    {line}")
+
+
+def _with_raise(
+    fact: Fact, oracle: Any, exc: BaseException, verbose: bool = False, context: str = ""
+) -> Fact:
+    """``fact``, with the exception ``oracle`` raised over it recorded as ``raised`` (#137).
+
+    One oracle that raises must not stop the rest, and the walk goes on
+    without it, but it used to go on without a word except under
+    ``--verbose``: a bug in a strategy of Lean's made the Lean oracle raise
+    on one claim, and the row read ``tested`` with nothing in the JSON
+    saying that Lean was asked at all, which is what a reader concludes.
+    The oracle's name and the exception are kept, one entry per raise, in
+    the order they came (:func:`_raise_entry`), and ``lanky check`` prints
+    them under the table (:func:`lanky.cli.report_raised`). ``--verbose``
+    prints the traceback as well, which is what a report of the bug needs.
+    """
+    entry = _raise_entry(oracle, exc, context)
+    if verbose:
+        _print_raise(entry, exc)
+    return _with_raised(fact, [entry])
+
+
+def _with_raised(fact: Fact, entries: list[str]) -> Fact:
+    """``fact``, with the ``entries`` it does not record yet added to its ``raised``."""
+    before = _declines(fact.provenance.get("raised"))
+    added = [entry for entry in entries if entry not in before]
+    if not added:
+        return fact
+    return fact.with_status(fact.status, raised=[*before, *added])
+
+
 def _overruled(fact: Fact, sampled: Fact, tester: str) -> Fact:
     """The refuted fact that a counterexample to a heuristic's answer leaves.
 
@@ -457,13 +540,15 @@ def _overruled(fact: Fact, sampled: Fact, tester: str) -> Fact:
     overruled = f"{fact.decided_by}, a heuristic, {fact.status.value} it"
     reason = sampled.provenance.get("reason")
     note = f"{overruled}, and this draw overrules it"
-    return sampled.with_status(
+    refuted = sampled.with_status(
         Status.REFUTED,
         tester,
         trust_class="test",
         overruled=overruled,
         reason=f"{reason}\n{note}" if reason else note,
     )
+    # an oracle that raised on the way here is still named (#137)
+    return _with_raised(refuted, _declines(fact.provenance.get("raised")))
 
 
 def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
@@ -503,8 +588,7 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
                 continue
             result = oracle.establish(fact)
         except Exception as exc:  # noqa: BLE001 - one oracle must not stop the rest
-            if verbose:
-                print(f"  {oracle.name} raised {type(exc).__name__}: {exc}")
+            fact = _with_raise(fact, oracle, exc, verbose=verbose)
             continue
         if result is None:
             continue
@@ -689,7 +773,10 @@ def _cross_check(
             if not oracle.can_establish(sampled):
                 continue
             result = oracle.establish(sampled)
-        except Exception:  # noqa: BLE001 - a cross-check must not fail a check
+        except Exception as exc:  # noqa: BLE001 - a cross-check must not fail a check
+            fact = _with_raise(
+                fact, oracle, exc, verbose=verbose, context="while it sampled the claim again"
+            )
             continue
         if result is None:
             continue
@@ -795,7 +882,9 @@ def _examine_vacuity(fact: Fact, verbose: bool = False) -> Fact:
             unsatisfied=unsatisfied,
             unsatisfied_detail=_skipped(fact.provenance),
         )
-    found = _inconsistency(fact, verbose=verbose)
+    raised: list[str] = []
+    found = _inconsistency(fact, verbose=verbose, raised=raised)
+    fact = _with_raised(fact, raised)
     if found is None:
         return fact
     name, result = found
@@ -893,7 +982,9 @@ def _examine_goal_guard(fact: Fact, verbose: bool = False) -> Fact:
         unreached = _goal_marks(fact.provenance, fact.term).get("goal_unreached")
         if unreached:
             fact = fact.with_status(fact.status, goal_unreached=unreached)
-    found = _stronger_than_a_heuristic(goal_guard_fact(fact), verbose=verbose)
+    raised: list[str] = []
+    found = _stronger_than_a_heuristic(goal_guard_fact(fact), verbose=verbose, raised=raised)
+    fact = _with_raised(fact, raised)
     if found is None:
         return fact
     name, result = found
@@ -976,7 +1067,9 @@ def goal_guard_fact(fact: Fact) -> Fact:
     )
 
 
-def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
+def _inconsistency(
+    fact: Fact, verbose: bool = False, raised: list[str] | None = None
+) -> tuple[str, Fact] | None:
     """The first decision procedure or kernel that proves the hypotheses inconsistent.
 
     Returns the oracle's name and the fact it established (see
@@ -989,17 +1082,21 @@ def _inconsistency(fact: Fact, verbose: bool = False) -> tuple[str, Fact] | None
     hypotheses every attempt fails, so what Lean is asked is its short ladder,
     which for a goal of ``False`` is the five cheap tactics.
     """
-    return _stronger_than_a_heuristic(hypotheses_fact(fact), verbose=verbose)
+    return _stronger_than_a_heuristic(hypotheses_fact(fact), verbose=verbose, raised=raised)
 
 
-def _stronger_than_a_heuristic(question: Fact, verbose: bool = False) -> tuple[str, Fact] | None:
+def _stronger_than_a_heuristic(
+    question: Fact, verbose: bool = False, raised: list[str] | None = None
+) -> tuple[str, Fact] | None:
     """The first decision procedure or kernel that establishes ``question``.
 
     Returns the oracle's name and the fact it established, or ``None``. This
     is how a claim of vacuity is settled (:func:`hypotheses_fact`,
     :func:`goal_guard_fact`): a test is what raised the question, and cannot
     answer it, and a heuristic's answer is not guaranteed, while a vacuous
-    fact fails the check (see :func:`_inconsistency`).
+    fact fails the check (see :func:`_inconsistency`). An oracle that raises
+    over the question is added to ``raised``, saying which question it was,
+    for the caller to record on the fact it is about (#137).
     """
     for oracle in registry.sorted_oracles():
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) <= TRUST_STRENGTH["heuristic"]:
@@ -1012,8 +1109,11 @@ def _stronger_than_a_heuristic(question: Fact, verbose: bool = False) -> tuple[s
                 continue
             result = oracle.establish(question)
         except Exception as exc:  # noqa: BLE001 - one oracle must not stop the rest
+            entry = _raise_entry(oracle, exc, f"while it was asked whether {question.statement}")
             if verbose:
-                print(f"  {oracle.name} raised {type(exc).__name__}: {exc}")
+                _print_raise(entry, exc)
+            if raised is not None:
+                raised.append(entry)
             continue
         if result is None:
             continue

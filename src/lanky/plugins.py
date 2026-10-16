@@ -120,7 +120,11 @@ class Oracle(Protocol):
 
     An oracle may also expose ``availability() -> (bool, str)`` to explain, in
     one line, why it is not going to do anything (no Lean on the PATH, for
-    instance). See :func:`oracle_availability`.
+    instance). See :func:`oracle_availability`. And it may expose
+    ``not_taken(fact) -> dict``, the provenance entries that say why
+    :meth:`can_establish` said no to one fact, which the check records on it
+    (an empty mapping for nothing to say): Lean's names what its printer
+    could not state (see :func:`lanky.check.establish`).
     """
 
     name: str

@@ -2498,6 +2498,53 @@ def lean_oracle() -> Iterator[LeanOracle]:
     oracle.session.close()
 
 
+def test_a_project_whose_mathlib_does_not_import_says_so(
+    lean_oracle: LeanOracle, tmp_path
+) -> None:
+    """#138: the REPL answered an import that failed with an empty environment and no error.
+
+    A project whose compiled files are damaged started a session with no
+    Mathlib in it, and every claim about reals then read ``not proved by
+    Lean: expected token``. A project of one module named ``Mathlib``, built
+    and then damaged, is what Lean imports here: the session refuses to
+    start, with what Lean says on its own and the command that fetches the
+    files again; built and not damaged, it is no Mathlib lanky's statements
+    read in, and the session says that.
+    """
+    import subprocess
+
+    from lanky import mathlib as mathlib_mode
+
+    version = lean_oracle.session.version or mathlib_mode.MATHLIB_REVISION
+    (tmp_path / "lean-toolchain").write_text(f"leanprover/lean4:{version}\n", encoding="utf-8")
+    (tmp_path / "lakefile.toml").write_text(
+        'name = "fake"\ndefaultTargets = ["Mathlib"]\n\n[[lean_lib]]\nname = "Mathlib"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "Mathlib.lean").write_text("def fakeMathlib : Nat := 1\n", encoding="utf-8")
+    (tmp_path / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    built = subprocess.run(
+        ["lake", "build"], cwd=tmp_path, capture_output=True, text=True, timeout=600
+    )
+    if built.returncode:
+        _without_lean(f"lake could not build a project of one module: {built.stdout[-500:]}")
+
+    session = LeanSession(lean_oracle.timeout, mathlib=str(tmp_path))
+    assert not session.start()
+    assert session.error.startswith(f"Mathlib from {tmp_path} does not read what lanky prints: ")
+
+    olean = tmp_path / ".lake" / "build" / "lib" / "lean" / "Mathlib.olean"
+    with olean.open("r+b") as handle:
+        handle.write(b"not an olean header")
+    session = LeanSession(lean_oracle.timeout, mathlib=str(tmp_path))
+    assert not session.start()
+    assert re.fullmatch(
+        rf"Mathlib could not be imported from {re.escape(str(tmp_path))}: failed to read "
+        rf"file '{re.escape(str(olean))}', invalid header; run `lake exe cache get!` there",
+        session.error,
+    ), session.error
+
+
 def test_lean_closes_a_nat_identity(lean_oracle: LeanOracle) -> None:
     proved = lean_oracle.establish(commutes.fact())
     assert proved.status is Status.PROVED
