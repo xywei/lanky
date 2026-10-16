@@ -196,15 +196,19 @@ indented under a bracket where it cannot.
 
 ```console
 $ uv run lanky check examples/gauss.py --verbose
-lean (kernel): available (untested until the first fact: the REPL is built on demand)
+lean (kernel): available (untested until the first fact: the REPL is built on demand, Lean v4.29.1)
 property-test (test): available
 ...
 ```
 
 The parenthetical is the honest part. What was checked is cheap: `lean` is on
-`PATH` and the driver imports. Whether a REPL can actually be built is found out
-on the first fact and then remembered, so after anything has been attempted the
-line names the Lean version in use instead.
+`PATH` and the driver imports. The Lean named is the one the REPL will run,
+`LANKY_LEAN_VERSION` when it pins one and else the `lean` on `PATH`; with
+Mathlib it is the project's toolchain, and the line names the Mathlib too
+(`Lean v4.29.1, with Mathlib v4.29.1 from /home/you/mathlib`). Whether a REPL
+can actually be built is found out on the first fact and then remembered, so
+after anything has been attempted the line names the Lean version in use
+instead.
 
 On a machine with no Lean it reads
 `lean (kernel): unavailable: lean_interact is not installed (pip install "lanky[lean]")`,
@@ -917,6 +921,7 @@ $ uv run python -m lanky.mathlib ~/mathlib
 wrote the pinned Mathlib project (v4.29.1) to /home/you/mathlib
 ...
 Completed successfully!
+Mathlib's packed downloads (410 MB) are in /home/you/mathlib/.lake/mathlib-cache, inside the project: deleting the project deletes them
 ready: export LANKY_LEAN_MATHLIB=/home/you/mathlib
 ```
 
@@ -924,10 +929,12 @@ ready: export LANKY_LEAN_MATHLIB=/home/you/mathlib
 It writes three files and runs `lake exe cache get`, which clones Mathlib and
 its dependencies at the pinned commits and fetches the compiled files Mathlib
 publishes: about 7 GB on disk and a few minutes. It never builds Mathlib from
-source, which would take hours. The project is wherever you put it; the cache
-tool keeps what it downloads (about 400 MB, packed) in `MATHLIB_CACHE_DIR`,
-by default `$XDG_CACHE_HOME/mathlib` or `~/.cache/mathlib`, and the REPL lanky
-builds goes where `LANKY_LEAN_CACHE_DIR` says, as in core mode. Then:
+source, which would take hours. The project is wherever you put it, and holds
+everything the command fetched: the cache tool keeps what it downloads (about
+400 MB, packed) in the project's `.lake/mathlib-cache`, so deleting `~/mathlib`
+deletes all of it, unless `MATHLIB_CACHE_DIR` names another place, and the
+line before `ready` says where they are. The REPL lanky builds goes where
+`LANKY_LEAN_CACHE_DIR` says, as in core mode. Then:
 
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/gauss.py

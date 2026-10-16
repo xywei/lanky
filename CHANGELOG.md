@@ -6,6 +6,39 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A check after the first starts no Lean, also where the first ran out of
+  time** (#134). An attempt the budget cut short, or one that timed out, was
+  not kept in the proof cache, since asked again it may be answered, so the
+  check after a cold one started Lean for it: on loopty's `l2p.py` with
+  Mathlib, the second check started a session for the vacuity question of
+  `on_every_triangle`, whose budget the cold check had spent, and only the
+  third started none. The cache now keeps where such a question stopped,
+  with the budget and timeout it had and what the check said of it, for a
+  claim, a part of a plugin's claim and a counterexample. A check given no
+  more time reads it back, passes over the attempts left unanswered and
+  says what the first check said, without Lean; one given more time, a
+  larger budget or timeout, asks Lean again. The record never proves
+  anything: a claim proved after an attempt that timed out is proved by
+  the kept answer that closed it, read back as before.
+- **`python -m lanky.mathlib DIR` keeps Mathlib's packed downloads in the
+  project** (#151). The cache tool kept its 408 MB of archives in
+  `~/.cache/mathlib`, outside `DIR`, so deleting the project left them
+  behind. They now go to `DIR/.lake/mathlib-cache`, unless
+  `MATHLIB_CACHE_DIR` names a place for them, and the command says where
+  they are and how large they are. The module's docstring suggested
+  `~/.cache/lanky/mathlib` for the project, and now says `~/mathlib`, as
+  the README and the ledger's `WITHOUT MATHLIB` line do.
+- **`lanky check --verbose` names the Lean the REPL runs** (#152). Before
+  the first fact the oracle's line named the Mathlib project and not the
+  Lean, and a reader checking a setup ran `lean --version` beside it, which
+  is the Lean on `PATH`. It now says `the REPL is built on demand, Lean
+  v4.29.1, with Mathlib v4.29.1 from DIR`: the project's toolchain and the
+  Mathlib it pins, or in core mode the pinned Lean or the one on `PATH`. A
+  `LANKY_LEAN_VERSION` that is not the Mathlib project's toolchain is the
+  reason the line gives, as the session gives it when it refuses to start.
+
 ## [0.3.0] - 2026-10-15
 
 Lean checks what a plugin decides, and Mathlib proves claims for every size.

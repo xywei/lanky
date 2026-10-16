@@ -1316,6 +1316,88 @@ def test_an_unready_project_makes_the_oracle_unavailable(monkeypatch, tmp_path) 
     assert reason.startswith("untested until the first fact") and str(tmp_path) in reason
 
 
+def test_the_oracles_line_names_the_lean_the_repl_runs(monkeypatch, tmp_path) -> None:
+    """#152: before any session, the line says which Lean, and which Mathlib, it would run.
+
+    ``lean --version`` beside it names the Lean on the ``PATH``, which need not
+    be the REPL's. In core mode the Lean is the pinned one, else the one on the
+    ``PATH``; in Mathlib mode it is the project's toolchain, and a pin that
+    says otherwise is the reason the session will refuse to start.
+    """
+    import lanky.oracles.lean as lean_oracle
+
+    monkeypatch.delenv("LANKY_LEAN_DISABLE", raising=False)
+    monkeypatch.setattr(lean_oracle.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(lean_oracle, "_lean_interact_installed", lambda: True)
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    monkeypatch.setenv("LANKY_LEAN_VERSION", "v4.29.1")
+    assert LeanOracle().availability() == (
+        True,
+        "untested until the first fact: the REPL is built on demand, Lean v4.29.1",
+    )
+    monkeypatch.delenv("LANKY_LEAN_VERSION")
+    monkeypatch.setattr(lean_oracle, "_lean_on_path_version", lambda: "v4.30.0")
+    monkeypatch.setattr(lean_oracle, "_RESOLVED", ())
+    assert LeanOracle().availability()[1].endswith(", Lean v4.30.0")
+    mathlib_mode.write_project(tmp_path)
+    (tmp_path / ".lake" / "packages" / "mathlib").mkdir(parents=True)
+    monkeypatch.setenv("LANKY_LEAN_MATHLIB", str(tmp_path))
+    assert LeanOracle().availability() == (
+        True,
+        "untested until the first fact: the REPL is built on demand, "
+        f"Lean v4.29.1, with Mathlib v4.29.1 from {tmp_path}",
+    )
+    monkeypatch.setenv("LANKY_LEAN_VERSION", "v4.30.0")
+    assert LeanOracle().availability() == (
+        False,
+        f"LANKY_LEAN_VERSION is v4.30.0, but the Mathlib project at {tmp_path} "
+        "runs Lean v4.29.1",
+    )
+
+
+def test_the_archives_mathlib_downloads_stay_in_the_project(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """#151: deleting the project deletes the packed files the cache tool downloaded.
+
+    The tool's own default is ``~/.cache/mathlib``, outside the project. A
+    place ``MATHLIB_CACHE_DIR`` names is the user's and is kept, and the
+    closing lines say it is outside. The ``lake`` here is a stand-in that
+    downloads one archive where it is told to and leaves a Mathlib behind.
+    """
+    import sys
+
+    lake = tmp_path / "lake"
+    lake.write_text(
+        f"#!{sys.executable}\n"
+        "import os, pathlib\n"
+        "archives = pathlib.Path(os.environ['MATHLIB_CACHE_DIR'])\n"
+        "archives.mkdir(parents=True, exist_ok=True)\n"
+        "(archives / 'a.ltar').write_bytes(bytes(2_000_000))\n"
+        "pathlib.Path('.lake', 'packages', 'mathlib').mkdir(parents=True, exist_ok=True)\n",
+        encoding="utf-8",
+    )
+    lake.chmod(0o755)
+    monkeypatch.delenv("MATHLIB_CACHE_DIR", raising=False)
+    project = tmp_path / "mathlib"
+    assert mathlib_mode.main([str(project), "--lake", str(lake)]) == 0
+    archives = project / ".lake" / "mathlib-cache"
+    assert mathlib_mode.archive_directory(project) == archives
+    assert (archives / "a.ltar").is_file()
+    printed = capsys.readouterr().out
+    assert (
+        f"Mathlib's packed downloads (2 MB) are in {archives}, inside the project: "
+        "deleting the project deletes them"
+    ) in printed
+    elsewhere = tmp_path / "elsewhere"
+    monkeypatch.setenv("MATHLIB_CACHE_DIR", str(elsewhere))
+    assert mathlib_mode.main([str(project), "--lake", str(lake)]) == 0
+    assert (elsewhere / "a.ltar").is_file()
+    assert "which MATHLIB_CACHE_DIR names, outside the project" in capsys.readouterr().out
+    monkeypatch.setenv("MATHLIB_CACHE_DIR", "")  # empty is unset, as for lanky's variables
+    assert mathlib_mode.archive_directory(project) == archives
+
+
 def test_a_pinned_version_that_is_not_the_projects_is_refused(monkeypatch, tmp_path) -> None:
     """``LANKY_LEAN_VERSION`` says which Lean; a Mathlib project already has one."""
     pytest.importorskip("lean_interact")

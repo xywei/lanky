@@ -1060,6 +1060,212 @@ def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
     assert fact.provenance["lean_mathlib"] == "v0.0.0-test (abc)"
 
 
+# {{{ where a question stopped when its time ran out (#134)
+
+
+_TIMED_OUT = "TimeoutError: The Lean server did not respond in time (timeout=60) and is now killed."
+
+
+def _answering(monkeypatch: pytest.MonkeyPatch, answers: list[tuple]) -> list[str]:
+    """Sessions that are ready at once and give ``answers`` in turn; the sources asked.
+
+    Each answer is ``(closed, detail, answered)``, as :meth:`LeanSession.answer`
+    gives it, and one asked for after the last is a spent budget. The
+    session runs the pinned version, which keys what is kept.
+    """
+    from lanky.oracles.lean import BUDGET_SPENT, LeanSession
+
+    asked: list[str] = []
+
+    def ready(session: LeanSession) -> bool:
+        session.version = "v0.0.0-test"
+        return True
+
+    def answer(session: LeanSession, source: str, until: float | None = None) -> tuple:
+        session.version = "v0.0.0-test"
+        asked.append(source)
+        if len(asked) <= len(answers):
+            return answers[len(asked) - 1]
+        return False, BUDGET_SPENT, False
+
+    monkeypatch.setattr(LeanSession, "ready", ready)
+    monkeypatch.setattr(LeanSession, "answer", answer)
+    return asked
+
+
+def _second_check(monkeypatch: pytest.MonkeyPatch, oracle: LeanOracle) -> LeanOracle:
+    """A second check: another oracle on the same cache, whose sessions do not start.
+
+    The ``no_session`` fixture's ``start`` records the session and fails, and
+    the real ``ready`` and ``answer`` go through it, so a session asked for
+    anything is in its list.
+    """
+    from lanky.oracles.lean import LeanSession
+
+    monkeypatch.setattr(LeanSession, "ready", _READY)
+    monkeypatch.setattr(LeanSession, "answer", _ANSWER)
+    again = LeanOracle(timeout=oracle.timeout)
+    monkeypatch.setattr(again, "availability", lambda: (True, ""))
+    again.proofs = ProofCache(oracle.proofs.directory)
+    return again
+
+
+def _session_methods() -> tuple[Any, Any]:
+    from lanky.oracles.lean import LeanSession
+
+    return LeanSession.ready, LeanSession.answer
+
+
+_READY, _ANSWER = _session_methods()
+
+_STOPPED = ("lean_tried", "lean_budget", "lean_reason", "lean_declined")
+
+
+def test_a_claim_whose_budget_ran_out_is_left_open_again_without_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#134: the cold check spent the budget, and the next one reads where it stopped.
+
+    It read every kept answer for nothing and so had the whole budget left
+    for the attempts the cold check never sent, and started Lean for them.
+    It now leaves the claim as the cold check left it, in its words.
+    """
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "120")
+    oracle, started = no_session
+    asked = _answering(monkeypatch, [(False, "no", True)])
+    term = claim((n,), [n >= 0], n + 1 > n)
+    cold = oracle.establish(_claim_fact(term))
+    assert len(asked) == 2  # the second one found the budget spent
+    reason = cold.provenance["lean_reason"]
+    assert reason.startswith("the ladder's budget of 120 s ran out after 1 of"), reason
+    warm = _second_check(monkeypatch, oracle).establish(_claim_fact(term))
+    assert started == []
+    assert warm.status is Status.ASSUMED
+    assert {k: warm.provenance.get(k) for k in _STOPPED} == {
+        k: cold.provenance.get(k) for k in _STOPPED
+    }
+
+
+def test_more_time_asks_lean_again(no_session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A larger budget, or a larger timeout, may answer what the cold check could not."""
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "120")
+    oracle, started = no_session
+    _answering(monkeypatch, [(False, "no", True)])
+    term = claim((n,), [n >= 0], n + 1 > n)
+    oracle.establish(_claim_fact(term))
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "121")
+    larger = _second_check(monkeypatch, oracle).establish(_claim_fact(term))
+    assert started
+    assert larger.provenance["lean_reason"] == "no Lean in this test"
+    started.clear()
+    monkeypatch.setenv("LANKY_LEAN_BUDGET", "100")
+    assert "ran out" in _second_check(monkeypatch, oracle).establish(
+        _claim_fact(term)
+    ).provenance["lean_reason"]
+    assert started == []
+    slower = LeanOracle(timeout=oracle.timeout + 1)
+    monkeypatch.setattr(slower, "availability", lambda: (True, ""))
+    slower.proofs = oracle.proofs
+    slower.establish(_claim_fact(term))
+    assert started
+
+
+def test_a_claim_proved_after_an_attempt_timed_out_is_proved_without_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a kept answer proves: the record passes over the attempt that timed out."""
+    from lanky.lean import statement_of
+    from lanky.oracles.lean import tactic_ladder
+
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    _answering(monkeypatch, [(False, _TIMED_OUT, False), (True, "", True)])
+    term = claim((n,), [n >= 0], n + 1 > n)
+    cold = oracle.establish(_claim_fact(term))
+    ladder = tactic_ladder(statement_of(term, "succ", mathlib=False))
+    assert cold.status is Status.PROVED and cold.provenance["tactic"] == ladder[1]
+    again = _second_check(monkeypatch, oracle)
+    warm = again.establish(_claim_fact(term))
+    assert started == []
+    assert warm.status is Status.PROVED and warm.provenance["tactic"] == ladder[1]
+    # the proof is the kept answer: without it, the record proves nothing
+    statement = statement_of(term, "succ", mathlib=False)
+    os.remove(again.proofs._path("v0.0.0-test", statement.source(ladder[1])))
+    assert again.establish(_claim_fact(term)).status is Status.ASSUMED
+    assert started
+
+
+def test_a_repl_that_could_not_be_reached_keeps_no_record(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not answered for want of a REPL is not out of time: the next check asks again."""
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    oracle, started = no_session
+    lost = "ConnectionAbortedError: The Lean server closed unexpectedly."
+    _answering(monkeypatch, [(False, lost, False)] * 40)
+    term = claim((n,), [n >= 0], n + 1 > n)
+    oracle.establish(_claim_fact(term))
+    _second_check(monkeypatch, oracle).establish(_claim_fact(term))
+    assert started
+
+
+def test_a_part_whose_time_ran_out_is_left_open_again_without_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#134 for a plugin's claim: the part keeps the record the cold check gave it."""
+    oracle, started = no_session
+    asked = _answering(monkeypatch, [(True, "", True), (False, _TIMED_OUT, False)])
+    wrong = Part("S1", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    obligation = Obligation(parts=(IN_BOUNDS, wrong), decider="isl")
+    cold = oracle.establish(fact_of(obligation))
+    assert len(asked) >= 2
+    reason = cold.provenance["lean_reason"]
+    assert reason.startswith("Lean proved 1 of its 2 parts, and ran out of time for "), reason
+    warm = _second_check(monkeypatch, oracle).establish(fact_of(obligation))
+    assert started == []
+    assert warm.provenance["lean_reason"] == cold.provenance["lean_reason"]
+    parts = warm.provenance["lean_parts"]
+    assert [part["cached"] for part in parts] == [True, True]
+    assert parts[1]["reason"] == cold.provenance["lean_parts"][1]["reason"]
+
+
+def test_a_counterexample_whose_time_ran_out_is_read_back_without_lean(
+    no_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    oracle, started = no_session
+    _answering(monkeypatch, [(False, _TIMED_OUT, False), (False, _TIMED_OUT, False)])
+    part = Part("S0", "x + 1 < n", claim((n, x), [x >= 0, x < n], x + 1 < n))
+    obligation = Obligation(
+        parts=(part,), counterexample=Counterexample("S0", {"n": 2, "x": 1}, "x=1 at n=2")
+    )
+    cold = oracle.establish(fact_of(obligation, Status.REFUTED))
+    assert "it ran out of time" in cold.provenance["lean_counterexample"]
+    warm = _second_check(monkeypatch, oracle).establish(fact_of(obligation, Status.REFUTED))
+    assert started == []
+    assert warm.provenance["lean_counterexample"] == cold.provenance["lean_counterexample"]
+
+
+def test_a_stop_record_is_read_by_no_check_with_more_time(tmp_path) -> None:
+    cache = ProofCache(str(tmp_path))
+    questions = ["theorem a : True := by omega", "theorem a : True := by simp"]
+    cache.stop("v1", questions, 30.0, 60.0, {"fields": {"lean_reason": "ran out"}})
+    assert cache.stopped("v1", questions, 30.0, 60.0) == {"fields": {"lean_reason": "ran out"}}
+    assert cache.stopped("v1", questions, 10.0, 5.0) is not None
+    assert cache.stopped("v1", questions, 31.0, 60.0) is None
+    assert cache.stopped("v1", questions, None, 60.0) is None  # no budget at all
+    assert cache.stopped("v1", questions, 30.0, 61.0) is None
+    assert cache.stopped("v2", questions, 30.0, 60.0) is None
+    assert cache.stopped("v1", questions[:1], 30.0, 60.0) is None
+    cache.stop("v1", questions, None, 60.0, {"fields": {}})
+    assert cache.stopped("v1", questions, None, 60.0) == {"fields": {}}
+    assert ProofCache(None).stopped("v1", questions, 30.0, 60.0) is None
+
+
+# }}}
+
+
 # }}}
 
 # {{{ where unknowns multiply: a layout at every size

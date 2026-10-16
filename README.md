@@ -755,9 +755,11 @@ export LANKY_LEAN_MATHLIB=~/mathlib
 ```
 
 The command never builds Mathlib from source; it fetches the compiled files
-Mathlib publishes, keeping the packed downloads in `MATHLIB_CACHE_DIR`
-(default `~/.cache/mathlib`). The first session of a process imports Mathlib, which takes
-seconds and about 1.5 GB of memory. The induction over families finds its
+Mathlib publishes. Everything it fetches stays in the project, the packed
+downloads (about 400 MB) included, in `.lake/mathlib-cache`, so deleting
+`~/mathlib` deletes all of it; a `MATHLIB_CACHE_DIR` you set keeps them
+there instead, and the command says where they went. The first session of a
+process imports Mathlib, which takes seconds and about 1.5 GB of memory. The induction over families finds its
 combinations with sympy, so a claim for every order wants both extras,
 `pip install "lanky[lean,cas]"`.
 
@@ -776,6 +778,13 @@ tactic attempt (60 s), `LANKY_LEAN_BUDGET` the whole ladder of one fact
 is vacuous (30 s), `0` for no budget, `LANKY_LEAN_MATHLIB` turns Mathlib
 mode on, and `LANKY_LEAN_MATHLIB_IMPORT_TIMEOUT` caps the Mathlib import
 (600 s).
+
+Lean's answers are kept in `$XDG_CACHE_HOME/lanky/proofs`
+(`~/.cache/lanky/proofs` by default; `LANKY_LEAN_PROOF_CACHE` moves it, and
+`off` turns it off), so a check after the first starts no Lean. A question the first check ran out of time on, its
+budget spent or an attempt timed out, is kept as where it stopped: the next
+check reads the same row back, and asks Lean again only when it is given more
+time, a larger budget or timeout.
 
 For work on lanky itself:
 
