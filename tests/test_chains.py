@@ -18,7 +18,15 @@ import pytest
 
 from lanky import theorem
 from lanky.chains import Chain, ChainError, combined_relation
-from lanky.citations import Citation, Cited, Hypothesis, citation_of, proved_texts
+from lanky.citations import (
+    Citation,
+    Cited,
+    CitedText,
+    Hypothesis,
+    citation_of,
+    proved_texts,
+    vacuity_question,
+)
 from lanky.induction import Lemma
 from lanky.lean import UnsupportedTerm, lean_type, print_lean, proof_exponents, render_term
 from lanky.matching import (
@@ -45,7 +53,7 @@ from lanky.oracles.steps import (
     step_script,
 )
 from lanky.prelude import Complex, Fin, Fn, Int, Nat, Real
-from lanky.terms import Comparison, LogicalNot, Sum, Var, log, render
+from lanky.terms import Comparison, LogicalNot, Sum, Var, log, render, structurally_equal
 
 D, R, a, b = Var("D"), Var("R"), Var("a"), Var("b")
 n, r, k = Var("n"), Var("r"), Var("k")
@@ -511,6 +519,54 @@ def test_a_step_that_cites_a_theorem_says_what_the_declaration_takes() -> None:
     assert set(script.restated) == {"doubled"}
     assert script.rests_on == [doubled.fact_id]
     assert "have h := doubled g i (by omega)" in script.text()
+
+
+def test_a_theorem_cited_restates_the_theorems_its_own_proof_cited() -> None:
+    """``B``'s ``as_cited`` takes ``C``: citing ``B`` restates both, and rests on both."""
+
+    @theorem
+    def premise(f: Fn[Nat, Real], m: Nat) -> f[m] == f[m]:
+        """C."""
+
+    @theorem
+    def doubled(f: Fn[Nat, Real], m: Nat) -> f[m] + f[m] == 2 * f[m]:
+        """B, proved citing C."""
+
+    g, i = Var("g"), Var("i")
+    goal = Comparison(g[i] + g[i], "==", 2 * g[i])
+    texts = {
+        doubled.fact_id: CitedText("doubled", "∀ f m, B", (premise.fact_id,)),
+        premise.fact_id: CitedText("premise", "∀ f m, C"),
+    }
+    scope = StepScope(types={"g": Fn[Nat, Real], "i": Nat})
+    with proved_texts(texts):
+        script = step_script(goal, (doubled,), scope, 7)
+    assert {name: cited.restated for name, cited in script.restated.items()} == {
+        "doubled": "∀ f m, B",
+        "premise": "∀ f m, C",
+    }
+    assert script.rests_on == [doubled.fact_id, premise.fact_id]
+    missing = {doubled.fact_id: CitedText("doubled", "∀ f m, B", (premise.fact_id,))}
+    with proved_texts(missing), pytest.raises(StepError, match="which has no proved text"):
+        step_script(goal, (doubled,), StepScope(types=scope.types), 7)
+    circle = {
+        doubled.fact_id: CitedText("doubled", "B", (premise.fact_id,)),
+        premise.fact_id: CitedText("premise", "C", (doubled.fact_id,)),
+    }
+    with proved_texts(circle), pytest.raises(StepError, match="go round in a circle"):
+        step_script(goal, (doubled,), StepScope(types=scope.types), 7)
+
+
+def test_citations_without_a_proved_text_raise_the_vacuity_question() -> None:
+    """Printed texts are asked whether together they prove ``False``; proved ones are not."""
+    printed = citation_of(compressed_taylor)
+    question = vacuity_question("theorem:t.owner@1", [printed], "t.py:1")
+    assert question.kind == "hypotheses" and question.term.body is False
+    assert structurally_equal(question.term.guard, compressed_taylor.term)
+    assert "compressed_taylor" in question.statement
+    with proved_texts({compressed_taylor.fact_id: "∀ D R, True"}):
+        proved = citation_of(compressed_taylor)
+    assert vacuity_question("theorem:t.owner@1", [proved]) is None
 
 
 # }}}

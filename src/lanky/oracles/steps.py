@@ -262,11 +262,19 @@ class Script:
         return None
 
     def cite(self, citation: Citation) -> None:
-        """Record what a cited theorem asks of the declaration: its text, and what it rests on."""
-        if citation.kind == "theorem":
-            self.restated[citation.head] = citation
-            if citation.fact_id and citation.fact_id not in self.rests_on:
-                self.rests_on.append(citation.fact_id)
+        """Record what a cited theorem asks of the declaration: its text, its premises', its id.
+
+        A theorem cited is a hypothesis of the declaration, by its cited text
+        (:mod:`lanky.citations`), and so is each theorem its own ``as_cited``
+        takes, all the way down; the claim rests on each of them.
+        """
+        if citation.kind != "theorem":
+            return
+        self.restated[citation.head] = citation
+        if citation.fact_id and citation.fact_id not in self.rests_on:
+            self.rests_on.append(citation.fact_id)
+        for premise in citation.premises:
+            self.cite(premise)
 
 
 # {{{ the facts a step cites
@@ -292,7 +300,7 @@ def resolve(
     for reason in reasons:
         try:
             citation = citation_of(reason, mathlib=scope.mathlib)
-        except (TypeError, UnsupportedTerm) as exc:
+        except (TypeError, ValueError, UnsupportedTerm) as exc:
             raise StepError(str(exc), line, scope.path) from None
         if citation.point is None:
             try:

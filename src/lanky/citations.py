@@ -31,7 +31,7 @@ ledger bounds ``A`` by ``B``'s status. The citation says which it is
 from __future__ import annotations
 
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -44,12 +44,15 @@ from lanky.terms import Forall, Var, conjuncts, render
 
 __all__ = [
     "Citation",
+    "CitedText",
     "Cited",
     "Hypothesis",
     "citation_of",
     "fact_lemma",
+    "premises_of",
     "proved_texts",
     "restated_text",
+    "vacuity_question",
 ]
 
 
@@ -76,6 +79,10 @@ class Citation:
             a hypothesis named :attr:`head` (see :func:`restated_text`).
         proved_text: Whether :attr:`restated` is the text the theorem's own
             command proved, and not one printed here.
+        premises: For a theorem whose own proof cited others, those
+            theorems, each by its proved text: its ``as_cited`` theorem takes
+            them as hypotheses, so a citer restates them too (see
+            :class:`CitedText`).
     """
 
     name: str
@@ -87,6 +94,7 @@ class Citation:
     fact_id: str | None = None
     restated: str | None = None
     proved_text: bool = False
+    premises: tuple[Citation, ...] = ()
 
     @property
     def lemma(self) -> Lemma:
@@ -283,6 +291,7 @@ def citation_of(reason: Any, *, mathlib: bool = True) -> Citation:
             fact_id=reason.fact_id,
             restated=text,
             proved_text=proved,
+            premises=premises_of(reason.fact_id) if proved else (),
         )
     raise TypeError(
         f"{reason!r} is no fact a step can cite: a hypothesis, a theorem, a fact on the "
@@ -296,19 +305,44 @@ def citation_of(reason: Any, *, mathlib: bool = True) -> Citation:
 # {{{ cited texts
 
 
-#: The texts each proved theorem's own command proved for its citers:
-#: ``{fact id: as_cited text}``, which the check of a file sets as it goes.
-_PROVED_TEXTS: ContextVar[Mapping[str, str] | None] = ContextVar("lanky_proved_texts", default=None)
+@dataclass(frozen=True)
+class CitedText:
+    """What a proved theorem's own command proved for its citers.
+
+    The command that proves a theorem ``B`` ends with ``Lanky.B.as_cited``,
+    whose statement is the text a citation of ``B`` restates. Where ``B``'s
+    proof cites ``C``, that theorem takes ``C``'s text as a hypothesis,
+    ``theorem Lanky.B.as_cited (C : ⟨C's text⟩) : ⟨B's text⟩ := Lanky.B C``,
+    so a citation of ``B`` restates ``C``'s text as well, and rests on it.
+
+    Attributes:
+        name: The theorem's name, under which a citing declaration takes the text.
+        text: The statement of its ``as_cited`` theorem, byte for byte.
+        premises: The fact ids of the theorems its ``as_cited`` takes, in order.
+    """
+
+    name: str
+    text: str
+    premises: tuple[str, ...] = ()
+
+
+#: What each proved theorem's own command proved for its citers, by fact id:
+#: a :class:`CitedText`, or its text alone. The check of a file sets it as it goes.
+_PROVED_TEXTS: ContextVar[Mapping[str, Any] | None] = ContextVar("lanky_proved_texts", default=None)
 
 
 @contextmanager
-def proved_texts(texts: Mapping[str, str]) -> Iterator[None]:
-    """Use ``texts``, ``{fact id: as_cited text}``, as the proved texts of the theorems cited.
+def proved_texts(texts: Mapping[str, Any]) -> Iterator[None]:
+    """Use ``texts``, ``{fact id: CitedText or text}``, as what the cited theorems' commands proved.
 
     The check of a file establishes a cited theorem before the theorems that
     cite it, and its proof records the text its ``Lanky.B.as_cited`` theorem
-    states; the check hands those texts over here, so that a citation of
-    ``B`` restates exactly that text (see the module docstring).
+    states and the premises it takes; the check hands them over here, so
+    that a citation of ``B`` restates exactly that text, and its premises'
+    (see the module docstring and :class:`CitedText`). The text is read
+    afresh at each citation, so the citing command's source, which is its
+    proof cache's key, changes with it: a warm check never reuses a proof
+    made against another text.
     """
     token = _PROVED_TEXTS.set(dict(texts))
     try:
@@ -317,23 +351,110 @@ def proved_texts(texts: Mapping[str, str]) -> Iterator[None]:
         _PROVED_TEXTS.reset(token)
 
 
+def _proved(fact_id: str | None) -> CitedText | None:
+    """The proved text recorded for a theorem, as a :class:`CitedText`, or ``None``."""
+    found = (_PROVED_TEXTS.get() or {}).get(fact_id)
+    if found is None or isinstance(found, CitedText):
+        return found
+    return CitedText(fact_id or "", str(found))
+
+
 def restated_text(theorem: Any, *, mathlib: bool = True) -> tuple[str, bool]:
     """The text a citation of ``theorem`` restates, and whether its own command proved it.
 
     The proved text when the check recorded one (:func:`proved_texts`); else
     the statement printed from the theorem's term, in the dialect ``mathlib``
-    says, which trusts the printer, as a citation without a proved text does.
+    says, which trusts the printer, as a citation without a proved text does
+    (:func:`vacuity_question` is then what bounds the damage).
 
     Raises:
         lanky.lean.UnsupportedTerm: If there is no proved text and the
             printer declines the theorem's statement.
     """
-    text = (_PROVED_TEXTS.get() or {}).get(theorem.fact_id)
-    if text is not None:
-        return text, True
+    found = _proved(theorem.fact_id)
+    if found is not None:
+        return found.text, True
     from lanky.lean import print_lean
 
     return print_lean(theorem.term, mathlib=mathlib), False
+
+
+def premises_of(fact_id: str, seen: tuple[str, ...] = ()) -> tuple[Citation, ...]:
+    """The theorems a proved theorem's ``as_cited`` takes, each a citation by its proved text.
+
+    Each premise has to be a proved text itself: the soundness of a
+    citation is an induction over what each proved theorem rests on, and a
+    premise with no proved text breaks it.
+
+    Raises:
+        ValueError: If a premise has no proved text, naming it, or if the
+            premises come round to a theorem again, naming the circle.
+    """
+    found = _proved(fact_id)
+    if found is None:
+        return ()
+    out: list[Citation] = []
+    for premise in found.premises:
+        if premise in (*seen, fact_id):
+            circle = " -> ".join((*seen, fact_id, premise))
+            raise ValueError(f"the citations go round in a circle: {circle}")
+        cited = _proved(premise)
+        if cited is None:
+            raise ValueError(
+                f"{found.name} was proved citing {premise}, which has no proved text; "
+                "a citation rests on proved texts all the way down"
+            )
+        out.append(
+            Citation(
+                cited.name,
+                None,
+                cited.name,
+                kind="theorem",
+                fact_id=premise,
+                restated=cited.text,
+                proved_text=True,
+                premises=premises_of(premise, (*seen, fact_id)),
+            )
+        )
+    return tuple(out)
+
+
+def vacuity_question(owner: str, citations: Sequence[Citation], where: str | None = None) -> Any:
+    """Whether the cited theorems without a proved text prove ``False`` together, as a fact.
+
+    A citation restated from a printed text trusts the printer, and a text
+    that dropped a condition could prove anything (the check's T4: a
+    ``log_of_a_power`` without ``n >= 0`` proves ``1 = 0``). So the check
+    asks, as it asks whether a claim's hypotheses are vacuous
+    (:func:`lanky.check.hypotheses_fact`), whether those texts alone prove
+    ``False``: the fact returned is that question, of kind ``"hypotheses"``,
+    which the Lean oracle answers with its short ladder and the vacuity
+    budget; established, the citing claim has to fail. ``None`` where every
+    citation is by a proved text, and there is nothing to ask.
+    """
+    from lanky.ledger import Fact
+    from lanky.terms import LogicalAnd
+
+    printed = [
+        citation
+        for citation in citations
+        if citation.kind == "theorem"
+        and not citation.proved_text
+        and citation.proposition is not None
+    ]
+    if not printed:
+        return None
+    terms = tuple(citation.proposition for citation in printed)
+    guard = terms[0] if len(terms) == 1 else LogicalAnd(terms)
+    names = ", ".join(citation.name for citation in printed)
+    return Fact(
+        id=f"{owner}:citations",
+        kind="hypotheses",
+        statement=f"the theorems {owner} cites without a proved text ({names}) are inconsistent",
+        term=Forall((), False, guard),
+        where=where,
+        owner=owner,
+    )
 
 
 # }}}
