@@ -97,6 +97,7 @@ select = ["E", "F", "I", "UP", "B"]
 "tests/test_mathlib.py" = ["F821"]
 "tests/test_audit.py" = ["F821"]
 "tests/test_induction.py" = ["F821"]
+"tests/test_outline.py" = ["F821"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
