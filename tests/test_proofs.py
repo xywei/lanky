@@ -163,6 +163,30 @@ def climb(
 
 
 @theorem
+def lex(
+    R: Fn[Nat, Nat, Int],
+    base: R[0, 0] == 0,
+    down_b: all(R[a, b + 1] == R[a, b] for a in Nat for b in Nat),
+    down_a: all(R[a + 1, 0] == R[a, 7] for a in Nat),
+) -> all(R[a, b] == 0 for a in Nat for b in Nat):
+    def claim(a, b):
+        if b >= 1:
+            return down_b(a, b - 1), claim(a, b - 1)
+        if a >= 1:
+            return down_a(a - 1), claim(a - 1, 7)
+        return base
+
+    return claim
+
+
+@theorem
+def routine(n: Nat, m: Nat, h: m == n + 1) -> m - n == 1:
+    if n == 0:
+        return
+    return h
+
+
+@theorem
 def zero_times(f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat if k >= 1)) -> f[0] * 0 == 0:
     return h(0)
 
@@ -511,6 +535,8 @@ def test_naturals_that_sum_to_nothing_are_each_nothing() -> None:
     assert pins(a + b == 0, types) == [("a", 0), ("b", 0)]
     assert pins(a == 1, types) == [("a", 1)]
     assert pins(a + b == 2, types) == []
+    assert pins(b < 1, types) == [("b", 0)] and pins(b <= 0, types) == [("b", 0)]
+    assert pins(b < 2, types) == []
     assert [(name, render(value)) for name, value in pins(k == p, types, ["k"])] == [("k", "p")]
 
 
@@ -590,6 +616,21 @@ def test_a_climb_toward_a_bound_is_measured_by_the_distance(cases) -> None:
     source = compile_proof(trace_proof(cases.climb), mathlib=False).source
     assert "termination_by (p - k).toNat\ndecreasing_by omega" in source
     assert "have pin_1 : k = p := by omega\n" in source
+
+
+def test_a_pair_that_gets_smaller_is_measured_as_a_pair(cases) -> None:
+    source = compile_proof(trace_proof(cases.lex), mathlib=False).source
+    assert "termination_by (a.toNat, b.toNat)\n\n" in source
+    # b >= 1 false keeps the natural b at 0, which the branch substitutes
+    assert "  · have pin_1 : b = 0 := by omega\n    subst b\n" in source
+
+
+def test_a_bare_return_leaves_the_case_to_lankys_closers(cases) -> None:
+    source = compile_proof(trace_proof(cases.routine), mathlib=False).source
+    assert "    first\n      | omega\n      | (simp_all; done)" in source
+    assert compile_proof(trace_proof(cases.routine), mathlib=False).summary == (
+        "2 cases, 1 step, 1 routine"
+    )
 
 
 def test_a_conjunction_is_cited_as_both_parts(cases) -> None:
@@ -930,7 +971,8 @@ def checked(tmp_path_factory) -> dict[str, Fact]:
 
 
 @pytest.mark.parametrize(
-    "owner", ["ct", "every_box", "sum_to", "climb", "both_parts", "cites_later"]
+    "owner",
+    ["ct", "every_box", "sum_to", "climb", "lex", "routine", "both_parts", "cites_later"],
 )
 def test_lean_accepts_the_written_proofs(checked, owner) -> None:
     fact = checked[owner]

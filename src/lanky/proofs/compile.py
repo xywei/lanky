@@ -862,9 +862,7 @@ class _Compiler:
                 [*context.facts, holds],
                 context.guards,
             )
-            body: list[_Line] = []
-            if answer:
-                body += self._pins(prop, inner, question.line)
+            body: list[_Line] = self._pins(holds, inner, question.line)
             if branch is None:
                 # a path no run took: its condition contradicts the path to it
                 body.append(_Line("exfalso", origin))
@@ -909,8 +907,8 @@ class _Compiler:
         """
         lines: list[_Line] = []
         for question in leaf.questions:
-            if question.forced and question.answer:
-                lines += self._pins(question.prop, context, question.line)
+            if question.forced:
+                lines += self._pins(question.condition, context, question.line)
         here = substitute(claim, context.pins)
         if leaf.facts is None:
             return lines + self._routine(leaf, context, here)

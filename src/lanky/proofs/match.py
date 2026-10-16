@@ -476,16 +476,43 @@ def _sharpened(facts: Sequence[Any], types: Mapping[str, Any]) -> list[Any]:
     return out
 
 
+def _at_the_bottom(prop: Any, types: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """A natural an order keeps at or below ``0``, fixed at ``0``: ``b < 1``, ``b <= 0``."""
+    left, right = affine(prop.left), affine(prop.right)
+    if left is None or right is None:
+        return []
+    form: dict[str | None, Fraction] = {}
+    # ``form <= 0``, or ``form < 0`` for a strict order
+    if prop.operator in ("<", "<="):
+        _accumulate(form, left, Fraction(1))
+        _accumulate(form, right, Fraction(-1))
+    else:
+        _accumulate(form, right, Fraction(1))
+        _accumulate(form, left, Fraction(-1))
+    names = [name for name in form if name is not None]
+    if len(names) != 1 or form[names[0]] != 1:
+        return []
+    (name,) = names
+    if name not in types or not _natural(types[name]):
+        return []
+    bound = -form.get(None, Fraction(0)) - (1 if prop.operator in ("<", ">") else 0)
+    return [(name, 0)] if bound == 0 else []
+
+
 def pins(prop: Any, types: Mapping[str, Any], local: Sequence[str] = ()) -> list[tuple[str, Any]]:
-    """The integer variables an equation fixes, with the value each is fixed at.
+    """The integer variables a condition fixes, with the value each is fixed at.
 
     ``n == 1`` fixes ``n`` at ``1``, ``2 - k == 0`` fixes ``k`` at ``2``,
     and ``a + b == 0`` among naturals fixes both at ``0``, since naturals
     that sum to nothing are each nothing. Anything else fixes nothing. Only
     an integer variable is fixed, since the proof substitutes it. And ``k ==
     p`` fixes ``k`` at ``p`` when ``k`` is among ``local``, the claim's own
-    variables, which are the ones a case may fix at another's value.
+    variables, which are the ones a case may fix at another's value. An order
+    that keeps a natural at ``0``, ``b < 1`` as the other branch of ``if b >=
+    1``, fixes it there.
     """
+    if isinstance(prop, prim.Comparison) and prop.operator in ("<", "<=", ">", ">="):
+        return _at_the_bottom(prop, types)
     if not (isinstance(prop, prim.Comparison) and prop.operator == "=="):
         return []
     left, right = affine(prop.left), affine(prop.right)
