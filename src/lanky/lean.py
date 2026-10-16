@@ -2401,12 +2401,15 @@ class LeanStatement:
         """
         text = self.goal
         restated = dict(self.restated)
+        # a family's bound is a universal, printed for a binder, where it needs
+        # no brackets; to the left of an arrow it does
+        bounds = {hypothesis for _, hypothesis in self.codomain_bounds}
         for hypothesis, index in reversed(self._parameters()):
             if not hypothesis:
                 name, sort = self.binders[index]
                 text = f"∀ {name} : {sort}, {text}"
                 continue
-            prop = self.hypotheses[index][1]
+            name, prop = self.hypotheses[index]
             term = self.hypothesis_terms[index] if self.hypothesis_terms else None
             if index in restated:
                 # a cited claim's text, as its command proved it
@@ -2414,6 +2417,8 @@ class LeanStatement:
             elif term is not None:
                 with dialect(self.mathlib), _shadowing(self.shadowed):
                     prop = _render_prop(term, _ARROW + 1, self.types)
+            elif name in bounds:
+                prop = f"({prop})"
             text = f"{prop} → {text}"
         return text
 

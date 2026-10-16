@@ -43,7 +43,7 @@ from lanky.oracles.lean import (
     claim_statement,
     use_tactic,
 )
-from lanky.prelude import Fn, Int, Nat
+from lanky.prelude import Fin, Fn, Int, Nat
 from lanky.terms import Forall, LogicalAnd, Var
 
 # {{{ claims
@@ -83,6 +83,13 @@ def rooted(n: Nat, m: Nat, Int: m > 0) -> n // m >= 0:
 @theorem
 def nonneg(n: Nat) -> n >= 0:
     """The core Lean analogue of the design's ``log_of_a_power``: its condition is ``0 ≤ n``."""
+
+
+@theorem
+def picks_a_cell(nc: Nat, nv: Nat, cell: Fn[Fin[nc], Fin[nv]]) -> all(
+    cell(c) < nv for c in Fin[nc]
+):
+    """A family whose values are cells: its bound is a hypothesis of the Lean theorem."""
 
 
 @theorem
@@ -174,6 +181,21 @@ def test_every_command_ends_with_the_audit_of_what_it_declares() -> None:
     # a part, a side condition or a question proves no as_cited text
     part = statement_of(nonneg.term, "nonneg")
     assert audited(part.source("omega")) == ("Lanky.nonneg",)
+
+
+def test_a_familys_bound_is_bracketed_in_the_text_a_citation_restates() -> None:
+    """``as_cited`` puts the bound of a family of cells to the left of an arrow.
+
+    Printed as a parameter it needs no brackets; as the antecedent of the
+    rest it does, or its ``∀`` would take the rest in, and the command's
+    ``as_cited`` would not follow from the theorem.
+    """
+    statement = claim_statement(picks_a_cell.fact(), False)
+    assert statement.as_cited == (
+        "∀ nc : Int, 0 ≤ nc → ∀ nv : Int, 0 ≤ nv → ∀ cell : Int → Nat, "
+        "(∀ cell_arg : Int, 0 ≤ cell_arg → cell_arg < nc → (cell cell_arg : Int) < nv) → "
+        "∀ c : Int, 0 ≤ c → c < nc → (cell c : Int) < nv"
+    )
 
 
 def test_a_script_cannot_write_lankys_audit() -> None:
@@ -660,6 +682,14 @@ def test_a_claim_is_proved_with_its_names_and_its_as_cited_text(lean: LeanOracle
     assert "(h0_1 : 0 ≤ n) (h0 : n > 3)" in source
     assert "theorem Lanky.guarded.as_cited :" in source
     assert proved.provenance["lean_as_cited"] == "∀ n : Int, 0 ≤ n → n > 3 → n - 1 > 2"
+
+
+def test_the_as_cited_text_of_a_family_of_cells_follows_from_its_theorem(
+    lean: LeanOracle,
+) -> None:
+    proved = lean.establish(picks_a_cell.fact())
+    assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
+    assert "theorem Lanky.picks_a_cell.as_cited :" in proved.provenance["lean_source"]
 
 
 def test_t4_against_lean(lean: LeanOracle) -> None:
