@@ -31,23 +31,31 @@ Read ``alpha`` and ``beta`` as complex numbers, and ``|alpha + tau * beta|``
 is the modulus of ``alpha + tau * beta`` at every real ``tau``, so the kernel
 along the line is the real part of ``log(alpha + tau * beta)``.
 
-Its coefficients in ``tau`` are ``log(alpha)`` and, for ``n >= 1``, ``c(n) ==
+Its coefficients in ``tau`` are ``log(alpha)`` and, for ``n >= 1``, ``a[n] ==
 -(-beta / alpha) ** n / n``. The function ``f(tau) = log(alpha + tau * beta)``
 solves ``(alpha + tau * beta) * f'(tau) == beta`` (``line_ode``). Write ``f``
-as the sum of ``c(n) * tau ** n`` and compare the powers of ``tau`` on the two
-sides: ``alpha * c(1) == beta`` at ``tau ** 0``, and ``(n + 1) * alpha * c(n +
-1) + n * beta * c(n) == 0`` at ``tau ** n`` for ``n >= 1``. ``line_taylor``
-takes these two as hypotheses about any table ``c`` of complex numbers, and
-concludes the closed form for every ``n``: an induction, two orders at a
-time, whose step is a linear combination of the recurrence and the induction
-hypothesis that Python finds and Lean checks (see :mod:`lanky.induction`).
-Comparing the coefficients of the series is the step taken on the citation,
-as differentiating the PDE is in ``sumpy_recurrence.py``, and it is what the
-proof rests on ``line_ode`` for.
+as the sum of ``a[n] * tau ** n`` and compare the powers of ``tau`` on the two
+sides: ``alpha * a[1] == beta`` at ``tau ** 0``, and ``(n + 1) * alpha * a[n +
+1] + n * beta * a[n] == 0`` at ``tau ** n`` for ``n >= 1``. ``line_taylor``
+takes these two as hypotheses about any table ``a`` of complex numbers, and
+concludes the closed form for every ``n``. Comparing the coefficients of the
+series is the step taken on the citation, as differentiating the PDE is in
+``sumpy_recurrence.py``, and it is what the proof rests on ``line_ode`` for.
+
+The theorem's body is its proof, read aloud: "Let ratio be -beta / alpha.
+The claim at n: if n is 1, it is the first term. Otherwise, the recurrence:
+a[n] equals (n - 1) / n times ratio times a[n - 1], by the ODE. By the
+recurrence and the claim at n - 1." ``claim`` calling itself at ``n - 1`` is
+the induction; ``by=ode`` is the ODE at the one point that lines it up with
+the step, ``n - 1``; the multiplier of the claim at ``n - 1`` is Python's to
+find (see :mod:`lanky.induction`), and Lean checks every step. lanky also
+finds this proof alone, an induction two orders at a time, so the body is
+for the reader: it fixes the proof's shape, and only the multipliers are
+searched for. ``python`` never runs it.
 
 The third row ties the theorem to sumpy's code. sumpy's ``k``-th
-coefficient, divided by ``k!``, is the real part of ``c(k)``, which is ``(c(k)
-+ conj(c(k))) / 2``, written out with the conjugates of ``alpha`` and
+coefficient, divided by ``k!``, is the real part of ``a[k]``, which is
+``(a[k] + conj(a[k])) / 2``, written out with the conjugates of ``alpha`` and
 ``beta``. The CAS oracle simplifies the difference of the two sides of each
 of the ``ORDER + 1`` equations to zero.
 
@@ -116,16 +124,25 @@ def line_ode(
 def line_taylor(
     alpha: Complex,
     beta: Complex,
-    c: Fn[Nat, Complex],
-    away: alpha != 0,
-    first: alpha * c(1) == beta,
-    ode: all((n + 1) * alpha * c(n + 1) + n * beta * c(n) == 0 for n in Nat if n >= 1),
-) -> all(c(n) == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
-    """The line-Taylor coefficients of ``log(alpha + tau * beta)``, for every order.
+    a: Fn[Nat, Complex],
+    nonzero: alpha != 0,
+    first_term: alpha * a[1] == beta,
+    ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
+) -> all(a[n] == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
+    """The line-Taylor coefficients of ``log(alpha + tau * beta)``, at every order.
 
-    ``first`` and ``ode`` are ``line_ode`` read on the coefficients, at
+    ``first_term`` and ``ode`` are ``line_ode`` read on the coefficients, at
     ``tau ** 0`` and at ``tau ** n``.
     """
+    ratio = -beta / alpha
+
+    def claim(n):
+        if n == 1:
+            return first_term
+        recurrence = a[n].equals((n - 1) / n * ratio * a[n - 1], by=ode)
+        return recurrence, claim(n - 1)
+
+    return claim
 
 
 # {{{ sumpy's coefficients, through ORDER
@@ -165,7 +182,7 @@ class LineTaylor:
         self.coefficients = _read_coefficients(expansion)[: order + 1]
 
     def statement(self) -> str:
-        """``coefficient(k) / k! == re(c(k))`` through the order, in words a reader knows."""
+        """``coefficient(k) / k! == re(a[k])`` through the order, in words a reader knows."""
         return (
             f"a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j and "
             f"beta = b0 + b1*1j, sumpy's coefficient(0) == log(abs(alpha)) and "

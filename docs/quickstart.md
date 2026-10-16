@@ -1260,19 +1260,40 @@ order is
 def line_taylor(
     alpha: Complex,
     beta: Complex,
-    c: Fn[Nat, Complex],
-    away: alpha != 0,
-    first: alpha * c(1) == beta,
-    ode: all((n + 1) * alpha * c(n + 1) + n * beta * c(n) == 0 for n in Nat if n >= 1),
-) -> all(c(n) == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
+    a: Fn[Nat, Complex],
+    nonzero: alpha != 0,
+    first_term: alpha * a[1] == beta,
+    ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
+) -> all(a[n] == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
+    """The line-Taylor coefficients of ``log(alpha + tau * beta)``, at every order."""
+    ratio = -beta / alpha
+
+    def claim(n):
+        if n == 1:
+            return first_term
+        recurrence = a[n].equals((n - 1) / n * ratio * a[n - 1], by=ode)
+        return recurrence, claim(n - 1)
+
+    return claim
 ```
 
-`first` and `ode` are the differential equation the logarithm solves along
-the line, `(alpha + tau * beta) * f'(tau) == beta`, read on its coefficients
-at `tau ** 0` and at `tau ** n`. The equation is the axiom `line_ode`, taken
-on its citation, and comparing the coefficients is the step taken on it, as
-differentiating the PDE is in the sumpy demonstration above. The file prints
-sumpy's coefficients beside the closed form:
+`first_term` and `ode` are the differential equation the logarithm solves
+along the line, `(alpha + tau * beta) * f'(tau) == beta`, read on its
+coefficients at `tau ** 0` and at `tau ** n`. The equation is the axiom
+`line_ode`, taken on its citation, and comparing the coefficients is the step
+taken on it, as differentiating the PDE is in the sumpy demonstration above.
+
+The body is the proof, as a reader says it: "Let ratio be -beta / alpha. The
+claim at n: if n is 1, it is the first term. Otherwise, the recurrence: a[n]
+equals (n - 1) / n times ratio times a[n - 1], by the ODE. By the recurrence
+and the claim at n - 1." `claim` calling itself at `n - 1` is the induction,
+`.equals(..., by=ode)` is one step of a calculation with its reason, and the
+name it is assigned to, `recurrence`, is a fact the next line cites. Each
+step becomes a line of Lean, which checks it; `python` never runs a proof. A
+step left open is written `by=...`, and the claim then reads assumed, with
+the line named.
+
+The file prints sumpy's coefficients beside the closed form:
 
 ```console
 $ uv run python examples/line_taylor.py
@@ -1302,30 +1323,30 @@ and with Mathlib:
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py
 STATUS                 EFFECTIVE            BY      WHERE               OWNER          STATEMENT
 ---------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------------
-assumed (axiom)        assumed              -       line_taylor.py:101  line_ode       alpha : Complex, beta : Complex, tau : Real
+assumed (axiom)        assumed              -       line_taylor.py:109  line_ode       alpha : Complex, beta : Complex, tau : Real
                                                                                        | off: alpha + tau*beta != 0
                                                                                        |- (alpha + tau*beta)*(beta / (alpha + beta*tau)) == beta
-tested                 tested               python  line_taylor.py:101  line_ode       the term computes what the annotations compute
-proved under line_ode  assumed              lean    line_taylor.py:115  line_taylor    alpha : Complex, beta : Complex, c : Fn[Nat, Complex]
-                                                                                       | away: alpha != 0
-                                                                                       | first: alpha*c(1) == beta
-                                                                                       | ode: forall n in Nat where n >= 1. (n + 1)*alpha*c(n + 1) + n*beta*c(n) == 0
-                                                                                       |- forall n in Nat where n >= 1. c(n) == -(-beta / alpha)**n / n
-tested                 tested               python  line_taylor.py:115  line_taylor    the term computes what the annotations compute
-decided (heuristic)    decided (heuristic)  cas     line_taylor.py:277  qbx_expansion  a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j
+tested                 tested               python  line_taylor.py:109  line_ode       the term computes what the annotations compute
+proved under line_ode  assumed              lean    line_taylor.py:123  line_taylor    alpha : Complex, beta : Complex, a : Fn[Nat, Complex]
+                                                                                       | nonzero: alpha != 0
+                                                                                       | first_term: alpha*a[1] == beta
+                                                                                       | ode: forall n in Nat where n >= 1. (n + 1)*alpha*a[n + 1] + n*beta*a[n] == 0
+                                                                                       |- forall n in Nat where n >= 1. a[n] == -(-beta / alpha)**n / n
+tested                 tested               python  line_taylor.py:123  line_taylor    the term computes what the annotations compute
+decided (heuristic)    decided (heuristic)  cas     line_taylor.py:294  qbx_expansion  a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j
                                                                                          and beta = b0 + b1*1j, sumpy's coefficient(0) == log(abs(alpha))
                                                                                          and coefficient(k) / k! == re(-(-beta / alpha)**k / k) for 1 <= k <= 6
 
 5 facts: 1 assumed, 1 decided, 1 proved, 2 tested
 
-CITED line_ode at line_taylor.py:101: L. V. Ahlfors, Complex Analysis, 3rd ed., McGraw-Hill, 1979, chs. 2 and 5
+CITED line_ode at line_taylor.py:109: L. V. Ahlfors, Complex Analysis, 3rd ed., McGraw-Hill, 1979, chs. 2 and 5
 ```
 
 The claim starts at order 1, and the induction takes that into account. Its
 guard, `n >= 1`, leaves order 0 without an equation, and the induction
 hypothesis holds only from order 1, so the step is tried two orders at a time
 as well as one: order 0 is a base case the guard rules out, which `omega`
-closes from the guard, order 1 is `first` times `1 / alpha`, and the step at
+closes from the guard, order 1 is `first_term` times `1 / alpha`, and the step at
 `k + 2` is the recurrence at `k + 1` and the induction hypothesis at `k + 1`,
 with multipliers that divide by `(k + 2) * alpha`. The step shows first that
 `k + 1` and `k + 2` are not zero in `ℂ`, which `field_simp` cannot see for
