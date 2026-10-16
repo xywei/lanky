@@ -116,6 +116,7 @@ from lanky.obligations import (
     part_statement,
     theorem_name,
 )
+from lanky.outline import FamilyPlan, Script, SumPlan, found_proof
 from lanky.prelude import FinType, FnType, Nat, Refined
 from lanky.terms import (
     Add,
@@ -1431,7 +1432,7 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     scripts.append(
         "\n".join([*head, *instantiations, f"  {apply_ih}", *peel, f"  {closers}"])
     )
-    return scripts
+    return [Script(script, f"by induction on {target.name}") for script in scripts]
 
 
 def _closers(statement: LeanStatement) -> str:
@@ -1523,25 +1524,24 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
             f"(have {applied} := {hypothesis}{' (by omega)' * count})"
             for count in range(later, -1, -1)
         )
-        scripts.append(
-            "\n".join(
-                [
-                    f"obtain ⟨{traded}, rfl⟩ := "
-                    f"{statement.qualified('Int.eq_ofNat_of_zero_le')} {own[0]}",
-                    f"induction {traded} with",
-                    "| zero =>",
-                    f"  {peel}",
-                    f"  {closers}",
-                    f"| succ {step} {hypothesis} =>",
-                    f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = "
-                    f"({step} : {integer}) + 1 := (by omega)",
-                    f"  try simp only [{cast}] at *",
-                    f"  first | {apply_ih} | skip",
-                    f"  {peel}",
-                    f"  {closers}",
-                ]
-            )
+        script = "\n".join(
+            [
+                f"obtain ⟨{traded}, rfl⟩ := "
+                f"{statement.qualified('Int.eq_ofNat_of_zero_le')} {own[0]}",
+                f"induction {traded} with",
+                "| zero =>",
+                f"  {peel}",
+                f"  {closers}",
+                f"| succ {step} {hypothesis} =>",
+                f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = "
+                f"({step} : {integer}) + 1 := (by omega)",
+                f"  try simp only [{cast}] at *",
+                f"  first | {apply_ih} | skip",
+                f"  {peel}",
+                f"  {closers}",
+            ]
         )
+        scripts.append(Script(script, f"by induction on {name}, taking the last term off the sum"))
     return scripts
 
 
@@ -1613,7 +1613,10 @@ def sum_scripts(statement: LeanStatement, until: float | None = None) -> list[st
                 path = ", ".join(f"2, {name}" for name in binders[:depth])
                 enter = f"enter [{path}]; " if path else ""
                 exchanges.append(f"all_goals (conv_lhs => {enter}rw [{commute}])")
-        scripts.append("\n".join([*head, *exchanges, *tail]))
+        # the order found, for lanky check --proofs (see lanky.outline)
+        plan = SumPlan(goal, left, tuple(order))
+        script = "\n".join([*head, *exchanges, *tail])
+        scripts.append(Script(script, "by putting the sums in one order", plan))
     return scripts
 
 
@@ -1806,7 +1809,9 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
         if weighted:
             # the weight may stand on the other side of the value on the right
             steps.append("all_goals ring1")
-        scripts.append("\n".join(steps))
+        scripts.append(
+            Script("\n".join(steps), f"by adding up the sums over the fibers of {family}")
+        )
     return scripts
 
 
@@ -1828,7 +1833,8 @@ def conjunction_scripts(statement: LeanStatement) -> list[str]:
     """
     if not statement.mathlib or not isinstance(statement.goal_term, prim.LogicalAnd):
         return []
-    return [f"(repeat' apply And.intro) <;> ({_CONJUNCT_CLOSERS})"]
+    script = f"(repeat' apply And.intro) <;> ({_CONJUNCT_CLOSERS})"
+    return [Script(script, "a conjunct at a time, by algebra")]
 
 
 #: How a linear combination is checked once it is moved to one side. The casts
@@ -2317,6 +2323,8 @@ def _family_induction(
 
     # the uses of the last certificate a case was closed with
     certificate: list[Use] = []
+    # each case closed, with its certificate, by its name: for lanky check --proofs
+    cases_closed: dict[str, tuple[Case, tuple[Use, ...]]] = {}
 
     def closing(this: Case | None) -> str | None:
         """The ``linear_combination`` that checks the certificate the finder gives for a case."""
@@ -2330,9 +2338,12 @@ def _family_induction(
             return None
         certificate[:] = uses
         try:
-            return _combination(statement, tuple(uses), this.lemmas, printing, ring)
+            text = _combination(statement, tuple(uses), this.lemmas, printing, ring)
         except UnsupportedTerm:
             return None
+        if text is not None:
+            cases_closed[this.name] = (this, tuple(uses))
+        return text
 
     base = closing(case("base", Var(name), {name: (0, step - 1)}, inductive=False))
     if base is not None:
@@ -2391,7 +2402,28 @@ def _family_induction(
         *nonzero,
         f"    {successive}",
     ]
-    return "\n".join(lines)
+    # what was found, in the claim's terms, for lanky check --proofs (see lanky.outline)
+    if base is not None:
+        found_base = ((None, *cases_closed["base"]),)
+    else:
+        found_base = tuple(
+            (value, *cases_closed[str(value)])
+            for value in range(step)
+            if str(value) in cases_closed
+        )
+    plan = FamilyPlan(
+        goal=goal,
+        target=target,
+        order=name,
+        step=step,
+        lowest=_lowest_order(target, goal.guard),
+        successor=successor,
+        hypothesis=induction_name,
+        renaming=dict(renaming),
+        base=found_base,
+        inductive=cases_closed["step"],
+    )
+    return Script("\n".join(lines), f"by induction on {target.name}", plan)
 
 
 def _combination(
@@ -2578,9 +2610,10 @@ def part_scripts(statement: LeanStatement) -> list[str]:
         "ring",
     ]
     squares = statement.qualified("Complex.normSq_apply")
+    rung = "through the conjugate, by algebra"
     return [
-        "\n".join(lines),
-        f"simp only [{mul_conj}, {of_real_re}, {squares}]\nring",
+        Script("\n".join(lines), rung),
+        Script(f"simp only [{mul_conj}, {of_real_re}, {squares}]\nring", rung),
     ]
 
 
@@ -3449,6 +3482,10 @@ class LeanOracle:
             extra["lean_mathlib"] = self.session.mathlib_revision or (
                 mathlib_mode.revision(directory) if directory else None
             )
+        # the proof said back in the claim's terms, for lanky check --proofs and --steps
+        extra["found_proof"] = found_proof(
+            fact, statement, tactic, given=fact.id in self.tactics
+        )
         return fact.with_status(
             Status.PROVED,
             self.name,
