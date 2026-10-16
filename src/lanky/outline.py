@@ -284,6 +284,10 @@ def hypothesis_names(fact: Any, statement: Any) -> dict[str, str]:
 # {{{ the induction
 
 
+#: Seconds sympy may take to write the terms of one case's chain, after the
+#: proof; past them the case is one line, the claim and the facts it rests on.
+CHAIN_SECONDS = 5.0
+
 #: How many orders a step takes at a time, in words.
 _AT_A_TIME = {2: "two", 3: "three", 4: "four"}
 
@@ -550,6 +554,20 @@ def _reason(plan: FamilyPlan, use: Any, text: str, lemma: Any, multiplier: str |
     return reason
 
 
+def _together(plan: FamilyPlan, cited: list[tuple[str, Any]], lemmas: Mapping[str, Any]) -> str:
+    """Why a case holds, said at once: ``from recurrence at (a - 2, b) and pde at (a - 2, b)``."""
+    if not cited:
+        return "by algebra"
+    if len(cited) == 1:
+        text, use = cited[0]
+        return _reason(plan, use, text, lemmas.get(use.lemma), None)
+    words = [
+        _reason(plan, use, text, lemmas.get(use.lemma), None)[len("by ") :].replace(", at ", " at ")
+        for text, use in cited
+    ]
+    return f"from {', '.join(words[:-1])} and {words[-1]}"
+
+
 def _point_of_call(text: str) -> str:
     """The point of a citation ``claim(a - 2, b + 2)``: ``(a - 2, b + 2)``, or ``n - 1``."""
     inside = text[len("claim(") : -1]
@@ -567,19 +585,23 @@ def _case_chain(
     multipliers with it; where it cannot, the case is one line, the claim
     with every fact it rests on.
     """
+    from lanky.deadline import Expired, deadline
+
     lemmas = {lemma.name: lemma for lemma in case.lemmas}
     goal = case.goal
     claim_text = python_source(_user(plan, goal))
+    owner = object()
     try:
-        links = _sympy_chain(plan, case, cited, lemmas)
+        with deadline(CHAIN_SECONDS, owner):
+            links = _sympy_chain(plan, case, cited, lemmas)
+    except Expired as exc:
+        if exc.owner is not owner:
+            raise
+        links = None
     except Exception:  # noqa: BLE001 - without sympy, or a term it cannot read: one line
         links = None
     if links is None:
-        reasons = [
-            _reason(plan, use, text, lemmas.get(use.lemma), None) for text, use in cited
-        ]
-        why = " and ".join(reasons) if reasons else "by algebra"
-        return [(claim_text, why)]
+        return [(claim_text, _together(plan, cited, lemmas))]
     left = python_source(_user(plan, goal.left))
     lines = []
     for position, (term, reason) in enumerate(links):
@@ -1086,11 +1108,10 @@ def step_lines(fact: Any) -> list[str]:
     """What ``lanky check --steps`` prints for a proved claim: its outline in lanky's notation."""
     found = fact.provenance.get("found_proof")
     if not isinstance(found, dict):
-        return [f"STEPS {_head(fact)}: one step, by {fact.decided_by or 'an oracle'}"]
-    steps = found.get("steps") or []
+        found = {"how": f"by {fact.decided_by or 'an oracle'}"}
     how = found.get("how") or "by lanky's ladder"
-    if not steps:
-        return [f"STEPS {_head(fact)}: one step, {how}"]
+    # a rung with nothing more to say is an outline of one line
+    steps = found.get("steps") or [f"the claim, {how}"]
     return [f"STEPS {_head(fact)}, as lanky found them:", *(f"  {line}" for line in steps)]
 
 

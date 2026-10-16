@@ -203,6 +203,22 @@ def test_its_steps_are_a_chain_from_one_side_to_the_other(searching) -> None:
     ]
 
 
+def test_without_the_terms_between_a_case_is_one_line(searching, monkeypatch) -> None:
+    """Where sympy cannot write a chain, each case is its claim and the facts it rests on."""
+    from lanky import outline
+
+    def unwritten(*args):
+        raise ValueError("no chain")
+
+    monkeypatch.setattr(outline, "_sympy_chain", unwritten)
+    proved, _ = _found(compressed_taylor)
+    assert proved.provenance["found_proof"]["steps"][1:] == [
+        "  if a < 2:   R[a, b] == D[a, b]  by stored, at (a, b)",
+        "  otherwise:  R[a, b] == D[a, b]  from recurrence at (a - 2, b), "
+        "the claim at (a - 2, b + 2) and pde at (a - 2, b)",
+    ]
+
+
 def test_a_base_the_guard_pins_to_one_order_reads_as_that_order(searching) -> None:
     """``n >= 1`` and a step of two leave the base ``n == 1``, where ``first_term`` is cited."""
     proved, _ = _found(line_taylor)
@@ -449,7 +465,8 @@ def test_proofs_names_the_rung_where_python_cannot_say_more(capsys) -> None:
         "",
         "PROOF gauss at claims.py:3, by integer arithmetic",
         "",
-        "STEPS gauss at claims.py:3: one step, by integer arithmetic",
+        "STEPS gauss at claims.py:3, as lanky found them:",
+        "  the claim, by integer arithmetic",
     ]
 
 
