@@ -210,6 +210,8 @@ def test_a_chain_the_other_way_round_gives_the_claim_from_it(cases) -> None:
 
 
 def test_a_chain_about_other_terms_than_the_claim_is_refused(cases) -> None:
+    """Refused before Lean is asked where sympy can tell; without it, Lean refuses it."""
+    pytest.importorskip("sympy", reason="the refusal compares the ends with sympy")
     with pytest.raises(ProofError) as raised:
         compile_proof(trace_proof(cases.square_wrong), mathlib=False)
     assert raised.value.kind == "chain"
