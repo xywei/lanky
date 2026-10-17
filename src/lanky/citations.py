@@ -337,7 +337,7 @@ def citation_of(reason: Any, *, mathlib: bool = True) -> Citation:
             fact_id=reason.fact_id,
             restated=text,
             proved_text=proved,
-            premises=premises_of(reason.fact_id) if proved else (),
+            premises=premises_of(reason.fact_id, term=reason.term) if proved else (),
         )
     raise TypeError(
         f"{reason!r} is no fact a step can cite: a hypothesis, a theorem, a fact on the "
@@ -398,23 +398,32 @@ def proved_texts(texts: Mapping[str, Any] | ProvedTexts) -> Iterator[None]:
         _PROVED_TEXTS.reset(token)
 
 
-def proved_text(fact_id: str | None) -> CitedText | None:
+def proved_text(fact_id: str | None, term: Any = None) -> CitedText | None:
     """The text a theorem's own command proved, as the check recorded it; ``None`` for none.
 
     What :func:`proved_texts` set, for the theorem with this fact id, read
     as a :class:`CitedText`: its name, its ``as_cited`` text and the
-    theorems that text takes as premises.
+    theorems that text takes as premises. Given the citing theorem's
+    ``term``, a text recorded for another term under the same fact id (a
+    theorem changed in a long-lived process, whose new statement Lean has
+    not proved) is no proved text of it, and ``None`` is returned.
     """
-    return _proved(fact_id)
+    return _proved(fact_id, term)
 
 
-def _proved(fact_id: str | None) -> CitedText | None:
+def _proved(fact_id: str | None, term: Any = None) -> CitedText | None:
     """The proved text recorded for a theorem, as a :class:`CitedText`, or ``None``."""
     texts = _PROVED_TEXTS.get()
     found = None if texts is None or fact_id is None else texts.get(fact_id)
     if found is None or isinstance(found, CitedText):
         return found
     if isinstance(found, Proved):
+        if (
+            term is not None
+            and found.term is not None
+            and not structurally_equal(found.term, term)
+        ):
+            return None
         return CitedText(found.name.removeprefix("Lanky."), found.text, found.premises)
     return CitedText(fact_id or "", str(found))
 
@@ -431,7 +440,7 @@ def restated_text(theorem: Any, *, mathlib: bool = True) -> tuple[str, bool]:
         lanky.lean.UnsupportedTerm: If there is no proved text and the
             printer declines the theorem's statement.
     """
-    found = _proved(theorem.fact_id)
+    found = _proved(theorem.fact_id, theorem.term)
     if found is not None:
         return found.text, True
     from lanky.lean import print_lean
@@ -439,18 +448,22 @@ def restated_text(theorem: Any, *, mathlib: bool = True) -> tuple[str, bool]:
     return print_lean(theorem.term, mathlib=mathlib), False
 
 
-def premises_of(fact_id: str, seen: tuple[str, ...] = ()) -> tuple[Citation, ...]:
+def premises_of(
+    fact_id: str, seen: tuple[str, ...] = (), term: Any = None
+) -> tuple[Citation, ...]:
     """The theorems a proved theorem's ``as_cited`` takes, each a citation by its proved text.
 
     Each premise has to be a proved text itself: the soundness of a
     citation is an induction over what each proved theorem rests on, and a
-    premise with no proved text breaks it.
+    premise with no proved text breaks it. Given the cited theorem's
+    ``term``, a text recorded for another term has no premises of it
+    (:func:`proved_text`).
 
     Raises:
         ValueError: If a premise has no proved text, naming it, or if the
             premises come round to a theorem again, naming the circle.
     """
-    found = _proved(fact_id)
+    found = _proved(fact_id, term)
     if found is None:
         return ()
     out: list[Citation] = []

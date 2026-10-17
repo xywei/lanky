@@ -475,10 +475,11 @@ def cited_text(theorem: Any, mathlib: bool) -> str:
     byte for byte, where the check recorded one (:func:`lanky.citations.proved_texts`,
     which :func:`lanky.proofs.check_written_proofs` sets from the Lean
     oracle's texts): a citation restates only what Lean proved of the
-    theorem it names. Where none was recorded (a theorem only tested, an
-    axiom, one whose Lean attempt failed), the statement printed from its
-    term, trusting the printer, as every citation did before; the ledger
-    bounds the citing proof by what it cites. The two are the same
+    theorem it names, and only while the theorem's term is the one that
+    text was proved for. Where none was recorded (a theorem only tested, an
+    axiom, one whose Lean attempt failed, one changed since), the statement
+    printed from its term, trusting the printer, as every citation did
+    before; the ledger bounds the citing proof by what it cites. The two are the same
     proposition, printed by one function (:attr:`lanky.lean.LeanStatement.as_cited`).
 
     Raises:
@@ -486,7 +487,7 @@ def cited_text(theorem: Any, mathlib: bool) -> str:
     """
     from lanky.citations import proved_text
 
-    found = proved_text(getattr(theorem, "fact_id", None))
+    found = proved_text(getattr(theorem, "fact_id", None), getattr(theorem, "term", None))
     if found is not None:
         return found.text
     return statement_of(theorem.term, theorem.__name__, mathlib=mathlib).proposition
@@ -723,7 +724,7 @@ class _Compiler:
             if not identifier:
                 continue
             try:
-                stack.extend(premises_of(identifier))
+                stack.extend(premises_of(identifier, term=getattr(theorem, "term", None)))
             except ValueError as exc:
                 raise ProofError(
                     "unsupported", f"the proof cites {theorem.__name__}: {exc}"

@@ -615,6 +615,24 @@ class _Path:
     leaf: Leaf | None = None
 
 
+def _positional_first(fn: Any, arguments: dict[str, Any]) -> tuple[tuple, dict[str, Any]]:
+    """``arguments`` as a call of ``fn`` takes them: its positional-only parameters by position.
+
+    ``def t(x: Int, /, h: x >= 0)`` is a theorem like any other, and its
+    ``x`` cannot be passed by name (Codex, #171). The names are read from the
+    code object, not :func:`inspect.signature`, which would evaluate the
+    annotations, the claim's own statements, where they are lazy.
+    """
+    code = fn.__code__
+    named = dict(arguments)
+    values = []
+    for name in code.co_varnames[: code.co_posonlyargcount]:
+        if name not in named:
+            break
+        values.append(named.pop(name))
+    return tuple(values), named
+
+
 class _Tracer:
     """The trace of one theorem's body: its runs, one per path, and what they recorded."""
 
@@ -828,8 +846,9 @@ class _Tracer:
         body.__kwdefaults__ = fn.__kwdefaults__
         arguments: dict[str, Any] = {name: Var(name) for name in self.variables}
         arguments.update({name: Given(name, prop, self) for name, prop in self.hypotheses.items()})
+        values, named = _positional_first(fn, arguments)
         with self._tracing(path):
-            result = self._call(body, (), arguments)
+            result = self._call(body, values, named)
             code = fn.__code__
             if isinstance(result, pytypes.FunctionType) and result.__code__ in self.codes:
                 self._start_claim(result)

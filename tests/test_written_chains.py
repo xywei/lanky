@@ -129,6 +129,11 @@ def square(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
 @theorem
 def square_wrong(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
     return (y * y).equals((x + 1) * (x + 1), by=h).equals(x * x + 2 * x + 2)
+
+
+@theorem
+def square_positional(x: Int, y: Int, /, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
+    return (y * y).equals((x + 1) * (x + 1), by=h).equals(x * x + 2 * x + 1)
 '''
 
 
@@ -241,6 +246,14 @@ def test_a_hole_is_a_sorry_whose_line_is_recorded(cases) -> None:
     assert said == "failed"
 
 
+def test_a_theorem_with_positional_only_parameters_is_traced(cases) -> None:
+    """Its parameters before ``/`` are passed by position (Codex, #171)."""
+    traced = trace_proof(cases.square_positional)
+    plain = trace_proof(cases.square)
+    assert len(traced.leaves) == len(plain.leaves) == 1
+    assert len(traced.leaves[0].chain.links) == len(plain.leaves[0].chain.links) == 2
+
+
 def test_the_command_proves_the_text_a_citation_restates_and_audits_both(cases) -> None:
     command = compile_proof(trace_proof(cases.square), mathlib=False, as_cited="TEXT")
     assert "theorem Lanky.square.as_cited :\n    TEXT := by\n  intro x_1 x_2 x_3\n" in (
@@ -266,6 +279,43 @@ def test_a_cited_theorem_is_restated_by_the_text_its_command_proved(cases) -> No
     assert command.rests_on == [cases.ct_chain.fact_id, "theorem:other@1"]
     assert isinstance(command.cited[-1], Premise)
     assert command.summary == "1 step, using ct_chain"
+
+
+def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) -> None:
+    """A theorem changed under its fact id is restated by the printer (Codex, #171).
+
+    In a long-lived process the oracle may still hold the text it proved for
+    the theorem's earlier statement; a citation restates a text only while
+    the term it was proved for is the theorem's.
+    """
+    from lanky.citations import Proved
+    from lanky.proofs.compile import cited_text
+
+    other = {"theorem:other@1": CitedText("other", "OTHER TEXT")}
+    earlier = Proved(
+        cases.ct_chain.fact_id,
+        "Lanky.ct_chain",
+        "PROVED TEXT",
+        False,
+        cases.square.term,
+        ("theorem:other@1",),
+    )
+    with proved_texts({cases.ct_chain.fact_id: earlier, **other}):
+        assert cited_text(cases.ct_chain, False) != "PROVED TEXT"
+        command = compile_proof(trace_proof(cases.at_two), mathlib=False)
+    assert "PROVED TEXT" not in command.source
+    assert "OTHER TEXT" not in command.source
+    assert command.rests_on == [cases.ct_chain.fact_id]
+    current = Proved(
+        cases.ct_chain.fact_id,
+        "Lanky.ct_chain",
+        "PROVED TEXT",
+        False,
+        cases.ct_chain.term,
+        ("theorem:other@1",),
+    )
+    with proved_texts({cases.ct_chain.fact_id: current, **other}):
+        assert cited_text(cases.ct_chain, False) == "PROVED TEXT"
 
 
 # }}}
@@ -336,7 +386,9 @@ def checked(tmp_path_factory) -> dict:
     return {fact.owner: fact for fact in claims(check_path(path))}
 
 
-@pytest.mark.parametrize("owner", ["ct_chain", "ct_reversed", "doubled", "at_two", "square"])
+@pytest.mark.parametrize(
+    "owner", ["ct_chain", "ct_reversed", "doubled", "at_two", "square", "square_positional"]
+)
 def test_lean_accepts_the_proofs_that_calculate(checked, owner) -> None:
     fact = checked[owner]
     assert fact.provenance["proof"]["closed"] is True, fact.provenance["proof"]
