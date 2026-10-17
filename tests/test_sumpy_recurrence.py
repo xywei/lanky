@@ -308,9 +308,8 @@ def test_the_pde_at_every_order_is_cited_and_the_claim_for_every_order_rests_on_
     ``assumed``: Lean cannot state them in core, and the tester has no table
     over ``Nat`` to draw.
     """
-    from lanky.ledger import Ledger
-
-    harmonic, sampled, symbolic, cited, every_order, triangle = _by_owner()
+    ledger = check_path(DEMO)
+    harmonic, sampled, symbolic, cited, every_order, triangle = claims(ledger)
     assert not harmonic.is_axiom
     assert harmonic.kind == "theorem"
     assert harmonic.statement.startswith("x : Real, y : Real | x**2 + y**2 > 0 |- ")
@@ -327,7 +326,7 @@ def test_the_pde_at_every_order_is_cited_and_the_claim_for_every_order_rests_on_
     assert sampled.rests_on == symbolic.rests_on == ()
     assert every_order.rests_on == triangle.rests_on == (cited.id,)
     assert every_order.status is triangle.status is Status.ASSUMED
-    ledger = Ledger([harmonic, sampled, symbolic, cited, every_order, triangle])
+    # the whole ledger, harmonic's reading of its annotations included
     assert ledger.support(every_order).under == (cited.id,)
     assert ledger.support(triangle).under == (cited.id,)
     assert "under harmonic at every order" in ledger.render()
