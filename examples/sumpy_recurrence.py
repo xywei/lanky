@@ -994,7 +994,7 @@ def main() -> int:
     print(
         "`lanky check examples/sumpy_recurrence.py` puts the claim in the ledger: tested by\n"
         "mpmath, decided by the CAS oracle where sympy is installed, and proved for every\n"
-        "order by Lean where Mathlib is, under the kernel's harmonicity."
+        "order by Lean where Mathlib is, under the kernel's harmonicity at every order."
     )
     return 0 if agree else 1
 

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import claims, without_lean_line
+from conftest import claims, without_lean_line, without_not_checked
 from lanky import cli
 from lanky.check import check_path
 from lanky.ledger import Status
@@ -394,12 +394,15 @@ def test_the_quickstart_shows_the_ledger_the_demo_prints(cas, capsys) -> None:
 
     Every column is sized to what it holds, so the rows are compared cell by cell.
     The ``WITHOUT LEAN`` line a machine without Lean prints under the table
-    is left out on both sides.
+    is left out on both sides, and so is the ``NOT CHECKED`` line that says
+    why ``harmonic``'s proof was not checked, which is the machine's.
     """
-    shown = without_lean_line(_shown("uv run lanky check examples/sumpy_recurrence.py"))
+    shown = without_not_checked(
+        without_lean_line(_shown("uv run lanky check examples/sumpy_recurrence.py"))
+    )
     assert cli.main(["check", str(DEMO)]) == 0
     printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
-    printed = without_lean_line(printed)
+    printed = without_not_checked(without_lean_line(printed))
     assert len(shown) == len(printed)
     for doc, real in zip(shown, printed, strict=True):
         if doc and set(doc) <= {"-", " "}:

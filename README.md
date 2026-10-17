@@ -80,9 +80,10 @@ installs it.
 worth no more than they are. `scan_monotone`'s proof rests on its reading,
 and is worth `tested`. In `examples/sumpy_recurrence.py`, sumpy's compressed
 Taylor recurrence for the 2-D Laplace kernel is proved by Lean for every
-order under the kernel's harmonicity, an axiom the file cites, so it reads
-`proved under harmonic` and is worth `assumed` until someone proves the
-axiom. And a plugin's facts rest on lanky's: in loopty's flagship, the row
+order. The kernel's harmonicity is a theorem the file proves, but the step to
+its derivatives at every order is taken on a citation (#174). So the claim
+reads `proved under harmonic at every order`, and is worth `assumed` until
+someone proves that step. And a plugin's facts rest on lanky's: in loopty's flagship, the row
 that applies the same theorem to a kernel rests on the theorem's proof and on
 the kernel's postcondition, which isl decided from what the kernel stores and
 Lean proved again (two rows of its ledger, with Lean and Mathlib):
@@ -194,8 +195,9 @@ starts no Lean, also for a question the first check ran out of time on.
   wrangler for the 2-D Laplace kernel claims that its recurrence reconstructs
   every derivative, and the ledger has the claim `tested` by mpmath and
   `decided (heuristic)` by sympy through order 6, and, with Mathlib, `proved
-  under harmonic` by Lean for every order and on the triangle `a + b <= p`
-  of every order `p`, the kernel's harmonicity `assumed` on its citation.
+  under harmonic at every order` by Lean for every order and on the triangle
+  `a + b <= p` of every order `p`. The kernel's harmonicity is proved by its
+  body, and the step from it to every order is `assumed` on a citation.
   `examples/sum_factorization.py` proves, for every size, that a tensor-product operator on a hexahedron is three
   one-axis passes, as grudge applies it, and `examples/line_taylor.py` that
   the line-Taylor coefficients pytential's QBX evaluates are the series of a
@@ -870,7 +872,8 @@ sets up the pinned project with `python -m lanky.mathlib`, caching Mathlib's
 compiled files between runs, installs sumpy, runs `tests/test_mathlib.py`
 and `tests/test_sumpy_recurrence.py` with the project required, and checks
 that `lanky check examples/gauss.py` proves both rows and that the sumpy
-demonstration's claim for every order is `proved under harmonic`.
+demonstration's claim for every order is `proved under harmonic at every
+order`.
 The suite otherwise runs in core-Lean mode wherever it runs: it takes
 `LANKY_LEAN_MATHLIB` out of its environment and hands it to the Mathlib tests
 alone.

@@ -355,7 +355,7 @@ def main() -> int:
     print(
         "`lanky check examples/line_taylor.py` puts it in the ledger: decided through the\n"
         "order by the CAS oracle, and the closed form proved for every order by Lean where\n"
-        "Mathlib is installed, under the differential equation the kernel solves."
+        "Mathlib is installed, as is the differential equation the kernel solves."
     )
     return 0 if agree else 1
 

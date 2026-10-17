@@ -286,15 +286,17 @@ jobs:
 
       # The ledger #3 asks for: the claim tested by mpmath, decided by the CAS
       # oracle through the order, and proved by Lean for every order, under the
-      # kernel's harmonicity, and on the triangle of every order p (#86's
-      # corollary, which a kernel of order p cites).
+      # kernel's harmonicity at every order, the one step taken on a citation,
+      # and on the triangle of every order p (#86's corollary, which a kernel
+      # of order p cites). The harmonicity itself is proved by its body.
       - name: Check the sumpy demonstration with Mathlib
         run: |
           set -euo pipefail
           uv run lanky check examples/sumpy_recurrence.py | tee ledger.txt
           grep -q '^tested  *tested  *mpmath ' ledger.txt
           grep -q '^decided (heuristic)  *decided (heuristic)  *cas ' ledger.txt
-          proved=$(grep -cE '^proved under harmonic +assumed +lean ' ledger.txt)
+          grep -qE '^proved +tested +lean +sumpy_recurrence.py:[0-9]+ +harmonic ' ledger.txt
+          proved=$(grep -cE '^proved under harmonic at every order +assumed +lean ' ledger.txt)
           if (( proved != 2 )); then
             echo "expected the claim for every order and on the triangle proved, found ${proved}" >&2
             exit 1
@@ -303,7 +305,8 @@ jobs:
       # The two demonstrations of Mathlib mode on scientific codes: grudge's
       # sum factorization, proved for every size by exchanging sums, and the
       # line-Taylor coefficients pytential's QBX evaluates, proved for every
-      # order under the differential equation the logarithm solves.
+      # order, beside the differential equation the logarithm solves, proved
+      # by algebra on sympy's derivative.
       - name: Check the sum-factorization and line-Taylor demonstrations with Mathlib
         run: |
           set -euo pipefail
@@ -314,7 +317,11 @@ jobs:
             exit 1
           fi
           uv run lanky check examples/line_taylor.py | tee ledger.txt
-          grep -q '^proved under line_ode  *assumed  *lean ' ledger.txt
+          proved=$(grep -cE '^proved +tested +lean +line_taylor.py:[0-9]+ +line_(ode|taylor) ' ledger.txt)
+          if (( proved != 2 )); then
+            echo "expected line_ode and line_taylor proved by lean, found ${proved}" >&2
+            exit 1
+          fi
           grep -q '^decided (heuristic)  *decided (heuristic)  *cas ' ledger.txt
 
   known:
