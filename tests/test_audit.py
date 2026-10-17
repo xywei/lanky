@@ -546,6 +546,36 @@ def test_a_claim_checked_again_and_not_proved_keeps_no_text(monkeypatch, tmp_pat
     assert nonneg.fact_id not in oracle.proved_texts
 
 
+def test_a_text_that_changes_drops_the_texts_whose_proofs_cited_it() -> None:
+    """Citations of citations: a premise's text changed, its citers' texts go (Codex, #171).
+
+    ``b``'s proof cited ``a``, and ``c``'s cited ``b``: their ``as_cited``
+    theorems take ``a``'s old text as a hypothesis, all the way up, so a
+    citation of ``c`` would restate it. A new text for ``a``, ``a`` no
+    longer proved, or ``a`` changed under its fact id, drops both.
+    """
+    from dataclasses import replace
+
+    a = Proved("a", "Lanky.a", "A", False, nonneg.term)
+    b = Proved("b", "Lanky.b", "B", False, T4_TERM, ("a",))
+    c = Proved("c", "Lanky.c", "C", False, MISRESTATED, ("b",))
+    texts = ProvedTexts()
+    for proved in (a, b, c):
+        texts.record(proved)
+    texts.record(a)
+    assert len(texts) == 3, "the same text again keeps its citers"
+    texts.record(replace(a, text="A, changed"))
+    assert "b" not in texts and "c" not in texts and texts.get("a").text == "A, changed"
+    for proved in (a, b, c):
+        texts.record(proved)
+    texts.forget("a")
+    assert len(texts) == 0
+    for proved in (a, b, c):
+        texts.record(proved)
+    assert texts.stale({"a": MISRESTATED, "b": T4_TERM, "c": MISRESTATED}) == ["a"]
+    assert len(texts) == 0
+
+
 def test_restatements_are_refused_for_a_hypothesis_the_part_does_not_have() -> None:
     texts = ProvedTexts()
     texts.record(

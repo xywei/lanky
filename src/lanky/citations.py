@@ -609,12 +609,54 @@ class ProvedTexts:
         self._texts: dict[str, Proved] = {}
 
     def record(self, proved: Proved) -> None:
-        """Keep the text a claim's command proved."""
+        """Keep the text a claim's command proved.
+
+        A text that replaces another drops the texts that took the old one
+        as a premise (:meth:`forget`), since their ``as_cited`` theorems
+        take the old text as a hypothesis.
+        """
+        old = self._texts.get(proved.fact)
+        if old is not None and old.text != proved.text:
+            self._forget_citers(proved.fact)
         self._texts[proved.fact] = proved
 
     def forget(self, fact: str) -> None:
-        """Drop what was kept of a claim that is no longer proved."""
+        """Drop what was kept of a claim that is no longer proved.
+
+        And of every claim whose text takes it as a premise, all the way up
+        (Codex, #171): their ``as_cited`` theorems restate its old text, so
+        a citation of them would restate it too.
+        """
         self._texts.pop(fact, None)
+        self._forget_citers(fact)
+
+    def _forget_citers(self, fact: str) -> None:
+        """Drop the texts that take ``fact``'s as a premise, and theirs, and so on."""
+        stack = [fact]
+        while stack:
+            current = stack.pop()
+            citers = [other for other, kept in self._texts.items() if current in kept.premises]
+            for other in citers:
+                del self._texts[other]
+            stack.extend(citers)
+
+    def stale(self, terms: Mapping[str, Any]) -> list[str]:
+        """Forget each text kept for another term than ``terms`` gives its claim; their ids.
+
+        ``terms`` maps fact ids to the claims' terms as the check now reads
+        them. A claim changed under its fact id in a long-lived process,
+        and not asked of Lean again, keeps the text its earlier statement
+        proved; it is dropped here, with the texts that cite it.
+        """
+        dropped = []
+        for fact, term in terms.items():
+            kept = self._texts.get(fact)
+            if kept is None or kept.term is None or term is None:
+                continue
+            if not structurally_equal(kept.term, term):
+                self.forget(fact)
+                dropped.append(fact)
+        return dropped
 
     def get(self, fact: str) -> Proved | None:
         """The text kept for the claim ``fact``, or ``None``."""

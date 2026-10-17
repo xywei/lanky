@@ -113,6 +113,10 @@ def check_written_proofs(ledger: Ledger, objects: Any, verbose: bool = False) ->
     texts = getattr(oracle, "proved_texts", None)
     from lanky.citations import proved_texts
 
+    if texts is not None:
+        # a claim changed since its text was proved, in a long-lived process,
+        # is not cited by that text, nor is any claim whose proof cited it
+        texts.stale({fact.id: fact.term for fact in ledger if fact.term is not None})
     with proved_texts(texts if texts is not None else {}):
         done: set[str] = set()
         for identifier in list(pending):
