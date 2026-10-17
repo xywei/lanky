@@ -87,6 +87,7 @@ __all__ = [
     "Undecided",
     "UndefinedValue",
     "Var",
+    "asking_proof_questions",
     "binder_assignments",
     "binders",
     "code_reads",
@@ -545,6 +546,9 @@ class SymbolicMixin:
         """
         if _ANNOTATION_CODE.get():
             _refuse_truth(self, sys._getframe(1))
+        asker = _PROOF_QUESTIONS.get()
+        if asker is not None:
+            asker.number(self, sys._getframe(1))
         answer = getattr(super(), "__bool__", None)
         return True if answer is None else answer()
 
@@ -679,6 +683,45 @@ class SymbolicMixin:
     def __getitem__(self, index: Any) -> Subscript:
         """Build a subscript ``self[...]``."""
         return Subscript(self, index)
+
+    # {{{ the words of a chain, which a proof body writes (lanky.chains)
+
+    def equals(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term equals ``term``, by ``by``.
+
+        ``R[a, b].equals(-R[a - 2, b + 2], by=recurrence)`` is one link of a
+        calculation, with its reason (see :mod:`lanky.chains`). It builds a
+        record of the step, and proves nothing until a proof is checked.
+        """
+        from lanky.chains import link
+
+        return link(self, "==", term, by, sys._getframe(1))
+
+    def at_most(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is at most ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, "<=", term, by, sys._getframe(1))
+
+    def less_than(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is less than ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, "<", term, by, sys._getframe(1))
+
+    def at_least(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is at least ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, ">=", term, by, sys._getframe(1))
+
+    def more_than(self, term: Any, *, by: Any = None) -> Any:
+        """Start a chain of a proof: this term is more than ``term``, by ``by``."""
+        from lanky.chains import link
+
+        return link(self, ">", term, by, sys._getframe(1))
+
+    # }}}
 
 
 for _name in (
@@ -1262,18 +1305,48 @@ def _hashed_unless_annotation(cls: type) -> type:
 # }}}
 
 
+#: What answers the truth value of a proposition while a written proof is
+#: traced (see :func:`asking_proof_questions`), or ``None`` outside one.
+_PROOF_QUESTIONS: ContextVar[Any] = ContextVar("lanky_proof_questions", default=None)
+
+
+@contextmanager
+def asking_proof_questions(asker: Any) -> Iterator[None]:
+    """Have ``asker`` answer the truth values a written proof's own ``if`` asks for.
+
+    A theorem's body is a proof, and its ``if`` is a case split
+    (:mod:`lanky.proofs`): the body is run once per path, and each
+    proposition its own code asks the truth value of is answered by the
+    tracer, which schedules the answers, ``asker.ask(prop, frame)``. A
+    number's truth value asked for by the body's own code is refused there,
+    ``asker.number(term, frame)``, as an annotation's is. Binder tracing
+    comes first: a generator inside the body records its ``if`` clause as
+    a guard, as anywhere else.
+    """
+    token = _PROOF_QUESTIONS.set(asker)
+    try:
+        yield
+    finally:
+        _PROOF_QUESTIONS.reset(token)
+
+
 class PropositionMixin(SymbolicMixin):
     """A term whose value is a truth value.
 
     Asking for ``bool`` of one is an error, except inside binder tracing, where
     the question can only come from the ``if`` clause of a generator expression
-    and is answered by recording the proposition as a guard.
+    and is answered by recording the proposition as a guard, and inside the
+    trace of a written proof, where the proof's own ``if`` is a case split
+    whose answer the tracer schedules (:func:`asking_proof_questions`).
     """
 
     def __bool__(self) -> bool:
-        """Record a guard while tracing binders; otherwise refuse."""
+        """Record a guard while tracing binders; answer a proof's case split; otherwise refuse."""
         trace = current_trace()
         if trace is None:
+            asker = _PROOF_QUESTIONS.get()
+            if asker is not None:
+                return asker.ask(self, sys._getframe(1))
             raise SymbolicBoolError(
                 f"the truth value of the symbolic proposition {render(self)!r} is "
                 "undefined; evaluate it at concrete values (Theorem.__call__, "
@@ -1981,14 +2054,17 @@ conj = _elementary("conj")
 
 
 def reading_annotation() -> bool:
-    """Whether an annotation is being read (:func:`evaluate_annotations`) in this context.
+    """Whether a statement is being read in this context: an annotation, or a written proof.
 
     A library whose functions build a node of its own for a term, a kernel's
     ``loopty.math.conj`` say, asks this to build lanky's instead where the
     term is a statement's: ``conj(alpha)`` in a theorem's annotation is the
-    conjugate every oracle reads, and not a family named ``conj``.
+    conjugate every oracle reads, and not a family named ``conj``. So is
+    ``log(abs(alpha))`` in a step of the theorem's proof, which is traced
+    on the same terms (:func:`asking_proof_questions`) and is matched
+    against the facts it cites.
     """
-    return bool(_ANNOTATION_CODE.get())
+    return bool(_ANNOTATION_CODE.get()) or _PROOF_QUESTIONS.get() is not None
 
 
 #: The builtins that mean something else inside an annotation.

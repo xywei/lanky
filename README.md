@@ -204,7 +204,11 @@ starts no Lean, also for a question the first check ran out of time on.
 
 ## Status
 
-This is 0.4.0. The core works; the edges are sharp. New in 0.4.0, the ledger
+This is 0.4.0. The core works; the edges are sharp. On main since 0.4.0, a
+theorem's body can be its proof, written in Python and checked by Lean: facts
+cited by name, case splits, induction, and calculations a link to a line,
+citing facts lanky knows (`lanky.known`); and every Lean command ends with an
+axiom audit read positively. New in 0.4.0, the ledger
 says what happened where it said nothing: an oracle that raised, in a
 `RAISED` line, a claim Lean was not asked about and why, under `--verbose`,
 and a Mathlib project Lean cannot import, in the `WITHOUT LEAN` line; and a
@@ -227,7 +231,8 @@ raises its floor to match.
 
 **Works.**
 
-- `lanky check FILE... [--json OUT] [--verbose] [--show-lean [TEXT]]`, exit code 1 on any
+- `lanky check FILE... [--json OUT] [--verbose] [--show-lean [TEXT]] [--proofs [TEXT]]
+  [--steps [TEXT]]`, exit code 1 on any
   refutation or vacuous claim. Each refuted fact is repeated under the table
   with its counterexample, its witness and its reason, the three standard
   provenance keys, read the same way whichever oracle or plugin refuted it; or
@@ -251,6 +256,31 @@ raises its floor to match.
   against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
+- Written proofs. A theorem whose body holds more than a docstring, `...` or
+  `pass` is proved by that body: ordinary Python that cites facts and gives
+  a reason for each, `return copies, stored`, with `if` for a case split and
+  a local `def claim(i, a, b)` that calls itself at smaller values for an
+  induction. `lanky check` traces the body after every run and draw, on
+  symbolic values (`python file.py` never calls it), compiles it to one Lean
+  command, with each hypothesis under its Python name and `claim` a theorem
+  of its own with the measure lanky finds, and adds a line to the claim's
+  row: `by its proof, every_box.py:106-113: induction on a, 3 cases, 3
+  steps`. A calculation is a chain, `R[a, b].equals(-R[a - 2, b + 2],
+  by=recurrence)`, each link with its reason; a step can be named and cited
+  later, and one left open, `by=...`, is named in the row. A proof that fails
+  is reported at the Python line, with what is left over and the fix where
+  lanky can name one, and fails the check, also for a claim lanky proves
+  alone, whose row still reads `proved`. A theorem the proof cites from
+  another module is a row of the ledger, marked with its module.
+  `examples/every_box.py`, lanky #140's claim, which lanky's search does not
+  prove, and `examples/log_of_the_modulus.py`, which cites two facts of
+  `lanky.known`, are the worked cases; the quickstart's *Write a proof* says
+  what each form means.
+- `lanky.known`: twenty facts under plain names (`log_of_a_power`,
+  `modulus_squared`, `one_more_term`, ...), each proved once with Mathlib by
+  a Lean proof kept in a table, and cited by a written proof like any
+  theorem. Where Lean does not prove a claim alone, `lanky check` names the
+  known facts that fit it.
 - `@axiom(cite=...)`: a statement written like a theorem and taken on a
   citation. Its fact is `assumed (axiom)`, with the citation in its
   provenance; no oracle is asked to establish it, and the property tester
@@ -517,6 +547,17 @@ raises its floor to match.
   under a name of its own in the ledger: the facts of one owner whose parts
   have one name, a kernel's accesses, are told apart as
   `Lanky.jacobi_in_bounds`, `Lanky.jacobi_in_bounds_2` and on.
+- `--proofs` prints the proof lanky found for each proved theorem, in Python
+  where Python can say it: for an induction over families, the body a written
+  proof would have, in the theorem's own names and at the points the search
+  found, ready to paste under the docstring (`def claim(a, b): ...`, `return
+  recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)`, `return
+  claim`); for an exchange of sums, the chain through the left side with its
+  sums in the order found; for any other rung of the ladder, the rung, in
+  words. `--steps` prints its outline in lanky's notation, each case a chain
+  of equations whose links name the fact, the point and the multiplier; for
+  a theorem with a written proof, that proof's outline, a row per step at
+  its Python line. Both take a text as `--show-lean` does.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
 

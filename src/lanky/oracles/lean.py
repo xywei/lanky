@@ -44,6 +44,16 @@ A fact the ladder does not close is returned unchanged, with what was tried in
 its provenance, so the weaker oracles still run and the ledger still shows the
 claim.
 
+What closes a claim is a command with no error, no ``sorry`` and a positive
+axiom audit: every command ends with ``#print axioms`` of each theorem it
+declares, named from the root, and Lean has to answer that each rests on
+nothing beyond Lean's own axioms (:mod:`lanky.audit`). A claim's theorem
+names its hypotheses as the file does, ``pde`` and ``stored``
+(:func:`claim_statement`), and its command goes on to prove the text a
+citation of it restates, ``Lanky.name.as_cited``, which the oracle keeps for
+the parts that cite the claim (:mod:`lanky.citations`). A script pinned with
+:func:`use_tactic` is screened before it is sent.
+
 A plugin's claim is not printed from its term and sent up the ladder. Its term
 offers an obligation (:mod:`lanky.obligations`): the claim in parts, each a
 closed lanky term, with the hints the plugin's solver found. Each part is
@@ -77,7 +87,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import replace
 from importlib.util import find_spec
 from typing import Any
@@ -85,6 +95,8 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky import mathlib as mathlib_mode
+from lanky.audit import audit_failure, audited, declares, screen
+from lanky.citations import Proved, ProvedTexts, restatements
 from lanky.deadline import Expired, deadline
 from lanky.induction import (
     Case,
@@ -116,6 +128,8 @@ from lanky.obligations import (
     part_statement,
     theorem_name,
 )
+from lanky.oracles.known import proof_of as known_proof
+from lanky.outline import FamilyPlan, Script, SumPlan, found_proof
 from lanky.prelude import FinType, FnType, Nat, Refined
 from lanky.terms import (
     Add,
@@ -131,15 +145,20 @@ from lanky.terms import (
 )
 
 __all__ = [
+    "CLOSED_WITH_HOLES",
     "COMBINATION_NORM",
     "LeanOracle",
     "LeanSession",
     "ProofCache",
+    "UNAUDITED",
+    "claim_statement",
     "combination_norm",
     "decline",
     "default_cache_dir",
     "default_proof_cache_dir",
     "family_induction_scripts",
+    "holes_verdict",
+    "hypothesis_names",
     "induction_over_families",
     "induction_scripts",
     "kill_servers",
@@ -930,7 +949,138 @@ class LeanSession:
         if problems:
             lines = problems[0].strip().splitlines()
             return False, lines[0] if lines else "Lean reported an error with no message", True
+        failure = _audit(source, response)
+        if failure is not None:
+            return False, failure, True
         return True, "", True
+
+    def said(self, source: str, until: float | None = None) -> tuple[dict | None, str]:
+        """Everything Lean says of one command, each message with where it is.
+
+        :meth:`answer` keeps the first line of the first error, which is
+        enough for a ladder's attempt and not for a written proof, whose
+        report names the Python line each failing step came from
+        (:mod:`lanky.proofs`): one command holds the whole proof, and Lean
+        goes on after an error in one step, so it reports every step that
+        fails. The record is ``{"messages": [...], "sorries": [...]}``, each
+        message a dict of ``severity``, ``line`` and ``column`` (Lean's: the
+        line counted from 1 in the command, the column from 0), ``end_line``,
+        ``end_column`` and ``data``, and each ``sorry`` its ``line`` and
+        ``column``; ``None`` with the reason when the command was not
+        answered, as :meth:`answer` says it.
+        """
+        from lean_interact import Command
+
+        if not self.start():
+            return None, self.error or "no Lean session"
+        if not self._revive():
+            return None, self.error or "no Lean session"
+        timeout = self.timeout
+        if until is not None:
+            left = until - time.monotonic()
+            if left <= 0:
+                return None, BUDGET_SPENT
+            timeout = min(timeout, left)
+        if self.mathlib is not None:
+            command = Command(cmd=source, env=self.environment)
+        else:
+            command = Command(cmd=source)
+        try:
+            response = self.server.run(command, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - a timeout is a reason, not a crash
+            return None, f"{type(exc).__name__}: {exc}"
+        except BaseException:
+            self._interrupted()
+            raise
+        message = getattr(response, "message", None)
+        if message is not None:
+            return None, str(message)
+        return {
+            "messages": [_message_record(item) for item in getattr(response, "messages", ())],
+            "sorries": [
+                _position_record(getattr(item, "start_pos", None))
+                for item in getattr(response, "sorries", ())
+            ],
+        }, ""
+
+    def answer_with_holes(
+        self, source: str, holes: Collection[int] = (), until: float | None = None
+    ) -> tuple[str, list[tuple[int | None, str]], bool]:
+        """Elaborate a written proof; ``(verdict, messages, answered)``.
+
+        ``holes`` are the lines of ``source``, counted from ``1``, at which
+        lanky wrote ``sorry`` for a step the proof left open (``by=...``).
+        The verdict is :func:`holes_verdict`'s: ``"closed"``, ``"closed with
+        holes"`` when every ``sorry`` Lean found is at one of them, or
+        ``"failed"``. The messages are every error Lean reported, each with
+        its line, which is how a report puts each back at its Python line
+        (:attr:`lanky.oracles.steps.Script.lines`); a command Lean did not
+        answer has one message, the reason, with no line. ``answered`` is
+        :meth:`answer`'s third value.
+        """
+        from lean_interact import Command
+
+        if not self.start() or not self._revive():
+            return "failed", [(None, self.error or "no Lean session")], False
+        timeout = self.timeout
+        if until is not None:
+            left = until - time.monotonic()
+            if left <= 0:
+                return "failed", [(None, BUDGET_SPENT)], False
+            timeout = min(timeout, left)
+        if self.mathlib is not None:
+            command = Command(cmd=source, env=self.environment)
+        else:
+            command = Command(cmd=source)
+        try:
+            response = self.server.run(command, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - a timeout is an answer of no one's
+            return "failed", [(None, f"{type(exc).__name__}: {exc}")], False
+        except BaseException:
+            self._interrupted()
+            raise
+        message = getattr(response, "message", None)
+        if message is not None:
+            return "failed", [(None, str(message))], False
+        verdict, messages = holes_verdict(response, holes)
+        return verdict, messages, True
+
+
+#: The verdict of a written proof that Lean accepted with ``sorry`` at the
+#: steps the proof left open, and nowhere else (:func:`holes_verdict`).
+CLOSED_WITH_HOLES = "closed with holes"
+
+
+def holes_verdict(
+    response: Any, holes: Collection[int] = ()
+) -> tuple[str, list[tuple[int | None, str]]]:
+    """What a REPL response says of a written proof: closed, closed with holes, or failed.
+
+    A proof is ``"closed"`` with no error and no ``sorry``, and ``"closed with
+    holes"`` with no error and a ``sorry`` only at lines in ``holes``, which
+    are where lanky wrote one for a step written ``by=...``: the claim then
+    reads assumed, and its row names those lines (:data:`CLOSED_WITH_HOLES`).
+    A ``sorry`` anywhere else, one a tactic left or one that came in some
+    other way, fails it, as an error does. The messages are the errors, each
+    with its line, and the stray ``sorry`` lines, in the order Lean gave them.
+    """
+    allowed = set(holes)
+    messages: list[tuple[int | None, str]] = []
+    for item in getattr(response, "messages", ()):
+        if str(getattr(item, "severity", "")).endswith("error"):
+            position = getattr(item, "start_pos", None)
+            messages.append((getattr(position, "line", None), str(item.data)))
+    stray: list[tuple[int | None, str]] = []
+    for item in getattr(response, "sorries", ()):
+        position = getattr(item, "start_pos", None)
+        line = getattr(position, "line", None)
+        if line is None or line not in allowed:
+            stray.append((line, "a sorry lanky did not write for a step left open"))
+    if messages or stray:
+        return "failed", messages + stray
+    if getattr(response, "sorries", ()):
+        return CLOSED_WITH_HOLES, []
+    return "closed", []
 
 
 #: Every session that opened, for :func:`kill_servers`.
@@ -1159,6 +1309,50 @@ def _errors(response: Any) -> list[str]:
     ]
 
 
+def _audit(source: str, response: Any) -> str | None:
+    """Why Lean's answer to ``source`` does not pass its axiom audit; ``None`` when it does.
+
+    The theorems audited are the ones lanky's audit at the end of the
+    command names (:func:`lanky.audit.audited`), and each needs its positive
+    answer among the messages (:func:`lanky.audit.audit_failure`). A command
+    with no audit is not audited here: a session runs whatever source it is
+    given, and the oracle sends none without one (:meth:`LeanOracle._ask`).
+    """
+    names = audited(source)
+    if not names:
+        return None
+    messages = [str(getattr(item, "data", "")) for item in getattr(response, "messages", ())]
+    return audit_failure(messages, names)
+
+
+#: What the oracle answers for a command it will not send: one that declares
+#: a theorem and does not end with lanky's axiom audit of it.
+UNAUDITED = "the command has no axiom audit, so lanky does not send it as a proof"
+
+
+def _position_record(position: Any) -> dict[str, int | None]:
+    """A REPL position as ``{"line": ..., "column": ...}``; ``None`` for each part it lacks."""
+    return {
+        "line": getattr(position, "line", None),
+        "column": getattr(position, "column", None),
+    }
+
+
+def _message_record(item: Any) -> dict[str, Any]:
+    """One message of a REPL response as plain data (see :meth:`LeanSession.said`)."""
+    start = _position_record(getattr(item, "start_pos", None))
+    end = _position_record(getattr(item, "end_pos", None))
+    severity = str(getattr(item, "severity", ""))
+    return {
+        "severity": severity.rsplit(".", 1)[-1],
+        "line": start["line"],
+        "column": start["column"],
+        "end_line": end["line"],
+        "end_column": end["column"],
+        "data": str(getattr(item, "data", "")),
+    }
+
+
 def _problems(response: Any) -> list[str]:
     """What went wrong with a REPL command: the REPL's own error, or Lean's errors."""
     message = getattr(response, "message", None)
@@ -1258,7 +1452,10 @@ def _goal_intro(
     That is its own name, unless it is one that ``intro`` and ``rcases`` read
     as a pattern (:data:`_PATTERN_NAMES`): ``intro rfl`` substitutes, and fails
     on a variable, so a variable named ``rfl`` is introduced under a fresh
-    name, ``x``, and a strategy names it so.
+    name, ``x``, and a strategy names it so. Nor is it a variable named like a
+    hypothesis of the statement, which keeps its Python name, ``k`` say: the
+    variable would hide it from every step after the ``intro``, so it is
+    introduced as ``k_1``.
 
     The guards are rendered to be counted, and rendering a bound such as
     ``Fin[2 ** n]`` needs to know that ``n`` is a natural, so each binder's
@@ -1278,9 +1475,16 @@ def _goal_intro(
     introduced: dict[str, str] = {}
     guards = list(conjuncts(goal.guard))
     scope = dict(statement.types)
+    hypotheses = {name for name, _ in statement.hypotheses}
     for position, (var, domain) in enumerate(goal.binders):
         if var.name in _PATTERN_NAMES:
             introduced[var.name] = _fresh("x", used)
+        elif lean_identifier(var.name) in hypotheses:
+            index = 1
+            while lean_identifier(f"{var.name}_{index}") in used:
+                index += 1
+            introduced[var.name] = lean_identifier(f"{var.name}_{index}")
+            used.add(introduced[var.name])
         else:
             introduced[var.name] = lean_identifier(var.name)
         names.append(introduced[var.name])
@@ -1431,7 +1635,7 @@ def induction_scripts(statement: LeanStatement) -> list[str]:
     scripts.append(
         "\n".join([*head, *instantiations, f"  {apply_ih}", *peel, f"  {closers}"])
     )
-    return scripts
+    return [Script(script, f"by induction on {target.name}") for script in scripts]
 
 
 def _closers(statement: LeanStatement) -> str:
@@ -1523,25 +1727,24 @@ def reduction_scripts(statement: LeanStatement) -> list[str]:
             f"(have {applied} := {hypothesis}{' (by omega)' * count})"
             for count in range(later, -1, -1)
         )
-        scripts.append(
-            "\n".join(
-                [
-                    f"obtain ⟨{traded}, rfl⟩ := "
-                    f"{statement.qualified('Int.eq_ofNat_of_zero_le')} {own[0]}",
-                    f"induction {traded} with",
-                    "| zero =>",
-                    f"  {peel}",
-                    f"  {closers}",
-                    f"| succ {step} {hypothesis} =>",
-                    f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = "
-                    f"({step} : {integer}) + 1 := (by omega)",
-                    f"  try simp only [{cast}] at *",
-                    f"  first | {apply_ih} | skip",
-                    f"  {peel}",
-                    f"  {closers}",
-                ]
-            )
+        script = "\n".join(
+            [
+                f"obtain ⟨{traded}, rfl⟩ := "
+                f"{statement.qualified('Int.eq_ofNat_of_zero_le')} {own[0]}",
+                f"induction {traded} with",
+                "| zero =>",
+                f"  {peel}",
+                f"  {closers}",
+                f"| succ {step} {hypothesis} =>",
+                f"  have {cast} : (({step} + 1 : {natural}) : {integer}) = "
+                f"({step} : {integer}) + 1 := (by omega)",
+                f"  try simp only [{cast}] at *",
+                f"  first | {apply_ih} | skip",
+                f"  {peel}",
+                f"  {closers}",
+            ]
         )
+        scripts.append(Script(script, f"by induction on {name}, taking the last term off the sum"))
     return scripts
 
 
@@ -1613,7 +1816,10 @@ def sum_scripts(statement: LeanStatement, until: float | None = None) -> list[st
                 path = ", ".join(f"2, {name}" for name in binders[:depth])
                 enter = f"enter [{path}]; " if path else ""
                 exchanges.append(f"all_goals (conv_lhs => {enter}rw [{commute}])")
-        scripts.append("\n".join([*head, *exchanges, *tail]))
+        # the order found, for lanky check --proofs (see lanky.outline)
+        plan = SumPlan(goal, left, tuple(order))
+        script = "\n".join([*head, *exchanges, *tail])
+        scripts.append(Script(script, "by putting the sums in one order", plan))
     return scripts
 
 
@@ -1806,7 +2012,9 @@ def fiber_scripts(statement: LeanStatement) -> list[str]:
         if weighted:
             # the weight may stand on the other side of the value on the right
             steps.append("all_goals ring1")
-        scripts.append("\n".join(steps))
+        scripts.append(
+            Script("\n".join(steps), f"by adding up the sums over the fibers of {family}")
+        )
     return scripts
 
 
@@ -1828,7 +2036,8 @@ def conjunction_scripts(statement: LeanStatement) -> list[str]:
     """
     if not statement.mathlib or not isinstance(statement.goal_term, prim.LogicalAnd):
         return []
-    return [f"(repeat' apply And.intro) <;> ({_CONJUNCT_CLOSERS})"]
+    script = f"(repeat' apply And.intro) <;> ({_CONJUNCT_CLOSERS})"
+    return [Script(script, "a conjunct at a time, by algebra")]
 
 
 #: How a linear combination is checked once it is moved to one side. The casts
@@ -2317,6 +2526,8 @@ def _family_induction(
 
     # the uses of the last certificate a case was closed with
     certificate: list[Use] = []
+    # each case closed, with its certificate, by its name: for lanky check --proofs
+    cases_closed: dict[str, tuple[Case, tuple[Use, ...]]] = {}
 
     def closing(this: Case | None) -> str | None:
         """The ``linear_combination`` that checks the certificate the finder gives for a case."""
@@ -2330,9 +2541,12 @@ def _family_induction(
             return None
         certificate[:] = uses
         try:
-            return _combination(statement, tuple(uses), this.lemmas, printing, ring)
+            text = _combination(statement, tuple(uses), this.lemmas, printing, ring)
         except UnsupportedTerm:
             return None
+        if text is not None:
+            cases_closed[this.name] = (this, tuple(uses))
+        return text
 
     base = closing(case("base", Var(name), {name: (0, step - 1)}, inductive=False))
     if base is not None:
@@ -2391,7 +2605,28 @@ def _family_induction(
         *nonzero,
         f"    {successive}",
     ]
-    return "\n".join(lines)
+    # what was found, in the claim's terms, for lanky check --proofs (see lanky.outline)
+    if base is not None:
+        found_base = ((None, *cases_closed["base"]),)
+    else:
+        found_base = tuple(
+            (value, *cases_closed[str(value)])
+            for value in range(step)
+            if str(value) in cases_closed
+        )
+    plan = FamilyPlan(
+        goal=goal,
+        target=target,
+        order=name,
+        step=step,
+        lowest=_lowest_order(target, goal.guard),
+        successor=successor,
+        hypothesis=induction_name,
+        renaming=dict(renaming),
+        base=found_base,
+        inductive=cases_closed["step"],
+    )
+    return Script("\n".join(lines), f"by induction on {target.name}", plan)
 
 
 def _combination(
@@ -2578,9 +2813,10 @@ def part_scripts(statement: LeanStatement) -> list[str]:
         "ring",
     ]
     squares = statement.qualified("Complex.normSq_apply")
+    rung = "through the conjugate, by algebra"
     return [
-        "\n".join(lines),
-        f"simp only [{mul_conj}, {of_real_re}, {squares}]\nring",
+        Script("\n".join(lines), rung),
+        Script(f"simp only [{mul_conj}, {of_real_re}, {squares}]\nring", rung),
     ]
 
 
@@ -2766,6 +3002,30 @@ class ProofCache:
             {"version": version, "source": source, "closed": closed, "detail": detail},
         )
 
+    def said(self, version: str | None, source: str) -> dict | None:
+        """Everything Lean said of a command, kept for ``source`` (:meth:`LeanSession.said`)."""
+        path = self._path(version, f"said\n{source}")
+        if path is None:
+            return None
+        try:
+            with open(path, encoding="utf-8") as handle:
+                import json
+
+                record = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(record, dict) or record.get("source") != source:
+            return None
+        if not isinstance(record.get("messages"), list):
+            return None
+        return record
+
+    def keep_said(self, version: str | None, source: str, record: dict) -> None:
+        """Keep what Lean said of a command, as :meth:`said` reads it back."""
+        self._write(
+            version, f"said\n{source}", {**record, "version": version, "source": source}
+        )
+
     def _write(self, version: str | None, text: str, record: dict) -> None:
         """Write ``record`` where ``text`` is kept under ``version``, whole or not at all."""
         path = self._path(version, text)
@@ -2899,6 +3159,40 @@ _LEFT_OPEN = "not answered in the time the check that kept it had"
 # {{{ the oracle
 
 
+def hypothesis_names(fact: Fact) -> tuple[str, ...] | None:
+    """The Python names of a claim's hypotheses, one per conjunct of its guard, if it has them.
+
+    A theorem records them as ``hypothesis_names`` in its fact's provenance
+    (:attr:`lanky.theory.Theorem.hypothesis_names`), and so may a plugin's
+    claim. ``None`` for a claim that records none, whose hypotheses Lean
+    calls ``h0``, ``h1``, ...
+    """
+    names = fact.provenance.get("hypothesis_names")
+    if not isinstance(names, list | tuple) or not all(isinstance(n, str) for n in names):
+        return None
+    return tuple(names)
+
+
+def claim_statement(fact: Fact, mathlib: bool | None) -> LeanStatement:
+    """The statement a claim's command proves: its term, as Lean, in ``mathlib``'s dialect.
+
+    Its hypotheses are named as the file names them (:func:`hypothesis_names`),
+    and the command proves the claim's ``as_cited`` text after it, which a
+    proof or a plugin's part that cites the claim restates
+    (:mod:`lanky.citations`).
+
+    Raises:
+        UnsupportedTerm: If the printer declines the claim's term.
+    """
+    return statement_of(
+        fact.term,
+        fact.owner or fact.id,
+        mathlib=mathlib,
+        hypotheses=hypothesis_names(fact),
+        citable=True,
+    )
+
+
 class LeanOracle:
     """Establish facts by proving them in Lean, with core Lean or with Mathlib.
 
@@ -2964,6 +3258,9 @@ class LeanOracle:
         #: The version of the ``lean`` on the ``PATH``, asked once, which keys
         #: the cache before a session has started (:meth:`_cache_version`).
         self._on_path: tuple[str] | None = None
+        #: The ``as_cited`` text of every claim this oracle proved, by fact
+        #: id, which a part that cites the claim restates (:mod:`lanky.citations`).
+        self.proved_texts = ProvedTexts()
 
     @property
     def session(self) -> LeanSession:
@@ -3069,7 +3366,7 @@ class LeanOracle:
             # a plugin's claim, stated for Lean when Lean is asked (lanky.obligations)
             return True
         try:
-            statement_of(fact.term, fact.owner or fact.id, mathlib=self._mathlib())
+            claim_statement(fact, self._mathlib())
         except (UnsupportedTerm, AttributeError, TypeError, ValueError):
             return False
         return True
@@ -3094,7 +3391,7 @@ class LeanOracle:
         if fact.term is None or callable(getattr(fact.term, "lean_obligation", None)):
             return {}
         try:
-            statement_of(fact.term, fact.owner or fact.id, mathlib=self._mathlib())
+            claim_statement(fact, self._mathlib())
         except UnsupportedTerm as exc:
             return {"lean_declined": str(exc)}
         except (AttributeError, TypeError, ValueError) as exc:
@@ -3161,11 +3458,10 @@ class LeanOracle:
                 return ()
             reals = any(getattr(part, "mathlib", False) for part in obligation.parts)
             return ("lean", "mathlib") if reals and not with_mathlib else ("lean",)
-        owner = fact.owner or fact.id
         stated: dict[bool, LeanStatement] = {}
         for mathlib in (False, True):
             try:
-                stated[mathlib] = statement_of(fact.term, owner, mathlib=mathlib)
+                stated[mathlib] = claim_statement(fact, mathlib)
             except (UnsupportedTerm, AttributeError, TypeError, ValueError):
                 continue
         if not stated:
@@ -3270,6 +3566,12 @@ class LeanOracle:
         Mathlib mode. The propositions the side conditions proved are listed
         as ``lean_side_conditions``.
 
+        A fact of :mod:`lanky.known` is not sent up the ladder: its proof is
+        the one the library's table keeps (:mod:`lanky.oracles.known`),
+        screened for raw text first, as a script :func:`use_tactic` pins is
+        tried alone. A table proof the screen refuses declines the fact, with
+        the reason.
+
         Lean's answer to each attempt is kept in the :class:`ProofCache`, as
         an obligation's are, and a claim every answer of which is kept is
         read back without starting a session (#118): the ladder is Python's,
@@ -3280,6 +3582,8 @@ class LeanOracle:
         well (:meth:`_stopping`), so that the check after it, given no more
         time, reads the same row back without a session (#134).
         """
+        # a text kept from an earlier proof of this claim is kept again only if it is proved again
+        self.proved_texts.forget(fact.id)
         declined = self.declines.get(fact.id)
         if declined is not None:
             return fact.with_status(
@@ -3290,7 +3594,7 @@ class LeanOracle:
         session = self.session
         mathlib = session.mathlib is not None
         try:
-            statement = statement_of(fact.term, fact.owner or fact.id, mathlib=mathlib)
+            statement = claim_statement(fact, mathlib)
         except UnsupportedTerm as exc:
             return fact.with_status(
                 fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
@@ -3311,7 +3615,24 @@ class LeanOracle:
             self.proofs = ProofCache(default_proof_cache_dir())
         # the ladder is Python's, and the same whether Lean is asked or the cache
         override = self.tactics.get(fact.id)
+        library = False
+        if override is None:
+            # a fact of lanky.known is proved by its proof in the table
+            try:
+                override = known_proof(fact)
+            except ValueError as exc:
+                return fact.with_status(
+                    fact.status, lean_declined=str(exc), declined=f"{self.name}: {exc}"
+                )
+            library = override is not None
         if override is not None:
+            refused = screen(override, library=library)
+            if refused is not None:
+                # set on the oracle by hand, past use_tactic's screen
+                reason = f"the tactic script given for it is not sent to Lean: {refused}"
+                return fact.with_status(
+                    fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+                )
             ladder = [override]
         else:
             ladder = tactic_ladder(statement, self.certificates.get(fact.id), until)
@@ -3393,6 +3714,52 @@ class LeanOracle:
         source = statement.source(proved)
         return self._proved_claim(fact, statement, proved, source, conditions, session.version)
 
+    def written(self, source: str, fact: Fact | None = None) -> tuple[dict | None, str, bool]:
+        """What Lean says of a written proof's command: ``(record, reason, cached)``.
+
+        A theorem whose body is a proof is checked in one Lean command
+        (:mod:`lanky.proofs`), sent here through this oracle's session, in
+        the dialect it runs, under its budget for a claim (``fact`` gives
+        it, as for the ladder), and kept in the proof cache by its source
+        with every message and where it is (:meth:`ProofCache.said`), so a
+        warm check starts no Lean. ``record`` is what
+        :meth:`LeanSession.said` gives, and ``None`` when Lean did not
+        answer: Lean is not available here, the REPL could not start, or
+        the command ran past its time, which ``reason`` then says.
+        ``cached`` says whether the record was read back.
+        """
+        available, reason = self.availability()
+        if not available:
+            return None, reason, False
+        session = self.session
+        if self.proofs is None:
+            self.proofs = ProofCache(default_proof_cache_dir())
+        if session.mathlib is not None:
+            key = _mathlib_key(session.mathlib)
+        elif self._pinned is not None:
+            key = session.version
+        else:
+            key = self._cache_version()
+        if key is not None:
+            kept = self.proofs.said(key, source)
+            if kept is not None:
+                return kept, "", True
+        if not session.ready():
+            return None, session.error or "no Lean session", False
+        budget: float | None = None
+        if fact is not None:
+            try:
+                budget = self._budget(fact)
+            except ValueError as exc:
+                return None, str(exc), False
+        until = None if budget is None else time.monotonic() + budget
+        record, reason = session.said(source, until)
+        if record is not None:
+            answered = self._answer_key(session)
+            if answered is not None:
+                self.proofs.keep_said(answered, source, record)
+        return record, reason, False
+
     def _stopping(
         self,
         fact: Fact,
@@ -3434,8 +3801,25 @@ class LeanOracle:
         conditions: list[str],
         version: str | None,
     ) -> Fact:
-        """``fact`` proved by ``tactic``, with the file that replays the proof."""
+        """``fact`` proved by ``tactic``, with the file that replays the proof.
+
+        A claim's command proved its ``as_cited`` text too
+        (:attr:`lanky.lean.LeanStatement.as_cited`), which is kept, for the
+        parts that cite the claim (:mod:`lanky.citations`), and recorded as
+        ``lean_as_cited``.
+        """
         extra: dict[str, Any] = {}
+        if statement.citable and fact.term is not None:
+            self.proved_texts.record(
+                Proved(
+                    fact.id,
+                    statement.declared_name,
+                    statement.as_cited,
+                    statement.mathlib,
+                    fact.term,
+                )
+            )
+            extra["lean_as_cited"] = statement.as_cited
         if conditions:
             source = "\n".join((*conditions, source))
             extra["lean_side_conditions"] = [
@@ -3449,6 +3833,10 @@ class LeanOracle:
             extra["lean_mathlib"] = self.session.mathlib_revision or (
                 mathlib_mode.revision(directory) if directory else None
             )
+        # the proof said back in the claim's terms, for lanky check --proofs and --steps
+        extra["found_proof"] = found_proof(
+            fact, statement, tactic, given=fact.id in self.tactics
+        )
         return fact.with_status(
             Status.PROVED,
             self.name,
@@ -3734,6 +4122,17 @@ class LeanOracle:
             "lean_parts": records,
             "lean_version": version,
         }
+        printed = sorted(
+            {
+                str(note.get("theorem"))
+                for record in records
+                for note in record.get("cited", ())
+                if note.get("restated") == "by the printer"
+            }
+        )
+        if printed:
+            # cited claims with no text Lean proved, restated as they always were
+            common["lean_restated_by_printer"] = printed
         if obligation.decider:
             common["lean_decider"] = obligation.decider
         if obligation.stated_by:
@@ -3992,9 +4391,13 @@ class LeanOracle:
         A Mathlib session's answers are kept under its Lean version and the
         Mathlib revision it imported, apart from core Lean's. An answer of a
         session whose version is not known is not kept, nor read: the key
-        would say nothing of which Lean gave it.
+        would say nothing of which Lean gave it. A command that declares a
+        theorem and has no axiom audit is not sent (:data:`UNAUDITED`).
         """
 
+        if declares(source) and not audited(source):
+            # every command the oracle sends audits what it declares (lanky.audit)
+            return False, UNAUDITED, False, True
         cache = self.proofs
         version = self._answer_key(session)
         if cache is not None and version is not None:
@@ -4046,8 +4449,18 @@ class LeanOracle:
         than the check asks for it (#155).
         """
         record: dict[str, Any] = {"name": part.name, "label": part.label, "proved": False}
+        restated = restatements(part, self.proved_texts)
+        if restated.notes:
+            record["cited"] = list(restated.notes)
+        if restated.refused:
+            record["reason"] = restated.refused
+            record["short"] = (
+                "was not asked, since the part restates a cited theorem other than as "
+                "Lean proved it"
+            )
+            return record
         try:
-            statement = part_statement(part, theorem_name(owner, part))
+            statement = part_statement(part, theorem_name(owner, part), restated.texts)
         except (UnsupportedTerm, AttributeError, TypeError, ValueError) as exc:
             record["reason"] = f"it has no Lean statement ({exc})"
             record["short"] = f"had no statement of it ({exc})"
@@ -4149,7 +4562,10 @@ class LeanOracle:
                 ),
             )
         try:
-            statement = part_statement(part, theorem_name(owner, part))
+            restated = restatements(part, self.proved_texts)
+            if restated.refused:
+                raise UnsupportedTerm(restated.refused)
+            statement = part_statement(part, theorem_name(owner, part), restated.texts)
             sources = [
                 ("decide", negation_source(part, statement, counter.point, decide=True)),
                 ("omega", negation_source(part, statement, counter.point, decide=False)),
@@ -4272,10 +4688,29 @@ def use_tactic(claim: Any, script: str) -> None:
     The script proves the statement as it is printed, which is the integer
     reading (see :mod:`lanky.lean`): a natural is an ``Int`` followed by its
     ``0 ≤ b``, which is why the script above trades ``b`` for a ``Nat`` before
-    inducing. The ledger still records which script closed the goal, so a
-    pinned proof is as visible as a found one.
+    inducing. Its hypotheses have the names of the theorem's parameters. The
+    ledger still records which script closed the goal, so a pinned proof is
+    as visible as a found one.
+
+    The script is the proof that follows ``:= by``, and lanky writes every
+    command around it, the axiom audit that ends it among them
+    (:mod:`lanky.audit`). So a script with anything a proof never needs, a
+    ``#`` command such as ``#exit``, ``native_decide``, ``set_option``, a
+    ``namespace`` or a declaration, is refused here, where it is written.
+
+    Raises:
+        ValueError: If the script is one the screen refuses
+            (:func:`lanky.audit.screen`), with what it found.
     """
     fact_id = _claim_id(claim)
+    refused = screen(script)
+    if refused is not None:
+        name = getattr(claim, "__name__", None) or fact_id
+        raise ValueError(
+            f"use_tactic({name}, ...): the script is not sent to Lean, because {refused}. "
+            "A script is the proof that follows `:= by`, and lanky writes the "
+            "commands around it."
+        )
     for oracle in _lean_oracles():
         oracle.tactics[fact_id] = script
 
