@@ -418,11 +418,7 @@ def _proved(fact_id: str | None, term: Any = None) -> CitedText | None:
     if found is None or isinstance(found, CitedText):
         return found
     if isinstance(found, Proved):
-        if (
-            term is not None
-            and found.term is not None
-            and not structurally_equal(found.term, term)
-        ):
+        if term is not None and found.term is not None and not structurally_equal(found.term, term):
             return None
         return CitedText(found.name.removeprefix("Lanky."), found.text, found.premises)
     return CitedText(fact_id or "", str(found))
@@ -448,9 +444,7 @@ def restated_text(theorem: Any, *, mathlib: bool = True) -> tuple[str, bool]:
     return print_lean(theorem.term, mathlib=mathlib), False
 
 
-def premises_of(
-    fact_id: str, seen: tuple[str, ...] = (), term: Any = None
-) -> tuple[Citation, ...]:
+def premises_of(fact_id: str, seen: tuple[str, ...] = (), term: Any = None) -> tuple[Citation, ...]:
     """The theorems a proved theorem's ``as_cited`` takes, each a citation by its proved text.
 
     Each premise has to be a proved text itself: the soundness of a
@@ -492,7 +486,13 @@ def premises_of(
     return tuple(out)
 
 
-def vacuity_question(owner: str, citations: Sequence[Citation], where: str | None = None) -> Any:
+def vacuity_question(
+    owner: str,
+    citations: Sequence[Citation],
+    where: str | None = None,
+    points: Sequence[tuple[str, tuple[Any, ...]]] = (),
+    mathlib: bool = False,
+) -> Any:
     """Whether the cited theorems without a proved text prove ``False`` together, as a fact.
 
     A citation restated from a printed text trusts the printer, and a text
@@ -504,6 +504,13 @@ def vacuity_question(owner: str, citations: Sequence[Citation], where: str | Non
     which the Lean oracle answers with its short ladder and the vacuity
     budget; established, the citing claim has to fail. ``None`` where every
     citation is by a proved text, and there is nothing to ask.
+
+    A text that dropped a condition is false at a point, and no tactic of
+    the short ladder looks for one. ``points`` are where the citing proof
+    applied the theorems, ``(fact id, values)`` with values that are
+    numbers: the question is then a part whose hypotheses are taken at
+    them (:class:`lanky.obligations.Instance`), as the proof took them, in
+    the dialect ``mathlib`` says.
     """
     from lanky.ledger import Fact
     from lanky.terms import LogicalAnd
@@ -520,14 +527,46 @@ def vacuity_question(owner: str, citations: Sequence[Citation], where: str | Non
     terms = tuple(citation.proposition for citation in printed)
     guard = terms[0] if len(terms) == 1 else LogicalAnd(terms)
     names = ", ".join(citation.name for citation in printed)
+    term: Any = Forall((), False, guard)
+    position = {citation.fact_id: index for index, citation in enumerate(printed)}
+    taken = [
+        (position[fact_id], tuple(values))
+        for fact_id, values in dict.fromkeys(points)
+        if fact_id in position and isinstance(terms[position[fact_id]], Forall)
+    ]
+    if taken:
+        from lanky.obligations import Hints, Instance, Obligation, Part
+
+        part = Part(
+            "citations",
+            f"the theorems {owner} cites without a proved text, where its proof takes them",
+            term,
+            Hints(instances=tuple(Instance(index, values) for index, values in taken)),
+            mathlib=mathlib,
+        )
+        term = _Question(Obligation(parts=(part,)), names)
     return Fact(
         id=f"{owner}:citations",
         kind="hypotheses",
         statement=f"the theorems {owner} cites without a proved text ({names}) are inconsistent",
-        term=Forall((), False, guard),
+        term=term,
         where=where,
         owner=owner,
     )
+
+
+class _Question:
+    """The question of :func:`vacuity_question` taken at points, as Lean is asked it."""
+
+    def __init__(self, obligation: Any, names: str) -> None:
+        self.obligation = obligation
+        self.names = names
+
+    def lean_obligation(self) -> Any:
+        return self.obligation
+
+    def __str__(self) -> str:
+        return f"{self.names}, where the proof takes them, prove False"
 
 
 # }}}

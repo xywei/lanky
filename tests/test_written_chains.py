@@ -406,6 +406,52 @@ def test_a_proof_cites_a_theorem_by_the_text_its_proof_proved(checked) -> None:
     )
 
 
+#: The design's T4 through a written proof: a cited statement that proves False.
+T4_CASES = '''\
+"""A proof whose citation, as lanky states it, proves False."""
+
+from __future__ import annotations
+
+from lanky import axiom, theorem
+from lanky.prelude import Fn, Int, Nat
+
+
+@axiom(cite="the design's T4: a printer that dropped a condition")
+def every_integer_is_nonnegative(n: Int) -> n >= 0:
+    """What a theorem about naturals would say if the printer dropped its condition."""
+
+
+@theorem
+def any_two_cells(f: Fn[Nat, Int]) -> f[0] == f[1]:
+    return every_integer_is_nonnegative(-1)
+'''
+
+
+def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path) -> None:
+    """The cited statement proves ``-1 >= 0``, and so anything; the proof is refused.
+
+    The claim is false and about a table over ``Nat``, which no draw tests, so
+    without the question the proof would read proved by Lean, resting on the
+    axiom: the design's T4, a citation without a proved text, restated as the
+    printer gives it. The oracles are asked whether the cited statements
+    alone prove False, and they do.
+    """
+    _lean_or_skip()
+    path = tmp_path / "t4_cases.py"
+    path.write_text(T4_CASES, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["any_two_cells"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["headline"] == ("the theorem its proof cites without a proved text proves False")
+    assert failure["lines"][0].startswith(
+        "every_integer_is_nonnegative, as lanky states it for Lean, proves False (proved by "
+    )
+    assert fact.status is not Status.PROVED
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
 def test_lean_accepts_a_proof_with_a_step_left_open_and_names_it(checked) -> None:
     fact = checked["ct_open"]
     account = fact.provenance["proof"]

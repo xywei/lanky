@@ -156,7 +156,12 @@ All notable changes to lanky are recorded here. The format follows
   the ledger it is counted in. A plugin's fact that cited a theorem proved
   only by its written proof, and restated it by the printer when it was
   established, is asked of Lean again from the proved text once the proof is
-  checked.
+  checked. A citation restates a proved text only while the theorem's term is
+  the one it was proved for. A theorem cited with no proved text (an axiom,
+  a claim only tested) is restated by the printer, and Lean is asked whether
+  those statements, taken at the points the proof takes them, prove False:
+  where they do, the proof fails and says which, since it could prove
+  anything (the design's T4).
 
 - **`examples/line_taylor.py` writes its proof** in the theorem's body, the
   recurrence named on the way, and its names are the design's: the

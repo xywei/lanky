@@ -349,12 +349,92 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
             return _failed(fact, where, command, [failure], theorem.path)
         return _not_checked(fact, where, said or "Lean did not answer")
     said_verdict, failures = verdict(proof, command, record)
+    if said_verdict in ("closed", CLOSED_WITH_HOLES):
+        inconsistent = _inconsistent_citations(fact, proof, mathlib)
+        if inconsistent is not None:
+            return _failed(fact, where, command, [inconsistent], theorem.path)
     if said_verdict == "closed":
         return _closed(fact, where, proof, command, oracle)
     if said_verdict == CLOSED_WITH_HOLES:
         return _holes(fact, where, proof, command)
     failures = [_checked_fix(failure, proof, command, oracle, fact) for failure in failures]
     return _failed(fact, where, command, failures, theorem.path)
+
+
+def _inconsistent_citations(fact: Fact, proof: Proof, mathlib: bool) -> Failure | None:
+    """Whether the theorems the proof cites without a proved text prove ``False`` together.
+
+    A citation of a theorem whose own command proved no text (an axiom, a
+    claim only tested, one whose Lean attempt failed) restates the statement
+    the printer gives, and a printer that dropped a condition would let the
+    proof prove anything: the design's T4, ``log_of_a_power`` without ``n >=
+    0``, proves ``1 = 0``. So the oracles stronger than a heuristic are asked
+    whether those statements alone prove ``False``, as a claim's hypotheses
+    are (:func:`lanky.citations.vacuity_question`), and where one shows they
+    do, the proof fails, naming them. ``None`` where every citation is by a
+    proved text, or none of them is shown inconsistent.
+    """
+    from lanky.check import _stronger_than_a_heuristic
+    from lanky.citations import citation_of, vacuity_question
+    from lanky.lean import UnsupportedTerm
+
+    citations = []
+    for theorem in proof.cited:
+        try:
+            citations.append(citation_of(theorem, mathlib=mathlib))
+        except (TypeError, UnsupportedTerm):
+            continue
+    points = [
+        (citation.source.fact_id, citation.values)
+        for leaf in proof.leaves
+        for citation in leaf.citations
+        if getattr(citation.source, "fact_id", None) is not None
+        and citation.values is not None
+        and all(_a_number(value) for value in citation.values)
+    ]
+    question = vacuity_question(fact.owner, citations, fact.where, points, mathlib)
+    if question is None:
+        return None
+    found = _stronger_than_a_heuristic(question)
+    if found is None:
+        return None
+    oracle, result = found
+    printed = [
+        citation.name
+        for citation in citations
+        if citation.kind == "theorem" and not citation.proved_text
+    ]
+    names = printed[0] if len(printed) == 1 else f"{', '.join(printed[:-1])} and {printed[-1]}"
+    one = len(printed) == 1
+    line = next(
+        (
+            citation.line
+            for leaf in proof.leaves
+            for citation in leaf.citations
+            if citation.name in printed and citation.line is not None
+        ),
+        None,
+    )
+    return Failure(
+        "cite",
+        line,
+        f"the {'theorem' if one else 'theorems'} its proof cites without a proved text "
+        f"{'proves' if one else 'prove'} False",
+        (
+            f"{names}, as lanky states {'it' if one else 'them'} for Lean, "
+            f"{'proves' if one else 'prove'} False ({result.status.value} by {oracle}): "
+            f"a proof that cites {'it' if one else 'them'} could prove anything.",
+        ),
+        f"prove {names} first, so that a citation restates what Lean proved, or correct "
+        f"{'its statement' if one else 'their statements'}",
+    )
+
+
+def _a_number(value: Any) -> bool:
+    """Whether a point's value is a number, which a question can take a citation at."""
+    import numbers
+
+    return isinstance(value, numbers.Number) and not isinstance(value, bool)
 
 
 def _where(theorem: Any) -> str:
