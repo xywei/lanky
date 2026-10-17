@@ -102,6 +102,23 @@ def without_lean_line(lines: list[str]) -> list[str]:
     return out
 
 
+def without_not_checked(lines: list[str]) -> list[str]:
+    """What ``lanky check`` printed, without its ``NOT CHECKED`` lines.
+
+    Such a line says why a written proof was not checked, and the reason is
+    the machine's: no Lean at all, or core Lean without the Mathlib the
+    claim needs. The blank line before each goes with it.
+    """
+    out: list[str] = []
+    for line in lines:
+        if line.startswith("NOT CHECKED "):
+            if out and not out[-1]:
+                out.pop()
+            continue
+        out.append(line)
+    return out
+
+
 def plugin_arguments() -> list[str]:
     """``["-p", "lanky.pytest_plugin"]`` when pytest would not load lanky's plugin itself.
 

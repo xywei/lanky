@@ -15,15 +15,17 @@ Run it as ``gauss.py`` and ``pytential_skie.py`` are run, where sumpy imports.
     takes the derivatives numerically at random points; ``decided
     (heuristic)`` by the CAS oracle, which simplifies the difference of the
     two sides of each equation to zero with sympy (the ``cas`` extra); and,
-    for every order and not only through ``ORDER``, ``proved under harmonic``
-    by Lean, where Mathlib is installed (see :mod:`lanky.mathlib`). Without
-    the CAS oracle the second row reads ``tested`` by the property tester,
-    which evaluates the same equations exactly, in rational arithmetic, and
+    for every order and not only through ``ORDER``, ``proved`` by Lean,
+    where Mathlib is installed (see :mod:`lanky.mathlib`), under ``harmonic
+    at every order``, the one step of it taken on a citation. Without the
+    CAS oracle the second row reads ``tested`` by the property tester, which
+    evaluates the same equations exactly, in rational arithmetic, and
     without Mathlib the third reads ``assumed``. The fourth is the third's
     corollary on the triangle ``a + b <= p`` of every order ``p``, the claim
     a wrangler of order ``p`` makes and a kernel of that order can cite,
-    proved the same way. Above them is the kernel's harmonicity, ``assumed``
-    on its citation.
+    proved the same way. Above them is the kernel's harmonicity,
+    ``harmonic``, ``proved`` by Lean with Mathlib by the proof written in
+    its body, and ``decided (heuristic)`` by the CAS oracle without it.
 
 The mathematics. A Taylor expansion of a kernel ``G`` needs every derivative
 ``d^(a+b) G / dx^a dy^b`` with ``a + b`` up to the order. When ``G`` satisfies a
@@ -37,28 +39,38 @@ every ``a + b <= p``, the wrangler's combination of the stored derivatives
 equals the derivative it stands for. The constant factor ``-1/(2 pi)`` of the
 kernel is left out, since the reconstruction is linear.
 
-The harmonicity is an axiom here, ``harmonic``, taken on its citation and
-sampled for a counterexample. The first two rows do not rest on it: each
-checks the reconstruction against the derivatives themselves, one order at a
-time. The third does. For every order, the claim is an induction on ``a``:
-the coefficient ``(a + 2, b)`` is minus the one at ``(a, b + 2)``, which by
-the induction hypothesis is the derivative ``D(a, b + 2)``, and the PDE,
-differentiated ``a`` times in ``x`` and ``b`` in ``y``, says that ``D(a + 2, b)
-+ D(a, b + 2) == 0``. That step is algebra, which Lean checks with
-``linear_combination`` once Python has found which hypotheses to combine, at
-which points, with which multipliers (see :mod:`lanky.induction`). What is not
-algebra is that the derivatives of the kernel satisfy the PDE at every order:
-that is the harmonicity, differentiated, which the kernel's smoothness away
-from the origin allows, and it is the hypothesis the proof takes and the axiom
-the row rests on. So the third row's term is a statement about any table
-``D`` of numbers indexed by ``(a, b)`` that satisfies the PDE at every order,
-and any table ``R`` that agrees with it where the wrangler stores and follows
-the recurrence elsewhere: ``R`` is ``D``. The derivatives of ``log r`` at a
-point are such a ``D``, by ``harmonic``, and the wrangler's reconstruction is
-such an ``R``, by the recurrence, which is read off the PDE sumpy declares for
-the kernel, as the wrangler reads it, and checked against the wrangler's
-weights through ``ORDER``; a wrangler whose weights do not follow it makes no
-claim for every order.
+The harmonicity is a theorem here, ``harmonic``. sympy takes the kernel's
+second derivatives, and the proof in its body adds them, read aloud: "Let r2
+be x**2 + y**2. The Laplacian equals 2 / r2 minus 2 (x**2 + y**2) / r2**2,
+which equals 0." Each step is algebra, once ``r2`` is not zero, which
+``away`` says. lanky's search does not find it alone (#173): clearing the
+denominators leaves a polynomial identity, which its ladder does not try
+next, and the two steps say where to go.
+
+The first two rows do not rest on it: each checks the reconstruction against
+the derivatives themselves, one order at a time. The third does. For every
+order, the claim is an induction on ``a``: the coefficient ``(a + 2, b)`` is
+minus the one at ``(a, b + 2)``, which by the induction hypothesis is the
+derivative ``D(a, b + 2)``, and the PDE, differentiated ``a`` times in ``x``
+and ``b`` in ``y``, says that ``D(a + 2, b) + D(a, b + 2) == 0``. That step is
+algebra, which Lean checks with ``linear_combination`` once Python has found
+which hypotheses to combine, at which points, with which multipliers (see
+:mod:`lanky.induction`). What is not algebra is that the derivatives of the
+kernel satisfy the PDE at every order: that is ``harmonic``, differentiated,
+which the kernel's smoothness away from the origin allows, since its
+derivatives then commute with the Laplacian. lanky has no derivative of an
+order it does not know to state that with (#174), so the claim takes it on
+Kress's word, as a fact of its own, ``harmonic at every order``, which rests
+on ``harmonic`` and which the third row rests on. So the third row's term is
+a statement about any table ``D`` of numbers indexed by ``(a, b)`` that
+satisfies the PDE at every order, and any table ``R`` that agrees with it
+where the wrangler stores and follows the recurrence elsewhere: ``R`` is
+``D``. The derivatives of ``log r`` at a point are such a ``D``, by
+``harmonic at every order``, and the wrangler's reconstruction is such an
+``R``, by the recurrence, which is read off the PDE sumpy declares for the
+kernel, as the wrangler reads it, and checked against the wrangler's weights
+through ``ORDER``; a wrangler whose weights do not follow it makes no claim
+for every order.
 
 The fourth row is the third's corollary on the triangle. A wrangler of order
 ``p`` has the coefficients through ``p`` and nothing past it, so it follows the
@@ -96,7 +108,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
-from lanky import axiom
+from lanky import theorem
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
@@ -112,9 +124,9 @@ ORDER = 6
 #: How many points mpmath takes the derivatives at, and to how many digits.
 POINTS, DIGITS = 20, 30
 
-#: Where the kernel's harmonicity is taken from: the fundamental solution of
-#: Laplace's equation, of which ``log r`` is a multiple, is harmonic away from
-#: its source.
+#: Where the harmonicity at every order is taken from: the fundamental
+#: solution of Laplace's equation, of which ``log r`` is a multiple, is
+#: harmonic and smooth away from its source, so its derivatives are harmonic.
 KRESS = "R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6"
 
 
@@ -136,15 +148,19 @@ def laplacian(kernel: Any, x: Var, y: Var) -> Any:
     return from_sympy(kernel_term.diff(sx, 2) + kernel_term.diff(sy, 2), {"x": x, "y": y})
 
 
-@axiom(cite=KRESS)
+@theorem
 def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) == 0:
     """The 2-D Laplace kernel is harmonic away from the origin: ``G_xx + G_yy == 0``.
 
-    The PDE the wrangler reconstructs by, and what the proof of the claim for
-    every order rests on: the kernel is smooth away from the origin, so its
-    derivatives commute with the Laplacian, and every one of them is harmonic
-    too, which is the hypothesis that proof takes.
+    The PDE the wrangler reconstructs by. The Laplacian is sympy's, the sum
+    of ``G_xx = 1 / r2 - 2 x**2 / r2**2`` and ``G_yy``, the same in ``y``.
     """
+    r2 = x**2 + y**2
+    return (
+        laplacian(log_r, x, y)
+        .equals(2 / r2 - 2 * (x**2 + y**2) / r2**2)
+        .equals(0)
+    )
 
 
 # {{{ the claim
@@ -184,6 +200,10 @@ class Reconstruction:
         leading: The derivative of the PDE the wrangler solves it for, the
             first one it does not store: ``(2, 0)``.
         uses: The facts the claim for every order rests on, ``harmonic``'s.
+        cite: Where the step from ``uses`` to every order is taken from, the
+            PDE differentiated: the claim's own fact ``harmonic at every
+            order``, which no oracle is asked about; ``None`` for no such
+            fact, which leaves the claim for every order resting on ``uses``.
     """
 
     noun = "reconstruction"
@@ -198,12 +218,23 @@ class Reconstruction:
         digits: int,
         seed: int = 0,
         uses: Any = (),
+        cite: str | None = None,
     ) -> None:
         self.fn = fn
         functools.update_wrapper(self, fn)
         self.kernel, self.order = kernel, order
         self.points, self.digits, self.seed = points, digits, seed
         self.uses = fact_ids(uses)
+        self.cite = cite
+        used = uses if isinstance(uses, list | tuple) else (uses,)
+        names = [getattr(each, "__name__", None) for each in used]
+        #: What the rows that rest on the cited step call it: ``harmonic at
+        #: every order``.
+        self.label = (
+            f"{names[0]} at every order"
+            if len(names) == 1 and names[0]
+            else "the PDE at every order"
+        )
         code = fn.__code__
         self.path, self.line = code.co_filename, code.co_firstlineno
         self.where = f"{os.path.basename(self.path)}:{self.line}"
@@ -253,6 +284,26 @@ class Reconstruction:
         text = " ".join(parts)
         text = text[2:] if text.startswith("+ ") else "-" + text[2:]
         return f"{text} == 0"
+
+    def every_derivative_text(self) -> str:
+        """The PDE at every order: ``diff(G, x, a + 2, y, b) + diff(G, x, a, y, b + 2) == 0``."""
+        assert self.pde is not None
+        parts = []
+        for mi, coefficient in self.pde.items():
+            size = "" if abs(coefficient) == 1 else f"{abs(coefficient)}*"
+            parts.append(f"{'-' if coefficient < 0 else '+'} {size}{_differentiated(mi)}")
+        text = " ".join(parts)
+        text = text[2:] if text.startswith("+ ") else "-" + text[2:]
+        return f"{text} == 0"
+
+    def every_derivative_statement(self) -> str:
+        """The cited step, as the ledger says it: the PDE, differentiated, at every order."""
+        name = self.label.removesuffix(" at every order")
+        return (
+            f"x : Real, y : Real | x**2 + y**2 > 0 |- every order: "
+            f"{self.every_derivative_text()} for every a, b, with G = {self.kernel_text}: "
+            f"{name} differentiated a times in x and b times in y"
+        )
 
     @property
     def kernel_text(self) -> str:
@@ -410,7 +461,11 @@ class Reconstruction:
         The last two only where the wrangler's weights follow the recurrence
         the PDE gives (see :func:`_read_pde`): the claim for every order, and
         its corollary on the triangle of every order ``p``
-        (:meth:`triangle_term`).
+        (:meth:`triangle_term`). With a citation, they rest on one more fact
+        before them, the step from ``uses`` to every order taken on it
+        (:meth:`every_derivative_statement`): an axiom of the claim's own,
+        ``assumed`` on the citation, which has no term for an oracle, since
+        lanky has no derivative of an order it does not know.
         """
         facts = [
             self._fact("sampled", str(Sampled(self)), Sampled(self)),
@@ -421,12 +476,31 @@ class Reconstruction:
             ),
         ]
         if self.pde is not None:
+            rests_on = self.uses
+            if self.cite is not None:
+                cited = Fact(
+                    id=self.fact_id("every-derivative"),
+                    kind="axiom",
+                    statement=self.every_derivative_statement(),
+                    term=None,
+                    provenance={
+                        "path": self.path,
+                        "line": self.line,
+                        "cite": self.cite,
+                        "label": self.label,
+                    },
+                    where=self.where,
+                    owner=self.qualname,
+                    rests_on=self.uses,
+                )
+                facts.append(cited)
+                rests_on = (cited.id,)
             facts.append(
                 self._fact(
                     "every-order",
                     self.statement("every order: ", f"for every a, b, by {self.recurrence_text()}"),
                     self.every_order_term(),
-                    rests_on=self.uses,
+                    rests_on=rests_on,
                 )
             )
             facts.append(
@@ -437,7 +511,7 @@ class Reconstruction:
                         f"for a + b <= p, by {self.recurrence_text()} inside it",
                     ),
                     self.triangle_term(),
-                    rests_on=self.uses,
+                    rests_on=rests_on,
                 )
             )
         return tuple(facts)
@@ -672,6 +746,12 @@ def _read_pde(
     return pde, leading
 
 
+def _differentiated(mi: tuple[int, int]) -> str:
+    """``diff(G, x, a + 2, y, b)`` for the shift ``(2, 0)``: a derivative of ``G``, shifted."""
+    shifted = [f"{v} + {m}" if m else v for v, m in zip("ab", mi, strict=True)]
+    return f"diff(G, x, {shifted[0]}, y, {shifted[1]})"
+
+
 def _derivative_name(mi: tuple[int, int]) -> str:
     """``G_xx`` for ``(2, 0)``, and ``G`` for ``(0, 0)``."""
     return "G" + ("_" + "x" * mi[0] + "y" * mi[1] if any(mi) else "")
@@ -770,7 +850,13 @@ FOR_THE_CAS = (
 
 
 def reconstructs(
-    kernel: Any, *, order: int, uses: Any = (), points: int = POINTS, digits: int = DIGITS
+    kernel: Any,
+    *,
+    order: int,
+    uses: Any = (),
+    cite: str | None = None,
+    points: int = POINTS,
+    digits: int = DIGITS,
 ) -> Any:
     """Claim that the wrangler the decorated function returns reconstructs ``kernel``'s derivatives.
 
@@ -779,12 +865,20 @@ def reconstructs(
     coefficients through ``order``, the ones the wrangler stores, and the
     combination of those it reconstructs each of the others by. ``uses``
     names what the claim for every order rests on, as ``@theorem(uses=...)``
-    does: the kernel's harmonicity.
+    does: the kernel's harmonicity. ``cite`` is where the step from it to
+    every derivative is taken from, which the claim then rests on instead
+    (see :meth:`Reconstruction.facts`).
     """
 
     def decorate(fn: Any) -> Reconstruction:
         claim = Reconstruction(
-            fn, kernel=kernel, order=order, points=points, digits=digits, uses=uses
+            fn,
+            kernel=kernel,
+            order=order,
+            points=points,
+            digits=digits,
+            uses=uses,
+            cite=cite,
         )
         try:
             decline(claim.fact_id("symbolic"), FOR_THE_CAS)
@@ -798,7 +892,7 @@ def reconstructs(
 # }}}
 
 
-@reconstructs(log_r, order=ORDER, uses=harmonic)
+@reconstructs(log_r, order=ORDER, uses=harmonic, cite=KRESS)
 def compressed_taylor():
     """sumpy's compressed Taylor wrangler for the 2-D Laplace kernel."""
     from sumpy.expansion import LinearPDEBasedExpansionTermsWrangler
@@ -900,7 +994,7 @@ def main() -> int:
     print(
         "`lanky check examples/sumpy_recurrence.py` puts the claim in the ledger: tested by\n"
         "mpmath, decided by the CAS oracle where sympy is installed, and proved for every\n"
-        "order by Lean where Mathlib is, under the kernel's harmonicity."
+        "order by Lean where Mathlib is, under the kernel's harmonicity at every order."
     )
     return 0 if agree else 1
 

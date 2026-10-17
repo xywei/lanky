@@ -124,22 +124,25 @@ def test_python_runs_the_demo_and_the_quickstart_shows_what_it_prints() -> None:
     assert all(row[2] == "0" for row in rows)
 
 
-def test_without_mathlib_the_claim_for_every_order_rests_on_the_ode(cas, capsys) -> None:
-    """The axiom ``assumed`` on its citation, the claim ``assumed under`` it, sumpy's decided."""
+def test_without_mathlib_the_ode_is_decided_and_the_claim_for_every_order_assumed(
+    cas, capsys
+) -> None:
+    """The ODE decided by the CAS oracle, the claim ``assumed``, sumpy's decided; nothing cited."""
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
     # a row whose statement is wrapped goes on under it, on lines of its own
     rows = [line for line in printed.splitlines() if not line.startswith(" ")]
     statuses = [_cells(line)[0] for line in rows[2:7]]
     assert statuses == [
-        "assumed (axiom)",
+        "decided (heuristic)",
         "tested",
-        "assumed under line_ode",
+        "assumed",
         "tested",
         "decided (heuristic)",
     ]
-    assert "5 facts: 2 assumed, 1 decided, 2 tested" in printed
-    assert re.search(r"^CITED line_ode at line_taylor\.py:\d+: L\. V\. Ahlfors, ", printed, re.M)
+    assert "5 facts: 1 assumed, 2 decided, 2 tested" in printed
+    # line_ode is a theorem now, which sympy's derivative and algebra prove
+    assert "CITED" not in printed
 
 
 def test_without_the_cas_oracle_sumpys_coefficients_are_tested_exactly() -> None:
@@ -147,7 +150,10 @@ def test_without_the_cas_oracle_sumpys_coefficients_are_tested_exactly() -> None
     fact = by_owner["qbx_expansion"]
     assert (fact.status, fact.decided_by) == (Status.TESTED, "property-test")
     assert fact.provenance["valid"] > 0
-    assert by_owner["line_taylor"].rests_on == (by_owner["line_ode"].id,)
+    # the closed form is about any table that satisfies the two hypotheses,
+    # and its proof cites none of line_ode
+    assert by_owner["line_taylor"].rests_on == ()
+    assert by_owner["line_ode"].kind == "theorem"
 
 
 def test_a_coefficient_off_by_its_order_is_refuted(cas, demo) -> None:
@@ -170,7 +176,7 @@ def test_a_coefficient_off_by_its_order_is_refuted(cas, demo) -> None:
     assert refuted.status is Status.REFUTED
 
 
-def test_with_mathlib_the_claim_for_every_order_is_proved_under_line_ode(
+def test_with_mathlib_the_ode_and_the_claim_for_every_order_are_proved(
     cas, mathlib_project, monkeypatch, capsys
 ) -> None:
     """Proved by Lean, two orders at a time, with the step a combination Python found."""
@@ -188,6 +194,11 @@ def test_with_mathlib_the_claim_for_every_order_is_proved_under_line_ode(
     tactic = every_order.provenance["tactic"]
     assert "induction n using Nat.strong_induction_on with" in tactic
     assert "by_cases hbase : n < 2" in tactic
+    # the ODE, sympy's derivative times alpha + tau * beta, is algebra
+    assert (by_owner["line_ode"].status, by_owner["line_ode"].decided_by) == (
+        Status.PROVED,
+        "lean",
+    )
     assert (by_owner["qbx_expansion"].status, by_owner["qbx_expansion"].decided_by) == (
         Status.DECIDED,
         "cas",
