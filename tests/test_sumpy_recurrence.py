@@ -313,7 +313,7 @@ def test_the_pde_at_every_order_is_cited_and_the_claim_for_every_order_rests_on_
     harmonic, sampled, symbolic, cited, every_order, triangle = _by_owner()
     assert not harmonic.is_axiom
     assert harmonic.kind == "theorem"
-    assert harmonic.statement.startswith("x : Real, y : Real | away: x**2 + y**2 > 0 |- ")
+    assert harmonic.statement.startswith("x : Real, y : Real | x**2 + y**2 > 0 |- ")
     assert harmonic.statement.endswith(" == 0")
     assert cited.is_axiom
     assert (cited.status, cited.decided_by, cited.term) == (Status.ASSUMED, None, None)
