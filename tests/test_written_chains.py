@@ -246,6 +246,31 @@ def test_a_hole_is_a_sorry_whose_line_is_recorded(cases) -> None:
     assert said == "failed"
 
 
+def test_a_citation_given_too_many_values_or_one_twice_is_refused(tmp_path) -> None:
+    """``h(a, b, k=c)`` of a fact of one variable is refused, not read as ``h(c)``.
+
+    And so is ``h(a, k=c)``, which gives ``k`` twice (Codex, #171).
+    """
+    path = tmp_path / "surplus_cases.py"
+    path.write_text(
+        "from __future__ import annotations\n\n"
+        "from lanky import theorem\n"
+        "from lanky.prelude import Fn, Int, Nat\n\n\n"
+        "@theorem\n"
+        "def surplus(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
+        "    return h(1, 2, k=3)\n\n\n"
+        "@theorem\n"
+        "def twice(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
+        "    return h(1, k=3)\n",
+        encoding="utf-8",
+    )
+    module = import_path(path)
+    with pytest.raises(ProofError, match="takes 1 value, its variable k, and is given 3"):
+        trace_proof(module.surplus)
+    with pytest.raises(ProofError, match="is given k twice"):
+        trace_proof(module.twice)
+
+
 def test_a_theorem_with_positional_only_parameters_is_traced(cases) -> None:
     """Its parameters before ``/`` are passed by position (Codex, #171)."""
     traced = trace_proof(cases.square_positional)

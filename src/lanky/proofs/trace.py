@@ -615,6 +615,13 @@ class _Path:
     leaf: Leaf | None = None
 
 
+def _takes(name: str, names: list[str], given: int) -> str:
+    """``h takes 1 value, its variable k, and is given 3``."""
+    plural = "" if len(names) == 1 else "s"
+    variables = f"its variable{plural} {', '.join(names)}" if names else "no variables"
+    return f"{name} takes {len(names)} value{plural}, {variables}, and is given {given}"
+
+
 def _positional_first(fn: Any, arguments: dict[str, Any]) -> tuple[tuple, dict[str, Any]]:
     """``arguments`` as a call of ``fn`` takes them: its positional-only parameters by position.
 
@@ -739,7 +746,23 @@ class _Tracer:
                     f"are {', '.join(names) or 'none'}",
                     line,
                 )
+            if len(values) > len(names):
+                raise ProofError(
+                    "cite",
+                    _takes(_source_name(source), names, len(values) + len(named)),
+                    line,
+                    fix=f"{_source_name(source)}({', '.join(names)})" if names else None,
+                )
             given = dict(zip(names, values, strict=False))
+            twice = [name for name in named if name in given]
+            if twice:
+                # each value is written once, as Python itself asks of a call
+                raise ProofError(
+                    "cite",
+                    f"{_source_name(source)} is given {twice[0]} twice, by its place and "
+                    "by its name",
+                    line,
+                )
             given.update(named)
             if len(given) != len(names):
                 missing = [name for name in names if name not in given]
@@ -752,8 +775,7 @@ class _Tracer:
         elif len(values) != len(names):
             raise ProofError(
                 "cite",
-                f"{_source_name(source)} takes {len(names)} values, its variables "
-                f"{', '.join(names) or 'none'}, and is given {len(values)}",
+                _takes(_source_name(source), names, len(values)),
                 line,
                 fix=f"{_source_name(source)}({', '.join(names)})" if names else None,
             )
