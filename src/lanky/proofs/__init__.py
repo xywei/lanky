@@ -335,6 +335,12 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
             )
         return _not_checked(fact, where, f"Lean cannot state it: {exc}")
     except ProofError as exc:
+        if exc.kind == "unsupported" and not mathlib:
+            # a theorem it cites, a step's term or a point is about the reals,
+            # which core Lean has no words for: not a fault of the proof
+            return _without_lean(
+                fact, where, proof, "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)"
+            )
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
     record, said, _cached = oracle.written(command.source, fact)
     if record is None:

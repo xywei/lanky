@@ -427,6 +427,21 @@ def any_two_cells(f: Fn[Nat, Int]) -> f[0] == f[1]:
 '''
 
 
+def test_a_proof_citing_a_fact_about_reals_is_left_to_mathlib_in_core_lean() -> None:
+    """``log_of_the_modulus`` cites ``log_of_a_power``, which core Lean cannot state.
+
+    Its proof is not checked there, and says that Mathlib would check it: it
+    is no fault of the proof, which ``lanky check`` with Lean and without
+    Mathlib reported as a failure, exiting 1 on the demonstration.
+    """
+    _lean_or_skip()
+    path = Path(__file__).resolve().parent.parent / "examples" / "log_of_the_modulus.py"
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["log_of_the_modulus"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is None, account
+    assert "only Lean with Mathlib can state it" in account["reason"]
+
+
 def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path) -> None:
     """The cited statement proves ``-1 >= 0``, and so anything; the proof is refused.
 
