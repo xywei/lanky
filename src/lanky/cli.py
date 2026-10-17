@@ -222,6 +222,7 @@ class CheckVerb:
         """
         files = getattr(args, "files", None)
         files = [*(files if files is not None else [args.file]), *_files_given_as_text(args)]
+        files = _in_the_order_given(files, getattr(args, "argv", None))
         if not files:
             print("lanky check: name a file to check, as in lanky check examples/gauss.py")
             return 2
@@ -1238,6 +1239,23 @@ def _files_given_as_text(args: argparse.Namespace) -> list[str]:
     return taken
 
 
+def _in_the_order_given(files: list[str], argv: list[str] | None) -> list[str]:
+    """``files`` in the order the command line names them.
+
+    An option that takes an optional text takes the file after it
+    (:func:`_files_given_as_text`), so ``lanky check --proofs a.py b.py``
+    reads ``a.py`` last among the files; the command line puts it first,
+    and files of one root share their modules, so the order is kept
+    (Codex, #171). Without the command line, ``files`` as they are.
+    """
+    if not argv:
+        return files
+    position: dict[str, int] = {}
+    for index, token in enumerate(argv):
+        position.setdefault(token, index)
+    return sorted(files, key=lambda file: position.get(file, len(argv)))
+
+
 def _by_source_roots(files: list[str]) -> list[list[str]]:
     """The files grouped by their source roots, in the order each group first appears.
 
@@ -2038,6 +2056,8 @@ def main(argv: Any = None) -> int:
     """Run a verb and return its exit code."""
     parser, verbs = build_parser()
     args = parser.parse_args(argv)
+    # the command line as given, for the order of the files (_in_the_order_given)
+    args.argv = [str(token) for token in (sys.argv[1:] if argv is None else argv)]
     if not args.verb:
         parser.print_help()
         return 0

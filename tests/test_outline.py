@@ -525,6 +525,26 @@ def test_a_file_given_to_proofs_is_checked(tmp_path, capsys) -> None:
     assert "PROOF " in printed
 
 
+def test_files_are_checked_in_the_order_the_command_names_them(tmp_path, capsys) -> None:
+    """``--proofs a.py b.py`` takes ``a.py`` as its text, and checks it first (Codex, #171)."""
+    names = []
+    for name in ("first", "second"):
+        path = tmp_path / f"{name}.py"
+        path.write_text(
+            "from __future__ import annotations\n\n"
+            "from lanky import theorem\n"
+            "from lanky.prelude import Nat\n\n\n"
+            "@theorem\n"
+            f"def {name}_plus_zero(n: Nat) -> n + 0 == n:\n"
+            '    """Adding nothing."""\n',
+            encoding="utf-8",
+        )
+        names.append(str(path))
+    assert cli.main(["check", "--proofs", *names]) == 0
+    printed = capsys.readouterr().out
+    assert printed.index(f"==> {names[0]} <==") < printed.index(f"==> {names[1]} <==")
+
+
 def test_check_with_no_file_says_so(capsys) -> None:
     assert cli.main(["check"]) == 2
     assert "name a file to check" in capsys.readouterr().out

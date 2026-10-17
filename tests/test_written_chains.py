@@ -427,6 +427,39 @@ def any_two_cells(f: Fn[Nat, Int]) -> f[0] == f[1]:
 '''
 
 
+#: Two proofs that cite each other.
+CIRCLE = '''\
+"""Two proofs, each citing the other."""
+
+from __future__ import annotations
+
+from lanky import theorem
+from lanky.prelude import Int
+
+
+@theorem
+def ping(x: Int) -> x + 1 > x:
+    return pong(x)
+
+
+@theorem
+def pong(x: Int) -> x + 1 > x:
+    return ping(x)
+'''
+
+
+def test_every_proof_on_a_circle_of_citations_is_refused(tmp_path) -> None:
+    """Both, not only the one whose citation closes the circle (Codex, #171)."""
+    path = tmp_path / "circle_cases.py"
+    path.write_text(CIRCLE, encoding="utf-8")
+    facts = {fact.owner: fact for fact in claims(check_path(path))}
+    for owner in ("ping", "pong"):
+        account = facts[owner].provenance["proof"]
+        assert account["closed"] is False, account
+        (failure,) = account["failures"]
+        assert failure["headline"] == "the proofs cite each other in a circle"
+
+
 def test_a_proof_citing_a_fact_about_reals_is_left_to_mathlib_in_core_lean() -> None:
     """``log_of_the_modulus`` cites ``log_of_a_power``, which core Lean cannot state.
 

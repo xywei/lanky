@@ -152,29 +152,36 @@ def _check_in_order(
                 continue
             if cited_id in pending and cited_id not in done:
                 if cited_id in path or cited_id == identifier:
-                    names = " -> ".join(
-                        pending[item].__name__ for item in (*path, identifier, cited_id)
-                    )
-                    done.add(identifier)
-                    ledger.add(
-                        _failed(
-                            fact,
-                            _where(theorem),
-                            None,
-                            [
-                                Failure(
-                                    "cite",
-                                    None,
-                                    "the proofs cite each other in a circle",
-                                    (f"The proofs cite each other in a circle: {names}.",),
-                                    "prove one of them without the other",
-                                )
-                            ],
-                            theorem.path,
+                    # every proof on the circle is refused, not only the one
+                    # that closes it (Codex, #171): each would rest on another
+                    # whose proof rests on it
+                    circle = (*path, identifier)
+                    circle = circle[circle.index(cited_id) :]
+                    names = " -> ".join(pending[item].__name__ for item in (*circle, cited_id))
+                    for item in circle:
+                        done.add(item)
+                        ledger.add(
+                            _failed(
+                                ledger[item],
+                                _where(pending[item]),
+                                None,
+                                [
+                                    Failure(
+                                        "cite",
+                                        None,
+                                        "the proofs cite each other in a circle",
+                                        (f"The proofs cite each other in a circle: {names}.",),
+                                        "prove one of them without the other",
+                                    )
+                                ],
+                                pending[item].path,
+                            )
                         )
-                    )
                     return
                 _check_in_order(cited_id, pending, done, (*path, identifier), ledger, verbose)
+                if identifier in done:
+                    # refused as part of a circle the check above found
+                    return
             elif cited_id not in ledger:
                 _establish_foreign(cited, ledger, verbose)
     done.add(identifier)
