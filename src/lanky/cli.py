@@ -1252,6 +1252,9 @@ def _in_the_order_given(files: list[str], argv: list[str] | None) -> list[str]:
         return files
     position: dict[str, int] = {}
     for index, token in enumerate(argv):
+        if token.startswith("--") and "=" in token:
+            # an option's value written attached, --proofs=a.py
+            token = token.split("=", 1)[1]
         position.setdefault(token, index)
     return sorted(files, key=lambda file: position.get(file, len(argv)))
 

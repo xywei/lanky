@@ -543,6 +543,10 @@ def test_files_are_checked_in_the_order_the_command_names_them(tmp_path, capsys)
     assert cli.main(["check", "--proofs", *names]) == 0
     printed = capsys.readouterr().out
     assert printed.index(f"==> {names[0]} <==") < printed.index(f"==> {names[1]} <==")
+    # and with the value attached to the option
+    assert cli.main(["check", f"--proofs={names[0]}", names[1]]) == 0
+    printed = capsys.readouterr().out
+    assert printed.index(f"==> {names[0]} <==") < printed.index(f"==> {names[1]} <==")
 
 
 def test_check_with_no_file_says_so(capsys) -> None:
