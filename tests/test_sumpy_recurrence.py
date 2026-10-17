@@ -88,7 +88,7 @@ def test_the_claim_is_one_statement_with_an_equation_per_coefficient(demo) -> No
     from lanky.prelude import Real
     from lanky.terms import Forall, render
 
-    sampled, symbolic, _every_order, _triangle = demo.compressed_taylor.facts()
+    sampled, symbolic, _cited, _every_order, _triangle = demo.compressed_taylor.facts()
     term = symbolic.term
     assert isinstance(term, Forall)
     assert [(var.name, domain) for var, domain in term.binders] == [("x", Real), ("y", Real)]
@@ -618,7 +618,11 @@ def test_with_mathlib_the_claim_for_every_order_is_proved_under_the_pde_at_every
     assert "induction a using Nat.strong_induction_on with" in triangle.provenance["tactic"]
     assert cli.main(["check", str(DEMO)]) == 0
     printed = capsys.readouterr().out
-    rows = [line for line in printed.splitlines() if "compressed_taylor" in line]
+    rows = [
+        line
+        for line in printed.splitlines()
+        if "compressed_taylor" in line and not line.startswith("CITED ")
+    ]
     assert [re.split(r"\s{2,}", row)[:3] for row in rows] == [
         ["tested", "tested", "mpmath"],
         ["decided (heuristic)", "decided (heuristic)", "cas"],
