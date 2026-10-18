@@ -186,6 +186,7 @@ _WHOLE_GOAL = {
     "positivity": "by showing each part of it positive",
     "ring": "by algebra",
     "field_simp": "by algebra, clearing its denominators",
+    "(field_simp; ring)": "by algebra, clearing its denominators",
     "linarith": "by linear arithmetic from its hypotheses",
     "nlinarith": "by nonlinear arithmetic from its hypotheses",
     "(push_cast; ring)": "by algebra",

@@ -104,8 +104,10 @@ _LEAN_RELATION = {"==": "=", "<=": "≤", "<": "<", ">=": "≥", ">": ">", "!=":
 
 
 def _shown(value: Any) -> str:
-    """A value as an outline writes it."""
-    return render(value) if hasattr(value, "mapper_method") else repr(value)
+    """A value as an outline writes it: a family's value as the ``lambda`` that would give it."""
+    from lanky.proofs.trace import shown
+
+    return shown(value)
 
 
 # {{{ what an emitted line came from
@@ -1370,6 +1372,7 @@ class _Compiler:
                 "positivity",
                 "ring",
                 "(field_simp; done)",
+                "(field_simp; ring1)",
                 "linarith",
                 "nlinarith",
                 "(push_cast; ring)",
@@ -1432,21 +1435,37 @@ class _Compiler:
         values: tuple[Any, ...],
         context: _Context,
     ) -> tuple[list[Instance], list[_Line]]:
-        """``have f := h v₁ (by omega) ...``: one fact at its point, each condition discharged."""
+        """``have f := h v₁ (by omega) ...``: one fact at its point, each condition discharged.
+
+        A family of the fact bound to a function (:class:`~lanky.matching.FamilyValue`)
+        is a ``fun``. Where that function's values are integers and the
+        family's are reals, as ``one_more_term`` cited at ``sum(i**3 for i
+        in Fin[n + 1])`` is, the fact at the point is about the reals, and
+        the step about the integers: it is restated in the integers, the
+        ring of its own terms, and shown from the fact through the cast,
+        which is injective (:meth:`_through_the_cast`).
+        """
+        from lanky.matching import instantiate
+
         at = {var.name: value for (var, _), value in zip(shape.binders, values, strict=True)}
+        sorts = {var.name: sort for var, sort in shape.binders}
         pieces: list[tuple[str, Origin | None]] = [(lean, None)]
+        casts: list[tuple[str, str]] = []
         for kind, item in shape.premises:
             if kind == "value":
                 try:
-                    pieces.append((self._render(at[item], context, atomic=True), None))
+                    text, cast = self._value(at[item], sorts.get(item), context)
                 except UnsupportedTerm as exc:
                     raise ProofError(
                         "unsupported",
                         f"Lean cannot state {citation.text()}'s point: {exc}",
                         citation.line,
                     ) from None
+                pieces.append((text, None))
+                if cast is not None:
+                    casts.append(cast)
                 continue
-            condition = substitute(item, at) if item is not None else None
+            condition = instantiate(item, at) if item is not None else None
             origin = Origin(
                 "condition",
                 citation.line,
@@ -1460,27 +1479,121 @@ class _Compiler:
                 },
             )
             pieces.append((self._discharge(condition, context), origin))
-        body = substitute(shape.body, at)
+        body = instantiate(shape.body, at)
         parts = conjuncts(body) if isinstance(body, prim.LogicalAnd) else (body,)
         names = [self.names.numbered("f") for _ in parts]
         instances = [
             Instance(citation, part, values, substitute(piece, context.pins), name)
             for piece, name in zip(parts, names, strict=True)
         ]
+        origin = Origin("cite", citation.line, {"citation": citation, "values": values})
+        if casts and len(instances) == 1 and self.mathlib:
+            restated = self._through_the_cast(instances[0], pieces, casts, origin, context)
+            if restated is not None:
+                return instances, restated
         if len(names) == 1:
             prefix = f"have {lean_identifier(names[0])} := "
         else:
             prefix = f"obtain ⟨{', '.join(lean_identifier(name) for name in names)}⟩ := "
-        text, spans = prefix, []
-        origin = Origin("cite", citation.line, {"citation": citation, "values": values})
-        for index, (piece, piece_origin) in enumerate(pieces):
-            if index:
-                text += " "
-            start = len(text)
-            text += piece
-            if piece_origin is not None:
-                spans.append((start, len(text), piece_origin))
-        return instances, [_Line(text, origin, tuple(spans))]
+        return instances, [_applied(prefix, pieces, origin)]
+
+    def _value(
+        self, value: Any, sort: Any, context: _Context
+    ) -> tuple[str, tuple[str, str] | None]:
+        """A value of a fact's point as Lean source, and the cast it needs, if any.
+
+        A term is printed as a step prints one. A family's value is a
+        ``fun``, its parameters read as the family's arguments: ``k ↦ r **
+        k`` for an ``f: Fn[Nat, Real]`` is ``(fun k => r ^ k.toNat)``. Where
+        its values are in a narrower ring than the family's, integers for a
+        family of reals, the body is ascribed the family's ring, ``(fun i =>
+        (i ^ 3 : ℝ))``, which Lean reads with the cast on each integer in it,
+        and the second answer is the two rings, ``("Int", "ℝ")``.
+        """
+        from lanky.matching import FamilyValue, family_scope
+
+        if not isinstance(value, FamilyValue):
+            return self._render(value, context, atomic=True), None
+        inner, codomain = family_scope(sort, value, self.types)
+        hidden = {var.name for var in value.parameters}
+        values = {
+            key: item
+            for key, item in {**getattr(self, "renaming", {}), **context.pins}.items()
+            if key not in hidden
+        }
+        body = substitute(value.body, values)
+        facts = tuple(context.facts)
+
+        def natural(exponent: Any) -> bool:
+            from lanky.matching import implied
+
+            return implied(Comparison(exponent, ">=", 0), facts, inner) is True
+
+        with proof_exponents(natural):
+            text = render_term(body, inner, self.mathlib, self.shadowed)
+        names = " ".join(lean_identifier(var.name) for var in value.parameters)
+        ring = _ring_of_sort(codomain)
+        cast = None
+        if ring is not None and self.mathlib:
+            try:
+                own = number_type(body, inner, mathlib=True)
+            except Exception:  # noqa: BLE001 - a body that cannot be typed is Lean's to judge
+                own = ring
+            if _RINGS.get(own, 0) < _RINGS.get(ring, 0):
+                text = f"({text} : {ring})"
+                cast = (own, ring)
+        return f"(fun {names} => {text})", cast
+
+    def _through_the_cast(
+        self,
+        instance: Instance,
+        pieces: Sequence[tuple[str, Origin | None]],
+        casts: Sequence[tuple[str, str]],
+        origin: Origin,
+        context: _Context,
+    ) -> list[_Line] | None:
+        """The fact at its point restated in the ring of its own terms, shown through the cast.
+
+        ``one_more_term`` at ``i ↦ i**3`` says, in the reals, that the sum
+        of the casts of the cubes to ``n + 1`` is the sum to ``n`` plus the
+        cast of ``n**3``. The step is about the integers, so the fact is
+        stated as the step reads it, ``∑ k ∈ Finset.Ico 0 (n + 1), k ^ 3 =
+        ...`` over ``ℤ``, and proved from the fact in the reals: the cast is
+        injective, so the equation in the integers follows from its cast,
+        whose casts ``push_cast`` takes down to the integers in it, the
+        sums' terms included, as it does in the fact, which is then what
+        the cast says. ``None`` where
+        the instance is no equation in a ring narrower than the fact's, and
+        the fact is stated as it is.
+        """
+        body = instance.body
+        if not isinstance(body, Comparison) or body.operator not in _LEAN_RELATION:
+            return None
+        own = self._ring(body)
+        wide = max((ring for _, ring in casts), key=lambda ring: _RINGS.get(ring, 0))
+        if _RINGS.get(own, 0) >= _RINGS.get(wide, 0):
+            return None
+        try:
+            statement = (
+                f"{self._step_term(body.left, context)} {_LEAN_RELATION[body.operator]} "
+                f"{self._step_term(body.right, context)}"
+            )
+        except UnsupportedTerm:
+            return None
+        cast = lean_identifier(self.names.fresh("cast"))
+        name = lean_identifier(instance.lean_name)
+        arms = [f"exact_mod_cast {cast}"]
+        if body.operator == "==":
+            injective = (
+                self._qualified("Complex.ofReal_injective")
+                if own == "ℝ"
+                else f"({self._qualified('Int.cast_injective')} (α := {wide}))"
+            )
+            arms.append(f"(apply {injective}; push_cast at {cast} ⊢; exact {cast})")
+        lines = [_Line(f"have {name} : {statement} := by", origin)]
+        inner = [_applied(f"have {cast} := ", pieces, origin), _Line("first", origin)]
+        inner += [_Line(f"  | {arm}", origin) for arm in arms]
+        return lines + _indented(inner, "  ", "  ")
 
     def _discharge(self, condition: Any, context: _Context) -> str:
         """How a condition is shown: ``(by omega)`` over the integers, else a rule."""
@@ -1536,13 +1649,29 @@ class _Compiler:
 
         lemma = Lemma(citation.name, shape.binders, shape.premises, shape.body)
         terms = [claim.left, claim.right] if isinstance(claim, Comparison) else [claim]
+        missed: NoSinglePoint | None = None
         try:
             return tuple(single_point(lemma, terms, self.types, context.facts, citation.name))
-        except NoSinglePoint:
-            pass
+        except NoSinglePoint as exc:
+            missed = exc
         except Exception:  # noqa: BLE001 - the matcher's failure leaves the point to the other rule
             pass
-        return self._unified(citation, shape, context, claim)
+        try:
+            return self._unified(citation, shape, context, claim)
+        except ProofError:
+            if missed is None or not missed.candidates:
+                raise
+        # the matcher's points say more than the other rule's, a family's
+        # value among them: the fix is written with them, lambda and all
+        from lanky.proofs.trace import shown
+
+        point = ", ".join(shown(value) for value in missed.candidates[0])
+        raise ProofError(
+            "no-point",
+            f"{citation.name}: {missed}",
+            citation.line,
+            fix=f"{citation.name}({point})",
+        ) from None
 
     def _unified(self, citation: Citation, shape: Shape, context: _Context, claim: Any) -> tuple:
         """The point at which the fact's applications of a family are the claim's.
@@ -1798,6 +1927,38 @@ class _Compiler:
         return f"linear_combination (norm := {combination_norm(statement)}) {' '.join(parts)}"
 
     # }}}
+
+
+#: The rings a number can be in, narrowest first, by the name a statement gives each.
+_RINGS = {"Int": 1, "_root_.Int": 1, "ℝ": 2, "ℂ": 3}
+
+
+def _ring_of_sort(sort: Any) -> str | None:
+    """The Lean ring a value of a lanky sort is in: ``Int``, ``ℝ`` or ``ℂ``; ``None`` if unknown."""
+    from lanky.prelude import Sort
+
+    while isinstance(sort, Refined):
+        sort = sort.base
+    if isinstance(sort, FinType):
+        return "Int"
+    if isinstance(sort, Sort):
+        return {"Nat": "Int", "Int": "Int", "Real": "ℝ", "Complex": "ℂ"}.get(sort.name)
+    return None
+
+
+def _applied(
+    prefix: str, pieces: Sequence[tuple[str, Origin | None]], origin: Origin
+) -> _Line:
+    """``prefix`` and a fact applied to its pieces, each condition's columns kept for a message."""
+    text, spans = prefix, []
+    for index, (piece, piece_origin) in enumerate(pieces):
+        if index:
+            text += " "
+        start = len(text)
+        text += piece
+        if piece_origin is not None:
+            spans.append((start, len(text), piece_origin))
+    return _Line(text, origin, tuple(spans))
 
 
 def _listing(names: Sequence[str]) -> str:
