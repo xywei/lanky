@@ -78,7 +78,7 @@ import math
 import os
 from typing import Any
 
-from lanky import by, claim, log, theorem
+from lanky import by, claim, log
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, fact_id
@@ -114,7 +114,7 @@ def tau_derivative(kernel: Any, alpha: Any, beta: Any, tau: Any) -> Any:
     return from_sympy(derivative, {"alpha": alpha, "beta": beta, "tau": tau})
 
 
-@theorem
+@claim
 def line_ode(
     alpha: Complex, beta: Complex, tau: Real, off: alpha + tau * beta != 0
 ) -> (alpha + tau * beta) * tau_derivative(log_line, alpha, beta, tau) == beta:
@@ -130,7 +130,7 @@ def line_ode(
     """
 
 
-@theorem
+@claim
 def line_taylor(
     alpha: Complex,
     beta: Complex,

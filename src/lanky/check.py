@@ -357,6 +357,8 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
                 print(f"  semantics: {note}")
     if fact.is_axiom:
         return _examine_axiom(fact, verbose=verbose)
+    if fact.is_condition:
+        return _examine_condition(fact, verbose=verbose)
     for oracle in registry.sorted_oracles():
         available, reason = oracle_availability(oracle)
         if not available:
@@ -594,7 +596,7 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
             continue
         if result.status is Status.REFUTED:
             if verbose:
-                print(f"  {oracle.name} refutes the axiom {fact.owner} as it is written")
+                print(f"  {oracle.name} refutes the cited claim {fact.owner} as it is written")
             return result.with_status(result.status, trust_class=oracle.trust_class())
         # A test oracle that does not count the goal's points (a plugin's,
         # say) records nothing about the guard, and says nothing against it,
@@ -615,6 +617,42 @@ def _examine_axiom(fact: Fact, verbose: bool = False) -> Fact:
     if marks:
         fact = fact.with_status(fact.status, **marks)
     return _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
+
+
+def _examine_condition(fact: Fact, verbose: bool = False) -> Fact:
+    """A ``@condition``'s row: whether its conditions can hold at all, by draws; never proved.
+
+    A condition is assumed, not claimed, so the only question about it is
+    whether it says anything: conditions nothing satisfies make every claim
+    under them vacuous. Its term is ``True`` under its conditions
+    (:meth:`lanky.conditions.Condition.fact`), and only the oracles of the
+    ``test`` trust class are asked about it: a pass over draws the
+    conditions admitted is ``tested``, the evidence that they can hold. Where
+    no draw satisfied them, the stronger oracles are asked whether they are
+    inconsistent (:func:`_examine_vacuity`), and a condition that can never
+    hold is ``vacuous`` and fails the check. A stronger oracle's proof of
+    ``True`` would say nothing, so none is asked for one.
+    """
+    for oracle in registry.sorted_oracles():
+        if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
+            continue
+        available, _reason = oracle_availability(oracle)
+        if not available:
+            continue
+        try:
+            if not oracle.can_establish(fact):
+                continue
+            result = oracle.establish(fact)
+        except Exception as exc:  # noqa: BLE001 - one oracle must not stop the rest
+            fact = _with_raise(fact, oracle, exc, verbose=verbose)
+            continue
+        if result is None:
+            continue
+        if result.status is Status.TESTED:
+            return result.with_status(result.status, trust_class=oracle.trust_class())
+        fact = result
+        break
+    return _examine_vacuity(fact, verbose=verbose)
 
 
 def has_hypotheses(term: Any) -> bool:
@@ -1145,7 +1183,7 @@ def _owned(obj: Any, path: Path, module: Any) -> bool | None:
 
     The answer comes from the function the object wraps: the object itself
     when it is a function, or what its ``__wrapped__`` chain leads to, which
-    :func:`functools.update_wrapper` sets and which ``@theorem`` and loopty's
+    :func:`functools.update_wrapper` sets and which ``@claim`` and loopty's
     decorators both use. Two things have to agree. The function's code was
     compiled from ``path``, which is where it was defined; and its globals are
     the namespace of the module :func:`import_path` just executed, which tells
@@ -1275,6 +1313,7 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
         ledger, claimed = _check_imported(path, module, decorated, refused, verbose)
     finally:
         forget_scripts(refused)
+    _suggest_conditions(ledger, claimed)
     # last, after every run and draw of the check, so that nothing a proof's
     # body does can change what they read
     from lanky.proofs import check_written_proofs
@@ -1321,6 +1360,35 @@ def _check_imported(
                     established = established.with_status(established.status, tactic_refused=said)
                 ledger.add(established)
     return ledger, claimed
+
+
+def _suggest_conditions(ledger: Ledger, claimed: list[Any]) -> None:
+    """Name the file's conditions that exclude every draw refuting a claim of it.
+
+    A claim that fails at draws is a red test, and the condition that makes
+    it green is often one the file already names: the CFL condition, for an
+    upwind step that does not grow the solution. Each refuted claim is
+    tested against each ``@condition`` of the file
+    (:func:`lanky.conditions.suggested_conditions`), and the lines naming
+    those that exclude every failing draw, with the ``with`` line to write,
+    are kept as ``suggestion``, which ``lanky check`` prints under the
+    refutation. Nothing rests on them.
+    """
+    from lanky.conditions import Condition, suggested_conditions
+    from lanky.theory import Claim
+
+    conditions = [obj for obj in claimed if isinstance(obj, Condition)]
+    if not conditions:
+        return
+    for obj in claimed:
+        if not isinstance(obj, Claim) or obj.fact_id not in ledger:
+            continue
+        fact = ledger[obj.fact_id]
+        if fact.status is not Status.REFUTED:
+            continue
+        lines = suggested_conditions(obj, conditions)
+        if lines:
+            ledger.add(fact.with_status(fact.status, suggestion=lines))
 
 
 def _with_duplicate(kept: Fact, claim: Fact) -> Fact:

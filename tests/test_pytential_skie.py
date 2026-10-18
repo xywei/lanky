@@ -103,7 +103,7 @@ from layer_potentials import (
     trace,
 )
 
-from lanky import axiom, theorem
+from lanky import claim
 from lanky.prelude import Nat
 '''
 
@@ -193,7 +193,7 @@ def test_the_quickstart_shows_what_python_prints() -> None:
 def test_lanky_check_decides_each_verdict_under_the_axioms_it_applied() -> None:
     ledger = check_path(DEMO)
     facts = list(ledger)
-    axioms = {fact.owner: fact for fact in facts if fact.kind == "axiom"}
+    axioms = {fact.owner: fact for fact in facts if fact.kind == "cited"}
     assert list(axioms) == AXIOMS
     for fact in axioms.values():
         assert (fact.status, fact.decided_by) == (Status.ASSUMED, None)
@@ -210,7 +210,7 @@ def test_lanky_check_decides_each_verdict_under_the_axioms_it_applied() -> None:
     assert not resting & {fact.id for fact in readings}
     claims: dict[str, dict] = {}
     for fact in facts:
-        if fact.kind != "axiom" and not fact.is_reading:
+        if not fact.is_cited and not fact.is_reading:
             claims.setdefault(fact.owner, {})[fact.kind] = fact
     assert list(claims) == list(EXPECTED)
     for owner, (jumps, under) in EXPECTED.items():
@@ -399,17 +399,17 @@ def test_coefficients_are_exact(demo, lp) -> None:
 
 PARTIAL = HEADER + '''
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def jump_D(gamma: C2Boundary, s: Side) -> trace(D, s) == D + s / 2 * I:
     """The double-layer jump."""
 
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def hyper_S(gamma: C2Boundary) -> ~scalar_plus_compact(S):
     """False, but an axiom may say it, and the rules then decline what it touches."""
 
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def hyper_Dp(gamma: C2Boundary) -> ~scalar_plus_compact(Dp):
     """D' is hypersingular."""
 
@@ -430,32 +430,32 @@ def test_the_rules_are_exactly_the_axioms_given(tmp_path, lp) -> None:
 
 BAD_RULES = HEADER + '''
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def jump_D(gamma: C2Boundary, s: Side) -> trace(D, s) == D + s / 2 * I:
     """The double-layer jump."""
 
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def jump_D_again(gamma: C2Boundary, s: Side) -> trace(D, s) == D - s / 2 * I:
     """The same trace, given a second time."""
 
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def compact_I(gamma: C2Boundary) -> compact(I):
     """The identity is not compact in infinite dimensions."""
 
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def arithmetic(n: Nat) -> n + 0 == n:
     """Not a rule about operators."""
 
 
-@axiom(cite="a test")
+@claim(cite="a test")
 def one_side(gamma: C2Boundary) -> trace(D, INTERIOR) == -I / 2 + D:
     """A jump relation for one side, not stated for a side variable."""
 
 
-@theorem
+@claim
 def not_an_axiom(gamma: C2Boundary) -> compact(S):
     """A theorem is not a rule."""
 '''
@@ -471,7 +471,7 @@ def test_a_rule_set_refuses_what_is_not_one_rule(tmp_path, lp) -> None:
         lp.RuleSet(module.arithmetic)
     with pytest.raises(TypeError, match="side variable of sort Side"):
         lp.RuleSet(module.one_side)
-    with pytest.raises(TypeError, match="read off an @axiom"):
+    with pytest.raises(TypeError, match=r"read off a cited claim, @claim\(cite=\.\.\.\)"):
         lp.RuleSet(module.not_an_axiom)
     rules = lp.RuleSet(module.jump_D)
     with pytest.raises(TypeError, match="names the operator that makes it so"):
@@ -489,12 +489,12 @@ def test_a_rule_set_refuses_what_is_not_one_rule(tmp_path, lp) -> None:
 
 MISCOPIED = HEADER + '''
 
-@axiom(cite="Kress, with the sign copied down wrong")
+@claim(cite="Kress, with the sign copied down wrong")
 def jump_D(gamma: C2Boundary, s: Side) -> trace(D, s) == D - s / 2 * I:
     """The double-layer jump, with its sign flipped."""
 
 
-@axiom(cite="Kress")
+@claim(cite="Kress")
 def compact_D(gamma: C2Boundary) -> compact(D):
     """D is compact."""
 
@@ -531,12 +531,12 @@ def test_a_jump_relation_copied_down_wrong_refutes_the_rewrite(tmp_path, capsys)
 
 SINGLE = HEADER + '''
 
-@axiom(cite="Kress")
+@claim(cite="Kress")
 def jump_S(gamma: C2Boundary, s: Side) -> trace(S, s) == S:
     """S is continuous across the boundary."""
 
 
-@axiom(cite="Kress")
+@claim(cite="Kress")
 def compact_S(gamma: C2Boundary) -> compact(S):
     """S is compact."""
 
@@ -570,12 +570,12 @@ from lanky import Var
 eta = Var("eta")
 
 
-@axiom(cite="Kress")
+@claim(cite="Kress")
 def jump_D(gamma: C2Boundary, s: Side) -> trace(D, s) == D + s / 2 * I:
     """The double-layer jump."""
 
 
-@axiom(cite="Kress")
+@claim(cite="Kress")
 def compact_D(gamma: C2Boundary) -> compact(D):
     """D is compact."""
 

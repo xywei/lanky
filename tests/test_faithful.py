@@ -33,7 +33,7 @@ from __future__ import annotations
 import builtins
 import collections
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat, Real, Sort
 """
 
@@ -111,71 +111,71 @@ def big(i):
     return 1 if isinstance(i, int) and i > 0 else 0
 
 
-@theorem
+@claim
 def types_differ(n: Nat) -> (Fin[n] != Fin[3]) | (n == 4):
     """#79: False at n = 3."""
 
 
-@theorem
+@claim
 def keyed_type(n: Nat) -> {Fin[3]: 1}.get(Fin[n], 0) == 0:
     """#79: False at n = 3."""
 
 
-@theorem
+@claim
 def families_differ(n: Nat) -> (Fn[Fin[n], Nat] != Fn[Fin[3], Nat]) | (n == 4):
     """#79's FnType: False at n = 3."""
 
 
-@theorem
+@claim
 def refinements_differ(n: Nat) -> ((Nat & (n > 2)) != (Nat & (3 > 2))) | (n == 4):
     """#79's Refined: False at n = 3 and at n = 5."""
 
 
-@theorem
+@claim
 def sums_differ(n: Nat) -> ((Fin[n] + Fin[1]) != (Fin[3] + Fin[1])) | (n == 4):
     """#79's SumType: False at n = 3."""
 
 
-@theorem
+@claim
 def through_helper(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):
     """#80: False at i = 0."""
 
 
-@theorem
+@claim
 def counted(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == collections.Counter([i, 0])[0] - 1 for i in Fin[n]
 ):
     """#80, first comment: False at i = 0, where 0 is counted twice."""
 
 
-@theorem
+@claim
 def chained(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == collections.ChainMap({0: 1}).get(i, 0) for i in Fin[n]
 ):
     """#80, first comment: False at i = 0."""
 
 
-@theorem
+@claim
 def flagged(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 + flag(i) == 1 for i in Fin[n]):
     """#80, second comment: a number's truth value in a helper; false at i = 0."""
 
 
-@theorem
+@claim
 def digits(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == digit(i) for i in Fin[n]):
     """#80, second comment: a term's text in a helper; false at i = 0."""
 
 
-@theorem
+@claim
 def identity(n: Nat, f: Fn[Fin[n], Nat]) -> all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n]):
     """#88: False at i = 0."""
 
 
-@theorem
+@claim
 def named(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == {"i": 0}.get(i.name, 1) for i in Fin[n]):
     """#88: a number has no name."""
 
 
-@theorem
+@claim
 def typed(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == big(i) for i in Fin[n]):
     """A helper that asks a value for its type, which no rule refuses; false at i = 1."""
 '''
@@ -224,7 +224,7 @@ def test_every_example_of_79_80_and_88_is_refuted_and_never_proved(
         ), (owner, reading.provenance)
         assert reading.provenance["counterexample"] == FIRST_POINT[owner], owner
         assert reading.provenance["witness"].startswith("the goal, "), owner
-        assert reading.id == claim.id.replace("theorem:", "faithful:", 1)
+        assert reading.id == claim.id.replace("claim:", "faithful:", 1)
         assert (claim.status, claim.decided_by) == (Status.ASSUMED, None), owner
         assert claim.provenance["unfaithful"] == reading.provenance["reason"]
         assert claim.rests_on == (reading.id,)
@@ -339,7 +339,7 @@ def test_the_earlier_rules_switched_off_are_refuted_by_the_check(
     says something else, which the stand-in prover proves on ``main``; the
     check refutes it at a point, as a test of the general check.
     """
-    body = f'\n\n@theorem\n{claim}:\n    """Misread without its rule."""\n'
+    body = f'\n\n@claim\n{claim}:\n    """Misread without its rule."""\n'
     path = _write(tmp_path, body)
     with pytest.raises((TypeError, SymbolicBoolError)):
         check_path(path)
@@ -367,12 +367,12 @@ def test_the_earlier_rules_switched_off_are_refuted_by_the_check(
 
 TRUE = '''
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Gauss."""
 
 
-@theorem
+@claim
 def scan_monotone(
     n: Nat,
     cnt: Fn[Fin[n], Nat],
@@ -383,22 +383,22 @@ def scan_monotone(
     """The offsets of a scan are monotone."""
 
 
-@theorem
+@claim
 def guarded(n: Nat, f: Fn[Fin[n], Nat]) -> all((i == 0) | (f(i - 1) >= 0) for i in Fin[n]):
     """Python's | asks f(-1) at i = 0; lanky's disjunction is true there first."""
 
 
-@theorem
+@claim
 def negation(n: Nat) -> ~(n < 0):
     """~ of a truth value is not, where Python's ~True is -2."""
 
 
-@theorem
+@claim
 def sampled(k: Nat) -> all(j + k >= j for j in Nat):
     """A quantifier over a sort, run over the same sample on both sides."""
 
 
-@theorem
+@claim
 def closed() -> 1 + 1 == 2:
     """No variables: one draw, the empty one."""
 '''
@@ -435,7 +435,7 @@ def test_a_true_claim_is_proved_as_before_under_a_tested_reading(
     assert lines[3].split()[:3] == ["tested", "tested", "python"]
     assert lines[3].endswith("the term computes what the annotations compute")
     rows = json.loads((tmp_path / "out.json").read_text(encoding="utf-8"))
-    assert [row["kind"] for row in rows[:2]] == ["theorem", "faithful"]
+    assert [row["kind"] for row in rows[:2]] == ["claim", "faithful"]
     assert rows[0]["rests_on"] == [rows[1]["id"]]
     assert rows[0]["effective"] == "tested"
 
@@ -490,14 +490,14 @@ def test_a_sum_rounds_alike_and_nothing_is_put_down_to_rounding(prover, tmp_path
         "    if isinstance(x, int | float | Fraction) and x > 0:\n"
         "        return x * (1 + 1e-12)\n"
         "    return x\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def tenths(n: Nat) -> sum(0.1 for i in Fin[2 * n]) == n / 5:\n"
         '    """Rounding decides it, alike on both sides."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def halves(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all((f(i) * 0.5 == 1.0) | (i is not 0) for i in Fin[n]):\n"
         '    """A float in the claim does not hide a misreading."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def close(x: Real) -> 1.0 * x == nudged(x):\n"
         '    """False wherever x > 0; its term is 1.0*x == x."""\n',
     )
@@ -531,7 +531,7 @@ def test_an_exception_on_one_side_only_is_a_disagreement(prover, tmp_path) -> No
     """
     path = _write(
         tmp_path,
-        "\n\n@theorem\n"
+        "\n\n@claim\n"
         "def stops(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all((f(i) * 0 == 1 // i + 1) | (i is not 0) for i in Fin[n]):\n"
         '    """Python stops at i = 0; the term reads or True."""\n',
@@ -557,10 +557,10 @@ def test_both_readings_pass_over_a_point_with_no_answer(tmp_path) -> None:
     """
     path = _write(
         tmp_path,
-        "\n\n@theorem\n"
+        "\n\n@claim\n"
         "def ordered(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i - 1) <= f(i) for i in Fin[n]):\n"
         '    """No value in Python wherever n >= 1."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def overflows(x: Real) -> ((x + 2) ** 2000.0 > 0) | (x == x):\n"
         '    """Python\'s float power overflows past 1, on both sides."""\n',
     )
@@ -579,24 +579,24 @@ def table(i):
     return {1: 1}.get(i, 0)
 
 
-@theorem
+@claim
 def divides(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 + (1 // i) * 0 == table(i) for i in Fin[n]
 ):
     \"\"\"False at i = 1, after both readings stop at i = 0.\"\"\"
 
 
-@theorem
+@claim
 def overflows(n: Nat) -> ((1.0 * n + 2) ** 2000 >= 0) & (n * 0 == table(n)):
     \"\"\"False at n = 1, where 3.0 ** 2000 overflows first.\"\"\"
 
 
-@theorem
+@claim
 def sums(n: Nat, f: Fn[Fin[n], Nat]) -> sum(f(i - 1) * 0 + table(i) for i in Fin[n]) == 0:
     \"\"\"f(-1) leaves the sum with no value; at i = 1 the term adds 0 where Python adds 1.\"\"\"
 
 
-@theorem
+@claim
 def named(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     y * 0 + (1 // i) * 0 == table(i) for i in Fin[n] if (y := f(i)) >= 0
 ):
@@ -662,22 +662,22 @@ def far(i):
     return TABLE.get(i, 0)
 
 
-@theorem
+@claim
 def just_past(n: Nat) -> n * 0 == past(n):
     \"\"\"False at n = 6, one past the largest natural the tester draws.\"\"\"
 
 
-@theorem
+@claim
 def at_the_end(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == last(i) for i in Fin[n]):
     \"\"\"False at i = 5, past the last point of any Fin the tester draws.\"\"\"
 
 
-@theorem
+@claim
 def in_a_table(n: Nat) -> n * 0 == far(n):
     \"\"\"False at n = 1000, a key of a module-level table the helper reads.\"\"\"
 
 
-@theorem
+@claim
 def over_a_sort() -> all(k * 0 == past(k) for k in Nat):
     \"\"\"False at k = 6, which the sample of Nat now holds.\"\"\"
 """
@@ -732,13 +732,13 @@ def test_a_written_value_keeps_a_draw_small_enough_to_run(tmp_path) -> None:
         tmp_path,
         "\n\ndef thousand(i):\n"
         "    return 1 if isinstance(i, int) and i == 1000 else 0\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def powers(n: Nat, h: n < 63) -> 2 ** n < 2 ** 63:\n"
         '    """Drawn at 62, 63 and 64, and not at 2 ** 63."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def bits(n: Nat, h: n < 64) -> all(x < 2 ** n for x in Fin[2 ** n]):\n"
         '    """Drawn at 63, 64 and 65, which are given up as too large to walk."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def nested(n: Nat, f: Fn[Fin[n], Nat]) -> all(\n"
         "    all(f(i) * 0 + f(j) * 0 == thousand(i) for j in Fin[n]) for i in Fin[n]\n"
         "):\n"
@@ -770,15 +770,15 @@ def test_the_if_clauses_are_one_conjunction_in_either_order(tmp_path) -> None:
     """
     path = _write(
         tmp_path,
-        "\n\n@theorem\n"
+        "\n\n@claim\n"
         "def later_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all(f(i) >= 0 for i in Fin[n] if f(i - 1) > 0 if i > 0):\n"
         '    """Python stops at f(-1) at i = 0; the term skips i = 0."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def and_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all(f(i) >= 0 for i in Fin[n] if (f(i - 1) > 0) and (i > 0)):\n"
         '    """The same, in one clause."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def named_guard(n: Nat, f: Fn[Fin[n], Nat]) -> "
         "all(y >= 0 for i in Fin[n] if (y := f(i)) >= 0):\n"
         '    """A name bound by := in a clause, which the body reads."""\n',
@@ -804,10 +804,10 @@ def test_a_helper_reads_the_module_as_it_was_when_the_claim_was_read(tmp_path) -
         "\n\nK = 0\nTABLE = {0: 1}\n\n\n"
         "def k():\n    return K\n\n\n"
         "def table(i):\n    return TABLE.get(i, 0)\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def constant(n: Nat) -> n * 0 == k():\n"
         '    """Read with K = 0, which the module rebinds after it."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def looked_up(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):\n"
         '    """Misread at i = 0, where the table read then gives 1."""\n\n\n'
         "def make():\n"
@@ -819,10 +819,10 @@ def test_a_helper_reads_the_module_as_it_was_when_the_claim_was_read(tmp_path) -
         "        at, held = 1, {}\n\n"
         "    return closed, held_at, rebind\n\n\n"
         "closed, held_at, rebind = make()\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def closed_over(n: Nat) -> n * 0 == closed():\n"
         '    """Read with at = 0, which rebind changes after it."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def held(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == held_at(i) for i in Fin[n]):\n"
         '    """Misread at i = 0, where the table closed over then gives 1."""\n\n\n'
         "K = 1\nTABLE = {}\nrebind()\n",
@@ -886,32 +886,32 @@ def make():
 held_at, clear_held = make()
 
 
-@theorem
+@claim
 def cleared(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):
     \"\"\"#102: the table gives 1 at i = 0 when the claim is read.\"\"\"
 
 
-@theorem
+@claim
 def appended(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == zeroed(i) for i in Fin[n]):
     \"\"\"1 at every point when the claim is read.\"\"\"
 
 
-@theorem
+@claim
 def assigned(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == zero_at(i) for i in Fin[n]):
     \"\"\"1 at every point when the claim is read.\"\"\"
 
 
-@theorem
+@claim
 def written_over(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == entry(i) for i in Fin[n]):
     \"\"\"1 at every point when the claim is read.\"\"\"
 
 
-@theorem
+@claim
 def nested(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == one_at(i) for i in Fin[n]):
     \"\"\"1 at i = 0 when the claim is read.\"\"\"
 
 
-@theorem
+@claim
 def closed_over(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == held_at(i) for i in Fin[n]):
     \"\"\"1 at i = 0 when the claim is read.\"\"\"
 
@@ -998,24 +998,24 @@ def through_an_instance(i):
     return Tables().one(i)
 
 
-@theorem
+@claim
 def configured(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == one_at(i) for i in Fin[n]):
     \"\"\"Misread at i = 0, and CONFIG is emptied after the claim.\"\"\"
 
 
-@theorem
+@claim
 def ruled_by(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == ruled(i) for i in Fin[n]):
     \"\"\"Misread at i = 0, and the class's table is cleared after the claim.\"\"\"
 
 
-@theorem
+@claim
 def instanced(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == through_an_instance(i) for i in Fin[n]
 ):
     \"\"\"Misread at i = 0, and the class's table is emptied after the claim.\"\"\"
 
 
-@theorem
+@claim
 def large(n: Nat) -> n * 0 == big(n):
     \"\"\"True, and read faithfully, but past the copy's budget.\"\"\"
 
@@ -1097,24 +1097,24 @@ def imported_one_at(i):
     return faithful_beside_102.one_at(i)
 
 
-@theorem
+@claim
 def zeros(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == zero(i) for i in Fin[n]):
     \"\"\"True, and read faithfully: every table gives 0.\"\"\"
 
 
-@theorem
+@claim
 def through_beside(n: Nat) -> n * 0 == beside.zero(n):
     \"\"\"True, and read faithfully, through the module beside.\"\"\"
 
 
-@theorem
+@claim
 def misread_beside(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == beside.one_at(i) for i in Fin[n]
 ):
     \"\"\"Misread at i = 0 by the module beside, which is emptied after the claim.\"\"\"
 
 
-@theorem
+@claim
 def misread_imported(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == imported_one_at(i) for i in Fin[n]
 ):
@@ -1207,22 +1207,22 @@ def counted(x):
     return x * 0 + COUNT
 
 
-@theorem
+@claim
 def shared(n: Nat) -> bump(n) * 0 + current() == n:
     \"\"\"True: current reads the cell bump sets, as it does when the claim is read.\"\"\"
 
 
-@theorem
+@claim
 def ticks(n: Nat) -> tick(n) == 1:
     \"\"\"True: the claim calls tick once, as each draw does.\"\"\"
 
 
-@theorem
+@claim
 def lists(n: Nat) -> listed(n) == 1:
     \"\"\"True: the claim calls listed once, as each draw does.\"\"\"
 
 
-@theorem
+@claim
 def counts(n: Nat) -> counted(n) == 1:
     \"\"\"True: the claim calls counted once, as each draw does.\"\"\"
 """
@@ -1258,7 +1258,7 @@ def test_an_annotation_that_reads_a_builtin_its_module_binds_otherwise_is_refuse
     shadowing = _write(
         tmp_path,
         "\n\ndef all(gen):\n    return False\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def everywhere(n: Nat) -> all(i >= 0 for i in Fin[n]):\n"
         '    """The module\'s all answers False."""\n',
         name="shadowing.py",
@@ -1277,7 +1277,7 @@ def test_an_annotation_that_reads_a_builtin_its_module_binds_otherwise_is_refuse
     numpy_abs = _write(
         tmp_path,
         "\nfrom numpy import abs\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def magnitude(x: Real) -> abs(x) >= 0:\n"
         '    """numpy\'s abs, which lanky would read as its own."""\n',
         name="numpy_abs.py",
@@ -1290,10 +1290,10 @@ def test_an_annotation_that_reads_a_builtin_its_module_binds_otherwise_is_refuse
         "\nfrom lanky import sum\n\n\n"
         "def any(*args):\n    return \"the module's\"\n\n\n"
         "def helper(n):\n    return 0 if any() == \"the module's\" else 1\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):\n"
         '    """sum is lanky\'s own."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def through_helper(n: Nat) -> n * 0 == helper(n):\n"
         '    """The annotation reads no any; the helper calls the module\'s."""\n',
         name="allowed.py",
@@ -1352,29 +1352,29 @@ def poked_at_a_number(i):
     return 0
 
 
-@theorem
+@claim
 def cached_misread(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == from_the_cache(i) for i in Fin[n]
 ):
     \"\"\"Misread at i = 0, where Python finds 1 in stale's cache.\"\"\"
 
 
-@theorem
+@claim
 def cached_hit(n: Nat) -> n * 0 + stale(0) == 1:
     \"\"\"True as Python reads it: stale(0) is the 1 its cache holds.\"\"\"
 
 
-@theorem
+@claim
 def cached_empty(n: Nat) -> through_fresh(n) == 0:
     \"\"\"True, and read faithfully: fresh's cache is empty when the claim is read.\"\"\"
 
 
-@theorem
+@claim
 def through_a_view(n: Nat) -> poked(n) == 1:
     \"\"\"True: poked writes through HEAD and reads the write through BASE.\"\"\"
 
 
-@theorem
+@claim
 def misread_through_a_view(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == poked_at_a_number(i) for i in Fin[n]
 ):
@@ -1492,54 +1492,54 @@ def typed_at_a_number(i):
     return typed(0)[0] if isinstance(i, int) else 0
 
 
-@theorem
+@claim
 def hit(n: Nat) -> n * 0 + stale(0) == 1:
     \"\"\"stale(0) is the 1 its cache holds, while STATE holds 0.\"\"\"
 
 
-@theorem
+@claim
 def evicted(n: Nat) -> n * 0 + bounded(0) + bounded(1, extra=2) + bounded(2) == 2:
     \"\"\"bounded(0) was evicted; computing it now evicts bounded(1, extra=2), the oldest.\"\"\"
 
 
-@theorem
+@claim
 def keyed(n: Nat) -> n * 0 + typed(0)[0] + typed(0, extra=5)[0] + typed(0.0)[0] == 7:
     \"\"\"1 and 6 from the cache, and 0 for the float, which a typed cache keys apart.\"\"\"
 
 
-@theorem
+@claim
 def through_a_function(n: Nat) -> n * 0 + by_function(helper) == 1:
     \"\"\"The cache is keyed by helper, and the rerun calls it with the copy of helper.\"\"\"
 
 
-@theorem
+@claim
 def dict_results(n: Nat) -> (
     n * 0 + bounded_tables(0)[0] + bounded_tables(1)[1] + tables(0)["v"] == 3
 ):
     \"\"\"Cached results that are dicts, which the cache is listed beside.\"\"\"
 
 
-@theorem
+@claim
 def misses(n: Nat) -> n * 0 + single.cache_info().misses == 2:
     \"\"\"Two misses before the claim, though the cache holds one entry.\"\"\"
 
 
-@theorem
+@claim
 def hits(n: Nat) -> n * 0 + single(1) * 0 + single.cache_info().hits == 1:
     \"\"\"single(1) is the first hit the cache counts.\"\"\"
 
 
-@theorem
+@claim
 def cleared(n: Nat) -> n * 0 + (single.cache_clear(), single.cache_info().misses)[1] == 0:
     \"\"\"Clearing the cache clears its counts.\"\"\"
 
 
-@theorem
+@claim
 def attributes(n: Nat) -> n * 0 + flagged.flag + flagged.tags[0] + unused.flag == 6:
     \"\"\"What was set on a cache after it was made, one with an entry and one without.\"\"\"
 
 
-@theorem
+@claim
 def misread(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == typed_at_a_number(i) for i in Fin[n]
 ):
@@ -1613,24 +1613,24 @@ def table(i):
     return {0: 1}.get(i, 0)
 
 
-@theorem
+@claim
 def scoped(n: Nat) -> ((lambda: (x := n))() == n) & (x == 1):
     \"\"\"The lambda's x is its own, and the module's is 1.\"\"\"
 
 
-@theorem
+@claim
 def scoped_under_and(n: Nat) -> (lambda: ((x := n) >= 0) & (x == n))() & (x == 1):
     \"\"\"A := in an operand of & in the lambda binds the lambda's x, which the other reads.\"\"\"
 
 
-@theorem
+@claim
 def misread_in_a_lambda(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     (lambda k: ((z := table(k)) >= 0) & (f(k) * 0 == z))(i) for i in Fin[n]
 ):
     \"\"\"Misread at i = 0, where the table gives 1.\"\"\"
 
 
-@theorem
+@claim
 def in_a_generator(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     w * 0 + (1 // i) * 0 == 0 for i in Fin[n] if (w := f(i)) >= 0
 ):
@@ -1672,10 +1672,10 @@ def test_a_parameter_named_like_a_builtin_the_module_binds_is_the_parameter(tmp_
         tmp_path,
         "\nfrom numpy import abs\n\n\n"
         "def all(gen):\n    return False\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def identity(abs: Nat) -> abs == abs:\n"
         '    """abs is the parameter."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def counted(all: Nat, n: Nat) -> all + n >= n:\n"
         '    """all is the parameter."""\n',
         name="parameters.py",
@@ -1687,7 +1687,7 @@ def test_a_parameter_named_like_a_builtin_the_module_binds_is_the_parameter(tmp_
     calls = _write(
         tmp_path,
         "\nfrom numpy import abs\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def magnitude(n: Nat, x: Real) -> abs(x) + n * 0 >= 0:\n"
         '    """The goal calls numpy\'s abs, which lanky would read as its own."""\n',
         name="calls.py",
@@ -1711,50 +1711,50 @@ def ratio(a, b):
     return a // b
 
 
-@theorem
+@claim
 def masked(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 + 1 // (i - i) == table(i) for i in Fin[n]
 ):
     \"\"\"#99's: no value in Python at any point; Lean's 1 // 0 is 0, and table(0) is 1.\"\"\"
 
 
-@theorem
+@claim
 def remainder(n: Nat) -> n * 0 + n % (n - n) == table(n) + n:
     \"\"\"Lean's n % 0 is n, and table(0) is 1.\"\"\"
 
 
-@theorem
+@claim
 def outside(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i - 1) * 0 + table(i) == 0 for i in Fin[n] if i == 0
 ):
     \"\"\"f(-1) has no value, and table(0) is 1.\"\"\"
 
 
-@theorem
+@claim
 def curried(n: Nat, f: Fn[Fin[n], Fn[Fin[1], Nat]]) -> all(
     f(i - 1)(0) * 0 + table(i) == 0 for i in Fin[n]
 ):
     \"\"\"f(-1) has no value, and read as Lean reads it, is a family that is 0 everywhere.\"\"\"
 
 
-@theorem
+@claim
 def logarithm(x: Real) -> log(x - x) * 0 + table(x) == 0:
     \"\"\"log(0) has no value in Python and is 0 in Mathlib, and table(0) is 1.\"\"\"
 
 
-@theorem
+@claim
 def divides(n: Nat) -> n // 0 == 0:
     \"\"\"No value in Python, and read faithfully: n // 0 is 0 on both sides, as Lean has it.\"\"\"
 
 
-@theorem
+@claim
 def where_defined(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 + (1 // i) * 0 == 0 for i in Fin[n]
 ):
     \"\"\"Read faithfully.\"\"\"
 
 
-@theorem
+@claim
 def in_a_helper(n: Nat) -> ratio(1, n - n) + n * 0 == 0:
     \"\"\"The helper's // is Python's in the rerun, so nothing more is compared.\"\"\"
 """
@@ -1812,12 +1812,12 @@ def spin(n, past):
     return n * 0
 
 
-@theorem
+@claim
 def always(n: Nat) -> 1 // (n - n) + spin(n, 0) == 0:
     \"\"\"Python stops at 1 // 0 at every draw; past it, spin never returns.\"\"\"
 
 
-@theorem
+@claim
 def from_three(n: Nat) -> 1 // (n - n) + spin(n, 3) == 0:
     \"\"\"The same from 3 on; below it, what follows 1 // 0 is compared.\"\"\"
 
@@ -1828,7 +1828,7 @@ def nap(n):
     return n * 0
 
 
-@theorem
+@claim
 def napping(n: Nat) -> nap(n) + 1 // (n - n) == 0:
     \"\"\"Each reading naps before it stops at 1 // 0, which the second passes.\"\"\"
 """
@@ -1888,22 +1888,22 @@ def catches(f, n):
         return 0
 
 
-@theorem
+@claim
 def loops(n: Nat, h: n < 60) -> spin(n) == 0:
     \"\"\"spin never returns past 50, and the claim writes 50 and 60.\"\"\"
 
 
-@theorem
+@claim
 def calls(n: Nat, h: n < 64) -> deep(n) == 0:
     \"\"\"deep makes 2 ** n calls, at a written 63.\"\"\"
 
 
-@theorem
+@claim
 def towers(n: Nat, h: n < 30) -> (2 ** 2 ** n) * 0 == 0:
     \"\"\"2 ** 2 ** 29 has more bits than the check computes.\"\"\"
 
 
-@theorem
+@claim
 def caught(n: Nat, h: n < 30) -> catches(lambda: 2 ** 2 ** n, n) == 0:
     \"\"\"The helper catches what gives the draw at the written 29 up, and answers 0.\"\"\"
 """
@@ -1967,12 +1967,12 @@ def imports_spin(n):
     return faithful_spinning_101.spin(n)
 
 
-@theorem
+@claim
 def in_a_method(n: Nat, h: n < 60) -> SPINNER.spin(n) == 0:
     \"\"\"A method of a class of the user's, reached through an instance the snapshot shares.\"\"\"
 
 
-@theorem
+@claim
 def in_an_import(n: Nat, h: n < 60) -> imports_spin(n) == 0:
     \"\"\"A function of a module beside, which the helper imports as it runs.\"\"\"
 """
@@ -2027,7 +2027,7 @@ def helper(n):
     return 1 if n == 1000 else 0
 
 
-@theorem
+@claim
 def misread(n: Nat, h: n <= 1000) -> helper(n) == 0:
     \"\"\"False at n = 1000, where the term, n*0 == 0, is true.\"\"\"
 """
@@ -2064,12 +2064,12 @@ def spin(n):
     return n * 0
 
 
-@theorem
+@claim
 def slow_small(n: Nat) -> spin(n) == 0:
     \"\"\"spin never returns from 3 on, which the corners and the tester draw.\"\"\"
 
 
-@theorem
+@claim
 def slow_late(n: Nat, h: n < 30) -> spin(n - 26) == 0:
     \"\"\"spin never returns from n = 29 on, the last few draws of the claim.\"\"\"
 """
@@ -2116,7 +2116,7 @@ def spin(n):
     return n * 0
 
 
-@theorem
+@claim
 def loops(n: Nat, h: n < 60) -> spin(n) == 0:
     \"\"\"spin never returns past 50, and the claim writes 50 and 60.\"\"\"
 """
@@ -2161,10 +2161,10 @@ def test_a_family_over_a_sort_is_drawn_as_it_is_applied(tmp_path) -> None:
     """
     path = _write(
         tmp_path,
-        "\n\n@theorem\n"
+        "\n\n@claim\n"
         "def misread(f: Fn[Nat, Nat]) -> all((f(k) * 0 == 1) | (k is not 0) for k in Nat):\n"
         '    """False at k = 0."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def over_naturals(f: Fn[Nat, Fn[Nat, Real]]) -> "
         "all(f(a)(b) - f(a)(b) == 0 for a in Nat for b in Nat):\n"
         '    """A family of families over Nat, read faithfully."""\n',
@@ -2186,7 +2186,7 @@ def test_a_refutation_over_a_family_of_reals_is_written_as_json(tmp_path) -> Non
     path = _write(
         tmp_path,
         "\n\ndef table(x):\n    return {0: 1}.get(x, 0)\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def halved(f: Fn[Real, Nat]) -> all(f(x / 2) * 0 == table(x) for x in Real):\n"
         '    """Misread: the table gives 0 for a term, and 1 at x = 0."""\n',
     )
@@ -2218,10 +2218,10 @@ def test_a_hypothesis_and_a_sort_are_compared_too(tmp_path) -> None:
     """A misread hypothesis or sort is refuted, and the witness names it."""
     path = _write(
         tmp_path,
-        "\n\n@theorem\n"
+        "\n\n@claim\n"
         "def assumes(n: Nat, h: (n is not 0) | (n == 5)) -> n >= 0:\n"
         '    """The hypothesis is read as True."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def sized(n: Nat, f: Fn[Fin[3 if n is 0 else n], Nat]) -> n >= 0:\n"
         '    """The sort is read as Fin[n], and is Fin[3] at n = 0."""\n',
     )
@@ -2246,7 +2246,7 @@ def test_a_reading_that_cannot_be_run_is_assumed_and_a_proof_rests_on_it(
     path = _write(
         tmp_path,
         '\n\nBoundary = Sort("Boundary")\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def opaque(g: Boundary, n: Nat) -> n + 0 == n:\n"
         '    """No boundary can be drawn."""\n',
     )
@@ -2267,10 +2267,10 @@ def test_an_annotation_python_evaluated_holds_no_source_to_run(tmp_path) -> None
     """Without ``from __future__ import annotations`` an annotation is a value, not a source."""
     path = tmp_path / "eager.py"
     path.write_text(
-        "from lanky import Var, theorem\n"
+        "from lanky import Var, claim\n"
         "from lanky.prelude import Nat\n\n"
         'x = Var("x")\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def eager(x: Nat) -> x + 0 == x:\n"
         '    """Python built the term itself."""\n',
         encoding="utf-8",
@@ -2283,8 +2283,8 @@ def test_an_annotation_python_evaluated_holds_no_source_to_run(tmp_path) -> None
 def test_a_refuted_reading_is_offered_to_no_oracle() -> None:
     """``establish`` returns a claim whose reading is refuted unasked, resting on the reading."""
     claim = Fact(
-        id="theorem:m.c@1",
-        kind="theorem",
+        id="claim:m.c@1",
+        kind="claim",
         statement="c",
         term=True,
         provenance={"faithful": "faithful:m.c@1", "unfaithful": "misread"},
@@ -2305,11 +2305,11 @@ def test_a_refuted_reading_is_offered_to_no_oracle() -> None:
 PYTEST_MODULE = """
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
-@theorem
+@claim
 def identity(n: Nat, f: Fn[Fin[n], Nat]) -> all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n]):
     \"\"\"False at i = 0, and every draw of its term passes.\"\"\"
 """
@@ -2353,7 +2353,7 @@ def test_the_quickstart_shows_what_check_prints_for_a_misread_claim(tmp_path, ca
     snippet = "\n".join(doc[start : doc.index("```", start)]) + "\n"
     lines = (root / "examples" / "gauss.py").read_text(encoding="utf-8").splitlines(keepends=True)
     head = next(index for index, line in enumerate(lines) if line.startswith("from __future__"))
-    end = next(index for index, line in enumerate(lines) if line.startswith("@theorem"))
+    end = next(index for index, line in enumerate(lines) if line.startswith("@claim"))
     path = tmp_path / "misread.py"
     path.write_text("".join(lines[head:end]) + snippet, encoding="utf-8")
     assert cli.main(["check", str(path)]) == 1

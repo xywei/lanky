@@ -18,6 +18,13 @@ def test_module_has_docstring() -> None:
 
 def test_the_package_re_exports_the_interface() -> None:
     for name in (
+        "claim",
+        "condition",
+        "Claim",
+        "CitedClaim",
+        "Condition",
+        "Conditions",
+        "ConditionNotMet",
         "theorem",
         "axiom",
         "rewrite",
@@ -60,7 +67,7 @@ def test_the_built_in_plugins_are_registered(monkeypatch, installed) -> None:
 
     plugins = [PluginTheory(name) for name in installed]
     monkeypatch.setattr(lanky.registry, "theories", [*lanky.registry.theories, *plugins])
-    assert [theory.name for theory in lanky.registry.theories][:2] == ["theorem", "rewrite"]
+    assert [theory.name for theory in lanky.registry.theories][:2] == ["claim", "rewrite"]
     assert {oracle.name for oracle in lanky.registry.oracles} >= {
         "lean",
         "property-test",
@@ -87,9 +94,9 @@ def test_checking_the_worked_example() -> None:
     ledger = lanky.check_path(example)
     # each claim, and after it the fact that its term reads its annotations
     assert [(fact.owner, fact.kind) for fact in ledger] == [
-        ("gauss", "theorem"),
+        ("gauss", "claim"),
         ("gauss", "faithful"),
-        ("scan_monotone", "theorem"),
+        ("scan_monotone", "claim"),
         ("scan_monotone", "faithful"),
     ]
     # Every claim is established by someone. Which oracle depends on what is

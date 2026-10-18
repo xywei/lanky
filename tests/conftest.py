@@ -72,15 +72,16 @@ def cas(monkeypatch):
 def claims(ledger) -> list:
     """The facts of a ledger, without the ``faithful`` fact that follows each claim (#91).
 
-    A theorem and an axiom are two facts in a ledger: the claim, and the fact
-    that its term computes what its annotations compute
-    (:mod:`lanky.faithful`). A test about the claim takes the claims. The
-    entries of a ``--json`` ledger are read the same way.
+    A claim is two facts in a ledger: the claim, and the fact that its term
+    computes what its annotations compute (:mod:`lanky.faithful`). A test
+    about the claim takes the claims. A ``@condition``'s row, whether its
+    conditions can hold, is no claim either. The entries of a ``--json``
+    ledger are read the same way.
     """
     return [
         fact
         for fact in ledger
-        if (fact["kind"] if isinstance(fact, dict) else fact.kind) != "faithful"
+        if (fact["kind"] if isinstance(fact, dict) else fact.kind) not in ("faithful", "condition")
     ]
 
 

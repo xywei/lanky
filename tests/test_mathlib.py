@@ -27,7 +27,7 @@ import pymbolic.primitives as prim
 import pytest
 
 from conftest import claims
-from lanky import conj, exp, imag, log, real, sqrt, theorem
+from lanky import claim, conj, exp, imag, log, real, sqrt
 from lanky import mathlib as mathlib_mode
 from lanky.check import goal_guard_fact, hypotheses_fact
 from lanky.intervals import ComplexValue, exp_value
@@ -111,81 +111,81 @@ def mathlib(expr: object, **sorts: object) -> str:
 # rounding (#33); drawn exactly, they are tested like the rest.
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``."""
 
 
-@theorem
+@claim
 def squares(n: Nat) -> 6 * sum(i**2 for i in Fin[n + 1]) == n * (n + 1) * (2 * n + 1):
     """The sum of the first squares."""
 
 
-@theorem
+@claim
 def exp_add(x: Real, y: Real) -> exp(x + y) == exp(x) * exp(y):
     """The exponential turns sums into products."""
 
 
-@theorem
+@claim
 def exp_positive(x: Real) -> exp(x) > 0:
     """The exponential is positive."""
 
 
-@theorem
+@claim
 def complex_exp_add(z: Complex, w: Complex) -> exp(z + w) == exp(z) * exp(w):
     """And so does the complex exponential."""
 
 
-@theorem
+@claim
 def binomial(x: Real.exact, y: Real.exact) -> (x + y) ** 2 == x**2 + 2 * x * y + y**2:
     """A ring identity over the reals."""
 
 
-@theorem
+@claim
 def divided_back(x: Real, y: Real, hy: y != 0) -> x / y * y == x:
     """True division, undone, away from zero."""
 
 
-@theorem
+@claim
 def by_the_conjugate(z: Complex, w: Complex, away: z != 0) -> (
     -w * conj(z) * (1 / real(z * conj(z))) == -w / z
 ):
     """A complex division multiplied out by the conjugate: one real division."""
 
 
-@theorem
+@claim
 def modulus_squared(z: Complex) -> real(z * conj(z)) == real(z) ** 2 + imag(z) ** 2:
     """``z`` times its conjugate is the sum of the squares of its parts."""
 
 
-@theorem
+@claim
 def _conjugate_misread(z: Complex, w: Complex, away: z != 0) -> (
     w * conj(z) * (1 / real(z * conj(z))) == -w / z
 ):
     """Off by a sign, so nothing proves it."""
 
 
-@theorem
+@claim
 def _not_a_theorem(x: Real, y: Real) -> x * y <= x**3 + y**2:
     """False at x = -1, y = 1/2, so nothing proves it."""
 
 
-@theorem
+@claim
 def _sqrt_of_negative(x: Real & (x < 0)) -> sqrt(x) == 0:
     """True of Mathlib's total square root, and never evaluable in Python."""
 
 
-@theorem
+@claim
 def _contradictory(x: Real, h1: x > 1, h2: x < 0) -> x == 2:
     """Vacuous: no real is above one and below zero."""
 
 
-@theorem
+@claim
 def commutes(a: Nat, b: Nat) -> a + b == b + a:
     """Core Lean's kind of claim, which Mathlib mode must still prove."""
 
 
-@theorem
+@claim
 def scan_monotone(
     n: Nat,
     cnt: Fn[Fin[n], Nat],
@@ -196,27 +196,27 @@ def scan_monotone(
     """The scan from the README, which the core induction proves."""
 
 
-@theorem
+@claim
 def exp_log_off_the_cut(x: Real) -> exp(log(x + 1j)) == x + 1j:
     """The principal logarithm undone, where the imaginary part keeps it off the cut."""
 
 
-@theorem
+@claim
 def root_squared(x: Real, y: Real, hy: y != 0) -> sqrt(x + y * 1j) ** 2 == x + y * 1j:
     """The principal square root squared, where a hypothesis keeps it off the cut."""
 
 
-@theorem
+@claim
 def exp_log_above_the_axis(x: Real, y: Real, hy: y > 0) -> exp(log(x + y * 1j)) == x + y * 1j:
     """The logarithm undone, where only a hypothesis shows its argument is not zero."""
 
 
-@theorem
+@claim
 def exp_log_of_a_positive(x: Real) -> exp(log(x * x + 1 + 0j)) == x * x + 1 + 0j:
     """The logarithm undone on the positive real axis, which is off the cut."""
 
 
-@theorem
+@claim
 def every_order(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -227,7 +227,7 @@ def every_order(
     """A table that follows Laplace's recurrence is a harmonic function's derivatives."""
 
 
-@theorem
+@claim
 def every_order_helmholtz(
     k: Real,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -239,7 +239,7 @@ def every_order_helmholtz(
     """The same for Helmholtz's PDE: a multiplier of the step is ``-k**2``."""
 
 
-@theorem
+@claim
 def every_order_from_zero(
     k: Real,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -251,7 +251,7 @@ def every_order_from_zero(
     """Helmholtz's, with a literal left side: the multiplier is ascribed ``ℝ`` all the same."""
 
 
-@theorem
+@claim
 def telescoping(
     f: Fn[Nat, Real],
     start: f(0) == 0,
@@ -260,7 +260,7 @@ def telescoping(
     """A sum of ``1 / ((n + 1)(n + 2))``: the step is closed by ``field_simp``."""
 
 
-@theorem
+@claim
 def every_order_along_b(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -271,7 +271,7 @@ def every_order_along_b(
     """Laplace's recurrence solved for ``G_yy``: induced on ``b``, at every ``a``."""
 
 
-@theorem
+@claim
 def on_the_triangle(
     p: Nat,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -283,7 +283,7 @@ def on_the_triangle(
     """The reconstruction of order ``p``: the recurrence inside the triangle alone (#86)."""
 
 
-@theorem
+@claim
 def counting(
     n: Nat,
     f: Fn[Nat, Fn[Nat, Real]],
@@ -293,7 +293,7 @@ def counting(
     """Induced on a point of ``Fin[n]``, whose bound the hypothesis takes before ``b``."""
 
 
-@theorem
+@claim
 def _lost_sign(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -304,7 +304,7 @@ def _lost_sign(
     """False: with its sign lost the recurrence gives ``R(2)(0) == D(0)(2) == -D(2)(0)``."""
 
 
-@theorem
+@claim
 def _shifted_index(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -315,7 +315,7 @@ def _shifted_index(
     """False: the recurrence takes one ``y`` too few."""
 
 
-@theorem
+@claim
 def _doubled(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -326,7 +326,7 @@ def _doubled(
     """False: the recurrence's coefficient is twice the PDE's."""
 
 
-@theorem
+@claim
 def _short_of_the_triangle(
     p: Nat,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -338,7 +338,7 @@ def _short_of_the_triangle(
     """False: the recurrence stops one order short of the triangle's edge."""
 
 
-@theorem
+@claim
 def _short_base(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -349,14 +349,14 @@ def _short_base(
     """False: nothing says what ``R(1)(b)`` is."""
 
 
-@theorem
+@claim
 def exchanged(n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]) -> sum(
     sum(f[i, j] for j in Fin[m]) for i in Fin[n]
 ) == sum(sum(f[i, j] for i in Fin[n]) for j in Fin[m]):
     """Two finite sums exchange."""
 
 
-@theorem
+@claim
 def factorized(
     n: Nat,
     F: Fn[Fin[n], Fin[n], Real],
@@ -375,7 +375,7 @@ def factorized(
     """Sum factorization: a tensor-product operator applied as three one-axis passes."""
 
 
-@theorem
+@claim
 def scattered(
     nc: Nat,
     nv: Nat,
@@ -391,14 +391,14 @@ def scattered(
     """A scatter-add keeps the total: what the cells add into the nodes is what they hold."""
 
 
-@theorem
+@claim
 def gathered(nc: Nat, nv: Nat, cell: Fn[Fin[nc], Fin[nv]], x: Fn[Fin[nc], Real]) -> sum(
     sum(x[c] for c in Fin[nc] if cell[c] == i) for i in Fin[nv]
 ) == sum(x[c] for c in Fin[nc]):
     """The same with one value per cell, the fibers written out."""
 
 
-@theorem
+@claim
 def transposed(
     nf: Nat,
     m: Nat,
@@ -413,7 +413,7 @@ def transposed(
     """A scatter is the transpose of a gather: what it adds into ``i``, weighted by ``u[i]``."""
 
 
-@theorem
+@claim
 def transposed_weight_first(
     nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], h: Fn[Fin[nf], Real], u: Fn[Fin[nv], Real]
 ) -> sum(u[i] * sum(h[p] for p in Fin[nf] if node[p] == i) for i in Fin[nv]) == sum(
@@ -422,7 +422,7 @@ def transposed_weight_first(
     """The same with the weight first on the left and last on the right."""
 
 
-@theorem
+@claim
 def _two_fibers(
     nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], h: Fn[Fin[nf], Real]
 ) -> sum(
@@ -432,14 +432,14 @@ def _two_fibers(
     """False: the squares of what a scatter adds are not its total."""
 
 
-@theorem
+@claim
 def three_rows(J: Real, u: Fn[Fin[3], Real]) -> all(
     J * (u[j] + u[0]) == J * u[j] + J * u[0] for j in Fin[3]
 ):
     """A claim over a concrete ``Fin[3]``: three equations, a conjunction."""
 
 
-@theorem
+@claim
 def mixed(
     n: Nat,
     A: Fn[Fin[n], Fin[n], Real],
@@ -457,7 +457,7 @@ def mixed(
     """The Kronecker product's mixed product, entry by entry, with the rows under universals."""
 
 
-@theorem
+@claim
 def _swapped_factors(
     n: Nat,
     F: Fn[Fin[n], Fin[n], Real],
@@ -476,7 +476,7 @@ def _swapped_factors(
     """False: the passes apply the first axis's factor along the third."""
 
 
-@theorem
+@claim
 def series(
     alpha: Complex,
     beta: Complex,
@@ -488,7 +488,7 @@ def series(
     """The series of ``log(alpha + tau * beta)``, from order 1 on: a claim the guard starts at 1."""
 
 
-@theorem
+@claim
 def _series_lost_sign(
     alpha: Complex,
     beta: Complex,
@@ -539,9 +539,9 @@ def test_the_core_fragment_prints_the_same_in_both_dialects() -> None:
     which keeps it integer division next to a real (see below); a statement
     without one is printed character for character as core Lean prints it.
     """
-    for claim in (commutes, scan_monotone):
-        assert print_lean(claim.term, mathlib=True) == print_lean(claim.term)
-        core, full = statement_of(claim.term, "t"), statement_of(claim.term, "t", mathlib=True)
+    for stated in (commutes, scan_monotone):
+        assert print_lean(stated.term, mathlib=True) == print_lean(stated.term)
+        core, full = statement_of(stated.term, "t"), statement_of(stated.term, "t", mathlib=True)
         assert (full.binders, full.hypotheses, full.goal) == (
             core.binders,
             core.hypotheses,
@@ -1308,11 +1308,11 @@ def test_the_oracle_follows_the_variable_when_it_is_asked(monkeypatch, tmp_path)
 def test_mathlib_mode_takes_what_core_lean_declines(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("LANKY_LEAN_MATHLIB", str(tmp_path))
     oracle = LeanOracle()
-    for claim in (gauss, exp_add, complex_exp_add, divided_back, _sqrt_of_negative):
-        assert oracle.can_establish(claim.fact()), claim.__name__
+    for stated in (gauss, exp_add, complex_exp_add, divided_back, _sqrt_of_negative):
+        assert oracle.can_establish(stated.fact()), stated.__name__
     monkeypatch.delenv("LANKY_LEAN_MATHLIB")
-    for claim in (gauss, exp_add, complex_exp_add, divided_back, _sqrt_of_negative):
-        assert not oracle.can_establish(claim.fact()), claim.__name__
+    for stated in (gauss, exp_add, complex_exp_add, divided_back, _sqrt_of_negative):
+        assert not oracle.can_establish(stated.fact()), stated.__name__
     assert oracle.can_establish(commutes.fact())
 
 
@@ -1696,26 +1696,26 @@ def test_identities_rounding_broke_are_tested(tmp_path) -> None:
     is not one, and ``0.1`` is the rational the float holds.)
     """
 
-    @theorem
+    @claim
     def add_one_back(x: Real) -> (x + 1) - 1 == x:
         """Exact in ``ℝ``."""
 
-    @theorem
+    @claim
     def add_a_tenth_back(x: Real) -> (x + 0.1) - 0.1 == x:
         """Exact in ``ℝ``, and false at most floats."""
 
-    for claim in (exp_add, add_one_back, add_a_tenth_back, divided_back, complex_exp_add):
-        report = claim.report(100)
-        assert report.ok, (claim.__name__, report.counterexample)
-        assert report.valid == 100, claim.__name__
+    for stated in (exp_add, add_one_back, add_a_tenth_back, divided_back, complex_exp_add):
+        report = stated.report(100)
+        assert report.ok, (stated.__name__, report.counterexample)
+        assert report.valid == 100, stated.__name__
     source = (
         "from __future__ import annotations\n"
-        "from lanky import exp, theorem\n"
+        "from lanky import exp, claim\n"
         "from lanky.prelude import Real\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def exp_add(x: Real, y: Real) -> exp(x + y) == exp(x) * exp(y):\n"
         '    """The exponential turns sums into products."""\n\n\n'
-        "@theorem\n"
+        "@claim\n"
         "def add_back(x: Real) -> (x + 0.1) - 0.1 == x:\n"
         '    """Adding a tenth and taking it away."""\n'
     )
@@ -1781,7 +1781,7 @@ def test_an_equality_is_evidence_only_where_it_is_asserted() -> None:
 
 
 def test_an_exact_complex_identity_is_tested_exactly() -> None:
-    @theorem
+    @claim
     def difference_of_squares(z: Complex.exact, w: Complex.exact) -> (z + w) * (z - w) == (
         z * z - w * w
     ):
@@ -1815,10 +1815,10 @@ def test_a_function_outside_its_python_domain_is_an_operand_with_no_answer() -> 
     still settles the connective, whichever side it is written on, and a
     conjunct the draw breaks refutes the goal however the other one fares.
     """
-    for claim in ((log(x) > 1) & (x > 0), (x > 0) & (log(x) > 1)):
-        assert evaluate(claim, {"x": 0}) is False
-    for claim in ((log(x) > 1) | (x == 0), (x == 0) | (log(x) > 1)):
-        assert evaluate(claim, {"x": 0}) is True
+    for stated in ((log(x) > 1) & (x > 0), (x > 0) & (log(x) > 1)):
+        assert evaluate(stated, {"x": 0}) is False
+    for stated in ((log(x) > 1) | (x == 0), (x == 0) | (log(x) > 1)):
+        assert evaluate(stated, {"x": 0}) is True
     with pytest.raises(UndefinedValue):
         evaluate((log(x) > 1) | (x > 0), {"x": 0})
     report = check([("x", Real)], [], (sqrt(x) >= 0) & (x >= 0))
@@ -2038,7 +2038,7 @@ def test_a_claim_named_after_a_mathlib_lemma_is_proved(
     Every attempt was refused with "`mul_comm` has already been declared",
     whatever its tactic; in the ``Lanky`` namespace the name is free.
     """
-    fact = Fact(id=owner, kind="theorem", statement=owner, term=term, owner=owner)
+    fact = Fact(id=owner, kind="claim", statement=owner, term=term, owner=owner)
     proved = mathlib_oracle.establish(fact)
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
     assert f"\ntheorem Lanky.{owner} " in proved.provenance["lean_source"]
@@ -2053,7 +2053,7 @@ def test_a_claim_over_words_mathlib_reserves_is_proved(mathlib_oracle: LeanOracl
     """
     to, over = Var("to"), Var("over")
     term = Forall(((to, Real), (over, Real)), to * over == over * to)
-    fact = Fact(id="lemma", kind="theorem", statement="lemma", term=term, owner="lemma")
+    fact = Fact(id="lemma", kind="claim", statement="lemma", term=term, owner="lemma")
     proved = mathlib_oracle.establish(fact)
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
     assert "\ntheorem Lanky.«lemma» («to» : ℝ) («over» : ℝ) : " in proved.provenance["lean_source"]
@@ -2121,7 +2121,7 @@ def test_names_lean_gives_a_meaning_to_are_kept_apart_in_mathlib(
     traded under a fresh name, since the ``rcases`` pattern ``⟨rfl, rfl⟩``
     substitutes twice.
     """
-    fact = Fact(id=owner, kind="theorem", statement=owner, term=term, owner=owner)
+    fact = Fact(id=owner, kind="claim", statement=owner, term=term, owner=owner)
     proved = mathlib_oracle.establish(fact)
     assert proved.status is Status.PROVED, proved.provenance.get("lean_reason")
     if tactic is not None:
@@ -2211,7 +2211,7 @@ def test_floor_division_next_to_a_real_is_integer_division(mathlib_oracle: LeanO
     can only find if the print kept it an integer.
     """
     halved = Forall(((x, Real), (n, Nat)), x + (2 * n + 1) // 2 == x + n)
-    fact = Fact(id="halved", kind="theorem", statement="halved", term=halved)
+    fact = Fact(id="halved", kind="claim", statement="halved", term=halved)
     mathlib_oracle.tactics[fact.id] = "have h : (2 * n + 1) / 2 = n := by omega\nrw [h]"
     try:
         proved = mathlib_oracle.establish(fact)
@@ -2229,7 +2229,7 @@ def test_a_sum_python_refutes_is_not_proved(mathlib_oracle: LeanOracle) -> None:
         ("closed_abs", _CLOSED_ABS),
         ("closed_body", _CLOSED_BODY),
     ):
-        fact = Fact(id=label, kind="theorem", statement=label, term=term)
+        fact = Fact(id=label, kind="claim", statement=label, term=term)
         result = mathlib_oracle.establish(fact)
         assert result.status is Status.ASSUMED, (label, result.provenance.get("tactic"))
     # and what Python computes is what Lean proves, read over the integers
@@ -2239,7 +2239,7 @@ def test_a_sum_python_refutes_is_not_proved(mathlib_oracle: LeanOracle) -> None:
         ("closed_abs_true", prim.Comparison(Abs(prim.Sum((1, -2))), "==", 1)),
         ("closed_body_true", prim.Comparison(Sum(((i, FinType(3)),), prim.Sum((1, -2))), "==", -3)),
     ):
-        fact = Fact(id=label, kind="theorem", statement=label, term=term)
+        fact = Fact(id=label, kind="claim", statement=label, term=term)
         proved = mathlib_oracle.establish(fact)
         assert proved.status is Status.PROVED, (label, proved.provenance.get("lean_reason"))
 
@@ -2252,7 +2252,7 @@ def test_mathlib_does_not_prove_a_statement_about_its_own_round(
     The theorem written with Python's ``round`` is ``0 == 1`` now (#63), and
     the free name, which only a term built by hand still holds, is declined.
     """
-    fact = Fact(id="free:round", kind="theorem", statement="round(0.5) == 1", term=_FREE_ROUND)
+    fact = Fact(id="free:round", kind="claim", statement="round(0.5) == 1", term=_FREE_ROUND)
     declined = mathlib_oracle.establish(fact)
     assert declined.status is Status.ASSUMED
     assert "mentions round" in declined.provenance["declined"]
@@ -2266,13 +2266,13 @@ def _table(i: object) -> int:
 def _misread() -> tuple:
     """#88 and #80: two claims whose term says something else than the annotation."""
 
-    @theorem
+    @claim
     def identity(
         n: Nat, f: Fn[Fin[n], Nat]
     ) -> all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n]):  # noqa: F632
         """False at i = 0, where 0 is not 0 is False."""
 
-    @theorem
+    @claim
     def through_helper(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == _table(i) for i in Fin[n]):
         """False at i = 0, where the lookup gives 1."""
 
@@ -2287,12 +2287,12 @@ def test_mathlib_is_never_asked_about_a_claim_whose_reading_is_refuted(
     from lanky.plugins import registry
 
     monkeypatch.setattr(registry, "oracles", [mathlib_oracle])
-    for claim in _misread():
-        proved = mathlib_oracle.establish(claim.fact())
-        assert (proved.status, proved.decided_by) == (Status.PROVED, "lean"), claim.__name__
-        reading = claim.faithful_fact()
+    for stated in _misread():
+        proved = mathlib_oracle.establish(stated.fact())
+        assert (proved.status, proved.decided_by) == (Status.PROVED, "lean"), stated.__name__
+        reading = stated.faithful_fact()
         assert reading.status is Status.REFUTED, reading.provenance
-        fact = establish(claim.fact(reading))
+        fact = establish(stated.fact(reading))
         assert (fact.status, fact.decided_by) == (Status.ASSUMED, None)
         assert fact.rests_on == (reading.id,)
 
@@ -2406,7 +2406,7 @@ def test_mathlib_proves_a_complex_logarithm_or_root_off_the_cut(
     nonzero, which takes the hypothesis ``y > 0``, or ``positivity``.
     """
     owner = claim.__name__
-    fact = Fact(id=owner, kind="theorem", statement=owner, term=claim.term, owner=owner)
+    fact = Fact(id=owner, kind="claim", statement=owner, term=claim.term, owner=owner)
     proved = mathlib_oracle.establish(fact)
     assert proved.status is Status.PROVED, (
         proved.provenance.get("lean_declined") or proved.provenance.get("lean_reason")
@@ -2434,7 +2434,7 @@ def test_a_statement_that_may_reach_the_cut_is_declined(mathlib_oracle: LeanOrac
         ("across", _ACROSS_THE_CUT),
         ("undone", Forall(((z, Complex),), exp(log(z)) == z, z != 0)),
     ):
-        fact = Fact(id=owner, kind="theorem", statement=owner, term=term, owner=owner)
+        fact = Fact(id=owner, kind="claim", statement=owner, term=term, owner=owner)
         result = mathlib_oracle.establish(fact)
         assert result.status is Status.ASSUMED
         declined = result.provenance["lean_declined"]
@@ -2456,7 +2456,7 @@ def test_a_pinned_tactic_does_not_skip_the_side_conditions(mathlib_oracle: LeanO
     assert closed, detail
     oracle = LeanOracle(session=mathlib_oracle.session)
     oracle.tactics["across"] = "simp"
-    fact = Fact(id="across", kind="theorem", statement="across", term=_ACROSS_THE_CUT)
+    fact = Fact(id="across", kind="claim", statement="across", term=_ACROSS_THE_CUT)
     result = oracle.establish(fact)
     assert result.status is Status.ASSUMED
     assert result.provenance["lean_declined"].startswith("Lean could not prove ∀ ")
@@ -2478,7 +2478,7 @@ def test_hypotheses_on_the_cut_are_not_shown_inconsistent(mathlib_oracle: LeanOr
         (Forall(((x, Real),), Forall(((y, Real),), y == x, on_the_cut), x > 0), goal_guard_fact),
     )
     for term, question in claims:
-        fact = question(Fact(id="c", kind="theorem", statement="c", term=term, owner="c"))
+        fact = question(Fact(id="c", kind="claim", statement="c", term=term, owner="c"))
         statement = statement_of(fact.term, "c", mathlib=True)
         closed, detail = mathlib_oracle.session.run(statement.source("simp_all"))
         assert closed, detail

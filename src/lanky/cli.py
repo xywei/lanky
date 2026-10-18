@@ -836,6 +836,8 @@ def report_missing(ledger: Ledger) -> None:
         if not callable(getattr(oracle, "missing", None)):
             continue
         for fact in ledger:
+            if fact.is_condition:
+                continue  # a condition is assumed, and never proved by anyone
             try:
                 pieces = oracle.missing(fact)
             except Exception:  # noqa: BLE001 - a line under the table must not stop the check
@@ -1109,11 +1111,11 @@ def report_known(ledger: Ledger) -> None:
     found: list[tuple[Fact, list[Any]]] = []
     settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
     for fact in ledger:
-        if fact.kind != "theorem" or fact.status in settled or fact.term is None:
+        if fact.kind != "claim" or fact.status in settled or fact.term is None:
             continue
         if not fact.provenance.get("lean_tried") or fact.provenance.get("lean_parts"):
             continue
-        own = fact.owner if fact.id.startswith("theorem:lanky.known.") else None
+        own = fact.owner if fact.id.startswith("claim:lanky.known.") else None
         try:
             from lanky.suggest import suggestions
 
@@ -1250,7 +1252,7 @@ def _report_found(ledger: Ledger, text: str, word: str, lines_of: Any) -> None:
     """Print ``lines_of`` each proved theorem whose name, id or statement contains ``text``."""
     blocks = []
     for fact in ledger:
-        if fact.kind != "theorem":
+        if fact.kind != "claim":
             continue
         proof = fact.provenance.get("proof")
         written = word == "STEPS" and isinstance(proof, dict) and proof.get("outline")
@@ -1263,7 +1265,7 @@ def _report_found(ledger: Ledger, text: str, word: str, lines_of: Any) -> None:
     if not blocks:
         print()
         among = f" among those matching {text!r}" if text else ""
-        print(f"{word} no theorem was proved{among}")
+        print(f"{word} no claim was proved{among}")
         return
     for block in blocks:
         print()
@@ -1843,6 +1845,11 @@ def refutation_lines(fact: Fact) -> list[str]:
         lines.extend(str(reason).splitlines())
     if not lines:
         lines.append("no witness recorded")
+    suggestion = provenance.get("suggestion")
+    if isinstance(suggestion, str):
+        suggestion = [suggestion]
+    if isinstance(suggestion, list | tuple):
+        lines.extend(str(line) for line in suggestion if str(line).strip())
     checked = provenance.get("lean_counterexample")
     if _recorded(checked):
         lines.extend(str(checked).splitlines())

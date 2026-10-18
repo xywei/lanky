@@ -1,4 +1,4 @@
-"""The @theorem theory: statements, native calls, and property tests."""
+"""The @claim theory: statements, native calls, and property tests."""
 
 from __future__ import annotations
 
@@ -10,16 +10,17 @@ import threading
 import numpy as np
 import pytest
 
-from lanky import axiom, exp, theorem
+from lanky import claim, exp
+from lanky.conditions import ConditionNotMet
 from lanky.ledger import Fact, Status
 from lanky.oracles.test import TestOracle
 from lanky.plugins import registry
 from lanky.prelude import Fin, Fn, Int, Nat, Real
 from lanky.terms import Undecided, Var, evaluate_annotations
-from lanky.theory import Axiom, Theorem
+from lanky.theory import Axiom, CitedClaim, Claim, Theorem
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of 0 .. n is n * (n + 1)."""
 
@@ -32,14 +33,14 @@ def false_theorem() -> Theorem:
     statement this suite means to refute.
     """
 
-    @theorem
+    @claim
     def wrong(n: Nat) -> sum(i for i in Fin[n + 1]) == n:
         """False as soon as n is at least two."""
 
     return wrong
 
 
-@theorem
+@claim
 def bounded(n: Nat, k: Int, h: k >= n) -> k + 1 > n:
     """A hypothesis restricts which draws count."""
 
@@ -58,19 +59,36 @@ def test_the_decorator_registers_in_import_order() -> None:
     assert names.index("gauss") < names.index("bounded")
 
 
-def test_calling_a_theorem_evaluates_it_at_concrete_values() -> None:
-    verdict = gauss(n=4)
-    assert verdict.goal is True
-    assert verdict.holds is True
-    assert bool(verdict)
-    assert false_theorem()(n=3).goal is False
-    # a failed hypothesis means the statement is not violated
-    verdict = bounded(n=3, k=0)
-    assert verdict.hypotheses == {"h": False}
-    assert verdict.hypotheses_hold is False
-    assert verdict.holds is True
+def test_calling_a_claim_evaluates_it_at_concrete_values() -> None:
+    assert gauss(n=4) is True
+    assert gauss(4) is True
+    assert false_theorem()(n=3) is False
+    # a claim whose condition fails at the values does not apply there
+    with pytest.raises(ConditionNotMet) as refused:
+        bounded(n=3, k=0)
+    assert str(refused.value) == (
+        "bounded does not apply at these values: its condition h, k >= n, fails there"
+    )
+    assert refused.value.claim == "bounded" and refused.value.condition == "h"
+    assert bounded(n=3, k=5) is True
+    assert bounded(3, 5) is True
     with pytest.raises(TypeError, match="needs values for n"):
         gauss()
+    with pytest.raises(TypeError, match="h is a condition of bounded, which the call answers"):
+        bounded(n=3, k=5, h=True)
+    with pytest.raises(TypeError, match="bounded is given n twice"):
+        bounded(3, n=3, k=5)
+
+
+def test_calling_a_claim_at_symbolic_values_is_its_statement() -> None:
+    from lanky.terms import Forall, render
+
+    applied = gauss(Var("m") - 1)
+    assert render(applied) == "2*sum(i for i in Fin(m - 1 + 1)) == (m - 1)*(m - 1 + 1)"
+    implied = bounded(Var("m"), Var("j"))
+    assert isinstance(implied, Forall) and implied.binders == ()
+    assert render(implied.guard) == "j >= m"
+    assert render(implied.body) == "j + 1 > m"
 
 
 def test_a_true_theorem_passes_the_property_test() -> None:
@@ -100,9 +118,9 @@ def test_a_theorem_becomes_an_assumed_fact_until_an_oracle_speaks() -> None:
     # the id names the definition, not only the qualified name: module, name
     # and line, which is what keeps two same-named theorems apart in one ledger;
     # the module is the one this file's path gives it, tests/ being no package
-    assert fact.id == f"theorem:test_theory.gauss@{gauss.line}"
+    assert fact.id == f"claim:test_theory.gauss@{gauss.line}"
     assert fact.id == gauss.fact_id
-    assert fact.kind == "theorem"
+    assert fact.kind == "claim"
     assert fact.status is Status.ASSUMED
     assert fact.owner == "gauss"
     assert fact.where.startswith("test_theory.py:")
@@ -116,7 +134,7 @@ def test_the_closed_term_carries_binders_and_guard() -> None:
 
 
 def test_families_are_sampled_as_tables() -> None:
-    @theorem
+    @claim
     def head_is_smallest(
         n: Nat,
         f: Fn[Fin[n + 1], Nat],
@@ -139,7 +157,7 @@ def test_a_family_with_several_indices_is_applied_at_all_of_them_at_once() -> No
     """
     from lanky.faithful import faithful_fact
 
-    @theorem
+    @claim
     def entries(n: Nat, m: Nat, F: Fn[Fin[n], Fin[m], Int]) -> all(
         (F[i, j] == F(i)(j)) & (F(i, j) == F[i][j]) for i in Fin[n] for j in Fin[m]
     ):
@@ -148,10 +166,10 @@ def test_a_family_with_several_indices_is_applied_at_all_of_them_at_once() -> No
     report = entries.report(n=30)
     assert report.ok, report.counterexample
     assert report.valid == 30
-    assert entries(n=2, m=3, F=[[1, 2, 3], [4, 5, 6]]).holds
+    assert entries(n=2, m=3, F=[[1, 2, 3], [4, 5, 6]])
     assert faithful_fact(entries).status is Status.TESTED
 
-    @theorem
+    @claim
     def symmetric(n: Nat, F: Fn[Fin[n], Fin[n], Int]) -> all(
         F[i, j] == F[j, i] for i in Fin[n] for j in Fin[n]
     ):
@@ -160,15 +178,15 @@ def test_a_family_with_several_indices_is_applied_at_all_of_them_at_once() -> No
     ok, counterexample = symmetric.test(n=60)
     assert not ok
     assert counterexample is not None
-    assert symmetric(n=2, F=[[1, 2], [2, 3]]).holds
-    assert not symmetric(n=2, F=[[1, 2], [3, 4]]).holds
+    assert symmetric(n=2, F=[[1, 2], [2, 3]])
+    assert not symmetric(n=2, F=[[1, 2], [3, 4]])
 
 
 def test_a_family_over_a_sort_is_applied_at_several_indices_in_its_reading() -> None:
     """A family over ``Nat`` is drawn as the reading applies it, at one index or several."""
     from lanky.faithful import faithful_fact
 
-    @theorem
+    @claim
     def entries(f: Fn[Nat, Nat, Int]) -> all(f[a, b] == f(a)(b) for a in Nat for b in Nat):
         """Two spellings of one entry of a family the tester cannot tabulate."""
 
@@ -189,7 +207,7 @@ def test_a_table_is_applied_at_as_many_indices_as_it_has() -> None:
 def test_a_claim_that_gives_a_matrix_three_indices_says_so_in_its_reason() -> None:
     """``F[i, i, i]`` of a matrix: the tester could not run it, and says how many ``F`` has."""
 
-    @theorem
+    @claim
     def over(n: Nat, F: Fn[Fin[n], Fin[n], Int], i: Fin[n]) -> F[i, i, i] == F[i, i, i]:
         """A matrix applied at three indices."""
 
@@ -205,7 +223,7 @@ def test_a_claim_that_gives_a_matrix_three_indices_says_so_in_its_reason() -> No
 def test_a_matrix_given_to_a_theorem_in_the_wrong_shape_is_refused_by_name() -> None:
     """A flat list, a dict, a scalar or an array with an axis too many: the message says why."""
 
-    @theorem
+    @claim
     def trace(n: Nat, F: Fn[Fin[n], Fin[n], Int]) -> sum(F[i, i] for i in Fin[n]) == sum(
         F(i)(i) for i in Fin[n]
     ):
@@ -234,36 +252,36 @@ def test_a_matrix_given_to_a_theorem_in_the_wrong_shape_is_refused_by_name() -> 
 def test_a_function_given_for_a_matrix_is_applied_as_the_claim_writes_the_entry() -> None:
     """``lambda i, j: ...``, ``lambda i: lambda j: ...`` or a list of rows that are functions."""
 
-    @theorem
+    @claim
     def spellings(n: Nat, F: Fn[Fin[n], Fin[n], Int], i: Fin[n], j: Fin[n]) -> (
         F[i, j] == F(i)(j)
     ) & (F(i, j) == F[i][j]):
         """Three spellings of one entry."""
 
-    @theorem
+    @claim
     def symmetric(n: Nat, F: Fn[Fin[n], Fin[n], Int], i: Fin[n], j: Fin[n]) -> F[i, j] == F(j)(i):
         """Holds for a symmetric matrix only."""
 
     at_once, one_at_a_time = (lambda i, j: 10 * i + j), (lambda i: lambda j: 10 * i + j)
     for F in (at_once, one_at_a_time, [lambda j: j, lambda j: 10 + j]):
-        assert spellings(n=2, F=F, i=1, j=0).holds
-        assert not symmetric(n=2, F=F, i=1, j=0).holds
-    assert symmetric(n=3, F=lambda i, j: i + j, i=2, j=1).holds
+        assert spellings(n=2, F=F, i=1, j=0)
+        assert not symmetric(n=2, F=F, i=1, j=0)
+    assert symmetric(n=3, F=lambda i, j: i + j, i=2, j=1)
 
-    @theorem
+    @claim
     def refined_rows(
         n: Nat, F: Fn[Fin[n], Fn[Fin[n], Int] & True], i: Fin[n], j: Fin[n]
     ) -> F[i, j] == F(i)(j):
         """A family whose rows are refined has two indices all the same."""
 
-    assert refined_rows(n=2, F=at_once, i=1, j=0).holds
-    assert refined_rows(n=2, F=[[1, 2], [3, 4]], i=1, j=0).holds
+    assert refined_rows(n=2, F=at_once, i=1, j=0)
+    assert refined_rows(n=2, F=[[1, 2], [3, 4]], i=1, j=0)
 
 
 def test_a_counterexample_shows_a_matrix_as_nested_lists() -> None:
     """As a theorem called as a function takes it, and as the JSON ledger can hold it."""
 
-    @theorem
+    @claim
     def symmetric(n: Nat, F: Fn[Fin[n], Fin[n], Int]) -> all(
         F[i, j] == F[j, i] for i in Fin[n] for j in Fin[n]
     ):
@@ -274,7 +292,7 @@ def test_a_counterexample_shows_a_matrix_as_nested_lists() -> None:
     matrix = report.counterexample["F"]
     assert isinstance(matrix, list) and all(isinstance(row, list) for row in matrix)
     assert all(isinstance(entry, int) for row in matrix for entry in row)
-    assert not symmetric(n=report.counterexample["n"], F=matrix).holds
+    assert not symmetric(n=report.counterexample["n"], F=matrix)
 
 
 def test_a_hypothesis_defines_a_matrix_entry_by_entry() -> None:
@@ -286,7 +304,7 @@ def test_a_hypothesis_defines_a_matrix_entry_by_entry() -> None:
     ...`` define an entry too.
     """
 
-    @theorem
+    @claim
     def antisymmetric(
         n: Nat,
         F: Fn[Fin[n], Fin[n], Int],
@@ -299,7 +317,7 @@ def test_a_hypothesis_defines_a_matrix_entry_by_entry() -> None:
     assert report.counterexample["n"] >= 2
     assert report.counterexample["F"][0][1] == -1
 
-    @theorem
+    @claim
     def symmetric(
         n: Nat,
         F: Fn[Fin[n], Fin[n], Int],
@@ -313,7 +331,7 @@ def test_a_hypothesis_defines_a_matrix_entry_by_entry() -> None:
     assert report.ok, report.counterexample
     assert report.valid == report.samples == 60
 
-    @theorem
+    @claim
     def even(n: Nat, f: Fn[Fin[n], Int], defined: all(f[i] == 2 * i for i in Fin[n])) -> all(
         f[i] % 2 == 1 for i in Fin[n] if i > 0
     ):
@@ -334,56 +352,81 @@ def test_the_lean_printer_is_not_here_yet() -> None:
 def cited() -> Axiom:
     """An axiom, built inside a function so that pytest does not collect it."""
 
-    @axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+    @claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
     def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
         """The sum of the first cubes is the square of the sum of the first numbers."""
 
     return nicomachus
 
 
-def test_an_axiom_is_a_statement_taken_on_a_citation() -> None:
+def test_a_cited_claim_is_a_statement_taken_on_a_source() -> None:
     nicomachus = cited()
-    assert isinstance(nicomachus, Axiom)
-    assert isinstance(nicomachus, Theorem)
+    assert isinstance(nicomachus, CitedClaim)
+    assert isinstance(nicomachus, Claim)
+    assert Axiom is CitedClaim and Theorem is Claim
     assert nicomachus.cite == "Nicomachus of Gerasa, Introduction to Arithmetic"
     assert nicomachus.variables == (("n", Nat),)
     fact = nicomachus.fact()
-    assert fact.id == f"axiom:{__name__}.cited.<locals>.nicomachus@{nicomachus.line}"
+    assert fact.id == f"claim:{__name__}.cited.<locals>.nicomachus@{nicomachus.line}"
     assert fact.id == nicomachus.fact_id
-    assert fact.kind == "axiom"
-    assert fact.is_axiom
+    assert fact.kind == "cited"
+    assert fact.is_cited and fact.is_axiom
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
     assert fact.provenance["cite"] == nicomachus.cite
     assert fact.rests_on == ()
-    assert repr(nicomachus).startswith("<axiom nicomachus: n : Nat |- ")
+    assert repr(nicomachus).startswith("<claim nicomachus: n : Nat |- ")
     # it is still a statement: it can be called and sampled
-    assert nicomachus(n=4).holds
+    assert nicomachus(n=4)
     assert nicomachus.report(n=20).ok
     assert nicomachus in registry.objects
 
 
-def test_an_axiom_needs_a_citation() -> None:
-    """Without one it is a claim with nothing behind it, which ``assumed`` already says."""
+def test_a_cited_claim_needs_a_source_that_says_something() -> None:
+    with pytest.raises(TypeError, match="a claim's source is empty"):
+        claim(cite="  ")
+    with pytest.raises(TypeError, match=r"a claim's source is a string, cite=\"\.\.\.\""):
+        claim(cite=("Kress", 1989))
+    with pytest.raises(TypeError, match="a claim needs a goal"):
+
+        @claim(cite="a textbook")
+        def no_goal(n: Nat):
+            """No return annotation."""
+
+
+def test_a_claim_with_no_goal_is_refused_naming_condition() -> None:
+    with pytest.raises(TypeError) as refused:
+
+        @claim
+        def stable(nu: Real, ok: (0 <= nu) & (nu <= 1)):
+            """A set of assumptions, written as a claim."""
+
+    message = str(refused.value)
+    assert "a claim needs a goal" in message
+    assert message.endswith("A named set of assumptions with no goal is a @condition")
+
+
+def test_the_0_5_decorators_are_refused_with_the_line_to_write() -> None:
+    from lanky import axiom, theorem
+    from lanky.surface import RemovedForm
 
     def statement(n: Nat) -> n + 0 == n:
         """Addition of zero."""
 
-    with pytest.raises(TypeError, match=r'needs a citation.*@axiom\(cite="..."\)'):
+    with pytest.raises(RemovedForm) as refused:
+        theorem(statement)
+    assert str(refused.value) == "@theorem is lanky 0.5's word for a claim; write @claim"
+    assert refused.value.fix == "@claim"
+    with pytest.raises(RemovedForm, match=r"write @claim\(uses=\[\.\.\.\]\)"):
+        theorem(uses=[gauss])
+    with pytest.raises(RemovedForm) as refused:
+        axiom(cite="Kress, ch. 6")
+    assert str(refused.value) == (
+        "@axiom is lanky 0.5's word for a claim taken on a source; "
+        'write @claim(cite="Kress, ch. 6")'
+    )
+    with pytest.raises(RemovedForm, match=r'write @claim\(cite="\.\.\."\)'):
         axiom(statement)
-    with pytest.raises(TypeError, match="needs a citation"):
-        axiom()
-    with pytest.raises(TypeError, match="needs a citation"):
-        axiom(cite=None)
-    with pytest.raises(TypeError, match="citation is empty"):
-        axiom(cite="  ")
-    with pytest.raises(TypeError, match="citation is a string"):
-        axiom(cite=("Kress", 1989))
-    with pytest.raises(TypeError, match="an axiom needs a goal"):
-
-        @axiom(cite="a textbook")
-        def no_goal(n: Nat):
-            """No return annotation."""
 
 
 def test_a_theorem_names_what_it_uses() -> None:
@@ -391,7 +434,7 @@ def test_a_theorem_names_what_it_uses() -> None:
     nicomachus = cited()
     plugin_fact = Fact(id="scan:postcondition", kind="postcondition", statement="...")
 
-    @theorem(uses=[nicomachus, gauss, plugin_fact, "kernel:spmv:traced", nicomachus])
+    @claim(uses=[nicomachus, gauss, plugin_fact, "kernel:spmv:traced", nicomachus])
     def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
         """The sum of the cubes, in closed form."""
 
@@ -403,19 +446,19 @@ def test_a_theorem_names_what_it_uses() -> None:
         "kernel:spmv:traced",
     )
     assert cubes.fact().rests_on == cubes.uses
-    assert cubes.fact().kind == "theorem"
+    assert cubes.fact().kind == "claim"
     assert cubes in registry.objects
 
     # one entry need not be wrapped, and none is said with an empty list
-    @theorem(uses=nicomachus)
+    @claim(uses=nicomachus)
     def single(n: Nat) -> n + 0 == n:
         """Uses one fact."""
 
-    @theorem(uses=[])
+    @claim(uses=[])
     def none(n: Nat) -> n + 0 == n:
         """Uses nothing."""
 
-    @theorem()
+    @claim()
     def bare(n: Nat) -> n + 0 == n:
         """Called with no arguments at all."""
 
@@ -429,12 +472,12 @@ def test_uses_refuses_what_does_not_name_one_fact() -> None:
     """Refused where the decorator is written, not when the file is checked."""
     with pytest.raises(TypeError, match="is none of them"):
 
-        @theorem(uses=[object()])
-        def claim(n: Nat) -> n + 0 == n:
+        @claim(uses=[object()])
+        def lemma(n: Nat) -> n + 0 == n:
             """Uses something that is not a fact."""
 
     with pytest.raises(TypeError, match="or a list of them"):
-        theorem(uses=3)
+        claim(uses=3)
 
 
 def test_uses_none_is_refused_rather_than_read_as_nothing() -> None:
@@ -445,42 +488,42 @@ def test_uses_none_is_refused_rather_than_read_as_nothing() -> None:
     """
     with pytest.raises(TypeError, match="uses=None names no fact"):
 
-        @theorem(uses=None)
-        def claim(n: Nat) -> n + 0 == n:
+        @claim(uses=None)
+        def lemma(n: Nat) -> n + 0 == n:
             """Meant to rest on something."""
 
     with pytest.raises(TypeError, match="uses=None names no fact"):
-        axiom(cite="a textbook", uses=None)
+        claim(cite="a textbook", uses=None)
     with pytest.raises(TypeError, match="is none of them"):
-        theorem(uses=[None])
+        claim(uses=[None])
 
 
 def test_a_decorator_refuses_what_is_not_the_function_it_decorates() -> None:
-    """``@theorem(gauss)`` is ``uses=`` without its keyword, ``@axiom("...")`` is ``cite=``.
+    """``@claim(gauss)`` is ``uses=`` without its keyword, ``@claim("...")`` is ``cite=``.
 
     Read as the function to decorate, the first failed on a theorem having no
     code object and the second on a missing citation, neither saying why.
     """
-    with pytest.raises(TypeError, match=r"@theorem decorates a typed function.*uses=\[\.\.\.\]"):
+    with pytest.raises(TypeError, match=r"@claim decorates a typed function.*uses=\[\.\.\.\]"):
 
-        @theorem(gauss)
-        def claim(n: Nat) -> n + 0 == n:
+        @claim(gauss)
+        def lemma(n: Nat) -> n + 0 == n:
             """Meant to use gauss."""
 
-    with pytest.raises(TypeError, match="@theorem decorates a typed function"):
-        theorem([gauss])
-    with pytest.raises(TypeError, match=r'@axiom decorates a typed function.*cite="\.\.\."'):
+    with pytest.raises(TypeError, match="@claim decorates a typed function"):
+        claim([gauss])
+    with pytest.raises(TypeError, match=r'@claim decorates a typed function.*cite="\.\.\."'):
 
-        @axiom("Kress, Linear Integral Equations")
+        @claim("Kress, Linear Integral Equations")
         def kress(n: Nat) -> n + 0 == n:
             """Meant to be cited."""
 
-    with pytest.raises(TypeError, match="@axiom decorates a typed function"):
-        axiom(cited(), cite="a textbook")
+    with pytest.raises(TypeError, match="@claim decorates a typed function"):
+        claim(cited(), cite="a textbook")
 
 
 def test_an_axiom_can_rest_on_facts_too() -> None:
-    @axiom(cite="a textbook", uses=[gauss])
+    @claim(cite="a textbook", uses=[gauss])
     def restated(n: Nat) -> n + 0 == n:
         """A cited result stated in terms of another."""
 
@@ -499,7 +542,7 @@ def test_a_builtin_answered_at_concrete_values_is_refuted() -> None:
     ``round``, which rounds half up (#64).
     """
 
-    @theorem
+    @claim
     def rounds_half_up() -> round(0.5) == 1:
         """False in Python, where round(0.5) is 0."""
 
@@ -526,13 +569,13 @@ def test_math_of_a_variable_names_the_call_and_the_term_to_write() -> None:
         r"lanky has no term for: math\.floor computes on a number, and x is no number "
         r"until it is evaluated\. Write x // 1, which is the floor of x as a term$",
     ):
-        theorem(floor_below)
+        claim(floor_below)
 
     def floor_of_exp(x: Real) -> math.floor(exp(x)) >= 0:
         """The floor of exp(x) is not negative."""
 
     with pytest.raises(TypeError, match=r"Write exp\(x\) // 1, which is the floor of exp\(x\)"):
-        theorem(floor_of_exp)
+        claim(floor_of_exp)
 
     def ceil_above(x: Real) -> math.ceil(x + 1) >= x:
         """The ceiling of x + 1 is above x."""
@@ -542,7 +585,7 @@ def test_math_of_a_variable_names_the_call_and_the_term_to_write() -> None:
         match=r"^math\.ceil\(x \+ 1\) applies .* Write -\(-\(x \+ 1\) // 1\), which is the "
         r"ceiling of x \+ 1 as a term$",
     ):
-        theorem(ceil_above)
+        claim(ceil_above)
 
     def root(x: Real) -> math.sqrt(x * x) >= 0:
         """A square root is not negative."""
@@ -554,16 +597,16 @@ def test_math_of_a_variable_names_the_call_and_the_term_to_write() -> None:
         r"arguments: .* lanky\.exp, lanky\.log and lanky\.sqrt are terms, and so is "
         r"\(x\*x\) // 1, the floor of x\*x$",
     ):
-        theorem(root)
+        claim(root)
 
     def close(x: Real) -> math.isclose(x, 1.0) | (x != 1):
         """Inside a generator too, and in any argument."""
 
     with pytest.raises(TypeError, match=r"^x was made a Python number by the annotation"):
-        theorem(close)
+        claim(close)
 
     # the term the message names is the claim, read and tested
-    @theorem
+    @claim
     def floor_term(x: Real) -> x // 1 >= x - 1:
         """The floor of x, as a term."""
 
@@ -595,26 +638,26 @@ def test_an_annotation_that_is_a_builtin_is_refused() -> None:
         r"which is Python's int and not a lanky sort or a proposition; write Int "
         r"from lanky.prelude, or Nat for a natural",
     ):
-        theorem(as_int)
+        claim(as_int)
 
     def as_float(n: Nat, x: float) -> x * n >= 0:
         """A real number, written as Python's type."""
 
     with pytest.raises(TypeError, match="the parameter x is annotated with float.*write Real"):
-        theorem(as_float)
+        claim(as_float)
 
     def a_bool(n: Nat) -> bool:
         """A goal that is a type, and no proposition."""
 
     with pytest.raises(TypeError, match="the goal is annotated with bool"):
-        theorem(a_bool)
+        claim(a_bool)
 
     # without the future import the annotation is the type itself, refused alike
     namespace: dict = {"x": Var("x")}
     source = "def eager(x: int) -> x >= 0:\n    pass\n"
     exec(compile(source, "<eager>", "exec", dont_inherit=True), namespace)
     with pytest.raises(TypeError, match="the parameter x is annotated with int"):
-        theorem(namespace["eager"])
+        claim(namespace["eager"])
 
 
 def test_a_builtin_named_inside_an_annotation_is_refused() -> None:
@@ -637,43 +680,43 @@ def test_a_builtin_named_inside_an_annotation_is_refused() -> None:
         match=r"the parameter f is annotated with Fn\[Fin\(n\), float\], which names "
         r"Python's float without calling it, .*; write Real from lanky.prelude",
     ):
-        theorem(floats)
+        claim(floats)
 
     def nested(n: Nat, f: Fn[Fin[n], Fn[Int, int]]) -> all(f(i)(0) >= 0 for i in Fin[n]):
         """A builtin in a family of families."""
 
     with pytest.raises(TypeError, match=r"the parameter f is annotated .*Python's int"):
-        theorem(nested)
+        claim(nested)
 
     def refined(x: int & (x > 0)) -> x >= 1:
         """A refinement of a builtin, which read as the proposition ``int and x > 0``."""
 
     with pytest.raises(TypeError, match=r"the parameter x is annotated with int and x > 0"):
-        theorem(refined)
+        claim(refined)
 
     def bounded(i: Fin[len]) -> i >= 0:
         """A builtin as a size."""
 
     with pytest.raises(TypeError, match=r"Python's len without calling it.*bind len as a"):
-        theorem(bounded)
+        claim(bounded)
 
     def compared(n: Nat) -> n >= int:
         """A builtin as a value."""
 
     # Python asks the subclass first, BuiltinName, so the comparison is reflected
     with pytest.raises(TypeError, match=r"the goal is annotated with int <= n, which names"):
-        theorem(compared)
+        claim(compared)
 
     # without the future import the type is what the family is built of
     namespace: dict = {"Fn": Fn, "Fin": Fin}
     source = "def eager(f: Fn[Fin[3], float]) -> True:\n    pass\n"
     exec(compile(source, "<eager>", "exec", dont_inherit=True), namespace)
     with pytest.raises(TypeError, match=r"parameter f is annotated with .*, which names Python's"):
-        theorem(namespace["eager"])
+        claim(namespace["eager"])
 
     # a builtin called at concrete values leaves nothing behind, and a name
     # bound by the theorem is the theorem's
-    @theorem
+    @claim
     def concrete(n: Nat, min: Fn[Fin[n], Nat]) -> all(min(i) >= round(0.4) for i in Fin[n]):
         """True: round(0.4) is 0, and min is the family."""
 
@@ -699,34 +742,34 @@ def test_a_term_is_no_key_of_a_dict_or_a_set_in_an_annotation() -> None:
         """False in Python at i = 0, where the lookup gives 1."""
 
     with pytest.raises(TypeError, match=refused):
-        theorem(looked_up)
+        claim(looked_up)
 
     def member(n: Nat) -> all(i in {0, 1} for i in Fin[n]):
         """False wherever n > 2; read as False everywhere."""
 
     with pytest.raises(TypeError, match=refused):
-        theorem(member)
+        claim(member)
 
     def displayed(n: Nat) -> all({i: 1}[0] == 1 for i in Fin[n]):
         """A dict display keyed by a term."""
 
     with pytest.raises(TypeError, match=refused):
-        theorem(displayed)
+        claim(displayed)
 
     def subscripted(n: Nat) -> all({0: 1}[i] == 1 for i in Fin[n]):
         """This one raised KeyError, and is refused with the reason now."""
 
     with pytest.raises(TypeError, match=refused):
-        theorem(subscripted)
+        claim(subscripted)
 
     def quantified(n: Nat) -> {all(i >= 0 for i in Fin[n]): 1}.get(True, 0) == 1:
         """A quantifier as a key, whose hash pymbolic generates."""
 
     with pytest.raises(TypeError, match=r"forall i in Fin\(n\)\. i >= 0 was hashed"):
-        theorem(quantified)
+        claim(quantified)
 
     # concrete keys, and a term as a value, are no business of the hash
-    @theorem
+    @claim
     def concrete(n: Nat) -> {0: n, 1: 1}.get(0) == n:
         """A lookup by a concrete key."""
 
@@ -755,7 +798,7 @@ def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
         """False at i = 0, where the set holds 0."""
 
     with pytest.raises(TypeError, match=r"Python's set raised .*i was hashed by the annotation"):
-        theorem(set_of)
+        claim(set_of)
 
     def dict_of(n: Nat, f: Fn[Fin[n], Nat]) -> all(
         f(i) * 0 == dict((i, 1) for k in range(1)).get(0, 0) for i in Fin[n]
@@ -763,7 +806,7 @@ def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
         """False at i = 0, where the lookup gives 1."""
 
     with pytest.raises(TypeError, match=r"Python's dict raised .*i was hashed by the annotation"):
-        theorem(dict_of)
+        claim(dict_of)
 
     def keyed(n: Nat, f: Fn[Fin[n], Nat]) -> all(
         f(i) * 0 + max([0, 1], key=functools.partial({0: 5}.get, i)) == 1 for i in Fin[n]
@@ -771,7 +814,7 @@ def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
         """False at i = 0, where both keys are 5 and max gives 0."""
 
     with pytest.raises(TypeError, match=r"Python's max raised .*i was hashed by the annotation"):
-        theorem(keyed)
+        claim(keyed)
 
     def ordered(n: Nat, f: Fn[Fin[n], Nat]) -> all(
         f(i) * 0 + sorted([1, 0], key=functools.partial({0: 5}.get, i))[0] == 0 for i in Fin[n]
@@ -779,10 +822,10 @@ def test_a_builtin_the_annotation_calls_hashes_no_term() -> None:
         """False at i = 0, where both keys are 5 and sorted keeps 1 first."""
 
     with pytest.raises(TypeError, match=r"Python's sorted raised .*i was hashed by the"):
-        theorem(ordered)
+        claim(ordered)
 
     # at concrete values a builtin is Python's, a generator and a key included
-    @theorem
+    @claim
     def concrete(n: Nat) -> len(set(k % 2 for k in range(4))) + max(
         [0, 1, 2], key=functools.partial({0: 5}.get, 0)
     ) + n >= 2:
@@ -834,14 +877,14 @@ def test_a_term_is_no_text_in_an_annotation() -> None:
     ):
         """A key function a builtin calls, whose text of i sorts after its value's."""
 
-    for claim in (formatted, counted, converted, percent, formatted_by_method):
+    for stated in (formatted, counted, converted, percent, formatted_by_method):
         with pytest.raises(TypeError, match=refused):
-            theorem(claim)
+            claim(stated)
     with pytest.raises(TypeError, match=r"Python's max raised .*i was made into text"):
-        theorem(keyed)
+        claim(keyed)
 
     # concrete values are Python's, and a term prints as before outside one
-    @theorem
+    @claim
     def concrete(n: Nat) -> len(f"{12}") + len("%s" % 3) + n >= 3:  # noqa: UP031
         """True: two digits and one."""
 
@@ -885,7 +928,7 @@ def test_a_number_term_has_no_truth_value_in_an_annotation() -> None:
     def filtered(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) >= 1 for i in Fin[n] if i):
         """An if clause that is a number, which no guard was recorded for."""
 
-    for claim, shown in (
+    for stated, shown in (
         (conditional, "i"),
         (conjoined, "i"),
         (disjoined, "i - i"),
@@ -896,10 +939,10 @@ def test_a_number_term_has_no_truth_value_in_an_annotation() -> None:
             SymbolicBoolError,
             match=rf"the truth value of {re.escape(shown)} was asked for by the annotation",
         ):
-            theorem(claim)
+            claim(stated)
 
     # concrete values are Python's, and pymbolic answers outside an annotation
-    @theorem
+    @claim
     def concrete(n: Nat) -> (1 if 3 else 0) + (0 or n) >= n:
         """True: 3 is true, and 0 or n is n."""
 

@@ -47,17 +47,17 @@ result enters the ledger before its proof is written.
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.known import one_more_term
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``."""
 
 
-@theorem
+@claim
 def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """The sum of the first cubes is the square of the sum of the first numbers."""
     if n == 0:
@@ -71,7 +71,7 @@ def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n 
     ), by(one_more_term, claim(n - 1), gauss(n - 1))
 
 
-@theorem(uses=[nicomachus, gauss])
+@claim(uses=[nicomachus, gauss])
 def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
     """Four times the sum of the cubes of ``0 .. n`` is ``(n * (n + 1)) ** 2``.
 

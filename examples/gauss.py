@@ -24,11 +24,11 @@ hypothesis rather than as a definition.
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``.
 
@@ -36,7 +36,7 @@ def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """
 
 
-@theorem
+@claim
 def scan_monotone(
     n: Nat,
     cnt: Fn[Fin[n], Nat],
@@ -54,10 +54,10 @@ def scan_monotone(
 
 def main() -> int:
     """Run both theorems as property tests and report what the draws found."""
-    print(f"gauss at n = 4: {gauss(n=4).holds}")
+    print(f"gauss at n = 4: {gauss(n=4)}")
     # A family parameter takes a sequence: the scan of the counts [2, 1, 4].
     scanned = scan_monotone(n=3, cnt=[2, 1, 4], off=[0, 2, 3, 7])
-    print(f"scan_monotone at n = 3: {scanned.holds} (hypotheses {scanned.hypotheses})")
+    print(f"scan_monotone at n = 3: {scanned}")
     for statement in (gauss, scan_monotone):
         print()
         print(f"{statement.__name__}: {statement.statement}")

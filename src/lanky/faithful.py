@@ -3335,25 +3335,47 @@ def _annotations(theorem: Any) -> list[_Annotation] | str:
     terms["return"] = ("goal", theorem.goal)
     out: list[_Annotation] = []
     seen: set[str] = set()
-    sources = [
-        (index, condition.fn, condition.snapshot.namespace, condition.__name__)
-        for index, condition in enumerate(getattr(theorem, "conditions", ()), start=1)
-    ]
-    sources.append((0, theorem.fn, theorem.namespace, None))
-    for world, fn, namespace, owner in sources:
+    sources: list[tuple[int, Any, Any, str | None, dict[str, str]]] = []
+    for index, assumed in enumerate(_held_under(theorem), start=1):
+        keys = dict(getattr(assumed, "annotation_keys", None) or {})
+        if not keys:
+            keys = {name: name for name in inspect.signature(assumed.fn).parameters}
+        fn = getattr(assumed, "source_fn", None) or assumed.fn
+        sources.append((index, fn, assumed.snapshot.namespace, assumed.__name__, keys))
+    own = {name: name for name in inspect.get_annotations(theorem.fn, eval_str=False)}
+    sources.append((0, theorem.fn, theorem.namespace, None, own))
+    for world, fn, namespace, owner, keys in sources:
         raw = inspect.get_annotations(fn, eval_str=False)
         parameters = [*inspect.signature(fn).parameters, *getattr(theorem, "bound", ())]
         names = _reduction_names(namespace, parameters)
-        for name, annotation in raw.items():
-            if name not in terms or name in seen:
+        for name, key in keys.items():
+            if key not in raw or name not in terms or name in seen:
                 continue
             if name != "return":
                 seen.add(name)
-            refused = _annotation(name, annotation, terms[name], names, world, owner)
+            refused = _annotation(name, raw[key], terms[name], names, world, owner)
             if isinstance(refused, str):
                 return refused
             out.append(refused)
     return out
+
+
+def _held_under(theorem: Any) -> tuple[Any, ...]:
+    """What a claim holds under (:attr:`lanky.theory.Claim.held_under`); nothing for another."""
+    return tuple(getattr(theorem, "held_under", ()) or ())
+
+
+def _read_names(theorem: Any) -> list[str]:
+    """The names a claim's own annotations read at drawn values: its parameters, and more.
+
+    A claim's :attr:`~lanky.theory.Claim.read_names`: its parameters, the
+    names its ``with`` blocks bound, and the variables a condition called in
+    a hypothesis brings; a plugin's object, its parameters and ``bound``.
+    """
+    names = getattr(theorem, "read_names", None)
+    if names:
+        return list(names)
+    return [*inspect.signature(theorem.fn).parameters, *getattr(theorem, "bound", ())]
 
 
 def _annotation(
@@ -3424,9 +3446,9 @@ def faithful_fact(theorem: Any) -> Fact:
         annotations = _annotations(theorem)
         if isinstance(annotations, str):
             return declined(annotations)
-        parameters = [*inspect.signature(theorem.fn).parameters, *getattr(theorem, "bound", ())]
+        parameters = _read_names(theorem)
         snapshot = theorem.snapshot
-        conditions = tuple(getattr(theorem, "conditions", ()))
+        conditions = _held_under(theorem)
         codes = [annotation.code for annotation in annotations if annotation.code is not None]
         extent = _extent(theorem, codes, snapshot.namespace)
         watched = [*snapshot.watched]
@@ -3580,10 +3602,13 @@ def _condition_worlds(theorem: Any, tally: _Tally) -> dict[str, Any]:
     not make again is counted in ``tally``, as the claim's own module's is.
     """
     worlds = []
-    for condition in getattr(theorem, "conditions", ()):
-        namespace, shared = condition.snapshot.fresh_copy()
+    for assumed in _held_under(theorem):
+        namespace, shared = assumed.snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
-        worlds.append((namespace, list(inspect.signature(condition.fn).parameters)))
+        parameters = getattr(assumed, "world_parameters", None)
+        if parameters is None:
+            parameters = inspect.signature(assumed.fn).parameters
+        worlds.append((namespace, list(parameters)))
     return {"worlds": worlds} if worlds else {}
 
 

@@ -38,11 +38,11 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@theorem
+@claim
 def ct_chain(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -62,7 +62,7 @@ def ct_chain(
             ), by(recurrence, claim[a - 2, b + 2], pde)
 
 
-@theorem
+@claim
 def ct_open(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -79,7 +79,7 @@ def ct_open(
             assert -D[a - 2, b + 2] == D[a, b], by(pde)
 
 
-@theorem
+@claim
 def ct_reversed(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -96,12 +96,12 @@ def ct_reversed(
             )
 
 
-@theorem
+@claim
 def doubled(f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat)) -> f[3] + f[3] == 12:
     assert f[3] == 6, by(h)
 
 
-@theorem
+@claim
 def at_two(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -112,22 +112,22 @@ def at_two(
     return by(ct_chain(D, R, 2, 0))
 
 
-@theorem
+@claim
 def square(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1, by(h)
 
 
-@theorem
+@claim
 def square_wrong(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 2, by(h)
 
 
-@theorem
+@claim
 def square_positional(x: Int, y: Int, /, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1, by(h)
 
 
-@theorem
+@claim
 def mixed(x: Int, y: Int, h: y == x + 1) -> y * y >= x * x + 2 * x:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1 >= x * x + 2 * x, by(h)
 '''
@@ -250,12 +250,12 @@ def test_a_citation_given_too_many_values_or_one_twice_is_refused(tmp_path) -> N
     path = tmp_path / "surplus_cases.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import by, theorem\n"
+        "from lanky import by, claim\n"
         "from lanky.prelude import Fn, Int, Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def surplus(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
         "    return by(h(1, 2, k=3))\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def twice(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
         "    return by(h(1, k=3))\n",
         encoding="utf-8",
@@ -292,14 +292,14 @@ def test_the_command_proves_the_text_a_citation_restates_and_audits_both(cases) 
 def test_a_cited_theorem_is_restated_by_the_text_its_command_proved(cases) -> None:
     """With its premises, the theorems its own proof cited, all the way down."""
     texts = {
-        cases.ct_chain.fact_id: CitedText("ct_chain", "PROVED TEXT", ("theorem:other@1",)),
-        "theorem:other@1": CitedText("other", "OTHER TEXT"),
+        cases.ct_chain.fact_id: CitedText("ct_chain", "PROVED TEXT", ("claim:other@1",)),
+        "claim:other@1": CitedText("other", "OTHER TEXT"),
     }
     with proved_texts(texts):
         command = compile_proof(trace_proof(cases.at_two), mathlib=False)
     assert "(ct_chain : PROVED TEXT)" in command.source
     assert "(other : OTHER TEXT)" in command.source
-    assert command.rests_on == [cases.ct_chain.fact_id, "theorem:other@1"]
+    assert command.rests_on == [cases.ct_chain.fact_id, "claim:other@1"]
     assert isinstance(command.cited[-1], Premise)
     assert command.summary == "1 step, using ct_chain"
 
@@ -314,14 +314,14 @@ def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) 
     from lanky.citations import Proved
     from lanky.proofs.compile import cited_text
 
-    other = {"theorem:other@1": CitedText("other", "OTHER TEXT")}
+    other = {"claim:other@1": CitedText("other", "OTHER TEXT")}
     earlier = Proved(
         cases.ct_chain.fact_id,
         "Lanky.ct_chain",
         "PROVED TEXT",
         False,
         cases.square.term,
-        ("theorem:other@1",),
+        ("claim:other@1",),
     )
     with proved_texts({cases.ct_chain.fact_id: earlier, **other}):
         assert cited_text(cases.ct_chain, False) != "PROVED TEXT"
@@ -335,7 +335,7 @@ def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) 
         "PROVED TEXT",
         False,
         cases.ct_chain.term,
-        ("theorem:other@1",),
+        ("claim:other@1",),
     )
     with proved_texts({cases.ct_chain.fact_id: current, **other}):
         assert cited_text(cases.ct_chain, False) == "PROVED TEXT"
@@ -437,16 +437,16 @@ T4_CASES = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, by, theorem
+from lanky import claim, by
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="the design's T4: a printer that dropped a condition")
+@claim(cite="the design's T4: a printer that dropped a condition")
 def every_integer_is_nonnegative(n: Int) -> n >= 0:
     """What a theorem about naturals would say if the printer dropped its condition."""
 
 
-@theorem
+@claim
 def any_two_cells(f: Fn[Nat, Int]) -> f[0] == f[1]:
     return by(every_integer_is_nonnegative(-1))
 '''
@@ -458,16 +458,16 @@ CIRCLE = '''\
 
 from __future__ import annotations
 
-from lanky import by, theorem
+from lanky import by, claim
 from lanky.prelude import Int
 
 
-@theorem
+@claim
 def ping(x: Int) -> x + 1 > x:
     return by(pong(x))
 
 
-@theorem
+@claim
 def pong(x: Int) -> x + 1 > x:
     return by(ping(x))
 '''
@@ -531,21 +531,21 @@ T4_INDUCTION = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, by, claim, theorem
+from lanky import claim, by
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="a table that does not change from one cell to the next")
+@claim(cite="a table that does not change from one cell to the next")
 def steady(g: Fn[Nat, Int], m: Nat) -> g[m + 1] == g[m]:
     """Each cell is the one before it."""
 
 
-@axiom(cite="a printer that dropped a condition, inside an induction")
+@claim(cite="a printer that dropped a condition, inside an induction")
 def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
     """What a statement about the cells past the first would say with m >= 1 dropped."""
 
 
-@theorem
+@claim
 def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
     for n in claim.dom:
         if n >= 1:
@@ -641,22 +641,22 @@ T4_UNSAMPLED = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, by, claim, theorem
+from lanky import claim, by
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="a printer that dropped a condition")
+@claim(cite="a printer that dropped a condition")
 def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
     """What a statement about the cells past the first would say with m >= 1 dropped."""
 
 
-@theorem
+@claim
 def cell_one_hundred(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat if n == 100):
     for n in claim.dom:
         yield by(grows(f, n - 100))
 
 
-@theorem
+@claim
 def threes_are_sevens(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
     for n in claim.dom:
         if f[n] == 3:
@@ -665,7 +665,7 @@ def threes_are_sevens(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
             yield by(grows(f, 0))
 
 
-@theorem
+@claim
 def past_a_hundred(
     f: Fn[Nat, Int], seven: all(f[m] == 7 for m in Nat if m >= 100)
 ) -> all(f[n] == 7 for n in Nat if n >= 100):
@@ -770,8 +770,8 @@ def test_proofs_names_a_written_proof_where_the_search_found_none() -> None:
     from lanky.outline import proof_lines
 
     fact = Fact(
-        id="theorem:m.t@3",
-        kind="theorem",
+        id="claim:m.t@3",
+        kind="claim",
         statement="t",
         status=Status.PROVED,
         decided_by="lean",

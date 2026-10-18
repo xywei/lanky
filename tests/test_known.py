@@ -22,7 +22,7 @@ import pytest
 
 import lanky.known as known
 from conftest import claims
-from lanky import conj, log, real, theorem
+from lanky import claim, conj, log, real
 from lanky.audit import REFUSED_WORDS, screen
 from lanky.check import check_path
 from lanky.cli import report_known
@@ -59,7 +59,7 @@ def test_every_fact_cites_its_mathlib_name_and_states_it_in_words(entry: Theorem
     first = doc.strip().splitlines()[0]
     assert first[0].isupper() or first[0] in "nz", first
     # the module is lanky.known wherever the package is installed
-    assert entry.fact_id.startswith(f"theorem:lanky.known.{entry.__name__}@")
+    assert entry.fact_id.startswith(f"claim:lanky.known.{entry.__name__}@")
 
 
 @pytest.mark.parametrize("entry", ENTRIES, ids=known.__all__)
@@ -109,7 +109,7 @@ def test_the_table_does_not_import_the_library() -> None:
     assert done.returncode == 0, done.stderr
 
 
-@theorem
+@claim
 def log_of_a_power(x: Real, n: Nat) -> log(x**n) == n * log(x):
     """A user's own theorem, named like a fact of the library."""
 
@@ -292,7 +292,7 @@ def test_a_pinned_tactic_still_comes_first(asked) -> None:
 # {{{ suggestions by shape
 
 
-@theorem
+@claim
 def log_of_the_modulus(alpha: Complex, nonzero: alpha != 0) -> (
     log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
 ):
@@ -310,7 +310,7 @@ def test_the_modulus_squared_fits_the_log_of_the_modulus() -> None:
 def test_a_fact_fits_only_terms_of_its_types() -> None:
     """``modulus_squared``'s ``z`` is complex, so the real ``x * conj(x)`` is not its shape."""
 
-    @theorem
+    @claim
     def real_square(x: Real) -> real(x * conj(x)) == x**2:
         """x times itself."""
 
@@ -318,7 +318,7 @@ def test_a_fact_fits_only_terms_of_its_types() -> None:
 
 
 def test_a_family_fits_what_the_claim_sums() -> None:
-    @theorem
+    @claim
     def powers(r: Real, n: Nat) -> sum(r**k for k in Fin[n + 1]) >= 0:
         """Not a theorem; only its shape matters here."""
 
@@ -332,7 +332,7 @@ def test_a_family_fits_what_the_claim_sums() -> None:
 
 
 def test_a_series_from_order_one_fits_the_shifted_sum() -> None:
-    @theorem
+    @claim
     def series(z: Real, p: Nat) -> sum(z**k / k for k in Fin[p + 1] if k >= 1) >= 0:
         """Only its shape matters here."""
 
@@ -344,7 +344,7 @@ def test_a_series_from_order_one_fits_the_shifted_sum() -> None:
 
 
 def test_a_factor_fits_what_the_others_leave() -> None:
-    @theorem
+    @claim
     def scaled(x: Real, a: Fn[Nat, Real], n: Nat) -> (
         2 * x * sum(a[k] for k in Fin[n]) == sum(2 * x * a[k] for k in Fin[n])
     ):
@@ -358,7 +358,7 @@ def test_a_factor_fits_what_the_others_leave() -> None:
 
 
 def test_an_inequality_bounds_the_side_it_fits() -> None:
-    @theorem
+    @claim
     def bounded(z: Complex, w: Complex) -> abs(z + 2 * w) <= 3 * abs(w) + abs(z):
         """Only its shape matters here."""
 
@@ -370,13 +370,13 @@ def test_an_inequality_bounds_the_side_it_fits() -> None:
 
 
 def test_a_sum_over_a_triangle_and_a_regrouped_sum_fit_their_exchanges() -> None:
-    @theorem
+    @claim
     def triangle(q: Nat, D: Fn[Fin[q], Fin[q], Real]) -> (
         sum(D[a, b] for a in Fin[q] for b in Fin[q - a]) >= 0
     ):
         """Only its shape matters here."""
 
-    @theorem
+    @claim
     def regrouped(
         nc: Nat, nv: Nat, cell: Fn[Fin[nc], Fin[nv]], h: Fn[Fin[nc], Real]
     ) -> sum(sum(h[p] for p in Fin[nc] if cell[p] == i) for i in Fin[nv]) >= 0:

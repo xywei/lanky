@@ -110,7 +110,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
-from lanky import theorem
+from lanky import claim
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
@@ -150,7 +150,7 @@ def laplacian(kernel: Any, x: Var, y: Var) -> Any:
     return from_sympy(kernel_term.diff(sx, 2) + kernel_term.diff(sy, 2), {"x": x, "y": y})
 
 
-@theorem
+@claim
 def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) == 0:
     """The 2-D Laplace kernel is harmonic away from the origin: ``G_xx + G_yy == 0``.
 
@@ -862,7 +862,7 @@ def reconstructs(
     where it is decorated, and the claim is read off what it returns: the
     coefficients through ``order``, the ones the wrangler stores, and the
     combination of those it reconstructs each of the others by. ``uses``
-    names what the claim for every order rests on, as ``@theorem(uses=...)``
+    names what the claim for every order rests on, as ``@claim(uses=...)``
     does: the kernel's harmonicity. ``cite`` is where the step from it to
     every derivative is taken from, which the claim then rests on instead
     (see :meth:`Reconstruction.facts`).

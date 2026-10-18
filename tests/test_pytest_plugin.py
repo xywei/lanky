@@ -28,21 +28,21 @@ def run(pytester, *arguments: str):
 MODULE = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def true_claim(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Gauss."""
 
 
-@theorem
+@claim
 def false_claim(n: Nat) -> sum(i for i in Fin[n + 1]) == n:
     """False as soon as n is at least two."""
 
 
-@theorem
+@claim
 def vacuous(n: Nat, h: n < 0) -> n == n:
     """No draw satisfies the hypothesis, so nothing is tested."""
 '''
@@ -60,11 +60,11 @@ def test_theorems_are_collected_as_items(pytester) -> None:
 OPEN = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def short_circuited(n: Nat) -> (n >= 0) | (m > 0):
     """m is bound by nothing, and the tester never asked for it."""
 '''
@@ -87,11 +87,11 @@ def test_a_theorem_with_a_free_name_fails_naming_it(pytester) -> None:
 PRIVATE = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def _false_on_purpose(n: Nat) -> sum(i for i in Fin[n + 1]) == n:
     """Kept as an example of a false statement, and not run."""
 
@@ -111,11 +111,11 @@ def test_a_private_theorem_is_not_collected(pytester) -> None:
 ONE = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def claim(n: Nat) -> n + 0 == n:
     """Addition of zero, module one."""
 '''
@@ -138,16 +138,16 @@ def test_theorems_do_not_leak_between_modules(pytester) -> None:
 AXIOMS = '''
 from __future__ import annotations
 
-from lanky import axiom
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+@claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
 def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """The sum of the first cubes is the square of the sum of the first numbers."""
 
 
-@axiom(cite="the same, copied down wrong")
+@claim(cite="the same, copied down wrong")
 def miscopied(n: Nat) -> sum(i**2 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """A square where the reference has a cube."""
 '''
@@ -164,16 +164,16 @@ def test_axioms_are_collected_and_sampled(pytester) -> None:
 GUARDED = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def ordered(n: Nat) -> all(a <= b for a in Fin[n] for b in Fin[n] if a <= b):
     """The guard holds at a = b, whenever n is positive."""
 
 
-@theorem
+@claim
 def flipped(n: Nat) -> all(a <= b for a in Fin[n] for b in Fin[n] if (a < b) & (a > b)):
     """The guard holds nowhere, so the goal holds at every draw for no reason."""
 '''

@@ -59,11 +59,11 @@ Otherwise by the recurrence, the claim at (i, a - 2, b + 2) and the PDE."
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fin, Fn, Int, Nat, Real
 
 
-@theorem
+@claim
 def every_box(
     n: Nat,
     p: Nat,

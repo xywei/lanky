@@ -16,7 +16,7 @@ import json
 import pytest
 
 from conftest import claims
-from lanky import cli, theorem
+from lanky import claim, cli
 from lanky.check import check_path
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.test import TestOracle
@@ -26,7 +26,7 @@ from lanky.terms import Exists, Forall, Undecided, Var, render, structurally_equ
 # {{{ a hypothesis no draw can satisfy
 
 
-@theorem
+@claim
 def unsatisfiable(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:
     """Nothing satisfies the hypotheses, so nothing is tested by sampling."""
 
@@ -53,9 +53,9 @@ def test_a_vacuous_pass_is_never_reported_as_tested() -> None:
 
 VACUOUS = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
     '    """No natural satisfies the hypotheses, so the goal is never at stake."""\n'
 )
@@ -239,9 +239,9 @@ def test_hypotheses_no_oracle_can_refute_leave_a_warning(tmp_path, oracles, caps
 
 VACUOUS_AXIOM = (
     "from __future__ import annotations\n\n"
-    "from lanky import axiom\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Nat\n\n\n"
-    '@axiom(cite="a textbook, with a hypothesis copied down wrong")\n'
+    '@claim(cite="a textbook, with a hypothesis copied down wrong")\n'
     "def miscopied(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
     '    """No natural satisfies the hypotheses, so the axiom says nothing."""\n'
 )
@@ -275,7 +275,7 @@ def test_an_axiom_with_inconsistent_hypotheses_is_vacuous(tmp_path, oracles, cap
     assert fact.provenance["cite"] == "a textbook, with a hypothesis copied down wrong"
     assert cli.main(["check", path]) == 1
     printed = capsys.readouterr().out
-    assert "assumed (axiom) (vacuous)  -" in printed
+    assert "assumed (cited) (vacuous)  -" in printed
     assert "VACUOUS miscopied at vacuous.py:7:" in printed
 
 
@@ -500,7 +500,7 @@ def test_hypotheses_fact_asks_for_false_under_the_same_hypotheses() -> None:
     assert has_hypotheses(Forall(((Var("i"), Fin[3]),), Var("i") >= 0))
     assert not has_hypotheses(Var("n") >= 0)
     with pytest.raises(ValueError, match="no hypotheses"):
-        hypotheses_fact(Fact(id="t", kind="theorem", statement="t", term=Var("n") >= 0))
+        hypotheses_fact(Fact(id="t", kind="claim", statement="t", term=Var("n") >= 0))
 
 
 # }}}
@@ -509,7 +509,7 @@ def test_hypotheses_fact_asks_for_false_under_the_same_hypotheses() -> None:
 # {{{ a name that is both a parameter and a size
 
 
-@theorem
+@claim
 def bounded_family(
     n: Nat,
     f: Fn[Fin[n], Nat],
@@ -518,7 +518,7 @@ def bounded_family(
     """``n`` is a variable of the statement and the size of ``f``'s domain."""
 
 
-@theorem
+@claim
 def size_named_before_it_is_bound(
     f: Fn[Fin[n], Nat],
     n: Nat,
@@ -543,8 +543,7 @@ def test_a_name_that_is_a_parameter_and_a_size_is_one_variable() -> None:
     assert report.ok
     assert report.valid == 40
 
-    verdict = bounded_family(n=3, f=[0, 1, 2])
-    assert verdict.hypotheses["h"] and verdict.goal
+    assert bounded_family(n=3, f=[0, 1, 2]) is True
 
 
 def test_a_size_written_after_what_it_sizes_is_still_drawn_first() -> None:
@@ -578,8 +577,8 @@ def test_a_refuted_fact_renders_and_round_trips() -> None:
     the JSON writer has to cope with something that is not JSON to begin with.
     """
     fact = Fact(
-        id="theorem:false_claim",
-        kind="theorem",
+        id="claim:false_claim",
+        kind="claim",
         statement="n : Nat |- n == n + 1",
         term=Var("n") == Var("n") + 1,
         status=Status.ASSUMED,
@@ -626,8 +625,8 @@ def test_two_files_with_one_basename_are_told_apart_in_the_table() -> None:
     """``where`` is ``basename:line``; two files can share one basename."""
     facts = [
         Fact(
-            id=f"theorem:{owner}",
-            kind="theorem",
+            id=f"claim:{owner}",
+            kind="claim",
             statement="n : Nat |- True",
             status=Status.REFUTED,
             where="claims.py:7",
@@ -659,7 +658,7 @@ def _unwitnessed_existential():
     which is exactly the situation being tested.
     """
 
-    @theorem
+    @claim
     def somewhere() -> any(x == 100 for x in Nat):
         """True: 100 is a natural. Unreachable: sampling never draws it."""
 
@@ -702,7 +701,7 @@ def test_an_existential_over_an_enumerated_domain_is_still_decided() -> None:
 def test_a_sampled_existential_under_a_quantifier_is_undecided_too() -> None:
     """The same care applies wherever the existential sits in the statement."""
 
-    @theorem
+    @claim
     def bigger_exists(n: Nat) -> any(x == n + 100 for x in Nat):
         """True for every n, and no draw of x will ever witness it."""
 
@@ -716,7 +715,7 @@ def test_a_sampled_existential_under_a_quantifier_is_undecided_too() -> None:
 def test_a_witnessed_existential_still_tests() -> None:
     """Declining is for the unwitnessed case only; a witness is still evidence."""
 
-    @theorem
+    @claim
     def small_witness(n: Nat) -> any(x == 0 for x in Nat):
         """0 is drawn often, so this is genuinely tested."""
 
@@ -740,7 +739,7 @@ def _false_hypothesis_and_goal():
     inside a function because the pytest plugin collects module-level theorems.
     """
 
-    @theorem
+    @claim
     def self_implication(
         h: all(x < 0 for x in Nat),
     ) -> all(x < 0 for x in Nat):
@@ -782,7 +781,7 @@ def test_a_theorem_with_no_variables_and_no_hypotheses_keeps_its_goal_a_goal() -
     closed statement whose goal Python already answered stays the ``bool``.
     """
 
-    @theorem
+    @claim
     def plain() -> all(x >= 0 for x in Nat):
         """No variables, no hypotheses."""
 
@@ -792,7 +791,7 @@ def test_a_theorem_with_no_variables_and_no_hypotheses_keeps_its_goal_a_goal() -
     assert plain.term.body is plain.goal
     assert render(plain.term) == render(plain.goal)
 
-    @theorem
+    @claim
     def answered() -> 1 == 2:
         """Python answered the goal while the annotation was evaluated."""
 
@@ -814,10 +813,10 @@ def test_two_same_named_theorems_are_two_facts(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     source = (
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
-        "def claim(n: Nat) -> n + 1 > n:\n"
+        "@claim\n"
+        "def lemma(n: Nat) -> n + 1 > n:\n"
         '    """Same name, different module."""\n'
     )
     facts = []
@@ -826,7 +825,7 @@ def test_two_same_named_theorems_are_two_facts(tmp_path, monkeypatch) -> None:
         path.write_text(source, encoding="utf-8")
         facts += claims(check_path(path))
 
-    assert [fact.owner for fact in facts] == ["claim", "claim"]
+    assert [fact.owner for fact in facts] == ["lemma", "lemma"]
     assert len({fact.id for fact in facts}) == 2
     ledger = Ledger(facts)
     assert len(ledger) == 2
@@ -836,24 +835,24 @@ def test_two_same_named_theorems_are_two_facts(tmp_path, monkeypatch) -> None:
 def test_one_module_with_two_definitions_of_a_name_keeps_both() -> None:
     """The line settles what the module name cannot: one module, two defs.
 
-    Two ``def claim`` statements in one module have the same qualified name
+    Two ``def lemma`` statements in one module have the same qualified name
     here, because the enclosing function is the same. The line they were
     written on is what tells them apart.
     """
 
-    @theorem
-    def claim(n: Nat) -> n + 1 >= n:
+    @claim
+    def lemma(n: Nat) -> n + 1 >= n:
         """The first of two definitions sharing a name."""
 
-    first = claim
+    first = lemma
 
-    @theorem
-    def claim(n: Nat) -> n + 2 >= n:  # noqa: F811 - two definitions, on purpose
+    @claim
+    def lemma(n: Nat) -> n + 2 >= n:  # noqa: F811 - two definitions, on purpose
         """The second."""
 
-    assert first.qualname == claim.qualname
-    assert first.fact().id != claim.fact().id
-    assert len(Ledger([first.fact(), claim.fact()])) == 2
+    assert first.qualname == lemma.qualname
+    assert first.fact().id != lemma.fact().id
+    assert len(Ledger([first.fact(), lemma.fact()])) == 2
 
 
 # }}}
@@ -870,7 +869,7 @@ def _definition_outside_the_codomain():
     table anyway would refute the goal with a point the statement excludes.
     """
 
-    @theorem
+    @claim
     def negative_entry(
         f: Fn[Fin[1], Nat],
         h: f(0) == -1,
@@ -903,7 +902,7 @@ def test_a_synthesized_value_outside_the_codomain_is_not_a_counterexample() -> N
 def test_a_definition_inside_the_codomain_still_fills_the_table() -> None:
     """The check must not cost the prefix sums the assignment pass exists for."""
 
-    @theorem
+    @claim
     def scan(
         n: Nat,
         cnt: Fn[Fin[n], Nat],
@@ -959,8 +958,7 @@ def test_a_closed_true_goal_is_tested_rather_than_assumed() -> None:
 def test_every_way_of_running_a_closed_statement_agrees() -> None:
     """The call, the report, the test and the pytest item say the same thing."""
     claim = _closed_false()
-    assert claim().goal is False
-    assert claim().holds is False
+    assert claim() is False
     ok, counterexample = claim.test(n=5)
     assert not ok
     assert counterexample == {}
@@ -968,7 +966,7 @@ def test_every_way_of_running_a_closed_statement_agrees() -> None:
     assert report.valid == 1
     assert report.samples == 1
 
-    assert closed_true().holds is True
+    assert closed_true() is True
     assert closed_true.test(n=5) == (True, None)
     assert closed_true.report(n=5).valid == 1
 
@@ -1063,8 +1061,8 @@ def test_a_shadowed_binder_does_not_survive_a_short_circuit() -> None:
     i = Var("i")
     shadowing = Forall(((i, Fin[3]),), Exists(((i, Fin[1]),), i == 0) & (i < 2))
     fact = Fact(
-        id="theorem:shadowed_binder",
-        kind="theorem",
+        id="claim:shadowed_binder",
+        kind="claim",
         statement=render(shadowing),
         term=Forall((), shadowing),
     )
@@ -1078,8 +1076,8 @@ def test_a_shadowed_binder_does_not_survive_a_short_circuit() -> None:
     nested = Forall(((i, Fin[3]),), Exists(((j, Fin[3]),), j == i) & (i < 3))
     unshadowed = TestOracle(samples=5).establish(
         Fact(
-            id="theorem:unshadowed_binder",
-            kind="theorem",
+            id="claim:unshadowed_binder",
+            kind="claim",
             statement=render(nested),
             term=Forall((), nested),
         )
@@ -1108,14 +1106,14 @@ def _closed_false():
     theorems, and this one is meant to be refuted rather than run.
     """
 
-    @theorem
+    @claim
     def impossible() -> 1 == 2:
         """Python answers this annotation: the term is the bool False."""
 
     return impossible
 
 
-@theorem
+@claim
 def closed_true() -> 1 == 1:
     """The same shape, and true: a closed statement is still a claim."""
 
@@ -1123,7 +1121,7 @@ def closed_true() -> 1 == 1:
 def _guarded_closed_goal():
     """A hypothesis that holds, and a goal Python already answered ``False``."""
 
-    @theorem
+    @claim
     def guarded(h: all(i >= 0 for i in Fin[3])) -> 1 == 2:
         """The guard is satisfied, so nothing stands between this and refuted."""
 
@@ -1133,7 +1131,7 @@ def _guarded_closed_goal():
 def _constant_false_hypothesis():
     """A hypothesis that is the constant ``False``, which nothing satisfies."""
 
-    @theorem
+    @claim
     def vacuous(h: 1 == 2) -> 1 == 3:
         """An implication with a false antecedent: valid, and untestable."""
 
@@ -1143,7 +1141,7 @@ def _constant_false_hypothesis():
 def _divides_by_a_variable():
     """``n // 0 == 0``: a Lean theorem and a Python ZeroDivisionError."""
 
-    @theorem
+    @claim
     def div_zero(n: Nat) -> n // 0 == 0:
         """Total in Lean, undefined in Python."""
 
@@ -1153,7 +1151,7 @@ def _divides_by_a_variable():
 def _applies_outside_its_domain():
     """``f(n)`` for an ``f : Fn[Fin[n], Nat]``: one point past the domain."""
 
-    @theorem
+    @claim
     def outside(n: Nat, f: Fn[Fin[n], Nat]) -> f(n) == f(n):
         """A tautology in Lean once the family is erased, and ill typed here."""
 
@@ -1195,7 +1193,7 @@ def test_a_refutation_under_a_quantifier_names_the_point() -> None:
     A nest of quantifiers lost every point the same way, in the ledger too.
     """
 
-    @theorem
+    @claim
     def bad(n: Nat) -> all(i < 2 for i in Fin[n + 3]):
         """False at every ``n``, and always because of ``i = 2``."""
 
@@ -1204,7 +1202,7 @@ def test_a_refutation_under_a_quantifier_names_the_point() -> None:
     assert set(report.counterexample) == {"n", "i"}
     assert report.counterexample["i"] == 2
 
-    @theorem
+    @claim
     def nested(n: Nat) -> all(
         all(i + j < 3 for j in Fin[n + 1] if j >= i) for i in Fin[n + 1]
     ):
@@ -1236,7 +1234,7 @@ def test_a_quantified_point_does_not_overwrite_a_drawn_variable() -> None:
     fails, and the value that reproduces that is the drawn one.
     """
 
-    @theorem
+    @claim
     def shadowing(i: Nat) -> all(i > 0 for i in Fin[i]):
         """The binder's own domain names the parameter it shadows."""
 
@@ -1260,15 +1258,15 @@ def test_a_theorem_without_a_goal_is_refused_where_it_is_written() -> None:
     refused where it is written, and so is ``-> None``, which evaluates to
     the same missing goal.
     """
-    with pytest.raises(TypeError, match="a theorem needs a goal"):
+    with pytest.raises(TypeError, match="a claim needs a goal"):
 
-        @theorem
+        @claim
         def no_goal(n: Nat, h: n > 1):
             """Hypotheses and no conclusion: it claims nothing."""
 
-    with pytest.raises(TypeError, match="no_none_goal at .*: a theorem needs a goal"):
+    with pytest.raises(TypeError, match="no_none_goal at .*: a claim needs a goal"):
 
-        @theorem
+        @claim
         def no_none_goal(n: Nat) -> None:
             """``None`` is not a proposition either."""
 
@@ -1280,9 +1278,9 @@ def test_a_file_with_a_goalless_theorem_does_not_import(tmp_path, capsys) -> Non
     path = tmp_path / "goalless.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def goalless(n: Nat, h: n > 1):\n"
         '    """No return annotation."""\n',
         encoding="utf-8",
@@ -1290,7 +1288,7 @@ def test_a_file_with_a_goalless_theorem_does_not_import(tmp_path, capsys) -> Non
     assert cli.main(["check", str(path)]) == 1
     printed = capsys.readouterr().out
     assert "could not be imported" in printed
-    assert "TypeError: goalless at goalless.py:7: a theorem needs a goal" in printed
+    assert "TypeError: goalless at goalless.py:7: a claim needs a goal" in printed
 
 
 def test_the_tester_still_reads_a_missing_goal_as_true() -> None:
@@ -1317,7 +1315,7 @@ def test_a_goal_that_is_not_a_proposition_is_never_tested() -> None:
     assumed with the reason in its provenance.
     """
 
-    @theorem
+    @claim
     def not_a_prop(n: Nat) -> n + 1:
         """A number where a proposition should be."""
 
@@ -1335,7 +1333,7 @@ def test_a_goal_that_is_not_a_proposition_is_never_tested() -> None:
 def test_a_hypothesis_that_is_not_a_proposition_is_refused_too() -> None:
     """A hypothesis was coerced the same way, so it filtered by truthiness."""
 
-    @theorem
+    @claim
     def not_a_hypothesis(n: Nat, h: n + 1) -> n >= 0:
         """A number where a hypothesis should be."""
 
@@ -1357,12 +1355,12 @@ def test_a_numpy_boolean_is_a_truth_value() -> None:
     with pytest.raises(TypeError, match="not a proposition"):
         truth_value(np.int64(1), "p")
 
-    @theorem
+    @claim
     def ordered(f: Fn[Fin[2], Nat]) -> f(1) >= f(0):
         """Run at a numpy array, whose comparisons answer numpy bools."""
 
-    assert ordered(f=np.array([0, 1])).holds
-    assert not ordered(f=np.array([1, 0])).holds
+    assert ordered(f=np.array([0, 1]))
+    assert not ordered(f=np.array([1, 0]))
 
 
 def test_a_number_inside_a_proposition_is_refused_too() -> None:
@@ -1376,15 +1374,15 @@ def test_a_number_inside_a_proposition_is_refused_too() -> None:
     ``all``, and a refinement by a number refined by nothing.
     """
 
-    @theorem
+    @claim
     def in_a_disjunction(n: Nat) -> (n + 1) | (n > 5):
         """A number as one side of a disjunction."""
 
-    @theorem
+    @claim
     def as_a_witness(n: Nat) -> any(i + 1 for i in Fin[n + 2]):
         """A number as the body of an existential."""
 
-    @theorem
+    @claim
     def in_a_hypothesis(n: Nat, h: (n + 1) | (n < 0)) -> n >= 0:
         """A number inside a disjunctive hypothesis."""
 
@@ -1400,13 +1398,13 @@ def test_a_number_inside_a_proposition_is_refused_too() -> None:
     with pytest.raises(TypeError, match="not a proposition"):
         as_a_witness(n=1)
 
-    @theorem
+    @claim
     def all_set(n: Nat, mask: Fn[Fin[n], Bool]) -> all(mask(i) for i in Fin[n]):
         """Every entry of a family of Booleans is set."""
 
     with pytest.raises(TypeError, match="not a proposition"):
         all_set(n=2, mask=[1, 1])
-    assert all_set(n=2, mask=[True, True]).holds
+    assert all_set(n=2, mask=[True, True])
 
     k = Var("k")
     with pytest.raises(TypeError, match="not a proposition"):
@@ -1428,7 +1426,7 @@ def test_a_family_into_an_empty_codomain_is_not_a_counterexample() -> None:
     refuted by it. Now no draw is taken, and the fact stays assumed.
     """
 
-    @theorem
+    @claim
     def vacuous(f: Fn[Fin[1], Nat & False]) -> False:
         """True, because nothing can be passed for ``f``."""
 
@@ -1454,7 +1452,7 @@ def test_a_codomain_refinement_is_judged_where_it_can_be() -> None:
 
     from lanky.testing import SkipSample, sample_value
 
-    @theorem
+    @claim
     def sized(n: Nat, f: Fn[Fin[2], Nat & (n > 0)]) -> n > 0:
         """Whenever such an ``f`` exists, ``n`` is positive."""
 
@@ -1480,11 +1478,11 @@ def test_a_refinement_that_cannot_be_evaluated_skips_the_draw() -> None:
     there regardless would refute it.
     """
 
-    @theorem
+    @claim
     def into_a_ratio(n: Nat, f: Fn[Fin[2], Nat & (10 // n > 1)]) -> n >= 1:
         """Such an ``f`` exists only where ``10 // n > 1``, so ``n`` is positive."""
 
-    @theorem
+    @claim
     def named_ratio(n: Nat, k: Nat & (10 // n > 1)) -> n >= 1:
         """The same condition on a named variable."""
 
@@ -1503,7 +1501,7 @@ def test_two_families_compare_by_their_values() -> None:
     """
     from lanky.testing import Table
 
-    @theorem
+    @claim
     def empty_equal(f: Fn[Fin[0], Nat], g: Fn[Fin[0], Nat]) -> f == g:
         """There is exactly one function out of an empty domain."""
 
@@ -1513,7 +1511,7 @@ def test_two_families_compare_by_their_values() -> None:
     result = TestOracle(samples=10).establish(empty_equal.fact())
     assert result is not None
     assert result.status is Status.TESTED
-    assert empty_equal(f=[], g=[]).holds
+    assert empty_equal(f=[], g=[])
 
     assert Table([1, 2]) == Table([1, 2])
     assert Table([1, 2]) != Table([2, 1])
@@ -1529,7 +1527,7 @@ def test_two_families_compare_by_their_values() -> None:
 
 def _establish(name: str, term) -> Fact:
     """What the property tester makes of a statement a plugin built by hand."""
-    fact = TestOracle().establish(Fact(id=name, kind="theorem", statement=name, term=term))
+    fact = TestOracle().establish(Fact(id=name, kind="claim", statement=name, term=term))
     assert fact is not None
     return fact
 
@@ -1583,10 +1581,10 @@ def test_a_sampled_refined_domain_never_yields_a_point_outside_it() -> None:
     for seed in range(10):
         oracle = TestOracle(samples=50, seed=seed)
         true = Forall(((n, Nat),), Forall(((k, domain),), k > 0))
-        fact = oracle.establish(Fact(id="true", kind="theorem", statement="", term=true))
+        fact = oracle.establish(Fact(id="true", kind="claim", statement="", term=true))
         assert fact.status is Status.TESTED
         false = Forall(((n, Nat),), Forall(((k, domain),), k >= 2))
-        fact = oracle.establish(Fact(id="false", kind="theorem", statement="", term=false))
+        fact = oracle.establish(Fact(id="false", kind="claim", statement="", term=false))
         assert fact.status is Status.REFUTED
         assert fact.provenance["counterexample"]["k"] == 1
 
@@ -1629,7 +1627,7 @@ def test_a_refinement_that_rejects_every_draw_stops_at_the_draw_budget() -> None
     n, k = Var("n"), Var("k")
     far = Forall(((n, Nat),), Forall(((k, Nat & (k > 100)),), k < 0))
     fact = TestOracle(samples=30).establish(
-        Fact(id="far", kind="theorem", statement="far", term=far)
+        Fact(id="far", kind="claim", statement="far", term=far)
     )
     assert fact.status is Status.ASSUMED
     assert fact.provenance["samples"] == 30 * REJECTION_FACTOR
@@ -1746,9 +1744,9 @@ def test_an_unnamed_draw_of_a_refined_sort_honours_the_refinement() -> None:
 
 GUARD_PROBE = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def never_reached(n: Nat) -> all(k < 0 for k in Nat if k > 100):\n"
     '    """False at k = 101, and no draw of k gets past the guard."""\n'
 )
@@ -1805,14 +1803,14 @@ def test_the_guard_and_the_refinement_spellings_agree() -> None:
             Forall(((n, Nat),), Forall(((k, Nat & guard),), body)),
         )
 
-    for claim in both(k > 100, k < 0):
-        fact = _establish("far", claim)
+    for stated in both(k > 100, k < 0):
+        fact = _establish("far", stated)
         assert fact.status is Status.ASSUMED
         assert fact.provenance["valid"] == 0
-    for claim in both(k == 3, k == 3):
-        assert _establish("three", claim).status is Status.TESTED
-    for claim in both(k == 3, k == 4):
-        fact = _establish("four", claim)
+    for stated in both(k == 3, k == 3):
+        assert _establish("three", stated).status is Status.TESTED
+    for stated in both(k == 3, k == 4):
+        fact = _establish("four", stated)
         assert fact.status is Status.REFUTED
         assert fact.provenance["counterexample"]["k"] == 3
 
@@ -1825,7 +1823,7 @@ def test_a_hypothesis_whose_guard_no_draw_passes_admits_no_draw() -> None:
     ``m < 0`` failed at a draw the statement excludes.
     """
 
-    @theorem
+    @claim
     def beyond(m: Nat, h: all(k < m for k in Nat if k > 100)) -> m < 0:
         """True vacuously: every natural above 100 bounds no natural m."""
 
@@ -1843,15 +1841,15 @@ def test_a_hypothesis_whose_guard_no_draw_passes_admits_no_draw() -> None:
 
 POLARITY = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def negated(n: Nat) -> ~all(k < 100 for k in Nat):\n"
     '    """True: not every natural is below 100 (k = 100 is not)."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def assumed_bound(m: Nat, h: all(k < m for k in Nat)) -> m < 0:\n"
     '    """True vacuously: no natural m bounds every natural."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def summed(n: Nat) -> sum(1 for k in Nat) < 3:\n"
     '    """Not a statement about a finite sum at all."""\n'
 )
@@ -1884,7 +1882,7 @@ def test_a_sampled_universal_that_is_not_asserted_is_never_refuted(
 def test_a_sampled_universal_in_a_goal_is_still_refuted() -> None:
     """A counterexample is real wherever it is drawn: ``k < 3`` fails at ``k = 3``."""
 
-    @theorem
+    @claim
     def below_three(n: Nat) -> all(k < 3 for k in Nat):
         """False: 3 is a natural."""
 
@@ -1892,7 +1890,7 @@ def test_a_sampled_universal_in_a_goal_is_still_refuted() -> None:
     assert fact.status is Status.REFUTED
     assert fact.provenance["counterexample"]["k"] >= 3
 
-    @theorem
+    @claim
     def denied(n: Nat) -> ~~all(k < 3 for k in Nat):
         """The same claim under two negations, which is where it started."""
 
@@ -1909,25 +1907,25 @@ def test_an_antecedent_is_read_where_it_stands_however_it_is_spelled() -> None:
     asserted, and a draw that breaks a universal there still refutes it.
     """
 
-    @theorem
+    @claim
     def implied(n: Nat) -> ~all(k < 100 for k in Nat) | (n < 0):
         """True: the antecedent is false, since k = 100 is a natural."""
 
-    @theorem
+    @claim
     def unwitnessed(n: Nat) -> ~any(i >= 0 for i in Fin[n + 1] if all(k < 100 for k in Nat)):
         """True: the guard is false, so nothing is a witness."""
 
-    @theorem
+    @claim
     def admitted(n: Nat, h: any(i == 0 for i in Fin[n + 1] if all(k < 100 for k in Nat))) -> n < 0:
         """True vacuously: the hypothesis is false at every n."""
 
-    for claim in (implied, unwitnessed, admitted):
-        fact = TestOracle().establish(claim.fact())
-        assert fact.status is Status.ASSUMED, claim.__name__
+    for stated in (implied, unwitnessed, admitted):
+        fact = TestOracle().establish(stated.fact())
+        assert fact.status is Status.ASSUMED, stated.__name__
         assert fact.provenance["valid"] == 0
         assert "assumes or denies it" in fact.provenance["untested"]
 
-    @theorem
+    @claim
     def consequent(n: Nat) -> ~(n >= 0) | all(k < 3 for k in Nat):
         """False: 3 is a natural."""
 
@@ -1947,21 +1945,21 @@ def test_a_sampled_universal_used_as_a_value_is_undecided() -> None:
     true.
     """
 
-    @theorem
+    @claim
     def compared(n: Nat) -> all(k < 100 for k in Nat) == False:  # noqa: E712
         """True: some natural is not below 100."""
 
-    @theorem
+    @claim
     def counted(n: Nat) -> sum(1 for i in Fin[n + 1] if all(k < 100 for k in Nat)) == 0:
         """True: the guard is false, so nothing is counted."""
 
-    @theorem
+    @claim
     def guarded(n: Nat) -> all(i < 0 for i in Fin[n + 1] if all(k < 100 for k in Nat)):
         """True vacuously: the guard is false."""
 
-    for claim in (compared, counted, guarded):
-        fact = TestOracle().establish(claim.fact())
-        assert fact.status is Status.ASSUMED, claim.__name__
+    for stated in (compared, counted, guarded):
+        fact = TestOracle().establish(stated.fact())
+        assert fact.status is Status.ASSUMED, stated.__name__
         assert fact.provenance["valid"] == 0
 
 
@@ -1991,7 +1989,7 @@ def test_an_existential_whose_enumerated_binders_are_empty_is_refuted() -> None:
     with ``n > 0``.
     """
 
-    @theorem
+    @claim
     def somewhere(n: Nat) -> any(k >= 0 for i in Fin[n] for k in Nat):
         """False at n = 0, where there is no i."""
 
@@ -2056,9 +2054,9 @@ def test_an_inner_binder_named_like_a_parameter_does_not_order_the_draws() -> No
 
 SCAN_GUARD = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Fn, Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def flipped(\n"
     "    n: Nat,\n"
     "    cnt: Fn[Fin[n], Nat],\n"
@@ -2130,7 +2128,7 @@ def test_a_proof_of_a_goal_whose_guard_is_empty_is_vacuous(tmp_path, oracles, ca
     path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
     ledger = check_path(path)
     (fact,) = claims(ledger)
-    assert shown == ["theorem", "goal-guard"]
+    assert shown == ["claim", "goal-guard"]
     assert fact.status is Status.PROVED
     assert fact.is_vacuous
     assert fact.provenance["vacuous"] == (
@@ -2185,7 +2183,7 @@ def test_a_guard_empty_only_for_some_outer_values_is_never_flagged(
         "scan_guard.py",
     )
     (fact,) = claims(check_path(path))
-    assert shown == ["theorem"]
+    assert shown == ["claim"]
     assert not fact.is_vacuous
     assert "goal_reached" not in fact.provenance
     assert "goal_unreached" not in fact.provenance
@@ -2214,7 +2212,7 @@ def test_a_guard_a_point_got_through_at_an_undecided_draw_is_not_empty(
     shown: list[str] = []
     oracles(_recording(shown), TestOracle())
     (fact,) = claims(check_path(path))
-    assert shown == ["theorem"]
+    assert shown == ["claim"]
     assert "goal_reached" not in fact.provenance
     oracles(TestOracle())
     (fact,) = claims(check_path(path))
@@ -2269,9 +2267,9 @@ def test_a_proof_over_the_reals_is_not_contradicted_by_rounding(
     """
     source = (
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Real\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def divided_back(x: Real, y: Real, hy: y != 0) -> x / y * y == x:\n"
         '    """True division, undone, away from zero."""\n'
     )
@@ -2327,7 +2325,7 @@ def test_a_sampled_goal_whose_guard_is_empty_is_vacuous_under_a_proof(
     shown: list[str] = []
     oracles(_recording(shown), TestOracle())
     (fact,) = claims(check_path(path))
-    assert shown == ["theorem", "goal-guard"]
+    assert shown == ["claim", "goal-guard"]
     assert fact.is_vacuous
     assert "goal_unreached" not in fact.provenance
     assert cli.main(["check", path]) == 1
@@ -2344,8 +2342,8 @@ def test_an_axiom_whose_goal_guard_is_empty_is_vacuous(tmp_path, oracles, capsys
     """An axiom's goal guard is examined as a theorem's is, never the axiom itself."""
     shown: list[str] = []
     oracles(_recording(shown), TestOracle())
-    source = SCAN_GUARD.replace("import theorem", "import axiom").replace(
-        "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
+    source = SCAN_GUARD.replace(
+        "@claim", '@claim(cite="a textbook, with a guard copied down wrong")'
     )
     path = _write(tmp_path, source, "scan_guard.py")
     (fact,) = claims(check_path(path))
@@ -2353,7 +2351,7 @@ def test_an_axiom_whose_goal_guard_is_empty_is_vacuous(tmp_path, oracles, capsys
     assert fact.status is Status.ASSUMED
     assert fact.is_vacuous
     assert cli.main(["check", path]) == 1
-    assert "assumed (axiom) (vacuous)  -" in capsys.readouterr().out
+    assert "assumed (cited) (vacuous)  -" in capsys.readouterr().out
 
 
 class PassesQuietly:
@@ -2388,8 +2386,8 @@ def test_an_axiom_goal_guard_is_examined_past_a_test_oracle_that_counts_nothing(
     """
     shown: list[str] = []
     oracles(_recording(shown), PassesQuietly(), TestOracle())
-    source = SCAN_GUARD.replace("import theorem", "import axiom").replace(
-        "@theorem", '@axiom(cite="a textbook, with a guard copied down wrong")'
+    source = SCAN_GUARD.replace(
+        "@claim", '@claim(cite="a textbook, with a guard copied down wrong")'
     )
     path = _write(tmp_path, source, "scan_guard.py")
     (fact,) = claims(check_path(path))
@@ -2445,7 +2443,7 @@ def test_a_cross_check_hears_a_later_testers_goal_count(tmp_path, oracles, capsy
     oracles(Recording(), DrawsNothingValid(), TestOracle())
     path = _write(tmp_path, SCAN_GUARD, "scan_guard.py")
     (fact,) = claims(check_path(path))
-    assert shown == ["theorem", "goal-guard"]
+    assert shown == ["claim", "goal-guard"]
     assert fact.status is Status.PROVED
     # what the first tester said about the hypotheses is kept, as it was
     assert fact.provenance["unsatisfied"] == "hypotheses never satisfied in 3 draws"
@@ -2484,15 +2482,15 @@ def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() 
     n, p, q = Var("n"), Var("p"), Var("q")
     goal = Forall(((p, Fin[n + 1]), (q, Fin[n + 1])), p <= q, (p < q) & (p > q))
     fact = Fact(
-        id="theorem:t",
-        kind="theorem",
+        id="claim:t",
+        kind="claim",
         statement="t",
         term=Forall(((n, Nat),), goal, n > 0),
         owner="t",
         provenance={"path": "/x/t.py", "line": 3, "tactic": "omega"},
     )
     question = goal_guard_fact(fact)
-    assert question.id == "theorem:t:goal-guard"
+    assert question.id == "claim:t:goal-guard"
     assert question.kind == "goal-guard"
     assert question.provenance == {"path": "/x/t.py", "line": 3}
     assert structurally_equal(question.term.binders, fact.term.binders)
@@ -2502,21 +2500,21 @@ def test_goal_guard_fact_asks_whether_the_guard_is_empty_under_the_hypotheses() 
     assert structurally_equal(question.term.body.guard, goal.guard)
     with pytest.raises(ValueError, match="no goal quantifier"):
         goal_guard_fact(
-            Fact(id="u", kind="theorem", statement="u", term=Forall(((n, Nat),), n >= 0))
+            Fact(id="u", kind="claim", statement="u", term=Forall(((n, Nat),), n >= 0))
         )
 
 
 CLOSED = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def closed_flipped() -> all(k >= 0 for k in Nat if (k > 5) & (k < 3)):\n"
     '    """No parameters: the goal\'s universal is the goal, not the statement."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def closed_rare() -> all(k >= 0 for k in Nat if k > 100):\n"
     '    """No parameters, and a guard no draw reaches."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def closed_nested() -> all(all(k >= j for k in Nat if (k > 5) & (k < 3)) for j in Nat):\n"
     '    """No parameters: the guard of the inner universal is not the goal\'s."""\n'
 )
@@ -2602,12 +2600,12 @@ def test_a_parameterless_theorems_empty_goal_guard_is_the_goals(tmp_path, oracle
 
 ORDER = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def left(n: Nat) -> ~all(k < 100 for k in Nat) | (n >= 0):\n"
     '    """True: the right disjunct holds at every n."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def right(n: Nat) -> (n >= 0) | ~all(k < 100 for k in Nat):\n"
     '    """The same statement with the disjuncts swapped."""\n'
 )
@@ -2633,7 +2631,7 @@ def test_an_undecided_conjunct_does_not_hide_a_refuted_one() -> None:
     tester walks the conjunction one conjunct at a time to find the point.
     """
 
-    @theorem
+    @claim
     def hidden(n: Nat) -> ~all(k < 100 for k in Nat) & (n < 0):
         """False at every n: the second conjunct is."""
 
@@ -2641,7 +2639,7 @@ def test_an_undecided_conjunct_does_not_hide_a_refuted_one() -> None:
     assert fact.status is Status.REFUTED
     assert fact.provenance["counterexample"]["n"] >= 0
 
-    @theorem
+    @claim
     def pointwise(n: Nat) -> all(~all(k < 100 for k in Nat) & (i < n) for i in Fin[n + 1]):
         """False at i = n, where the second conjunct is."""
 
@@ -2653,20 +2651,20 @@ def test_an_undecided_conjunct_does_not_hide_a_refuted_one() -> None:
 
 POINTS = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def pointwise(n: Nat) -> all(~all(k < 100 for k in Nat) & (i < 1) for i in Fin[n + 2]):\n"
     '    """False at i = 1, where the second conjunct is; undecided at i = 0."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def spelled(n: Nat) -> (\n"
     "    (~all(k < 100 for k in Nat) & (0 < 1)) & (~all(k < 100 for k in Nat) & (1 < 1))\n"
     "):\n"
     '    """The same claim at the points 0 and 1, spelled out."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def guarded(n: Nat) -> all(i < 2 for i in Fin[n + 3] if 10 // i > 3):\n"
     '    """False at i = 2; the guard divides by zero at i = 0."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def witnessed(n: Nat) -> any(~all(k < 100 for k in Nat) | (i == n) for i in Fin[n + 1]):\n"
     '    """True: i = n is a witness, after points that have no answer."""\n'
 )
@@ -2701,7 +2699,7 @@ def test_a_hypothesis_a_draw_breaks_rejects_it_whatever_came_before() -> None:
     holds at no draw, so no draw satisfies them, and the report says so.
     """
 
-    @theorem
+    @claim
     def split(n: Nat, h1: all(k < 100 for k in Nat), h2: n < 0) -> n == n + 1:
         """True vacuously: neither hypothesis holds anywhere."""
 
@@ -2720,9 +2718,9 @@ def test_a_hypothesis_a_draw_breaks_rejects_it_whatever_came_before() -> None:
 
 DROPPED_GUARD = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def counted(n: Nat) -> sum(1 for i in Fin[3] if n > 100) == 0:\n"
     '    """True for n <= 100, where the guard holds nowhere; false above."""\n'
 )
@@ -2750,9 +2748,9 @@ def test_a_guard_the_annotation_would_drop_fails_the_import(tmp_path, capsys) ->
 
 REFINED = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def refined(n: Nat & all(k < n + 100 for k in Nat)) -> n >= 0:\n"
     '    """A parameter refinement that quantifies over naturals."""\n'
 )
@@ -2844,18 +2842,18 @@ def test_the_other_refinements_the_tester_reads_have_a_sampler_too() -> None:
 
 THIN = (
     "from __future__ import annotations\n\n"
-    "from lanky import exp, log, theorem\n"
+    "from lanky import exp, log, claim\n"
     "from lanky.prelude import Nat, Real\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def exp_neg(x: Real) -> exp(x) * exp(-x) <= 1:\n"
     '    """Decided only at x = 0, where the value is rational."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def exp_log(x: Real, h: x > 0) -> exp(log(x)) <= x:\n"
     '    """Decided only at x = 1."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def two_points(n: Nat, h: n < 3) -> 10 // n >= 0:\n"
     '    """Undecided at n = 0, which Python divides by; decided at n = 1 and n = 2."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def one_gap(n: Nat) -> (10 // n) * n <= 10:\n"
     '    """Undecided at n = 0 only, which leaves five of the six values."""\n'
 )
@@ -2977,24 +2975,24 @@ def test_thin_pass_reason_counts_draws_and_assignments() -> None:
 
 ORDINARY = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Bool, Fin, Nat, Real\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def plain(n: Nat) -> n + 0 == n:\n"
     '    """Every draw decides it."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def bools(a: Bool, b: Bool) -> (a & b) | ~a | ~b:\n"
     '    """Four assignments in all."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def one_point(n: Nat, h: n == 0) -> n * n == 0:\n"
     '    """One assignment in all, which is not thin for being one."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def enumerated(n: Nat) -> all(i < n + 1 for i in Fin[n + 1]):\n"
     '    """A goal quantifier over an enumerated domain."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def exact(x: Real, y: Real) -> (x + y) - y == x:\n"
     '    """Rationals, read exactly."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def sampled() -> all(k + 1 > k for k in Nat):\n"
     '    """A sampled goal quantifier, and no parameters."""\n'
 )

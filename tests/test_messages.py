@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from conftest import claims
-from lanky import conj, real, theorem
+from lanky import claim, conj, real
 from lanky.audit import refusal, screen
 from lanky.check import check_path, import_path
 from lanky.cli import main as lanky_main
@@ -67,7 +67,7 @@ def test_a_refused_script_is_said_with_what_to_write_instead(script, found, fix)
     assert refusal("omega") is None
 
 
-@theorem
+@claim
 def nonneg_square(n: Nat) -> n * n >= 0:
     """A claim a test pins a refused script to."""
 
@@ -120,12 +120,12 @@ REFUSED_FILE = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.oracles.lean import use_tactic
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def square(n: Nat) -> n * n >= 0:
     """A square is not negative."""
 
@@ -143,7 +143,7 @@ def test_lanky_check_names_a_refused_script_under_the_table_and_fails(
     path.write_text(REFUSED_FILE, encoding="utf-8")
     assert lanky_main(["check", str(path)]) == 1
     out = capsys.readouterr().out
-    line = REFUSED_FILE.splitlines().index("@theorem") + 1
+    line = REFUSED_FILE.splitlines().index("@claim") + 1
     assert (
         f"REFUSED square at pinned.py:{line}: the script use_tactic gives it is not sent to "
         "Lean, since it has #exit, a Lean command." in out
@@ -195,11 +195,11 @@ STEPS = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, conj, log, real, theorem
+from lanky import by, claim, conj, log, real
 from lanky.prelude import Complex, Fn, Nat, Real
 
 
-@theorem
+@claim
 def without_pde(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -216,7 +216,7 @@ def without_pde(
             yield by(recurrence(a - 2, b), claim[a - 2, b + 2])
 
 
-@theorem
+@claim
 def nested(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -234,7 +234,7 @@ def nested(
             yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
 
 
-@theorem
+@claim
 def bare_modulus(alpha: Complex, nonzero: alpha != 0) -> (
     log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
 ):
@@ -330,8 +330,8 @@ def test_a_nested_case_says_the_split_it_did_not_take_the_other_way_round(steps)
 
 def _fact(proof: dict | None = None, **provenance) -> Fact:
     return Fact(
-        id="theorem:m.t@3",
-        kind="theorem",
+        id="claim:m.t@3",
+        kind="claim",
         statement="n : Nat |- n + 0 == n",
         status=Status.TESTED,
         decided_by="property-test",
@@ -349,11 +349,11 @@ def test_without_lean_the_line_says_so_in_a_clause(tmp_path, monkeypatch, capsys
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import claim
             from lanky.prelude import Real
 
 
-            @theorem
+            @claim
             def doubled(x: Real) -> 2 * x == x + x:
                 assert 2 * x == x + x
             """
@@ -453,11 +453,11 @@ NAMES = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@theorem
+@claim
 def count_ih(
     f: Fn[Nat, Int],
     ih: f[0] == 0,
@@ -470,7 +470,7 @@ def count_ih(
             yield by(hk(n - 1), claim[n - 1])
 
 
-@theorem
+@claim
 def count_hn(
     f: Fn[Nat, Int],
     hn: f[0] == 0,
@@ -483,7 +483,7 @@ def count_hn(
             yield by(case_1(n - 1), claim[n - 1])
 
 
-@theorem
+@claim
 def count_pin(
     f: Fn[Nat, Int],
     pin_1: f[0] == 0,
@@ -509,7 +509,7 @@ def test_a_hypothesis_named_like_a_script_name_keeps_its_name(tmp_path) -> None:
         assert f"have {given} " not in claim and f"by_cases {given} " not in claim, claim
 
 
-@theorem
+@claim
 def conjugate_form(x: Complex, alpha: Complex, hz0: alpha != 0) -> x / alpha == x * conj(alpha) * (
     1 / real(alpha * conj(alpha))
 ):

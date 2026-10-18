@@ -145,17 +145,17 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.known import one_more_term
 from lanky.prelude import Fin, Nat, Real
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``."""
 
 
-@theorem
+@claim
 def written(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """Nicomachus's theorem, the family written as a lambda."""
     if n == 0:
@@ -174,7 +174,7 @@ def written(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1
     )
 
 
-@theorem
+@claim
 def geometric(r: Real, n: Nat) -> (r - 1) * sum(r**k for k in Fin[n]) == r**n - 1:
     """The design's geometric sum: one more term, and the theorem at n - 1."""
     if n == 0:
@@ -285,11 +285,11 @@ HARMONIC = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Real
 
 
-@theorem
+@claim
 def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> (
     (1 - 2 * x**2 / (x**2 + y**2)) / (x**2 + y**2)
     + (1 - 2 * y**2 / (x**2 + y**2)) / (x**2 + y**2)

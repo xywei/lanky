@@ -37,6 +37,7 @@ run (:mod:`lanky.proofs.native`), which runs the body at drawn values.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -226,8 +227,20 @@ class _Claim:
         return self._current().at(point, sys._getframe(1))
 
     def __call__(self, *values: Any, **named: Any) -> Any:
-        """The theorem at other values of its parameters, smaller ones: ``claim(n - 1)``."""
-        return self._current().call(values, named, sys._getframe(1))
+        """``@claim`` outside a body; inside one, the theorem at smaller values, ``claim(n - 1)``.
+
+        Outside a running body ``claim`` is the decorator, :func:`lanky.theory.claim`
+        (``@claim``, ``@claim(cite=...)``, ``@claim(uses=[...])``). This keeps
+        the draft proof surface's ``claim(...)`` working inside a body until
+        the proof body addresses the claim by its own name.
+        """
+        current = _CLAIM.get()
+        decorating = len(values) == 1 and not named and inspect.isfunction(values[0])
+        if current is None or decorating:
+            from lanky.theory import claim as decorate
+
+            return decorate(*values, **named)
+        return current.call(values, named, sys._getframe(1))
 
     def __getattr__(self, name: str) -> Any:
         """A variable of the conclusion as a handle, ``claim.n``, for messages."""

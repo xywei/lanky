@@ -19,7 +19,7 @@ import os
 
 import pytest
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.chains import combined_relation
 from lanky.citations import (
     Citation,
@@ -68,7 +68,7 @@ n, r, k = Var("n"), Var("r"), Var("k")
 alpha, beta, x = Var("alpha"), Var("beta"), Var("x")
 
 
-@theorem
+@claim
 def compressed_taylor(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -86,7 +86,7 @@ def compressed_taylor(
             )
 
 
-@theorem
+@claim
 def line_taylor(
     alpha: Complex,
     beta: Complex,
@@ -104,7 +104,7 @@ def line_taylor(
             yield by(claim[n - 1])
 
 
-@theorem
+@claim
 def doubled(f: Fn[Nat, Real], m: Nat) -> f[m] + f[m] == 2 * f[m]:
     """A fact to cite."""
 
@@ -504,7 +504,7 @@ def test_a_theorem_is_cited_by_its_proved_text_or_its_printed_one() -> None:
 def test_a_theorem_cited_restates_the_theorems_its_own_proof_cited() -> None:
     """``B``'s ``as_cited`` takes ``C``: citing ``B`` restates both, and a gap or circle refuses."""
 
-    @theorem
+    @claim
     def premise(f: Fn[Nat, Real], m: Nat) -> f[m] == f[m]:
         """C."""
 
@@ -563,18 +563,18 @@ def test_a_restated_text_is_compared_with_the_kept_one() -> None:
 
 def test_citations_without_a_proved_text_raise_the_vacuity_question() -> None:
     """Printed texts are asked whether together they prove ``False``; proved ones are not."""
-    question = vacuity_question("theorem:t.owner@1", [compressed_taylor], "t.py:1")
+    question = vacuity_question("claim:t.owner@1", [compressed_taylor], "t.py:1")
     assert question.kind == "hypotheses" and question.term.body is False
     assert structurally_equal(question.term.guard, compressed_taylor.term)
     assert "compressed_taylor" in question.statement
     with proved_texts({compressed_taylor.fact_id: "∀ D R, True"}):
-        assert vacuity_question("theorem:t.owner@1", [compressed_taylor]) is None
+        assert vacuity_question("claim:t.owner@1", [compressed_taylor]) is None
 
 
 def test_the_vacuity_question_is_asked_at_symbolic_points_in_a_case() -> None:
     """Inside an induction, the texts at ``(a - 2, b)``, ``a`` and ``b`` bound, the case assumed."""
     question = vacuity_question(
-        "theorem:t.owner@1",
+        "claim:t.owner@1",
         [doubled],
         "t.py:1",
         [(doubled.fact_id, (Var("g"), a - 2))],
@@ -582,7 +582,7 @@ def test_the_vacuity_question_is_asked_at_symbolic_points_in_a_case() -> None:
         conditions=[LogicalNot(a < 2)],
         case="in the case at t.py:9",
     )
-    assert question.id == "theorem:t.owner@1:citations@in-the-case-at-t-py-9"
+    assert question.id == "claim:t.owner@1:citations@in-the-case-at-t-py-9"
     assert question.statement.endswith("are inconsistent in the case at t.py:9")
     (part,) = question.term.lean_obligation().parts
     assert [var.name for var, _ in part.term.binders] == ["g", "a"]
@@ -592,7 +592,7 @@ def test_the_vacuity_question_is_asked_at_symbolic_points_in_a_case() -> None:
     # points with variables and no binders for them are not asked
     assert (
         vacuity_question(
-            "theorem:t.owner@1", [doubled], variables=[(a, Nat)], conditions=[a >= 2]
+            "claim:t.owner@1", [doubled], variables=[(a, Nat)], conditions=[a >= 2]
         )
         is None
     )

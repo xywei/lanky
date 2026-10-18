@@ -74,7 +74,7 @@ from layer_potentials import (
     trace,
 )
 
-from lanky import Var, axiom
+from lanky import Var, claim
 
 KRESS = "R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6"
 COLTON_KRESS = (
@@ -91,42 +91,42 @@ eta = Var("eta")
 # {{{ what the argument rests on
 
 
-@axiom(cite=BOTH)
+@claim(cite=BOTH)
 def jump_S(gamma: C2Boundary, s: Side) -> trace(S, s) == S:
     """The single-layer potential is continuous across the boundary."""
 
 
-@axiom(cite=BOTH)
+@claim(cite=BOTH)
 def jump_D(gamma: C2Boundary, s: Side) -> trace(D, s) == D + s / 2 * I:
     """The double-layer potential jumps by the density: ``u± = D σ ± σ/2``."""
 
 
-@axiom(cite=BOTH)
+@claim(cite=BOTH)
 def jump_Sp(gamma: C2Boundary, s: Side) -> normal_derivative(S, s) == Sp - s / 2 * I:
     """The normal derivative of the single-layer potential jumps: ``∂u±/∂ν = S' σ ∓ σ/2``."""
 
 
-@axiom(cite=BOTH)
+@claim(cite=BOTH)
 def jump_Dp(gamma: C2Boundary, s: Side) -> normal_derivative(D, s) == Dp:
     """The normal derivative of the double-layer potential is continuous, for a C^{1,α} density."""
 
 
-@axiom(cite=BOTH)
+@claim(cite=BOTH)
 def compact_S(gamma: C2Boundary) -> compact(S):
     """``S`` has a weakly singular kernel, and is compact on ``C(Γ)`` and ``L²(Γ)``."""
 
 
-@axiom(cite=BOTH)
+@claim(cite=BOTH)
 def compact_D(gamma: C2Boundary) -> compact(D):
     """``D`` has a weakly singular kernel on a boundary of class C², and is compact."""
 
 
-@axiom(cite=BOTH)
+@claim(cite=BOTH)
 def compact_Sp(gamma: C2Boundary) -> compact(Sp):
     """``S'`` is the adjoint of ``D``, and is compact."""
 
 
-@axiom(cite=COLTON_KRESS)
+@claim(cite=COLTON_KRESS)
 def hypersingular_Dp(gamma: C2Boundary) -> ~scalar_plus_compact(Dp):
     """``D'`` is hypersingular: of order one, and bounded on neither ``C(Γ)`` nor ``L²(Γ)``.
 
@@ -257,11 +257,11 @@ def pytential_lines() -> tuple[bool, list[str]]:
         ),
     }
     ok, lines = True, []
-    for claim, (representation, operator) in built.items():
+    for stated, (representation, operator) in built.items():
         try:
-            agrees = same(from_pytential(representation), claim.representation) and same(
+            agrees = same(from_pytential(representation), stated.representation) and same(
                 resolve(from_pytential(operator), rules).operator,
-                resolve(claim.target, rules).operator,
+                resolve(stated.target, rules).operator,
             )
         except OutsideFragment as exc:
             agrees, why = False, str(exc)
@@ -269,7 +269,7 @@ def pytential_lines() -> tuple[bool, list[str]]:
             why = "a different representation or operator"
         if not agrees:
             ok = False
-            lines.append(f"pytential: {claim.__name__} translates to {why}")
+            lines.append(f"pytential: {stated.__name__} translates to {why}")
     if ok:
         lines.append(
             "pytential: the five representations and operators, built with pytential.sym, "
@@ -311,19 +311,19 @@ def main() -> int:
     ok = True
     rows = [("problem", "representation", "boundary equation", "verdict")]
     why = []
-    for claim in CLAIMS:
-        rewrite, verdict = claim.decide_rewrite(), claim.decide_verdict()
+    for stated in CLAIMS:
+        rewrite, verdict = stated.decide_rewrite(), stated.decide_verdict()
         ok = ok and rewrite.holds and verdict.holds
         rows.append(
             (
-                claim.problem,
-                f"u = {_applied(claim.representation)}",
-                f"{_applied(claim.target)} = {claim.data}",
-                _verdict_text(claim) if rewrite.holds and verdict.holds else "WRONG, see below",
+                stated.problem,
+                f"u = {_applied(stated.representation)}",
+                f"{_applied(stated.target)} = {stated.data}",
+                _verdict_text(stated) if rewrite.holds and verdict.holds else "WRONG, see below",
             )
         )
         axioms = ", ".join(a.__name__ for a in (*rewrite.applied, *verdict.applied))
-        why.append(f"{claim.__name__}: {verdict.reason}. Under {axioms}.")
+        why.append(f"{stated.__name__}: {verdict.reason}. Under {axioms}.")
         if not rewrite.holds:
             why.append(f"  the rewrite is wrong: {rewrite.reason}")
         if not verdict.holds:

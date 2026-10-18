@@ -339,7 +339,7 @@ def _fix_for_word(word: str) -> str:
     if word in _DECLARING:
         return (
             f"take {word} out; state what the proof needs with have inside the "
-            "script, or as a @theorem of its own"
+            "script, or as a @claim of its own"
         )
     if word == "open":
         return "take open out, and write each name in full, as Finset.sum_comm"

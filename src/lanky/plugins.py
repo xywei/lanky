@@ -10,7 +10,7 @@ and lanky never imports it.
 
 Two mechanisms make that work. Discovery is by entry points, in the four groups
 named below, so installing loopty is all it takes. Registration is also possible
-in process, which is what the decorators do: ``@theorem`` records the decorated
+in process, which is what the decorators do: ``@claim`` records the decorated
 object in :data:`registry` in import order, and ``lanky check FILE`` imports the
 file and then reads the registry.
 

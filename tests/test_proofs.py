@@ -39,11 +39,11 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fin, Fn, Int, Nat
 
 
-@theorem
+@claim
 def ct(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -58,7 +58,7 @@ def ct(
             yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
 
 
-@theorem
+@claim
 def ct_wrong(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -73,7 +73,7 @@ def ct_wrong(
             yield by(recurrence(a - 2, b), claim[a - 2, b + 3], pde(a - 2, b))
 
 
-@theorem
+@claim
 def ct_negative(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -85,7 +85,7 @@ def ct_negative(
         yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
 
 
-@theorem
+@claim
 def ct_condition(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -100,7 +100,7 @@ def ct_condition(
             yield by(stored)
 
 
-@theorem
+@claim
 def every_box(
     n: Nat,
     p: Nat,
@@ -132,7 +132,7 @@ def every_box(
             yield by(recurrence, claim[i, a - 2, b + 2], pde)
 
 
-@theorem
+@claim
 def sum_to(
     n: Nat, S: Fn[Nat, Int], base: S[0] == 0, step: all(S[k + 1] == S[k] + 1 for k in Nat)
 ) -> S[n] == n:
@@ -141,7 +141,7 @@ def sum_to(
     return by(step(n - 1), claim(n - 1))
 
 
-@theorem
+@claim
 def stepped(
     n: Nat, S: Fn[Nat, Int], base: S[0] == 0, step: all(S[k + 1] == S[k] + 1 for k in Nat)
 ) -> S[n] == n:
@@ -151,7 +151,7 @@ def stepped(
     return by(claim(n - 1))
 
 
-@theorem
+@claim
 def lex(
     R: Fn[Nat, Nat, Int],
     base: R[0, 0] == 0,
@@ -167,31 +167,31 @@ def lex(
             yield by(base)
 
 
-@theorem
+@claim
 def routine(n: Nat, m: Nat, h: m == n + 1) -> m - n == 1:
     if n == 0:
         return
     return by(h)
 
 
-@theorem
+@claim
 def zero_times(f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat if k >= 1)) -> f[0] * 0 == 0:
     return by(h(0))
 
 
-@theorem
+@claim
 def both_parts(
     S: Fn[Nat, Int], T: Fn[Nat, Int], starts: (S[0] == 1) & (T[0] == 2)
 ) -> S[0] + T[0] == 3:
     return by(starts)
 
 
-@theorem
+@claim
 def cites_later(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:
     return by(identity_at(f, 3))
 
 
-@theorem
+@claim
 def identity_at(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat), m: Nat) -> f[m] == m:
     """Proved by lanky alone; cited by the theorem above, which is written before it."""
 '''
@@ -202,7 +202,7 @@ REFUSED = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
@@ -212,7 +212,7 @@ def small(x):
     return False
 
 
-@theorem
+@claim
 def ct_later(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -227,7 +227,7 @@ def ct_later(
             yield by(recurrence(a - 2, b), claim[a, b + 2], pde(a - 2, b))
 
 
-@theorem
+@claim
 def ct_self(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -242,7 +242,7 @@ def ct_self(
             yield by(recurrence(a - 2, b), ct_self(a - 2, b + 2), pde(a - 2, b))
 
 
-@theorem
+@claim
 def ct_nopoint(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -254,7 +254,7 @@ def ct_nopoint(
         yield by(stored, apart)
 
 
-@theorem
+@claim
 def foreign_if(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
@@ -265,7 +265,7 @@ def foreign_if(
             yield by(h)
 
 
-@theorem
+@claim
 def and_as_a_value(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
@@ -274,12 +274,12 @@ def and_as_a_value(
         yield by(h)
 
 
-@theorem
+@claim
 def returns_a_number(n: Nat) -> n + 0 == n:
     return 3
 
 
-@theorem
+@claim
 def asked_twice(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
@@ -291,7 +291,7 @@ def asked_twice(
             yield by(h)
 
 
-@theorem
+@claim
 def old_claim(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
@@ -301,7 +301,7 @@ def old_claim(
     return claim
 
 
-@theorem
+@claim
 def old_induction(
     n: Nat, S: Fn[Nat, Int], base: S[0] == 0, step: all(S[k + 1] == S[k] + 1 for k in Nat)
 ) -> S[n] == n:
@@ -313,22 +313,22 @@ def old_induction(
     return claim
 
 
-@theorem
+@claim
 def old_return(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
     return h, h
 
 
-@theorem
+@claim
 def old_chain(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
     return S[n].equals(0, by=h)
 
 
-@theorem
+@claim
 def old_at_most(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] <= 0:
     return S[n].at_most(0, by=h)
 
 
-@theorem
+@claim
 def same_point(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
@@ -336,17 +336,17 @@ def same_point(
         yield by(claim[a])
 
 
-@theorem
+@claim
 def larger_values(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
     return by(claim(n + 1))
 
 
-@theorem
+@claim
 def yield_outside(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
     yield by(h)
 
 
-@theorem
+@claim
 def return_in_the_loop(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
@@ -354,7 +354,7 @@ def return_in_the_loop(
         return by(h)
 
 
-@theorem
+@claim
 def two_yields(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
@@ -363,18 +363,18 @@ def two_yields(
         yield by(h)
 
 
-@theorem
+@claim
 def no_variables(n: Nat) -> n + 0 == n:
     for k in claim.dom:
         yield
 
 
-@theorem
+@claim
 def a_message(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
     assert S[n] == 0, "it is zero"
 
 
-@theorem
+@claim
 def false_as_written(n: Nat) -> n + 0 == n:
     assert 1 == 2
 '''
@@ -439,13 +439,13 @@ def test_running_the_file_never_runs_a_proof(tmp_path) -> None:
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import claim
             from lanky.prelude import Nat
 
             RAN = []
 
 
-            @theorem
+            @claim
             def loud(n: Nat) -> n + 0 == n:
                 RAN.append("the body ran")
                 return None
@@ -459,10 +459,9 @@ def test_running_the_file_never_runs_a_proof(tmp_path) -> None:
     assert module.RAN == []
 
 
-def test_outside_a_proof_a_theorem_is_evaluated_at_values_given_by_name(cases) -> None:
+def test_outside_a_proof_a_claim_is_evaluated_at_values_by_position_or_name(cases) -> None:
     assert cases.both_parts(S=[1], T=[2])
-    with pytest.raises(TypeError, match=r"given by name, as both_parts\(S=\.\.\., T=\.\.\.\)"):
-        cases.both_parts([1], [2])
+    assert cases.both_parts([1], [2])
 
 
 # }}}
@@ -829,11 +828,11 @@ def test_a_hypothesis_named_like_a_lean_word_keeps_meaning_one_thing(tmp_path) -
             """
             from __future__ import annotations
 
-            from lanky import by, theorem
+            from lanky import by, claim
             from lanky.prelude import Nat
 
 
-            @theorem
+            @claim
             def odd_names(n: Nat, fun: n >= 1, Real: n <= 5) -> n >= 1:
                 return by(fun, Real)
             """
@@ -980,11 +979,11 @@ def test_a_case_is_said_with_the_lines_of_its_ifs() -> None:
 NATIVE = '''\
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fin, Fn, Int, Nat
 
 
-@theorem
+@claim
 def doubling(
     n: Nat,
     f: Fn[Fin[n + 1], Int],
@@ -999,7 +998,7 @@ def doubling(
             yield by(claim[k - 1])
 
 
-@theorem
+@claim
 def doubling_wrong(
     n: Nat,
     f: Fn[Fin[n + 1], Int],
@@ -1014,7 +1013,7 @@ def doubling_wrong(
             yield by(claim[k - 1])
 
 
-@theorem
+@claim
 def capped(
     n: Nat,
     f: Fn[Fin[n + 1], Int],
@@ -1025,7 +1024,7 @@ def capped(
         yield by(step)
 
 
-@theorem
+@claim
 def halves(n: Nat, k: Nat, h: k >= 1) -> (n + k) / k == n / k + 1:
     assert (n + k) / k == n / k + k / k == n / k + 1
 '''
@@ -1099,8 +1098,8 @@ def test_without_lean_a_false_step_fails_the_proof(native, monkeypatch) -> None:
 
 def _fact(status: Status, proof: dict) -> Fact:
     return Fact(
-        id="theorem:m.t@3",
-        kind="theorem",
+        id="claim:m.t@3",
+        kind="claim",
         statement="n : Nat |- n + 0 == n",
         status=status,
         decided_by="lean" if status is Status.PROVED else None,
@@ -1164,11 +1163,11 @@ def test_without_lean_a_proof_is_not_checked_and_the_check_passes(
             """
             from __future__ import annotations
 
-            from lanky import by, claim, theorem
+            from lanky import by, claim
             from lanky.prelude import Fn, Int, Nat
 
 
-            @theorem
+            @claim
             def sum_to(
                 n: Nat, S: Fn[Nat, Int], base: S[0] == 0,
                 step: all(S[k + 1] == S[k] + 1 for k in Nat),
@@ -1205,19 +1204,19 @@ def test_a_body_is_traced_after_every_run_and_draw_of_the_check(tmp_path, monkey
             """
             from __future__ import annotations
 
-            from lanky import by, theorem
+            from lanky import by, claim
             from lanky.prelude import Nat
 
             ORDER = None
 
 
-            @theorem
+            @claim
             def first(n: Nat, h: n >= 1) -> n >= 1:
                 ORDER.append("traced first")
                 return by(h)
 
 
-            @theorem
+            @claim
             def second(n: Nat) -> n + 0 == n:
                 ...
             """
@@ -1231,7 +1230,7 @@ def test_a_body_is_traced_after_every_run_and_draw_of_the_check(tmp_path, monkey
     path.write_text(text, encoding="utf-8")
     check_path(path)
     assert order[-1] == "traced first"
-    assert order.count("establish theorem") == 2
+    assert order.count("establish claim") == 2
 
 
 # }}}
@@ -1319,11 +1318,11 @@ def test_lanky_check_exits_nonzero_on_a_broken_proof(tmp_path, capsys) -> None:
             """
             from __future__ import annotations
 
-            from lanky import by, theorem
+            from lanky import by, claim
             from lanky.prelude import Fn, Int, Nat
 
 
-            @theorem
+            @claim
             def zero_times(
                 f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat if k >= 1)
             ) -> f[0] * 0 == 0:
@@ -1335,9 +1334,9 @@ def test_lanky_check_exits_nonzero_on_a_broken_proof(tmp_path, capsys) -> None:
     assert lanky_main(["check", str(path)]) == 1
     out = capsys.readouterr().out
     lines = path.read_text(encoding="utf-8").splitlines()
-    claim = next(number for number, line in enumerate(lines, 1) if line == "@theorem")
+    stated = next(number for number, line in enumerate(lines, 1) if line == "@claim")
     body = next(number for number, line in enumerate(lines, 1) if "return by(h(0))" in line)
-    assert f"WARNING zero_times at broken.py:{claim}: your proof fails at broken.py:{body};" in out
+    assert f"WARNING zero_times at broken.py:{stated}: your proof fails at broken.py:{body};" in out
     assert "  h(0) needs 0 >= 1, and this case has nothing that shows it." in out
 
 
