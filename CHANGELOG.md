@@ -227,15 +227,28 @@ All notable changes to lanky are recorded here. The format follows
   a theorem with no proved text (an axiom, a claim only tested) restates the
   statement the printer gives, and lanky asks whether those statements prove
   `False` where the proof takes them. That question took only points that
-  are numbers; a citation at the claim's own point, `nothing_above_zero(n)`
-  inside `def claim(n)`, went unasked, and a proof that took a statement
-  missing its condition there read proved. Now each case of the proof whose
-  citations have variables is asked too: the variables bound, with the
-  sorts the proof gives them, and the case's conditions assumed (`n != 0`
-  under `if n == 0: return`), where some small values satisfy them, so that
-  the question cannot hold of a case that never happens
+  are numbers; a citation at the claim's own point went unasked, and a
+  proof that took a statement missing its condition there read proved:
+
+  ```python
+  @theorem
+  def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
+      def claim(n):
+          if n >= 1:
+              return steady(f, n - 1), claim(n - 1)
+          return grows(f, n)  # grows: g[m] < g[m] + m, its m >= 1 dropped
+
+      return claim
+  ```
+
+  Now each case of the proof whose citations have variables is asked too:
+  the variables bound, with the sorts the proof gives them, and the case's
+  conditions assumed (here `n >= 1` false), where some small values satisfy
+  them, so that the question cannot hold of a case that never happens
   (`lanky.citations.satisfiable`). Where one shows the statements prove
-  `False`, the proof fails at the line of that case.
+  `False`, the proof fails at the line of that case: `UNPROVED
+  every_cell_is_seven ...: the theorems its proof cites without a proved
+  text prove False`, at `return grows(f, n)`.
 
 - **A cited text is compared with the cited theorem's cache entry** (the
   design's 3.5). A theorem's `as_cited` text is kept only from the command

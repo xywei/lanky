@@ -534,43 +534,53 @@ from lanky import axiom, theorem
 from lanky.prelude import Fn, Int, Nat
 
 
+@axiom(cite="a table that does not change from one cell to the next")
+def steady(g: Fn[Nat, Int], m: Nat) -> g[m + 1] == g[m]:
+    """Each cell is the one before it."""
+
+
 @axiom(cite="a printer that dropped a condition, inside an induction")
-def nothing_above_zero(m: Nat) -> m <= 0:
-    """What a statement about an empty range would say with its range dropped."""
+def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
+    """What a statement about the cells past the first would say with m >= 1 dropped."""
 
 
 @theorem
-def all_cells_agree(f: Fn[Nat, Int]) -> all(f[n] == f[0] for n in Nat):
+def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
     def claim(n):
-        if n == 0:
-            return
-        return nothing_above_zero(n), claim(n - 1)
+        if n >= 1:
+            return steady(f, n - 1), claim(n - 1)
+        return grows(f, n)
 
     return claim
 '''
 
 
 def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> None:
-    """The citation is at ``n`` in the case ``n != 0``, where its statement proves False.
+    """``grows`` is cited at ``(f, n)`` in the case ``n < 1``, where its statement proves False.
 
-    No point of the proof is a number, so the question at numbers alone has
-    no instance to take. In the case, with ``n`` bound and ``n != 0``
-    assumed, the statement at ``n`` says ``n <= 0``, and ``omega`` finds
+    The claim is false, and about a table over ``Nat``, which no draw tests;
+    no point of the proof is a number, so the question at numbers alone has
+    no instance to take, and the proof read proved by Lean. In the case,
+    with ``f`` and ``n`` bound and ``n >= 1`` false, ``grows`` at ``(f, n)``
+    says ``f[n] < f[n] + n`` where ``n`` is ``0``, and ``omega`` finds
     False: the proof is refused, at the line of the case.
     """
     _lean_or_skip()
     path = tmp_path / "t4_induction_cases.py"
     path.write_text(T4_INDUCTION, encoding="utf-8")
-    fact = {fact.owner: fact for fact in claims(check_path(path))}["all_cells_agree"]
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
     account = fact.provenance["proof"]
     assert account["closed"] is False, account
     (failure,) = account["failures"]
     assert failure["kind"] == "cite"
-    assert failure["headline"] == "the theorem its proof cites without a proved text proves False"
+    assert failure["headline"] == (
+        "the theorems its proof cites without a proved text prove False"
+    )
+    assert failure["lines"][0].startswith("steady and grows, as lanky states them for Lean")
     assert failure["line"] == 1 + next(
         index
         for index, text in enumerate(T4_INDUCTION.splitlines())
-        if "return nothing_above_zero(n), claim(n - 1)" in text
+        if "return grows(f, n)" in text
     )
     assert fact.provenance.get("tactic") != "its written proof"
 
