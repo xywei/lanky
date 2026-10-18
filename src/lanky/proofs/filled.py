@@ -387,7 +387,9 @@ class _Filling:
                 grid.probe.pop(key, None)
 
         try:
-            f1, f2, f3 = (at(x, prop.left) - at(x, prop.right) for x in (1, 2, 3))
+            # exact probes: with plain ints, f[0] == 0 would give 1 - 1 / 1, a float
+            probes = (ExactInt(1), ExactInt(2), ExactInt(3))
+            f1, f2, f3 = (at(x, prop.left) - at(x, prop.right) for x in probes)
             slope = f2 - f1
             if (f3 - f2 == slope) is not True or (slope == 0) is not False:
                 return None

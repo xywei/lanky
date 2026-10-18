@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import sys
 import types as pytypes
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack
@@ -260,6 +261,28 @@ class _Run:
         if holds is False:
             raise PointFalse(point)
 
+    def check_goal(self, line: int | None) -> None:
+        """Check the claim's goal where a proof with no loop over its domain ends.
+
+        A proof that closes with ``return by(...)`` serves no point of a
+        domain, so :meth:`check_point` has nothing to check; the goal is
+        checked at the draw instead, as each point's is when its case closes.
+
+        Raises:
+            PointFalse: Where it is false at the draw.
+        """
+        if self.loop_line is not None or self.point.values is not None:
+            return
+        from lanky.terms import evaluate
+
+        try:
+            holds = evaluate(self.theorem.goal, dict(self.context))
+        except Exception:  # noqa: BLE001 - a goal with no answer here is no counterexample
+            return
+        if holds is False:
+            self.point.line = line
+            raise PointFalse(self.point)
+
     def condition(self, claim: Any, name: str, frame: Any) -> _Fact:
         """``name.conditions.ode`` in the claim's own proof: the fact, inert."""
         if claim is not self.theorem:
@@ -400,6 +423,7 @@ def _run(theorem: Any, values: Mapping[str, Any], run: _Run) -> None:
         stack.enter_context(exact_reading())
         stack.enter_context(closed_truth())
         stack.enter_context(concrete_sorts(points))
+        returned: list[int] = []
         if is_generator(fn):
             generator = body(*positional, **named)
             for value in generator:
@@ -408,8 +432,19 @@ def _run(theorem: Any, values: Mapping[str, Any], run: _Run) -> None:
                     run.point.line = frame.f_lineno if frame is not None else None
                 del value
         else:
-            body(*positional, **named)
+            # the line the body returns at, which a false goal is reported at
+            def watch(frame: Any, event: str, _arg: Any) -> None:
+                if event == "return" and frame.f_code is fn.__code__:
+                    returned.append(frame.f_lineno)
+
+            previous = sys.getprofile()
+            sys.setprofile(watch)
+            try:
+                body(*positional, **named)
+            finally:
+                sys.setprofile(previous)
         run.check_point()
+        run.check_goal(returned[-1] if returned else None)
 
 
 def native_failure(theorem: Any, samples: int = NATIVE_DRAWS, seed: int = 0) -> Any:
@@ -628,6 +663,23 @@ def _point_failure(theorem: Any, run: _Run) -> Any:
     at = _assignment(theorem, run)
     line = run.point.line or run.loop_line
     said = render(run.statement_at(run.point.depth))
+    if run.point.values is None:
+        # a proof with no loop over its domain: the goal where it ends
+        cells = [
+            f"{name}[{', '.join(_number(index) for index in key)}] = {_number(value)}"
+            for name, _sort in theorem.variables
+            for key, value in sorted(getattr(run.context.get(name), "cells", {}).items())[:5]
+            if 0 < len(getattr(run.context.get(name), "cells", {})) <= 4 and _exact_number(value)
+        ]
+        shown = ", ".join(part for part in (at, ", ".join(cells)) if part)
+        where = f"At {shown}" if shown else "At a draw of its variables"
+        return Failure(
+            "false",
+            line,
+            "its conclusion is false where its proof ends",
+            (f"{where}: the conclusion, {said}, is false.",),
+            None,
+        )
     return Failure(
         "false",
         line,

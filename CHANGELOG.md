@@ -291,6 +291,14 @@ the CFL story, red then green.
   0.5 form, `n` a parameter, refused with `n` moved into the conclusion's
   `for`), `log_of_the_modulus`, `harmonic`, and the CFL story red with its
   suggestion and green under `with cfl`.
+- The soundness reproductions of 0.6's surface (`tests/test_soundness.py`,
+  the design's 3.8): a false `assert` step, the conclusion cited at a later
+  point, a `yield` whose reasons do not give the case, a case with no
+  closing line, and a condition dropped (a claim held under a `with` block
+  cited outside it, a bound name declared again, a bound name read after the
+  block). Each is a false claim, and each fails the check without Lean, with
+  Lean and the native run set aside, and with both; the same proofs written
+  right are proved.
 
 ### Changed
 
@@ -337,6 +345,34 @@ the CFL story, red then green.
   failed step the measure is left out now (the trace refuses a citation at a
   point that is not earlier before Lean is asked), and the report is of the
   step, at its line.
+- The design's calculation form of a step (2.2: one chained `assert` with
+  every fact at its point, then `yield by()`) was not proved, with core Lean
+  or with Mathlib, and was reported as the measure (#191, #192). Each link
+  of the calculation cites the conclusion, and Lean has a measure goal for
+  each; `decreasing_by` showed the first. It shows every one now, which a
+  proof citing two earlier points needed too.
+- The native run checks a claim's goal where a proof with no loop over its
+  domain ends, at the `return by(...)` line ("At g[0] = 1: the conclusion,
+  g[0] == 0, is false."); it checked only points of a domain, so a false
+  claim proved by a citation that did not apply passed natively. And a
+  family defined by an equation with a number on one side (`f[0] == 0`) is
+  filled with integers: the cell was solved as a float and the filling
+  dropped, so the run tested nothing.
+- Two refusals say what they mean (#190): a claim called with its own inputs
+  in its proof is told those are this proof's inputs already, and the fix
+  names an earlier point of the domain, not the inputs in brackets; `return
+  by(...)` inside the loop is headed "a return ends the loop at its first
+  point".
+- `with item as (n):` for a claim or condition with one name is one store,
+  and is accepted, binding the name; a claim with no inputs is assumed by
+  `with item:`, and the refusals write that line, not `as ()`. A name a
+  `with` statement bound is told apart by the binding, not by the value, so
+  another name holding the same object (`True`) is not refused as the
+  block's. `max(x, y, y)` prints `max (max x y) y` for Lean. A reversed
+  loop walks each level from the top down, so a large bounded domain is not
+  walked in full first. A filling that leaves a defining hypothesis with no
+  answer in Python (`f[0] % 0 == 0`, which Lean's reading answers) is
+  dropped.
 
 ## [0.5.0] - 2026-10-18
 
