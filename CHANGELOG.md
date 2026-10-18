@@ -126,7 +126,7 @@ All notable changes to lanky are recorded here. The format follows
   (`exact`), a rewrite by it under a function of the step (`rw`, `simp
   only`), a `linear_combination` with the multipliers lanky's search finds
   among the facts cited, then `linarith`; in core Lean `omega` and `grind`.
-  The compiler adds what a reader never writes (`lanky.oracles.steps`): that
+  The compiler adds what a reader never writes (`lanky.proofs.compile`): that
   an integer denominator the case shows is not zero is not zero in the
   field, the shift `n.toNat = (n - 1).toNat + 1` where a fact has the power
   one order down, and each fact with its casts pushed in. Where the chain's
@@ -223,7 +223,71 @@ All notable changes to lanky are recorded here. The format follows
   math steps (`Schedule.rewrite`) need under the sum over the sources of a
   layer potential. A part with no such condition keeps its script.
 
+- **The vacuity question is asked inside an induction.** A proof that cites
+  a theorem with no proved text (an axiom, a claim only tested) restates the
+  statement the printer gives, and lanky asks whether those statements prove
+  `False` where the proof takes them. That question took only points that
+  are numbers; a citation at the claim's own point went unasked, and a
+  proof that took a statement missing its condition there read proved:
+
+  ```python
+  @theorem
+  def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
+      def claim(n):
+          if n >= 1:
+              return steady(f, n - 1), claim(n - 1)
+          return grows(f, n)  # grows: g[m] < g[m] + m, its m >= 1 dropped
+
+      return claim
+  ```
+
+  Now each case of the proof whose citations have variables is asked too:
+  the variables bound, with the sorts the proof gives them, and the case's
+  conditions assumed (here `n >= 1` false), where some small values satisfy
+  them, so that the question cannot hold of a case that never happens
+  (`lanky.citations.satisfiable`). Where one shows the statements prove
+  `False`, the proof fails at the line of that case: `UNPROVED
+  every_cell_is_seven ...: the theorems its proof cites without a proved
+  text prove False`, at `return grows(f, n)`.
+
+- **A cited text is compared with the cited theorem's cache entry** (the
+  design's 3.5). A theorem's `as_cited` text is kept only from the command
+  that closed with it: the source Lean answered, or on a warm check the
+  source the proof cache kept the answer for, has to state the text as its
+  `Lanky.<name>.as_cited`, byte for byte (`lanky.citations.closed_with`). A
+  written proof's restated texts are compared with the kept ones before
+  Lean is asked and before the proof cache is read, and a proof that
+  restates another text is refused, naming the theorem.
+
 ### Changed
+
+- **One of each: one matcher, one step compiler, one citation.**
+  - `lanky.matching.single_point` lines up every fact a written proof leaves
+    uncalled, in a link or in a `return`, and the fixes a failing step's
+    report offers come from its `candidate_points`. Where no point makes the
+    fact about the step alone, it takes the one point at which an
+    application of the fact is one of the step's (`return copies, stored`,
+    where `copies` gives one side of the claim), the rule
+    `lanky.proofs.match.unify` had; of several such points, those the case
+    rules out go, and the message names the one whose conditions the case
+    shows first.
+  - `lanky.proofs.compile` is the step compiler: the nonzero facts and the
+    power shifts it adds are its own (`nonzero_lines`, `shift_lines`), and a
+    family's value the higher-order rule binds is applied as a `fun`.
+    `lanky.oracles.steps`, `LeanSession.answer_with_holes` and
+    `holes_verdict` are gone; a written proof's verdict, holes included, is
+    `lanky.proofs.report.verdict`.
+  - `lanky.citations.Citation` is the one record of a fact cited: by a step
+    of a written proof, `Citation(source, values, line)`, the source a
+    hypothesis, a theorem, the claim or a fact on the way, and by a
+    plugin's part, `Citation(theorem, hypothesis=position)`. The trace's and
+    `lanky.obligations`' classes are gone, and so are
+    `lanky.citations.Hypothesis`, `Cited`, `citation_of` and the
+    `__lanky_citation__` protocol, which no proof read. `premises_of` gives
+    `lanky.citations.Premise`s, theorems known by their proved texts, and
+    `vacuity_question` takes the theorems cited.
+  - What was left of `lanky.proofs.match`, the algebra of a proof's cases
+    (`decide`, `pins`, `shape_of`), is `lanky.proofs.cases`.
 
 - **A theorem's hypotheses have their Python names in Lean.** The printed
   theorem calls them what the file does, `(pde : ∀ a : Int, ...)`,
@@ -297,7 +361,7 @@ All notable changes to lanky are recorded here. The format follows
   A claim's command now proves one more theorem after its own,
   `Lanky.<name>.as_cited`, the claim as one proposition, from the claim's
   theorem; the oracle keeps that text (`lean_as_cited` in the provenance). A
-  plugin's part that cites the claim (`lanky.obligations.Citation`, which
+  plugin's part that cites the claim (`Citation(theorem, hypothesis=0)`, which
   loopty's applications, series and unfolded postconditions name) restates
   exactly that text, before any variable of its own, and a part whose
   citation is not the claim's statement is refused before Lean is asked. A

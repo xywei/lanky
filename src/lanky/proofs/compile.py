@@ -19,14 +19,21 @@ prove another claim. One command holds the whole proof:
 - A fact at a point is the hypothesis applied to the values, each condition
   closed by ``omega``, or, over the reals, by the first of a few rules. A fact
   cited by its name alone is applied at the point found by matching it
-  against the case's claim (:func:`lanky.proofs.match.unify`).
+  against the step it supports, a link or the case's claim
+  (:func:`lanky.matching.single_point`).
 - ``return f, g`` is one step: ``exact``, or ``linear_combination`` with
   multipliers Python finds (:mod:`lanky.induction`), or ``linarith`` and
   ``nlinarith`` with the facts, in Mathlib; ``exact``, ``omega`` after the
   indices are normalized, or ``grind``, in core Lean. A bare ``return`` is
-  lanky's whole-goal closers on the case.
-- A cited theorem is restated as a hypothesis of the command, from its printed
-  statement, and the proof rests on it in the ledger.
+  lanky's whole-goal closers on the case. A chain is a ``calc``, a link to a
+  step, and a named chain a ``have``; a link written ``by=...`` is ``sorry``.
+- The compiler adds what a reader never writes: that an integer denominator
+  the case shows is not zero is not zero in the field (:func:`nonzero_lines`),
+  and the shift ``n.toNat = (n - 1).toNat + 1`` where a fact has the power one
+  order down (:func:`shift_lines`).
+- A cited theorem is restated as a hypothesis of the command, from the text
+  its own command proved where there is one (:func:`cited_text`), and the
+  proof rests on it in the ledger.
 - The command ends with ``#print axioms``, whose answer is read positively
   (:func:`lanky.proofs.report.audit`).
 
@@ -37,13 +44,14 @@ position is reported at the line the user wrote, in lanky's notation.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pymbolic.primitives as prim
 
 from lanky.audit import audit_lines
+from lanky.citations import Citation, Premise
 from lanky.induction import substitute
 from lanky.lean import (
     ELABORATION_OPTIONS,
@@ -58,20 +66,17 @@ from lanky.lean import (
     render_term,
     statement_of,
 )
-from lanky.prelude import FinType, Refined
-from lanky.proofs.match import (
+from lanky.matching import FamilyValue, _affine, implied, instantiate, same
+from lanky.prelude import FinType, FnType, Refined
+from lanky.proofs.cases import (
     Shape,
     affine,
-    applications,
-    decide,
     integer_sort,
     negated,
     pins,
     shape_of,
-    unify,
 )
 from lanky.proofs.trace import (
-    Citation,
     ClaimDef,
     Given,
     Leaf,
@@ -82,7 +87,17 @@ from lanky.proofs.trace import (
     ProofError,
     TracedChain,
 )
-from lanky.terms import Add, Comparison, Forall, LogicalAnd, Var, conjuncts, render
+from lanky.terms import (
+    Add,
+    Comparison,
+    Elementary,
+    Forall,
+    LogicalAnd,
+    Var,
+    conjuncts,
+    init_args,
+    render,
+)
 
 __all__ = [
     "Command",
@@ -90,9 +105,11 @@ __all__ = [
     "Measure",
     "Origin",
     "Step",
-    "compile_proof",
     "cited_text",
+    "compile_proof",
     "measure",
+    "nonzero_lines",
+    "shift_lines",
 ]
 
 #: The heartbeats one step may take, so that a stray ``nlinarith`` cannot spend
@@ -104,7 +121,9 @@ _LEAN_RELATION = {"==": "=", "<=": "≤", "<": "<", ">=": "≥", ">": ">", "!=":
 
 
 def _shown(value: Any) -> str:
-    """A value as an outline writes it."""
+    """A value as an outline writes it: a term rendered, a family's value as a function."""
+    if isinstance(value, FamilyValue):
+        return value.shown()
     return render(value) if hasattr(value, "mapper_method") else repr(value)
 
 
@@ -215,6 +234,10 @@ class Command:
             report reads it.
         cited: The theorems the proof cites, restated as hypotheses, and the
             theorems their own proofs cited (:func:`cited_text`).
+        restated: Each of those as ``(name, fact id, text, term)``: the text
+            the command restates it as, which has to be the text its own
+            command proved where one was kept for its term ``term``
+            (:meth:`lanky.citations.ProvedTexts.mismatch`).
         as_cited: The text a proof that cites this theorem restates, which the
             command proves as ``Lanky.<name>.as_cited``; ``None`` for none.
         audited: The theorems the command's axiom audit asks about.
@@ -231,6 +254,7 @@ class Command:
     summary: str
     steps: list[Step]
     cited: list[Any]
+    restated: tuple[tuple[str, str, str, Any], ...] = ()
     as_cited: str | None = None
     audited: tuple[str, ...] = ()
     holes: tuple[int, ...] = ()
@@ -493,24 +517,6 @@ def cited_text(theorem: Any, mathlib: bool) -> str:
     return statement_of(theorem.term, theorem.__name__, mathlib=mathlib).proposition
 
 
-class Premise:
-    """A theorem a cited theorem's own proof cited: restated too, and rested on.
-
-    Its ``as_cited`` text is a hypothesis of the cited theorem's
-    ``as_cited``, so a citation of that theorem restates it as well, all the
-    way down (:func:`lanky.citations.premises_of`). It has a theorem's
-    ``__name__`` and ``fact_id``, which is all a restatement reads.
-    """
-
-    def __init__(self, name: str, fact_id: str) -> None:
-        self.__name__ = name
-        self.fact_id = fact_id
-
-    def __repr__(self) -> str:
-        """``<premise log_of_a_power>``."""
-        return f"<premise {self.__name__}>"
-
-
 def _cited_premises(theorem: Any, mathlib: bool, names: _Names) -> Shape:
     """A cited theorem's shape as its restated text is applied: its parameters, then its goal's."""
     statement = statement_of(theorem.term, theorem.__name__, mathlib=mathlib)
@@ -655,6 +661,263 @@ def measure(claim: ClaimDef, calls: Sequence[Citation], conditions: Sequence[Any
 # }}}
 
 
+# {{{ what the compiler adds, which the proof never writes
+
+
+@dataclass
+class _Scope:
+    """What is in scope where a step is compiled, as what the compiler adds reads it.
+
+    Attributes:
+        types: The lanky type of every name in scope: the theorem's
+            variables and the claim's, as the statement printer reads them.
+        facts: What the case knows, as propositions over those names: the
+            claim's conditions and each branch's (``a >= 2``, ``not (n == 1)``).
+        mathlib: Whether the command is for a Lean with Mathlib.
+        shadowed: The root names a variable is named like
+            (:attr:`lanky.lean.LeanStatement.shadowed`).
+        taken: Every name the declaration uses so far, which a fresh name
+            avoids; the compiler adds the names it introduces.
+    """
+
+    types: Mapping[str, Any]
+    facts: tuple[Any, ...] = ()
+    mathlib: bool = True
+    shadowed: frozenset[str] = frozenset()
+    taken: set[str] = field(default_factory=set)
+
+    def fresh(self, stem: str) -> str:
+        """A name like ``stem`` that nothing in the declaration uses yet, then taken."""
+        name, index = stem, 1
+        while name in self.taken or name in self.types:
+            name = f"{stem}_{index}"
+            index += 1
+        self.taken.add(name)
+        return name
+
+    def render(
+        self,
+        term: Any,
+        atomic: bool = False,
+        types: Mapping[str, Any] | None = None,
+        sort: Any = None,
+    ) -> str:
+        """A term as Lean source, in the scope's dialect, its natural exponents as ``.toNat``.
+
+        A family's value the higher-order rule bound (:class:`FamilyValue`) is
+        a ``fun``, its parameters typed by ``sort``, the family's own type, so
+        that ``k ↦ r ** k`` for an ``f: Fn[Nat, Real]`` is ``(fun k => r ^
+        k.toNat)``.
+        """
+        scope = dict(self.types if types is None else types)
+        if isinstance(term, FamilyValue):
+            inner = dict(scope)
+            current = _unrefined(sort)
+            for var in term.parameters:
+                if not isinstance(current, FnType):
+                    break
+                inner[var.name] = current.domain
+                current = _unrefined(current.codomain)
+            with proof_exponents(lambda exponent: self.natural(exponent)):
+                text = render_term(term.body, inner, self.mathlib, self.shadowed)
+            names = " ".join(var.name for var in term.parameters)
+            return f"(fun {names} => {text})"
+        with proof_exponents(lambda exponent: self.natural(exponent)):
+            return render_term(term, scope, self.mathlib, self.shadowed, atomic=atomic)
+
+    def natural(self, term: Any) -> bool:
+        """Whether the case shows ``term`` is an integer at least ``0``."""
+        return implied(Comparison(term, ">=", 0), self.facts, self.types) is True
+
+    def ring(self, *terms: Any) -> str:
+        """The Lean type the terms are numbers of: ``Int``, ``ℝ`` or ``ℂ``, the widest."""
+        kinds = []
+        for term in terms:
+            try:
+                kinds.append(number_type(term, self.types, mathlib=self.mathlib))
+            except Exception:  # noqa: BLE001 - a term the printer cannot read is an integer to it
+                kinds.append("Int")
+        for wide in ("ℂ", "ℝ"):
+            if wide in kinds:
+                return wide
+        return kinds[0] if kinds else "Int"
+
+
+def _denominators(term: Any) -> list[Any]:
+    """The denominators of the true divisions in ``term``, outermost first."""
+    found: list[Any] = []
+    stack = [term]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, FamilyValue):
+            stack.append(node.body)
+            continue
+        if isinstance(node, prim.Quotient):
+            found.append(node.denominator)
+        if isinstance(node, prim.ExpressionNode):
+            stack.extend(init_args(node))
+        elif isinstance(node, tuple):
+            stack.extend(node)
+    return found
+
+
+def nonzero_lines(terms: Iterable[Any], scope: _Scope) -> list[str]:
+    """The facts that the denominators of ``terms`` are not zero, which ``field_simp`` needs.
+
+    An integer denominator the case shows is not zero, ``n`` where ``n >= 1``
+    or ``n - 1`` where ``n >= 2``, is stated in the field the step is in, by
+    ``exact_mod_cast`` and ``omega``, and pushed through the cast, so that the
+    context has ``(n : ℂ) - 1 ≠ 0`` in the form ``ring_nf`` writes it. A
+    modulus squared, ``real(alpha * conj(alpha))``, is not zero by the normSq
+    rule, where a hypothesis says ``alpha`` is not. A real or complex
+    denominator is left to the hypotheses, which ``field_simp`` reads. Every
+    line is tried, so one that does not hold costs nothing.
+    """
+    if not scope.mathlib:
+        return []
+    terms = list(terms)
+    sides = [side for term in terms for side in _sides(term)]
+    ring = scope.ring(*sides) if sides else "ℝ"
+    if ring not in ("ℝ", "ℂ"):
+        ring = "ℝ"
+    lines: list[str] = []
+    seen: list[Any] = []
+    for term in terms:
+        for denominator in _denominators(term):
+            if isinstance(denominator, int | float) or any(
+                same(denominator, other) for other in seen
+            ):
+                continue
+            seen.append(denominator)
+            if _is_modulus_squared(denominator):
+                inner = scope.render(denominator.argument.children[0], atomic=True)
+                name = scope.fresh("nz")
+                lines.append(
+                    f"try have {name} : Complex.re ({inner} * (starRingEnd ℂ) {inner}) ≠ 0 := by "
+                    f"rw [Complex.mul_conj, Complex.ofReal_re]; "
+                    f"exact (Complex.normSq_pos.mpr (by assumption)).ne'"
+                )
+                continue
+            try:
+                kind = number_type(denominator, scope.types, mathlib=True)
+            except Exception:  # noqa: BLE001 - a denominator the printer cannot read gets nothing
+                continue
+            if (
+                kind != "Int"
+                or implied(Comparison(denominator, "!=", 0), scope.facts, scope.types) is not True
+            ):
+                continue
+            text = scope.render(denominator)
+            name = scope.fresh("nz")
+            lines.append(
+                f"try have {name} : (({text} : Int) : {ring}) ≠ 0 := by "
+                f"exact_mod_cast (show ({text} : Int) ≠ 0 by omega)"
+            )
+            lines.append(f"try push_cast at {name}")
+    return lines
+
+
+def _sides(term: Any) -> tuple[Any, ...]:
+    """The two sides of a comparison, or the term itself: what has a number type."""
+    if isinstance(term, prim.Comparison):
+        return (term.left, term.right)
+    return (term,)
+
+
+def _is_modulus_squared(term: Any) -> bool:
+    """Whether a term is ``real(z * conj(z))``."""
+    if not (isinstance(term, Elementary) and term.function == "real"):
+        return False
+    inner = term.argument
+    if not (isinstance(inner, prim.Product) and len(inner.children) == 2):
+        return False
+    first, second = inner.children
+    return (
+        isinstance(second, Elementary)
+        and second.function == "conj"
+        and same(first, second.argument)
+    )
+
+
+def _powers(term: Any) -> list[prim.Power]:
+    """Every power in a term."""
+    found: list[prim.Power] = []
+    stack = [term]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, prim.Power):
+            found.append(node)
+        if isinstance(node, prim.ExpressionNode):
+            stack.extend(init_args(node))
+        elif isinstance(node, tuple):
+            stack.extend(node)
+    return found
+
+
+def shift_lines(goal: Any, facts: Sequence[Any], scope: _Scope) -> list[str]:
+    """The rewrites that put the goal's powers in the exponents its facts have.
+
+    Where the goal has ``x ** n`` for a natural ``n`` (``x ^ n.toNat`` in Lean)
+    and a fact has the same base at ``n - s``, ``s`` a positive number the
+    case shows ``n - s >= 0`` for, the goal is rewritten with ``n.toNat = (n -
+    s).toNat + s`` and ``pow_succ`` (``pow_add`` for ``s > 1``), so that ``x ^
+    (n - s).toNat`` is an atom of both. One rewrite per exponent, the
+    smallest shift first.
+    """
+    if not scope.mathlib:
+        return []
+    shifts: dict[str, int] = {}
+    fact_powers = [power for fact in facts for power in _powers(fact)]
+    for power in _powers(goal):
+        exponent = power.exponent
+        if not isinstance(exponent, prim.Variable) or exponent.name not in scope.types:
+            continue
+        for other in fact_powers:
+            if not same(other.base, power.base):
+                continue
+            offset = _offset(other.exponent, exponent.name)
+            if offset is None or offset <= 0:
+                continue
+            if not scope.natural(exponent - offset):
+                continue
+            current = shifts.get(exponent.name)
+            if current is None or offset < current:
+                shifts[exponent.name] = offset
+    lines = []
+    for name, offset in sorted(shifts.items()):
+        lemma = "pow_succ" if offset == 1 else "pow_add"
+        variable = scope.render(Var(name), atomic=True)
+        lines.append(
+            f"rw [show {variable}.toNat = ({variable} - {offset}).toNat + {offset} by omega, "
+            f"{lemma}]"
+        )
+    return lines
+
+
+def _offset(exponent: Any, name: str) -> int | None:
+    """``s`` where ``exponent`` is ``name - s``; ``None`` for anything else."""
+    form = _affine(exponent)
+    if form is None:
+        return None
+    variables = {key: value for key, value in form.items() if key and value != 0}
+    if variables != {name: 1}:
+        return None
+    constant = form.get("", 0)
+    if constant.denominator != 1:
+        return None
+    return int(-constant)
+
+
+def _unrefined(sort: Any) -> Any:
+    """A sort with its refinements taken off."""
+    while isinstance(sort, Refined):
+        sort = sort.base
+    return sort
+
+
+# }}}
+
+
 # {{{ emitting the proof
 
 
@@ -718,7 +981,7 @@ class _Compiler:
         from lanky.citations import premises_of
 
         seen = {getattr(theorem, "fact_id", None) for theorem in theorems}
-        stack = []
+        stack: list[Premise] = []
         for theorem in theorems:
             identifier = getattr(theorem, "fact_id", None)
             if not identifier:
@@ -730,13 +993,13 @@ class _Compiler:
                     "unsupported", f"the proof cites {theorem.__name__}: {exc}"
                 ) from None
         while stack:
-            citation = stack.pop(0)
-            if citation.fact_id in seen or citation.restated is None:
+            premise = stack.pop(0)
+            if premise.fact_id in seen:
                 continue
-            seen.add(citation.fact_id)
-            lean = self.names.fresh(citation.name)
-            self.cited.append((lean, citation.restated, Premise(citation.name, citation.fact_id)))
-            stack.extend(citation.premises)
+            seen.add(premise.fact_id)
+            lean = self.names.fresh(premise.__name__)
+            self.cited.append((lean, premise.text, premise))
+            stack.extend(premise.premises)
 
     # {{{ statements
 
@@ -855,6 +1118,15 @@ class _Compiler:
             summary=self._summary(measured),
             steps=self.steps,
             cited=[theorem for _lean, _text, theorem in self.cited],
+            restated=tuple(
+                (
+                    theorem.__name__,
+                    getattr(theorem, "fact_id", None) or "",
+                    text,
+                    getattr(theorem, "term", None),
+                )
+                for _lean, text, theorem in self.cited
+            ),
             as_cited=self.as_cited,
             audited=audited,
             holes=tuple(self.proof.holes),
@@ -993,6 +1265,21 @@ class _Compiler:
         here = substitute(term, {**getattr(self, "renaming", {}), **context.pins})
         return render_term(here, self.types, self.mathlib, self.shadowed, atomic=atomic)
 
+    def _value(self, value: Any, sort: Any, context: _Context) -> str:
+        """A fact's value at its point, as Lean source: a family's value as a ``fun``.
+
+        The higher-order rule binds a family of the fact to a function of the
+        variables a sum binds (:class:`lanky.matching.FamilyValue`), ``k ↦ r
+        ** k``, which is ``(fun k => r ^ k.toNat)`` for an ``f: Fn[Nat, Real]``.
+        """
+        if not isinstance(value, FamilyValue):
+            return self._render(value, context, atomic=True)
+        pins = {**getattr(self, "renaming", {}), **context.pins}
+        for var in value.parameters:
+            pins.pop(var.name, None)
+        here = FamilyValue(value.parameters, substitute(value.body, pins))
+        return self._scope(context).render(here, atomic=True, sort=sort)
+
     def _prop(self, prop: Any, context: _Context) -> str:
         """A proposition, with the case's pins put in, as Lean source."""
         here = substitute(prop, {**getattr(self, "renaming", {}), **context.pins})
@@ -1109,7 +1396,9 @@ class _Compiler:
         lines: list[_Line] = []
         instances: list[Instance] = []
         for citation in facts:
-            produced, made = self._citation(citation, leaf, context, goal, named)
+            produced, made = self._citation(
+                citation, leaf, context, goal, named, link=line is not None
+            )
             lines += produced
             instances += made
         step = Step(
@@ -1339,17 +1628,14 @@ class _Compiler:
         except Exception:  # noqa: BLE001 - what cannot be typed is a real number to the closers
             return "ℝ"
 
-    def _scope(self, context: _Context) -> Any:
-        """The scope a step is compiled in, as :mod:`lanky.oracles.steps` reads it."""
-        from lanky.oracles.steps import StepScope
-
-        return StepScope(
+    def _scope(self, context: _Context) -> _Scope:
+        """The scope a step is compiled in, as what the compiler adds reads it."""
+        return _Scope(
             types=self.types,
             facts=tuple(context.facts),
             mathlib=self.mathlib,
             shadowed=self.shadowed,
             taken=self.names.used,
-            path=self.proof.path,
         )
 
     def _step_term(self, term: Any, context: _Context) -> str:
@@ -1383,10 +1669,12 @@ class _Compiler:
         context: _Context,
         claim: Any,
         named: Mapping[int, Instance] | None = None,
+        link: bool = False,
     ) -> tuple[list[_Line], list[Instance]]:
         """The ``have`` lines that state a cited fact at its point, one per part.
 
         A fact on the way is in the context already, under its name.
+        ``claim`` is what the step shows, a link's or the case's.
         """
         source = citation.source
         if isinstance(source, Named):
@@ -1411,7 +1699,7 @@ class _Compiler:
         for index, (shape, lean) in enumerate(zip(shapes, leans, strict=True)):
             if shape.binders:
                 if citation.values is None:
-                    values = self._point(citation, shape, context, claim)
+                    values = self._point(citation, shape, context, claim, link)
                 else:
                     values = citation.values
             else:
@@ -1434,11 +1722,14 @@ class _Compiler:
     ) -> tuple[list[Instance], list[_Line]]:
         """``have f := h v₁ (by omega) ...``: one fact at its point, each condition discharged."""
         at = {var.name: value for (var, _), value in zip(shape.binders, values, strict=True)}
+        sorts = {var.name: domain for var, domain in shape.binders}
         pieces: list[tuple[str, Origin | None]] = [(lean, None)]
         for kind, item in shape.premises:
             if kind == "value":
                 try:
-                    pieces.append((self._render(at[item], context, atomic=True), None))
+                    pieces.append(
+                        (self._value(at[item], sorts.get(item), context), None)
+                    )
                 except UnsupportedTerm as exc:
                     raise ProofError(
                         "unsupported",
@@ -1446,7 +1737,7 @@ class _Compiler:
                         citation.line,
                     ) from None
                 continue
-            condition = substitute(item, at) if item is not None else None
+            condition = instantiate(item, at) if item is not None else None
             origin = Origin(
                 "condition",
                 citation.line,
@@ -1460,7 +1751,7 @@ class _Compiler:
                 },
             )
             pieces.append((self._discharge(condition, context), origin))
-        body = substitute(shape.body, at)
+        body = instantiate(shape.body, at)
         parts = conjuncts(body) if isinstance(body, prim.LogicalAnd) else (body,)
         names = [self.names.numbered("f") for _ in parts]
         instances = [
@@ -1516,82 +1807,59 @@ class _Compiler:
             return False
         return kind.endswith("Int")
 
-    def _point(self, citation: Citation, shape: Shape, context: _Context, claim: Any) -> tuple:
+    def _point(
+        self, citation: Citation, shape: Shape, context: _Context, claim: Any, link: bool
+    ) -> tuple:
         """The point of a fact cited by name alone, by matching it against the step it supports.
 
         The step is a link of a chain, or a case's claim for a ``return``. The
         point is the one at which the fact is about the step's terms and
-        nothing else (:func:`lanky.matching.single_point`), solving offsets
-        such as ``x + 2 = a``, binding values by type, and a family of the
-        fact to a function by the higher-order rule. Where that rule finds no
-        single point, the point that lines the fact's applications up with
-        the claim's, one family at a time, is taken if there is one
-        (:meth:`_unified`).
+        nothing else, or where there is none, the one at which it gives one of
+        them (:func:`lanky.matching.single_point`), solving offsets such as
+        ``x + 2 = a``, binding values by type, and a family of the fact to a
+        function by the higher-order rule.
 
         Raises:
-            ProofError: When no single point fits.
+            ProofError: When no single point fits, with the fix: write it.
         """
         from lanky.induction import Lemma
         from lanky.matching import NoSinglePoint, single_point
 
-        lemma = Lemma(citation.name, shape.binders, shape.premises, shape.body)
-        terms = [claim.left, claim.right] if isinstance(claim, Comparison) else [claim]
-        try:
-            return tuple(single_point(lemma, terms, self.types, context.facts, citation.name))
-        except NoSinglePoint:
-            pass
-        except Exception:  # noqa: BLE001 - the matcher's failure leaves the point to the other rule
-            pass
-        return self._unified(citation, shape, context, claim)
-
-    def _unified(self, citation: Citation, shape: Shape, context: _Context, claim: Any) -> tuple:
-        """The point at which the fact's applications of a family are the claim's.
-
-        Raises:
-            ProofError: When no single point fits.
-        """
-        unknowns = [var.name for var, _ in shape.binders]
-        order = list(self.types)
-        candidates: dict[tuple[str, ...], dict[str, Any]] = {}
-        for pattern in applications(shape.body):
-            for atom in applications(claim):
-                solution = unify(pattern, atom, unknowns, order)
-                if solution is None or set(solution) != set(unknowns):
-                    continue
-                key = tuple(render(solution[name]) for name in unknowns)
-                candidates.setdefault(key, solution)
-        if len(candidates) > 1:
-            consistent = {
-                key: solution
-                for key, solution in candidates.items()
-                if all(
-                    decide(guard, context.facts, self.types) is not False
-                    for guard in shape.at(solution)[1]
-                )
-            }
-            if len(consistent) == 1:
-                candidates = consistent
-        if len(candidates) == 1:
-            ((_, solution),) = candidates.items()
-            return tuple(solution[name] for name in unknowns)
         name = citation.name
-        if not candidates:
+        unknowns = [var.name for var, _ in shape.binders]
+        what = "this step" if link else "this case's claim"
+        if not isinstance(shape.body, Comparison):
             raise ProofError(
                 "no-point",
-                f"{name}: no point of {name} fits a term of this case's claim, "
-                f"{render(claim)}; write its point, as {name}({', '.join(unknowns)}) "
-                "with the values meant",
+                f"{name} says {render(shape.body)}, which lines up with no step; write its "
+                f"point, as {name}({', '.join(unknowns)}) with the values meant",
                 citation.line,
                 fix=f"{name}({', '.join(unknowns)})",
             )
-        example = next(iter(candidates))
-        return_fix = f"{name}({', '.join(example)})"
+        lemma = Lemma(name, shape.binders, shape.premises, shape.body)
+        terms = [claim.left, claim.right] if isinstance(claim, Comparison) else [claim]
+        try:
+            return tuple(single_point(lemma, terms, self.types, context.facts, name))
+        except NoSinglePoint as exc:
+            failed: NoSinglePoint = exc
+        except Exception:  # noqa: BLE001 - a fact the matcher cannot read fits no point it finds
+            failed = NoSinglePoint("", ())
+        if not failed.several:
+            raise ProofError(
+                "no-point",
+                f"{name}: no point of {name} fits a term of {what}, {render(claim)}; write "
+                f"its point, as {name}({', '.join(unknowns)}) with the values meant",
+                citation.line,
+                fix=f"{name}({', '.join(unknowns)})",
+            )
+        example = ", ".join(_shown(value) for value in failed.candidates[0])
+        fix = f"{name}({example})"
         raise ProofError(
             "no-point",
-            f"{name}: no single point of {name} fits this case's claim, {render(claim)}, "
-            f"since {len(candidates)} do; write it, as {return_fix}",
+            f"{name}: no single point of {name} fits {what}, {render(claim)}, since "
+            f"{len(failed.candidates)} do; write it, as {fix}",
             citation.line,
-            fix=return_fix,
+            fix=fix,
         )
 
     def _claim_call(
@@ -1685,12 +1953,11 @@ class _Compiler:
     def _closer(self, step: Step, origin: Origin, context: _Context) -> list[_Line]:
         """The step's closing tactic: what turns the facts into the step's claim.
 
-        With Mathlib, the compiler first puts in what the proof never writes
-        (:mod:`lanky.oracles.steps`): each fact with its casts pushed in, the
-        facts that the integer denominators the case shows nonzero are not
-        zero in the field (:func:`~lanky.oracles.steps.nonzero_lines`), and the
-        rewrite that puts the goal's powers in the exponents its facts have
-        (:func:`~lanky.oracles.steps.shift_lines`).
+        With Mathlib, the compiler first puts in what the proof never writes:
+        each fact with its casts pushed in, the facts that the integer
+        denominators the case shows nonzero are not zero in the field
+        (:func:`nonzero_lines`), and the rewrite that puts the goal's powers
+        in the exponents its facts have (:func:`shift_lines`).
         """
         names = [lean_identifier(instance.lean_name) for instance in step.instances]
         claim = step.claim
@@ -1698,8 +1965,6 @@ class _Compiler:
         lines: list[_Line] = []
         scope = self._scope(context)
         if self.mathlib:
-            from lanky.oracles.steps import nonzero_lines, shift_lines
-
             for name in dict.fromkeys(names):
                 lines.append(_Line(f"try push_cast at {name}", origin))
             bodies = [instance.body for instance in step.instances]

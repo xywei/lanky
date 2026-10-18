@@ -965,7 +965,7 @@ def proof_exponents(shown_natural: Any) -> Iterator[None]:
     could be a negative power, where Python's ``**`` answers a float. Inside
     a step of a proof the case may show ``n - 1 >= 0``, and the step is
     printed under this, with ``shown_natural`` the case's judgement
-    (:meth:`lanky.oracles.steps.StepScope.natural`). A wrong judgement prints
+    (as :mod:`lanky.proofs.compile` reads the case). A wrong judgement prints
     a term Lean reads as another power, which can only make the step fail:
     the step's goal and its facts are the claim's and the hypotheses',
     stated by the printer without this.

@@ -31,10 +31,10 @@ import pytest
 
 from lanky import theorem
 from lanky.audit import TRUSTED_AXIOMS, audit_failure, audit_lines, audited, screen
-from lanky.citations import Proved, ProvedTexts, restatements
+from lanky.citations import Citation, Proved, ProvedTexts, restatements
 from lanky.lean import LeanStatement, statement_of
 from lanky.ledger import Fact, Status
-from lanky.obligations import Citation, Hints, Instance, Obligation, Part, part_statement
+from lanky.obligations import Hints, Instance, Obligation, Part, part_statement
 from lanky.oracles.lean import (
     UNAUDITED,
     LeanOracle,
@@ -471,7 +471,7 @@ def _cited(term: Any, hints: Hints | None = None) -> Part:
         "nonneg applied",
         term,
         hints or Hints(),
-        citations=(Citation(0, nonneg.fact_id, "nonneg"),),
+        citations=(Citation(nonneg, hypothesis=0),),
     )
 
 
@@ -582,7 +582,7 @@ def test_restatements_are_refused_for_a_hypothesis_the_part_does_not_have() -> N
         Proved(nonneg.fact_id, "Lanky.nonneg", "∀ n : Int, 0 ≤ n → n ≥ 0", False, nonneg.term)
     )
     part = Part(
-        "p", "p", Forall(((m, Nat),), m >= 0), citations=(Citation(3, nonneg.fact_id, "nonneg"),)
+        "p", "p", Forall(((m, Nat),), m >= 0), citations=(Citation(nonneg, hypothesis=3),)
     )
     assert restatements(part, texts).refused.startswith("the part cites nonneg at hypothesis 3")
     stated = part_statement(

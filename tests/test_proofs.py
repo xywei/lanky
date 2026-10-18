@@ -19,16 +19,19 @@ import pytest
 
 from conftest import claims
 from lanky.check import check_path, import_path
+from lanky.citations import Citation
 from lanky.cli import main as lanky_main
 from lanky.cli import report_written
+from lanky.induction import Lemma
 from lanky.ledger import Fact, Ledger, Status
-from lanky.prelude import Nat
+from lanky.matching import NoSinglePoint, single_point
+from lanky.prelude import Fn, Int, Nat
 from lanky.proofs import ProofError, compile_proof, trace_proof, written_lines
+from lanky.proofs.cases import affine, from_affine, pins
 from lanky.proofs.compile import measure
-from lanky.proofs.match import affine, from_affine, pins, unify
 from lanky.proofs.report import audit, case_text, read
-from lanky.proofs.trace import Citation, ClaimDef
-from lanky.terms import Var, render
+from lanky.proofs.trace import ClaimDef
+from lanky.terms import Comparison, Var, render
 
 #: Written proofs over the integers, which core Lean checks.
 CASES = '''\
@@ -523,10 +526,23 @@ def test_affine_forms_read_and_write_offsets() -> None:
 
 
 def test_a_fact_is_matched_at_the_point_its_offsets_solve() -> None:
-    a, b, x, y, R = Var("a"), Var("b"), Var("x"), Var("y"), Var("R")
-    solution = unify(R[x + 2, y], R[a, b], ["x", "y"], ["a", "b"])
-    assert {name: render(value) for name, value in solution.items()} == {"x": "a - 2", "y": "b"}
-    assert unify(R[x, 0], R[a, b], ["x"]) is None
+    """A fact that gives one side of the claim is at the point that lines that side up."""
+    a, b, x, y = Var("a"), Var("b"), Var("x"), Var("y")
+    R, C, D = Var("R"), Var("C"), Var("D")
+    types = {"R": Fn[Nat, Nat, Int], "C": Fn[Nat, Nat, Int], "D": Fn[Nat, Nat, Int]}
+    types.update(a=Nat, b=Nat)
+    claim = [R[a, b], D[a, b]]
+    copies = Lemma(
+        "copies",
+        ((x, Nat), (y, Nat)),
+        (("value", "x"), ("value", "y")),
+        Comparison(R[x + 2, y], "==", C[x, y]),
+    )
+    point = single_point(copies, claim, types, (), "copies")
+    assert [render(value) for value in point] == ["a - 2", "b"]
+    stuck = Lemma("stuck", ((x, Nat),), (("value", "x"),), Comparison(R[x, 0], "==", C[x, 0]))
+    with pytest.raises(NoSinglePoint):
+        single_point(stuck, claim, types, (), "stuck")
 
 
 def test_naturals_that_sum_to_nothing_are_each_nothing() -> None:

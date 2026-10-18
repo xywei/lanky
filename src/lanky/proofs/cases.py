@@ -1,18 +1,11 @@
-"""The algebra a written proof needs before Lean is asked: points, cases and pins.
+"""The algebra of a written proof's cases, before Lean is asked: what a path decides and fixes.
 
-Three questions are answered here, in Python, and each answer only produces
-text that Lean checks. Where is a fact cited without a point (``return
-stored``) applied? Which cases of a proof are impossible, or certain, given
-the conditions of the path to them? And which variables does a case's
-condition fix (``a + b == 0`` among naturals fixes ``a`` and ``b`` at ``0``)?
-
-A point is found by matching. A fact's applications of a family, ``D[i, a',
-b']``, are matched against the applications in the case's claim, ``D[i, a,
-b]``: each argument is an affine form in the fact's binders, and the
-equations between the arguments are solved one unknown at a time, so ``R[x +
-2, y]`` against ``R[a, b]`` gives ``x = a - 2`` and ``y = b``. Only integer
-solutions with a coefficient of one are taken, which is what an offset is; a
-point that needs a division is left for the user to write.
+Two questions are answered here, in Python, and each answer only produces
+text that Lean checks. Which cases of a proof are impossible, or certain,
+given the conditions of the path to them (:func:`decide`)? And which variables
+does a case's condition fix (:func:`pins`: ``a + b == 0`` among naturals fixes
+``a`` and ``b`` at ``0``)? Where a fact cited without a point is applied is
+the matcher's question, :mod:`lanky.matching`, which every citation shares.
 
 The cases are read with lanky's induction search (:mod:`lanky.induction`),
 which reads a guard as an affine inequality over the bounds of its variables
@@ -23,7 +16,7 @@ condition is known only when the path has asked it, or its negation, before.
 from __future__ import annotations
 
 import numbers
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
@@ -37,15 +30,12 @@ from lanky.terms import Comparison, Forall, LogicalNot, Var, conjuncts, render
 __all__ = [
     "Shape",
     "affine",
-    "applications",
     "decide",
     "from_affine",
     "integer_sort",
     "negated",
     "pins",
     "shape_of",
-    "spine",
-    "unify",
 ]
 
 
@@ -149,155 +139,6 @@ def from_affine(form: Mapping[str | None, Fraction], order: Sequence[str] = ()) 
     if constant < 0:
         return term - _number(-constant)
     return term
-
-
-def simplified(term: Any, order: Sequence[str] = ()) -> Any:
-    """``term``, written as its affine form where it has one: ``a - 2 + 2`` is ``a``."""
-    form = affine(term)
-    return term if form is None else from_affine(form, order)
-
-
-# }}}
-
-
-# {{{ applications of families
-
-
-def spine(term: Any) -> tuple[str, tuple[Any, ...]] | None:
-    """``(family, arguments)`` of an application, ``R[i, a, b]`` or ``R(a)(b)``; else ``None``."""
-    arguments: tuple[Any, ...] = ()
-    while True:
-        if isinstance(term, prim.Call):
-            arguments = (*term.parameters, *arguments)
-            term = term.function
-        elif isinstance(term, prim.Subscript):
-            index = term.index if isinstance(term.index, tuple) else (term.index,)
-            arguments = (*index, *arguments)
-            term = term.aggregate
-        elif isinstance(term, prim.Variable):
-            return (term.name, arguments) if arguments else None
-        else:
-            return None
-
-
-def applications(term: Any) -> list[Any]:
-    """Every application of a family in ``term``, outermost first, each once by its text."""
-    from lanky.terms import Exists, Sum, init_args
-
-    found: list[Any] = []
-    seen: set[str] = set()
-    stack = [term]
-    while stack:
-        node = stack.pop(0)
-        if isinstance(node, prim.Call | prim.Subscript) and spine(node) is not None:
-            key = render(node)
-            if key not in seen:
-                seen.add(key)
-                found.append(node)
-            stack.extend(spine(node)[1])
-            continue
-        if isinstance(node, Forall | Exists | Sum):
-            stack.extend(part for part in (node.body, node.guard) if part is not None)
-        elif isinstance(node, prim.ExpressionNode):
-            for child in init_args(node):
-                stack.extend(child if isinstance(child, tuple) else (child,))
-    return found
-
-
-def _split(term: Any, unknowns: Iterable[str]) -> tuple[dict[str, Fraction], Any] | None:
-    """``term`` as ``sum(c * u) + rest``, with no unknown in ``rest``; ``None`` if it is not.
-
-    A term that is no affine form is ``rest`` itself when it mentions no
-    unknown.
-    """
-    from lanky.terms import free_variables
-
-    unknown = set(unknowns)
-    form = affine(term)
-    if form is None:
-        if free_variables(term) & unknown:
-            return None
-        return {}, term
-    coefficients = {name: value for name, value in form.items() if name in unknown}
-    rest = {name: value for name, value in form.items() if name not in unknown}
-    return coefficients, from_affine(rest)
-
-
-def same(left: Any, right: Any) -> bool:
-    """Whether two terms are equal as integers by their affine forms, or as written."""
-    from lanky.terms import structurally_equal
-
-    first, second = affine(left), affine(right)
-    if first is not None and second is not None:
-        return first == second
-    return structurally_equal(left, right) or render(left) == render(right)
-
-
-def unify(
-    pattern: Any, atom: Any, unknowns: Sequence[str], order: Sequence[str] = ()
-) -> dict[str, Any] | None:
-    """The values of ``unknowns`` that make the application ``pattern`` the application ``atom``.
-
-    Both have to apply the same family to as many arguments. Each equation
-    between two arguments is affine in the unknowns; one with a single
-    unknown left, at a coefficient of one or minus one, gives its value, and
-    an equation with none left has to hold as it stands. ``None`` when the
-    applications do not match; the unknowns the arguments do not mention are
-    left out of the answer. ``order`` is the order the values' variables are
-    written in.
-    """
-    first, second = spine(pattern), spine(atom)
-    if first is None or second is None:
-        return None
-    if first[0] != second[0] or len(first[1]) != len(second[1]):
-        return None
-    pending = list(zip(first[1], second[1], strict=True))
-    solved: dict[str, Any] = {}
-    while pending:
-        progress = False
-        left_over = []
-        for left, right in pending:
-            here = substitute(left, solved)
-            split = _split(here, [name for name in unknowns if name not in solved])
-            if split is None:
-                return None
-            coefficients, rest = split
-            if not coefficients:
-                if not same(rest, right):
-                    return None
-                progress = True
-                continue
-            if len(coefficients) == 1:
-                ((name, coefficient),) = coefficients.items()
-                if coefficient in (1, -1):
-                    value = _solve_for(right, rest, coefficient, order)
-                    if value is None:
-                        return None
-                    solved[name] = value
-                    progress = True
-                    continue
-            left_over.append((left, right))
-        if not progress:
-            return None
-        pending = left_over
-    return solved
-
-
-def _solve_for(right: Any, rest: Any, coefficient: Fraction, order: Sequence[str]) -> Any:
-    """The unknown ``u`` with ``coefficient * u + rest == right``, simplified where it can be."""
-    first, second = affine(right), affine(rest)
-    if first is not None and second is not None:
-        form: dict[str | None, Fraction] = {}
-        _accumulate(form, first, coefficient)
-        _accumulate(form, second, -coefficient)
-        return from_affine(form, order)
-    value = right - rest if not _is_zero(rest) else right
-    return value if coefficient == 1 else -value
-
-
-def _is_zero(term: Any) -> bool:
-    """Whether ``term`` is the number zero."""
-    return isinstance(term, numbers.Number) and not isinstance(term, bool) and term == 0
 
 
 # }}}
