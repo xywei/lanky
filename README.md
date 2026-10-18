@@ -132,12 +132,13 @@ Read it aloud: *"For each point (a, b) of the conclusion, in order. If a <
 b + 2), and the PDE."* The claim is a table of true and false, and the proof
 is a loop that fills it in; each entry may use entries already filled, which
 is induction, with no function standing for a proof. Lean checks each step,
-and the row says how: `by its proof, table.py:16-20: induction on a, 2
-cases, 2 steps`. Before Lean is asked, the body also runs as plain Python at
-drawn values, so a step written wrong is caught at its line, with its
-numbers: `At a = 2, b = 0: the left side is 5, the right side -5.` The
-quickstart's [Write a proof](docs/quickstart.md#write-a-proof) has the whole
-language on one card.
+and the row says how; in the quickstart, where this claim is `table.py`, it
+reads `by its proof, table.py:16-20: induction on a, 2 cases, 2 steps`.
+Before Lean is asked, the body also runs as plain Python at drawn values, so
+a step written wrong is caught at its line, with its numbers: `At a = 2, b =
+0: the left side is 5, the right side -5.` The quickstart's
+[Write a proof](docs/quickstart.md#write-a-proof) has the whole language on
+one card.
 
 **Conditions have names.** Results often share their conditions, and
 engineers name them: the CFL condition, an expansion point that is not zero.

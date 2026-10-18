@@ -2066,8 +2066,8 @@ A claim with no `for` in its conclusion has no loop, and closes with
 ### Two runs of one body
 
 Running or importing the file runs no proof: `python table.py` prints
-nothing, and `pytest` tests the statement. The body runs only under `lanky
-check`, in two ways.
+nothing, and `pytest` samples the statement, never the proof. The body runs
+only under `lanky check`, in two ways.
 
 - **Natively**, at the check's draws, as plain Python. The values are exact,
   `Fraction`s and exact complex numbers, never floats.
@@ -2327,9 +2327,9 @@ power; the rest is the modulus squared." The step is known for the rest of
 the proof, so `return by(modulus_squared)` is asked only for the rest of the
 way, from where the step ended to the claim's other side. The claim has no
 `for`, so it is proved without a loop, and closes with `return by(...)`. The
-two facts come from `lanky.known`, under plain names. Each is a
-claim stated in Python, like any other, with a docstring that cites the
-Mathlib lemma it is:
+two facts come from `lanky.known`, under plain names. Each is a claim stated
+in Python, like any other, with a docstring that cites the Mathlib lemma it
+is:
 
 ```python
 @claim
