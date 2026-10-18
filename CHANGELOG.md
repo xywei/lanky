@@ -6,6 +6,8 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-18
+
 Proofs read as engineers write checks (the decision of 2026-10-18). A step is
 an `assert` with its reason after it, `assert x == y, by(f, g)`; a
 calculation is Python's own chained comparison; cases are `if`; a claim over
