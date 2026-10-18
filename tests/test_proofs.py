@@ -1361,6 +1361,24 @@ def near_the_top(n: Nat) -> all(k <= n for k in Fin[n + 1]):
 
 
 @claim
+def from_the_guard_top(
+    n: Nat, f: Fn[Nat, Int], top: f[n + 100] == 0, step: all(f[k] == f[k + 1] for k in Nat)
+) -> all(f[k] == 0 for k in Nat if k <= n + 100):
+    for k in reversed(from_the_guard_top.conclusion.domain):
+        if k == n + 100:
+            yield by(top)
+        else:
+            assert f[k] == f[k + 1], by(step[k])
+            yield by(from_the_guard_top.conclusion[k + 1])
+
+
+@claim
+def sparse(n: Nat) -> all(k + n >= n for k in Fin[n] if k + 1 >= n):
+    for k in sparse.conclusion.domain:
+        yield by()
+
+
+@claim
 def table(n: Nat, f: Fn[Fin[n], Fin[n], Int]) -> all(
     all(f[i, j] + i * j <= f[i, j] + i for j in Fin[n]) for i in Fin[n]
 ):
@@ -1430,6 +1448,24 @@ def test_a_reversed_loop_over_a_large_domain_starts_at_its_top(native) -> None:
 
     start = time.monotonic()
     native.near_the_top.run_proof(n=10**9)
+    assert time.monotonic() - start < 30
+
+
+def test_a_reversed_loop_over_the_naturals_starts_at_the_top_its_guard_gives(native) -> None:
+    """``k <= n + 100``: the walk starts at 100, not at the top of the tester's window (Codex)."""
+    from lanky.proofs.native import PointFalse
+
+    native.from_the_guard_top.run_proof(n=0, f=[0] * 111)
+    with pytest.raises(PointFalse):
+        native.from_the_guard_top.run_proof(n=0, f=[0] * 100 + [1] + [0] * 10)
+
+
+def test_a_sparse_guard_over_a_large_domain_is_not_scanned_in_full(native) -> None:
+    """The walk examines a bounded number of candidates, its guard rejecting them (Codex)."""
+    import time
+
+    start = time.monotonic()
+    native.sparse.run_proof(n=10**9)
     assert time.monotonic() - start < 30
 
 

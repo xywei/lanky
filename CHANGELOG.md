@@ -372,7 +372,10 @@ the CFL story, red then green.
   loop walks each level from the top down, so a large bounded domain is not
   walked in full first. A filling that leaves a defining hypothesis with no
   answer in Python (`f[0] % 0 == 0`, which Lean's reading answers) is
-  dropped.
+  dropped. A reversed loop over the naturals whose guard gives its top
+  (`k <= n + 100`) starts there, not at the top of the tester's window, and
+  a walk examines at most 20,000 candidates, so a sparse guard over a large
+  domain is not scanned in full.
 
 ## [0.5.0] - 2026-10-18
 

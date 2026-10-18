@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import itertools
 import sys
 import types as pytypes
 from collections.abc import Iterator, Mapping
@@ -60,6 +61,16 @@ NATIVE_DRAWS = 50
 
 #: How many points of a conclusion's domain one loop walks at most.
 POINT_LIMIT = 200
+
+#: How many candidate values one walk examines at most, those its guard or a
+#: refinement rejects among them: a sparse guard over a large domain
+#: (``k == 10**9 - 1`` over ``Fin[10**9]``) is not scanned in full. A walk
+#: that runs out stops there, and tests no point past it.
+CANDIDATE_LIMIT = 20_000
+
+
+class _Spent(Exception):  # noqa: N818 - a signal inside the walk, never seen outside it
+    """A walk has examined :data:`CANDIDATE_LIMIT` candidates."""
 
 
 class PointFalse(AssertionError):
@@ -325,12 +336,17 @@ def _points(
 
     Reversed, each binder's values are walked from the top down, which is the
     loop's order reversed: the points of a lexicographic order, reversed, are
-    every level's values reversed.
+    every level's values reversed. A natural or an integer starts at the top
+    the guard gives it (``k <= n + 100``), where it gives one.
     """
-    from lanky.terms import evaluate
+    from lanky.terms import conjuncts, evaluate
+
+    budget = [CANDIDATE_LIMIT]
+    bounds = conjuncts(guard) if guard is not None else ()
 
     def walk(index: int, scope: dict[str, Any]) -> Iterator[tuple[Any, ...]]:
         if index == len(binders):
+            _spend(budget)
             if guard is not None:
                 try:
                     if evaluate(guard, scope) is not True:
@@ -340,18 +356,69 @@ def _points(
             yield tuple(scope[var.name] for var, _ in binders)
             return
         var, domain = binders[index]
-        for value in _domain_values(domain, var, scope, bound, reverse):
+        top = _guard_top(var, domain, bounds, scope) if reverse else None
+        for value in _domain_values(domain, var, scope, bound, reverse, top, budget):
             yield from walk(index + 1, {**scope, var.name: value})
 
-    yield from walk(0, dict(context))
+    try:
+        yield from walk(0, dict(context))
+    except _Spent:
+        return
+
+
+def _spend(budget: list[int]) -> None:
+    """Count one candidate against a walk's budget.
+
+    Raises:
+        _Spent: When the budget is used up.
+    """
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise _Spent
+
+
+def _guard_top(var: Any, domain: Any, bounds: tuple[Any, ...], scope: Mapping[str, Any]) -> Any:
+    """The top a guard gives a natural or an integer at this point (``k <= n + 100``), or ``None``.
+
+    Read as the trace reads it when it allows ``reversed(...)``
+    (:func:`lanky.proofs.compile._upper_bound`), and evaluated at the values
+    the walk has: ``None`` where it reads a variable not bound yet.
+    """
+    from lanky.prelude import Refined, Sort
+    from lanky.proofs.compile import _upper_bound
+    from lanky.terms import evaluate
+
+    base = domain
+    while isinstance(base, Refined):
+        base = base.base
+    if not (isinstance(base, Sort) and base.name in ("Nat", "Int")):
+        return None
+    top = _upper_bound(var.name, domain, bounds)
+    if top is None:
+        return None
+    try:
+        value = evaluate(top, dict(scope))
+    except Exception:  # noqa: BLE001 - a top that reads an inner variable is no top here
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return int(value)
 
 
 def _domain_values(
-    domain: Any, var: Any, scope: Mapping[str, Any], bound: int, reverse: bool = False
+    domain: Any,
+    var: Any,
+    scope: Mapping[str, Any],
+    bound: int,
+    reverse: bool = False,
+    top: int | None = None,
+    budget: list[int] | None = None,
 ) -> Iterator[Any]:
     """The first values of a binder's domain: a ``Fin``'s points, the naturals to the bound.
 
-    Reversed, its last values first, from the top down.
+    Reversed, its last values first, from the top down: from ``top`` for a
+    natural or an integer whose guard gives one, else from the bound. Each
+    value looked at is counted against ``budget``.
     """
     from lanky.prelude import FinType, Refined, Sort
     from lanky.terms import evaluate
@@ -371,9 +438,14 @@ def _domain_values(
         values = sorted(range(-bound, bound + 1), key=lambda value: (abs(value), value < 0))
     else:
         raise TypeError(f"the native run does not walk {domain}")
-    if reverse:
+    if reverse and top is not None and isinstance(domain, Sort):
+        # from the guard's top down: to 0 for a natural, without end for an integer
+        values = range(top, -1, -1) if domain.name == "Nat" else itertools.count(top, -1)
+    elif reverse:
         values = reversed(values)
     for value in values:
+        if budget is not None:
+            _spend(budget)
         exact_value = ExactInt(value)
         if props:
             point = {**scope, var.name: exact_value}
