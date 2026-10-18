@@ -1659,10 +1659,10 @@ class _Compiler:
         try:
             return self._unified(citation, shape, context, claim)
         except ProofError:
-            if missed is None or not missed.candidates:
+            if missed is None or not _binds_a_family(missed.candidates):
                 raise
-        # the matcher's points say more than the other rule's, a family's
-        # value among them: the fix is written with them, lambda and all
+        # the other rule binds no family: the matcher's points, which bind
+        # one to a function, are the fix, written with a lambda
         from lanky.proofs.trace import shown
 
         point = ", ".join(shown(value) for value in missed.candidates[0])
@@ -1944,6 +1944,13 @@ def _ring_of_sort(sort: Any) -> str | None:
     if isinstance(sort, Sort):
         return {"Nat": "Int", "Int": "Int", "Real": "ℝ", "Complex": "ℂ"}.get(sort.name)
     return None
+
+
+def _binds_a_family(points: Sequence[tuple[Any, ...]]) -> bool:
+    """Whether some point gives a family of the fact a function as its value."""
+    from lanky.matching import FamilyValue
+
+    return any(isinstance(value, FamilyValue) for point in points for value in point)
 
 
 def _applied(

@@ -208,7 +208,9 @@ def test_the_fact_over_the_reals_is_restated_over_the_integers(example) -> None:
     # multiplier pairs its sum with the step's
     assert ") f_2\n" in source
     assert "((-1) * n : Int) * f_3" in source
-    assert command.summary == "induction on n, 2 cases, 4 steps, 1 routine"
+    assert command.summary == (
+        "induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss"
+    )
     reasons = [row[-1] for row in command.outline]
     assert reasons == [
         "by one_more_term, at (lambda i: i**3, n)",
@@ -245,9 +247,10 @@ def test_a_steps_multipliers_see_its_sums() -> None:
 
 
 def test_the_ladder_tries_field_simp_then_ring() -> None:
-    """After ``field_simp`` alone; never for a question whether a fact is vacuous."""
+    """After the attempts that prove a claim without it; never for a question of vacuity."""
     tactics = lean_module.MATHLIB_TACTICS
-    assert tactics.index("(field_simp; ring)") == tactics.index("field_simp") + 1
+    assert tactics.index("(field_simp; ring)") == tactics.index("(push_cast; ring)") + 1
+    assert tactics.index("field_simp") < tactics.index("linarith")
     assert "(field_simp; ring)" not in lean_module._mathlib_tactics((), refuting=True)
     assert _rung_of_text("(field_simp; ring)") == "by algebra, clearing its denominators"
 
@@ -311,7 +314,9 @@ def test_with_mathlib_the_example_is_proved_by_its_written_proof(
     }
     account = facts["nicomachus"].provenance["proof"]
     assert account["closed"] is True, account
-    assert account["summary"] == "induction on n, 2 cases, 4 steps, 1 routine"
+    assert account["summary"] == (
+        "induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss"
+    )
     assert facts["one_more_term"].id in facts["nicomachus"].rests_on
 
 

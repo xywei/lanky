@@ -247,6 +247,8 @@ def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[s
     by ``ring``, it closes an identity of rational functions, which is what
     is left of most (#173): sympy's Laplacian of ``log r``, ``(1 - 2*x**2 /
     (x**2 + y**2)) / (x**2 + y**2) + ...`` under ``x**2 + y**2 > 0``, is one.
+    It comes after the attempts that close a claim without it, so that a
+    claim one of them proves is proved as it was.
 
     ``refuting`` is for a goal that is ``False`` under binders, the question
     whether a fact is vacuous: ``positivity``, ``ring``, ``field_simp``,
@@ -259,10 +261,10 @@ def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[s
         "positivity",
         "ring",
         "field_simp",
-        "(field_simp; ring)",
         "linarith",
         "nlinarith",
         "(push_cast; ring)",
+        "(field_simp; ring)",
         f"simp [{', '.join(lemmas)}]",
         f"simp_all [{', '.join(lemmas)}] <;> linarith",
     )

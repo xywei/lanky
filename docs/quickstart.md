@@ -1035,8 +1035,8 @@ truncates. Every Mathlib statement is declared in the `Lanky` namespace,
 because Mathlib declares lemmas such as `mul_comm` at the root and a claim of
 that name would otherwise be refused as already declared. The core attempts
 fail, and so do Mathlib's whole-goal ones (`norm_num`, `positivity`, `ring`,
-`field_simp`, `field_simp` then `ring`, `linarith`, `nlinarith`, and three
-that combine them with `push_cast` and `simp`), and the last script is an induction on `n`, which the
+`field_simp`, `linarith`, `nlinarith`, `ring` after `push_cast` and after
+`field_simp`, and two with `simp`), and the last script is an induction on `n`, which the
 ladder chose because `n` is a natural parameter that the bound of a sum
 mentions: trade `n` for the natural it is, and in each case take the last term
 off the sum, which leaves the induction hypothesis and a polynomial identity

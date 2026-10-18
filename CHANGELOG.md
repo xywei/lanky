@@ -303,9 +303,11 @@ All notable changes to lanky are recorded here. The format follows
   reals takes a function whose values are integers or reals, and not one
   whose values are complex.
 
-- **The ladder tries `field_simp` followed by `ring`** (#173), after
-  `field_simp` alone, which closes only what clearing the denominators
-  leaves trivial; a bare `return` in a written proof tries it too. sympy's
+- **The ladder tries `field_simp` followed by `ring`** (#173). `field_simp`
+  alone closes only what clearing the denominators leaves trivial. The new
+  attempt comes after `linarith`, `nlinarith` and `ring` after `push_cast`,
+  so a claim one of them proved is proved as it was; a bare `return` in a
+  written proof tries it too. sympy's
   Laplacian of `log r`, `(1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 -
   2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0` under `x**2 + y**2 > 0` or
   `!= 0`, is proved with no body. Its rung reads `by algebra, clearing its
