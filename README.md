@@ -128,13 +128,13 @@ with the code it was written after.
 
 ## Run it
 
-lanky's own examples and loopty's demonstrations run on the 0.4.0 release
+lanky's own examples and loopty's demonstrations run on the 0.5.0 release
 on PyPI. The examples are in the repository and not in the package, so clone
 the release's tag for them. On Python 3.12 or later:
 
 ```sh
 pip install "lanky[lean,cas]"
-git clone --branch v0.4.0 https://github.com/xywei/lanky.git && cd lanky
+git clone --branch v0.5.0 https://github.com/xywei/lanky.git && cd lanky
 lanky check examples/gauss.py
 ```
 
@@ -206,11 +206,11 @@ starts no Lean, also for a question the first check ran out of time on.
 
 ## Status
 
-This is 0.4.0. The core works; the edges are sharp. On main since 0.4.0, a
+This is 0.5.0. The core works; the edges are sharp. New in 0.5.0, a
 theorem's body can be its proof, written in Python and checked by Lean: facts
 cited by name, case splits, induction, and calculations a link to a line,
 citing facts lanky knows (`lanky.known`); and every Lean command ends with an
-axiom audit read positively. New in 0.4.0, the ledger
+axiom audit read positively. Since 0.4.0, the ledger
 says what happened where it said nothing: an oracle that raised, in a
 `RAISED` line, a claim Lean was not asked about and why, under `--verbose`,
 and a Mathlib project Lean cannot import, in the `WITHOUT LEAN` line; and a
@@ -759,7 +759,7 @@ The open issues you are most likely to meet:
 pip install lanky
 ```
 
-That is the 0.4.0 release, which loopty's demonstrations need
+That is the 0.5.0 release, which loopty's demonstrations need
 ([Run it](#run-it)). lanky needs Python 3.12 or later. In a uv project, `uv add lanky`, and the
 same for the extras below. The examples and the quickstart are in the
 repository and not in the package; clone it to follow them.
