@@ -428,6 +428,19 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Fixed
 
+- **A written proof that cites a theorem without a proved text is asked
+  about every case it takes the theorem in** (the design's T4, Codex on #177
+  and #182). Two cases went unasked, and in each a false claim read proved by
+  Lean from a statement that, as lanky prints it, proves `False`:
+  - a theorem cited by name alone, `return grows`, which has no point
+    written: it is now taken at the point the compiler matched it at, as a
+    written point is;
+  - a case no small number reaches (`n == 100`), or whose condition reads a
+    table (`if f[n] == 3:`): a search that finds no values showed nothing,
+    and the case is now asked unless its conditions alone are shown to prove
+    `False`, so a case nothing reaches still takes nothing. The search also
+    tries the integers a case's conditions name, and their neighbours.
+
 - The script that takes a complex number apart (`part_scripts`) names the
   facts it adds apart from the theorem's hypotheses, so a hypothesis named
   `hz0` is not hidden by one. The other scripts already drew their names

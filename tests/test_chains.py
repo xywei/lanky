@@ -606,13 +606,17 @@ def test_the_vacuity_question_is_asked_at_symbolic_points_in_a_case() -> None:
     )
 
 
-def test_a_case_is_asked_only_where_some_values_satisfy_it() -> None:
-    """A case with no point found among small numbers is not asked: its question may be vacuous."""
+def test_values_satisfying_a_case_are_looked_for_among_small_numbers() -> None:
+    """And at the integers its conditions name; ``False`` is only that none was found."""
     assert satisfiable([(a, Nat), (b, Nat)], [LogicalNot(a < 2), b < 1])
     assert not satisfiable([(a, Nat)], [a < 0])
     assert satisfiable([(n, Int)], [n < 0])
     assert satisfiable([(Var("i"), Fin[n]), (n, Nat)], [Var("i") >= 1])
     assert not satisfiable([(alpha, Fn[Nat, Real])], [alpha[0] > 0])
+    # a case only a large number reaches is met at the number it names (Codex, #182)
+    assert satisfiable([(n, Nat)], [n == 100])
+    assert satisfiable([(a, Nat), (b, Nat)], [a >= 10, b > a])
+    assert not satisfiable([(n, Nat)], [n >= 100, n < 50])
 
 
 # }}}

@@ -585,6 +585,117 @@ def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> No
     assert fact.provenance.get("tactic") != "its written proof"
 
 
+#: T4 inside an induction, with the citation by name alone: the compiler finds its point.
+T4_BY_NAME = T4_INDUCTION.replace("return grows(f, n)", "return grows")
+
+
+def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> None:
+    """``return grows`` is taken at ``(f, n)``, matched against ``f[n] == 7`` (Codex, #177).
+
+    The point is written nowhere, so the case's question had no point to
+    take ``grows`` at, and was not asked: the false claim read proved by
+    Lean. The compiler's instance is the point now, and the case at ``n <
+    1`` is refused as when the point is written.
+    """
+    _lean_or_skip()
+    path = tmp_path / "t4_by_name_cases.py"
+    path.write_text(T4_BY_NAME, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["lines"][0].startswith("steady and grows, as lanky states them for Lean")
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
+#: T4 in a case no small number reaches, and in one whose condition reads a table.
+T4_UNSAMPLED = '''\
+"""Proofs that take a citation in a case the search for values does not reach."""
+
+from __future__ import annotations
+
+from lanky import axiom, theorem
+from lanky.prelude import Fn, Int, Nat
+
+
+@axiom(cite="a printer that dropped a condition")
+def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
+    """What a statement about the cells past the first would say with m >= 1 dropped."""
+
+
+@theorem
+def cell_one_hundred(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat if n == 100):
+    def claim(n):
+        return grows(f, n - 100)
+
+    return claim
+
+
+@theorem
+def threes_are_sevens(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
+    def claim(n):
+        if f[n] == 3:
+            return grows(f, 0)
+        return grows(f, 0)
+
+    return claim
+
+
+@theorem
+def past_a_hundred(
+    f: Fn[Nat, Int], seven: all(f[m] == 7 for m in Nat if m >= 100)
+) -> all(f[n] == 7 for n in Nat if n >= 100):
+    def claim(n):
+        if n < 50:
+            return grows(f, n)
+        return seven(n)
+
+    return claim
+'''
+
+
+@pytest.fixture(scope="module")
+def unsampled(tmp_path_factory) -> dict:
+    """:data:`T4_UNSAMPLED` checked with core Lean, by owner."""
+    _lean_or_skip()
+    path = tmp_path_factory.mktemp("t4_unsampled") / "t4_unsampled_cases.py"
+    path.write_text(T4_UNSAMPLED, encoding="utf-8")
+    return {fact.owner: fact for fact in claims(check_path(path))}
+
+
+@pytest.mark.parametrize("owner", ["cell_one_hundred", "threes_are_sevens"])
+def test_t4_in_a_case_no_small_number_reaches_is_asked(unsampled, owner) -> None:
+    """A search that finds no values shows nothing about the case (Codex, #177 and #182).
+
+    ``n == 100`` is met by no small number, and ``f[n] == 3`` cannot be
+    evaluated at numbers, so neither case had its question asked, and both
+    false claims read proved by Lean from ``grows`` at a point where its
+    statement is ``f[0] < f[0]``. The case is asked now unless its
+    conditions alone prove False, which these do not.
+    """
+    fact = unsampled[owner]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["headline"] == (
+        "the theorem its proof cites without a proved text proves False"
+    )
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
+def test_a_case_its_conditions_rule_out_is_not_asked(unsampled) -> None:
+    """``n < 50`` under the guard ``n >= 100`` is a case nothing reaches; its citation is idle.
+
+    Asked, the question would prove False from the case's conditions alone
+    and refuse a sound proof; the conditions are shown inconsistent first,
+    and the case is passed over.
+    """
+    account = unsampled["past_a_hundred"].provenance["proof"]
+    assert account["closed"] is True, account
+
+
 def test_a_restated_text_other_than_the_kept_one_is_refused_before_lean(cases) -> None:
     """The design's 3.5: a citation is compared with the text the cited command closed with.
 

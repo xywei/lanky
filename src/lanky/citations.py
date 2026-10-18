@@ -332,8 +332,10 @@ def vacuity_question(
     ``variables`` are ``(Var, sort)`` binders over them and ``conditions``
     what holds in the case the points are taken in, the hypotheses after
     the texts. Such a question shows the texts prove ``False`` only if the
-    case can happen, so the caller asks it only where some values satisfy
-    ``conditions`` (:func:`satisfiable`), and ``case`` names it.
+    case can happen, so the caller asks it unless the case is shown not to:
+    where values satisfying ``conditions`` are found (:func:`satisfiable`),
+    and where none are but the conditions alone are not shown to prove
+    ``False``. ``case`` names it.
     """
     from lanky.ledger import Fact
     from lanky.terms import LogicalAnd
@@ -417,21 +419,56 @@ _NUMBERS = (1, 2, 0, -1, 3)
 #: How many points are tried at most.
 _TRIES = 4096
 
+#: How many of the integers a case's conditions name are tried, with their neighbours.
+_NAMED = 8
+
+
+def _integers_named(conditions: Sequence[Any]) -> tuple[int, ...]:
+    """The integers ``conditions`` name, past the small ones, each with its neighbours."""
+    import numbers
+
+    from lanky.terms import init_args
+
+    found: dict[int, None] = {}
+    stack = list(conditions)
+    while stack and len(found) < _NAMED:
+        item = stack.pop()
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, numbers.Integral):
+            if int(item) not in _INTEGERS:
+                found[int(item)] = None
+            continue
+        if isinstance(item, (tuple, list)):
+            stack.extend(item)
+        elif hasattr(item, "mapper_method"):
+            try:
+                stack.extend(init_args(item))
+            except Exception:  # noqa: BLE001 - what cannot be taken apart names nothing
+                continue
+    return tuple(
+        value + step for value in found for step in (0, -1, 1) if value + step not in _INTEGERS
+    )
+
 
 def satisfiable(variables: Sequence[tuple[Any, Any]], conditions: Sequence[Any]) -> bool:
     """Whether some values of ``variables`` satisfy ``conditions`` and their domains, as found.
 
     A point is looked for among small numbers: each integer variable
     (``Nat``, ``Int``, a point of ``Fin``) from ``0`` up and a little below,
-    each real or complex one among a few. ``True`` where one is found; a
-    question taken in a case with no point found is not asked
-    (:func:`vacuity_question`). A family, a variable of another sort, or a
-    condition that cannot be evaluated at numbers, makes it ``False``.
+    and at the integers the conditions name and their neighbours (``n ==
+    100`` is met at ``100``), each real or complex one among a few. ``True``
+    where one is found. ``False`` says only that none was found: a family, a
+    variable of another sort, or a condition that cannot be evaluated at
+    numbers, makes it ``False`` too, so a caller that needs to know a case
+    cannot happen asks a prover (:func:`lanky.proofs._ruled_out`).
     """
     from lanky.induction import domain_conditions
     from lanky.prelude import FinType, FnType, Refined, Sort
     from lanky.terms import evaluate
 
+    named = _integers_named(conditions)
+    integers = tuple(dict.fromkeys((*_INTEGERS, *named)))
     choices: list[tuple[Any, ...]] = []
     tests = list(conditions)
     for var, sort in variables:
@@ -440,7 +477,7 @@ def satisfiable(variables: Sequence[tuple[Any, Any]], conditions: Sequence[Any])
             base = base.base
         tests += list(domain_conditions(var, sort))
         if isinstance(base, FinType) or (isinstance(base, Sort) and base.name in ("Nat", "Int")):
-            choices.append(_INTEGERS)
+            choices.append(integers)
         elif isinstance(base, Sort) and base.name in ("Real", "Complex"):
             choices.append(_NUMBERS)
         elif isinstance(base, FnType):

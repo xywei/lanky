@@ -389,7 +389,7 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
         return _not_checked(fact, where, said or "Lean did not answer")
     said_verdict, failures = verdict(proof, command, record)
     if said_verdict in ("closed", CLOSED_WITH_HOLES):
-        inconsistent = _inconsistent_citations(fact, proof, mathlib)
+        inconsistent = _inconsistent_citations(fact, proof, mathlib, command)
         if inconsistent is not None:
             return _failed(fact, where, command, [inconsistent], theorem.path)
     if said_verdict == "closed":
@@ -400,7 +400,9 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
     return _failed(fact, where, command, failures, theorem.path)
 
 
-def _inconsistent_citations(fact: Fact, proof: Proof, mathlib: bool) -> Failure | None:
+def _inconsistent_citations(
+    fact: Fact, proof: Proof, mathlib: bool, command: Command | None = None
+) -> Failure | None:
     """Whether the theorems the proof cites without a proved text prove ``False`` together.
 
     A citation of a theorem whose own command proved no text (an axiom, a
@@ -413,10 +415,12 @@ def _inconsistent_citations(fact: Fact, proof: Proof, mathlib: bool) -> Failure 
     them: once at the points that are numbers, and once for each case of the
     proof that takes them at points with variables, the claim's ``(a - 2,
     b)`` inside an induction, those variables bound and the case's
-    conditions assumed, where some values satisfy the conditions
-    (:func:`lanky.citations.satisfiable`). Where one shows they do, the proof
-    fails, naming them. ``None`` where every citation is by a proved text, or
-    none of them is shown inconsistent.
+    conditions assumed, unless the conditions alone are shown to rule the
+    case out. A point is where the proof takes a theorem, written or, for a
+    theorem cited by name alone, ``return grows``, the one ``command`` found
+    by matching. Where one shows they do, the proof fails, naming them.
+    ``None`` where every citation is by a proved text, or none of them is
+    shown inconsistent.
     """
     from lanky.check import _stronger_than_a_heuristic
     from lanky.citations import proved_text
@@ -432,7 +436,7 @@ def _inconsistent_citations(fact: Fact, proof: Proof, mathlib: bool) -> Failure 
         return None
     found = None
     line: int | None = None
-    for question, where in _vacuity_questions(fact, proof, theorems, mathlib):
+    for question, where in _vacuity_questions(fact, proof, theorems, mathlib, command):
         found = _stronger_than_a_heuristic(question)
         if found is not None:
             line = where
@@ -469,7 +473,7 @@ def _inconsistent_citations(fact: Fact, proof: Proof, mathlib: bool) -> Failure 
 
 
 def _vacuity_questions(
-    fact: Fact, proof: Proof, theorems: list[Any], mathlib: bool
+    fact: Fact, proof: Proof, theorems: list[Any], mathlib: bool, command: Command | None = None
 ) -> list[tuple[Fact, int | None]]:
     """The vacuity questions of a proof's printed citations, each with the line it is about.
 
@@ -477,9 +481,14 @@ def _vacuity_questions(
     Then one for each case whose citations are at points with variables, as
     :func:`_inconsistent_citations` says: the variables the points and the
     case's conditions mention are bound, with the sorts the proof gives them,
-    and the conditions are its hypotheses after the texts. A case whose
-    points or conditions cannot be stated, or for which no values satisfying
-    its conditions are found, is not asked.
+    and the conditions are its hypotheses after the texts. The points are
+    the written ones and, for a theorem cited by name alone, the ones
+    ``command`` took it at (:func:`_taken_at`). A case whose points or
+    conditions cannot be stated is not asked. Nor is one whose conditions
+    alone a stronger oracle than a heuristic shows to prove ``False``, where
+    no values satisfying them are found among small numbers: a case none can
+    reach takes nothing, while a search that found no values shows nothing
+    (``n == 100``, or a condition no number can be put into).
     """
     import os
 
@@ -487,13 +496,12 @@ def _vacuity_questions(
     from lanky.matching import FamilyValue
     from lanky.terms import Forall, conjuncts, free_variables
 
+    taken = _taken_at(proof, command)
     numbers = [
-        (citation.source.fact_id, citation.values)
+        (fact_id, values)
         for leaf in proof.leaves
-        for citation in leaf.citations
-        if getattr(citation.source, "fact_id", None) is not None
-        and citation.values is not None
-        and all(_a_number(value) for value in citation.values)
+        for fact_id, values in taken.get(id(leaf), ())
+        if all(_a_number(value) for value in values)
     ]
     out: list[tuple[Fact, int | None]] = []
     first = vacuity_question(fact.owner, theorems, fact.where, numbers, mathlib)
@@ -513,12 +521,10 @@ def _vacuity_questions(
     seen: set[int] = set()
     for leaf in proof.leaves:
         points = [
-            (citation.source.fact_id, citation.values)
-            for citation in leaf.citations
-            if getattr(citation.source, "fact_id", None) is not None
-            and citation.values is not None
-            and not all(_a_number(value) for value in citation.values)
-            and not any(isinstance(value, FamilyValue) for value in citation.values)
+            (fact_id, values)
+            for fact_id, values in taken.get(id(leaf), ())
+            if not all(_a_number(value) for value in values)
+            and not any(isinstance(value, FamilyValue) for value in values)
         ]
         if not points or id(leaf) in seen:
             continue
@@ -538,9 +544,11 @@ def _vacuity_questions(
         if names is None:
             continue
         variables = [(Var(name), sorts[name]) for name in sorts if name in names]
-        if not satisfiable(variables, conditions):
-            continue
         case = f"in the case at {base}:{leaf.line}" if leaf.line is not None else "in a case"
+        if not satisfiable(variables, conditions) and _ruled_out(
+            fact, variables, conditions, case
+        ):
+            continue
         question = vacuity_question(
             fact.owner,
             theorems,
@@ -554,6 +562,64 @@ def _vacuity_questions(
         if question is not None:
             out.append((question, leaf.line))
     return out
+
+
+def _taken_at(proof: Proof, command: Command | None) -> dict[int, list[tuple[str, tuple]]]:
+    """Where the proof takes each theorem it cites, ``(fact id, values)``, by leaf.
+
+    A point written in the proof, ``grows(f, n)``, is the citation's own. A
+    theorem cited by name alone, ``return grows``, has none written, and is
+    taken where the compiler matched it against the step it supports: the
+    instances of ``command``'s steps. Without the command only the written
+    points are known.
+    """
+    taken: dict[int, list[tuple[str, tuple]]] = {}
+    for leaf in proof.leaves:
+        for citation in leaf.citations:
+            fact_id = getattr(citation.source, "fact_id", None)
+            if fact_id is not None and citation.values is not None:
+                taken.setdefault(id(leaf), []).append((fact_id, tuple(citation.values)))
+    for step in command.steps if command is not None else ():
+        for instance in step.instances:
+            citation = instance.citation
+            fact_id = getattr(citation.source, "fact_id", None)
+            if fact_id is None or citation.values is not None:
+                continue
+            taken.setdefault(id(step.leaf), []).append((fact_id, tuple(instance.values)))
+    return taken
+
+
+def _ruled_out(fact: Fact, variables: list[Any], conditions: list[Any], case: str) -> bool:
+    """Whether a stronger oracle than a heuristic shows that no values satisfy ``conditions``.
+
+    The question is the case's own, without the theorems: its variables
+    bound with their sorts, its conditions the hypotheses, and ``False`` the
+    goal, as a claim's hypotheses are asked about
+    (:func:`lanky.check.hypotheses_fact`). Shown, the case takes nothing,
+    and its citations are not asked about; not shown, they are, since a
+    case no small number reaches may still be reached.
+    """
+    import re
+
+    from lanky.check import _stronger_than_a_heuristic
+    from lanky.terms import Forall, LogicalAnd
+
+    if not conditions:
+        return False
+    guard = conditions[0] if len(conditions) == 1 else LogicalAnd(tuple(conditions))
+    suffix = re.sub(r"[^0-9A-Za-z]+", "-", case).strip("-")
+    question = Fact(
+        id=f"{fact.owner}:case@{suffix}",
+        kind="hypotheses",
+        statement=f"the conditions of {fact.owner}'s proof {case} are inconsistent",
+        term=Forall(tuple(variables), False, guard),
+        where=fact.where,
+        owner=fact.owner,
+    )
+    try:
+        return _stronger_than_a_heuristic(question) is not None
+    except Exception:  # noqa: BLE001 - a question no oracle can take shows nothing
+        return False
 
 
 def _a_number(value: Any) -> bool:
