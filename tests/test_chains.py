@@ -1,19 +1,17 @@
-"""Chains and citations of written proofs: the surface, the matcher, and the Lean of each step.
+"""Chains and citations of written proofs: the surface, the matcher, what the compiler adds.
 
-The surface and the matcher are Python and need no Lean. The Lean each step
-compiles to is checked in two ways: as text, against what the design's
-examples print, and, where a Lean with Mathlib is installed, by Lean itself,
-inside the recursive theorem a written proof compiles to (the design's 1.1
-and 1.2, as the check's T3 and T7 wrote them). The proof-trace mode that
-runs a body and calls ``claim`` is not here: these tests build the scope a
-step is compiled in by hand, as the tracer will.
+The surface and the matcher are Python and need no Lean: there is one matcher
+(:mod:`lanky.matching`), which lines up a fact a proof leaves uncalled with the
+step it supports, and one :class:`lanky.citations.Citation`, which records
+every fact cited, by a proof or by a plugin's part. The Lean a written proof
+compiles to (:mod:`lanky.proofs.compile`, the one step compiler) is checked as
+text for the design's 1.1 and 1.2, written here as the design writes them,
+and, where a Lean with Mathlib is installed, by Lean itself.
 """
 
 from __future__ import annotations
 
 import os
-from importlib.util import find_spec
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,15 +19,18 @@ from lanky import theorem
 from lanky.chains import Chain, ChainError, combined_relation
 from lanky.citations import (
     Citation,
-    Cited,
     CitedText,
-    Hypothesis,
-    citation_of,
+    Premise,
+    Proved,
+    ProvedTexts,
+    closed_with,
+    premises_of,
     proved_texts,
+    satisfiable,
     vacuity_question,
 )
 from lanky.induction import Lemma
-from lanky.lean import UnsupportedTerm, lean_type, print_lean, proof_exponents, render_term
+from lanky.lean import UnsupportedTerm, print_lean, proof_exponents, render_term
 from lanky.matching import (
     FamilyValue,
     NoSinglePoint,
@@ -39,24 +40,16 @@ from lanky.matching import (
     instantiate,
     same,
     single_point,
-)
-from lanky.oracles.lean import CLOSED_WITH_HOLES, LeanOracle, LeanSession, holes_verdict
-from lanky.oracles.steps import (
-    StepError,
-    StepScope,
-    chain_script,
-    draw_links,
-    drawn_status,
-    named_script,
-    nonzero_lines,
-    outline_text,
-    shift_lines,
-    step_script,
+    touches,
 )
 from lanky.prelude import Complex, Fin, Fn, Int, Nat, Real
+from lanky.proofs import compile_proof, trace_proof
+from lanky.proofs.cases import shape_of
+from lanky.proofs.compile import _Scope, cited_text, nonzero_lines, shift_lines
+from lanky.proofs.report import verdict
+from lanky.proofs.trace import ClaimDef, Given
 from lanky.terms import (
     Comparison,
-    Forall,
     LogicalNot,
     Sum,
     Var,
@@ -78,7 +71,19 @@ def compressed_taylor(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    """The design's 1.1, its statement as l2p.py has it."""
+    """The design's 1.1, its statement as l2p.py has it, and its proof by a chain."""
+
+    def claim(a, b):
+        if a < 2:
+            return stored
+        return (
+            R[a, b]
+            .equals(-R[a - 2, b + 2], by=recurrence)
+            .equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))
+            .equals(D[a, b], by=pde)
+        )
+
+    return claim
 
 
 @theorem
@@ -90,77 +95,37 @@ def line_taylor(
     first_term: alpha * a[1] == beta,
     ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
 ) -> all(a[n] == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
-    """The design's 1.2, with the coefficient written out."""
-
-
-class Claim:
-    """``claim`` as a proof body holds it: calling it cites the claim at a point."""
-
-    def __init__(self, citation: Citation) -> None:
-        self.citation = citation
-
-    def __call__(self, *values):
-        return Cited(self.citation.at(values))
-
-
-def hypotheses(thm) -> dict[str, Hypothesis]:
-    """The theorem's hypotheses as the handles a proof body holds."""
-    return {name: Hypothesis(name, prop) for name, prop in thm.hypotheses}
-
-
-def compressed_taylor_case():
-    """The second case of 1.1: the chain, and the scope it is compiled in."""
-    facts = hypotheses(compressed_taylor)
-    pde, recurrence = facts["pde"], facts["recurrence"]
-    claim = Claim(
-        Citation(
-            "the claim",
-            compressed_taylor.goal,
-            "Lanky.compressed_taylor.claim D R pde stored recurrence",
-            kind="claim",
-        )
-    )
-    # fmt: off
-    chain = (
-        R[a, b]
-        .equals(-R[a - 2, b + 2], by=recurrence)
-        .equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))
-        .equals(D[a, b], by=pde)
-    )
-    # fmt: on
-    types = {**dict(compressed_taylor.variables), "a": Nat, "b": Nat}
-    scope = StepScope(
-        types=types,
-        facts=(LogicalNot(a < 2),),
-        taken={"pde", "stored", "recurrence", "ha", "hb", "case_1"},
-        path=__file__,
-    )
-    return chain, scope, claim, facts
-
-
-def line_taylor_case():
-    """The second case of 1.2: the named fact, the return's reasons, and the scope."""
-    facts = hypotheses(line_taylor)
-    ode = facts["ode"]
-    claim = Claim(
-        Citation(
-            "the claim",
-            line_taylor.goal,
-            "Lanky.line_taylor.claim alpha beta a nonzero first_term ode",
-            kind="claim",
-        )
-    )
-    a_ = Var("a")
+    """The design's 1.2, with the coefficient written out, and its proof by a named step."""
     ratio = -beta / alpha
-    recurrence = a_[n].equals((n - 1) / n * ratio * a_[n - 1], by=ode)
-    types = {**dict(line_taylor.variables), "n": Nat}
-    scope = StepScope(
-        types=types,
-        facts=(n >= 1, LogicalNot(Comparison(n, "==", 1))),
-        taken={"nonzero", "first_term", "ode", "hn0", "hn1", "case_1"},
-        path=__file__,
-    )
-    return recurrence, claim(n - 1), scope
+
+    def claim(n):
+        if n == 1:
+            return first_term
+        recurrence = a[n].equals((n - 1) / n * ratio * a[n - 1], by=ode)
+        return recurrence, claim(n - 1)
+
+    return claim
+
+
+@theorem
+def doubled(f: Fn[Nat, Real], m: Nat) -> f[m] + f[m] == 2 * f[m]:
+    """A fact to cite."""
+
+
+def lemma(name: str, prop) -> Lemma:
+    """A fact as the matcher takes it: its binders, the premises Lean applies it to, its body."""
+    shape = shape_of(prop)
+    return Lemma(name, shape.binders, shape.premises, shape.body)
+
+
+def hypothesis(thm, name: str) -> Lemma:
+    """A hypothesis of a theorem, as the matcher takes it."""
+    return lemma(name, dict(thm.hypotheses)[name])
+
+
+#: The scope of 1.1's second case, ``a >= 2``.
+CT_TYPES = {**dict(compressed_taylor.variables), "a": Nat, "b": Nat}
+CT_CASE = (LogicalNot(a < 2),)
 
 
 # {{{ the surface
@@ -200,17 +165,16 @@ def test_the_relations_combine_one_way() -> None:
 
 def test_by_takes_facts_tuples_and_holes() -> None:
     """``by=`` is a fact, a tuple of facts, or ``...``; anything else is refused at its line."""
-    pde = Hypothesis("pde", compressed_taylor.hypotheses[0][1])
-    one = R[a, b].equals(D[a, b], by=pde)
-    assert one.links[0].reasons == (pde,) and not one.links[0].hole
-    two = R[a, b].equals(D[a, b], by=(pde, pde))
+    one = R[a, b].equals(D[a, b], by=doubled)
+    assert one.links[0].reasons == (doubled,) and not one.links[0].hole
+    two = R[a, b].equals(D[a, b], by=(doubled, doubled))
     assert len(two.links[0].reasons) == 2
     hole = R[a, b].equals(D[a, b], by=...)
     assert hole.links[0].hole and hole.holes == (hole.line,)
     with pytest.raises(ChainError, match="names no fact"):
         R[a, b].equals(D[a, b], by="pde")
     with pytest.raises(ChainError, match="takes no facts beside it"):
-        R[a, b].equals(D[a, b], by=(pde, ...))
+        R[a, b].equals(D[a, b], by=(doubled, ...))
     with pytest.raises(ChainError, match="is a term, which is no reason"):
         R[a, b].equals(D[a, b], by=a + 1)
     with pytest.raises(ChainError, match="reaches a proposition"):
@@ -243,22 +207,34 @@ def test_a_named_chain_is_named_by_its_assignment() -> None:
         return R[a, b].equals(D[a, b])
 
     assert returned().name is None
-    cited = citation_of(recurrence)
-    assert cited.kind == "named" and cited.head == "recurrence" and cited.point == ()
-    with pytest.raises(TypeError, match="cited without a name"):
-        citation_of(returned())
 
 
-def test_a_hypothesis_is_cited_at_a_point_or_uncalled() -> None:
-    """``pde(a - 2, b)`` is the fact at a point, ``pde`` uncalled; a wrong count is refused."""
-    pde = Hypothesis("pde", compressed_taylor.hypotheses[0][1])
-    uncalled = citation_of(pde)
-    assert uncalled.point is None and [v.name for v, _ in uncalled.binders] == ["a", "b"]
-    at = citation_of(pde(a - 2, b))
-    assert render(at.instance) == "D[a - 2 + 2, b] + D[a - 2, b + 2] == 0"
-    assert at.described() == "pde, at (a - 2, b)"
-    with pytest.raises(TypeError, match="pde is cited at 1 value, and it takes 2"):
-        pde(a)
+# }}}
+
+
+# {{{ one citation
+
+
+def test_every_fact_a_proof_cites_is_one_citation() -> None:
+    """1.1's chain cites hypotheses uncalled and the claim at a point, each a ``Citation``."""
+    proof = trace_proof(compressed_taylor)
+    stored, chain = proof.leaves
+    (cited,) = stored.facts
+    assert isinstance(cited, Citation) and isinstance(cited.source, Given)
+    assert cited.values is None and cited.text() == "stored" and cited.fact == ""
+    reasons = [fact for link in chain.chain.links for fact in link.facts]
+    assert [type(reason) for reason in reasons] == [Citation, Citation, Citation]
+    assert [reason.text() for reason in reasons] == ["recurrence", "claim(a - 2, b + 2)", "pde"]
+    assert [reason.is_claim for reason in reasons] == [False, True, False]
+    assert isinstance(reasons[1].source, ClaimDef)
+    assert reasons[1].line == chain.chain.links[1].line
+
+
+def test_a_part_cites_a_theorem_by_the_same_citation() -> None:
+    """A plugin's part names the hypothesis that restates a theorem: the theorem, at a position."""
+    cited = Citation(doubled, hypothesis=2)
+    assert cited.name == "doubled" and cited.fact == doubled.fact_id
+    assert cited.hypothesis == 2 and cited.values is None and not cited.is_claim
 
 
 # }}}
@@ -269,16 +245,40 @@ def test_a_hypothesis_is_cited_at_a_point_or_uncalled() -> None:
 
 def test_an_uncalled_fact_is_matched_by_solving_offsets() -> None:
     """1.1: ``recurrence`` and ``pde`` each fit their link at one point, ``(a - 2, b)``."""
-    chain, scope, _, facts = compressed_taylor_case()
-    recurrence = facts["recurrence"].__lanky_citation__().lemma
+    recurrence = hypothesis(compressed_taylor, "recurrence")
     first = [R[a, b], -R[a - 2, b + 2]]
-    points = candidate_points(recurrence, first, scope.types)
+    points = candidate_points(recurrence, first, CT_TYPES)
     assert len(points) == 3
-    point = single_point(recurrence, first, scope.types, scope.facts, "recurrence")
+    point = single_point(recurrence, first, CT_TYPES, CT_CASE, "recurrence")
     assert [render(value) for value in point] == ["a - 2", "b"]
-    pde = facts["pde"].__lanky_citation__().lemma
+    pde = hypothesis(compressed_taylor, "pde")
     last = [-D[a - 2, b + 2], D[a, b]]
-    point = single_point(pde, last, scope.types, scope.facts, "pde")
+    point = single_point(pde, last, CT_TYPES, CT_CASE, "pde")
+    assert [render(value) for value in point] == ["a - 2", "b"]
+
+
+def test_a_fact_that_gives_one_side_of_the_claim_is_at_the_point_that_lines_it_up() -> None:
+    """``return stored`` fits the case's claim whole; ``pde`` alone touches it at two points."""
+    claim = [R[a, b], D[a, b]]
+    stored = hypothesis(compressed_taylor, "stored")
+    point = single_point(stored, claim, CT_TYPES, (a < 2,), "stored")
+    assert [render(value) for value in point] == ["a", "b"]
+    pde = hypothesis(compressed_taylor, "pde")
+    assert touches(pde, (a - 2, b), claim, CT_TYPES)
+    with pytest.raises(NoSinglePoint, match="fits this step at 2 points") as raised:
+        single_point(pde, claim, CT_TYPES, CT_CASE, "pde")
+    assert raised.value.several
+    # the point whose conditions the case shows first, the fix the message names
+    assert [[render(value) for value in point] for point in raised.value.candidates] == [
+        ["a - 2", "b"],
+        ["a", "b - 2"],
+    ]
+
+
+def test_a_point_the_case_rules_out_is_dropped() -> None:
+    """Touching at ``(a - 2, b)`` and ``(a, b - 2)``, with ``b < 2`` known, leaves the first."""
+    pde = hypothesis(compressed_taylor, "pde")
+    point = single_point(pde, [R[a, b], D[a, b]], CT_TYPES, (*CT_CASE, b < 2), "pde")
     assert [render(value) for value in point] == ["a - 2", "b"]
 
 
@@ -296,16 +296,18 @@ def test_a_condition_follows_from_the_case() -> None:
 
 def test_the_ode_fits_at_n_minus_one() -> None:
     """1.2: ``ode`` matched against ``a[n] == ... a[n - 1]`` is at ``n - 1``."""
-    recurrence, _, scope = line_taylor_case()
-    ode = Hypothesis("ode", dict(line_taylor.hypotheses)["ode"]).__lanky_citation__().lemma
-    left, link = next(recurrence.steps())
-    point = single_point(ode, [left, link.term], scope.types, scope.facts, "ode")
+    a_ = Var("a")
+    link = a_[n].equals((n - 1) / n * (-beta / alpha) * a_[n - 1])
+    left, step = next(link.steps())
+    types = {**dict(line_taylor.variables), "n": Nat}
+    case = (n >= 1, LogicalNot(Comparison(n, "==", 1)))
+    point = single_point(hypothesis(line_taylor, "ode"), [left, step.term], types, case, "ode")
     assert [render(value) for value in point] == ["n - 1"]
 
 
 def test_no_single_point_asks_for_the_point() -> None:
     """A fact that fits nowhere, or at two points, names the fix: write the point."""
-    lemma = Lemma(
+    fact = Lemma(
         "f",
         ((Var("i"), Nat),),
         (("value", "i"),),
@@ -313,7 +315,7 @@ def test_no_single_point_asks_for_the_point() -> None:
     )
     types = {"R": Fn[Nat, Nat, Real], "a": Nat}
     with pytest.raises(NoSinglePoint, match="no single point of f fits this step"):
-        single_point(lemma, [D[a, 0]], types, (), "f")
+        single_point(fact, [D[a, 0]], types, (), "f")
     twice = Lemma(
         "g",
         ((Var("i"), Nat),),
@@ -372,45 +374,29 @@ def test_the_higher_order_rule_binds_a_family_to_a_function() -> None:
 def test_an_index_with_two_unknowns_waits_for_one_of_them() -> None:
     """``R[x + y, y]`` against ``R[a, b]``: ``y`` from the second index, then ``x = a - b``."""
     xx, yy = Var("xx"), Var("yy")
-    lemma = Lemma(
+    fact = Lemma(
         "f",
         ((xx, Nat), (yy, Nat)),
         (("value", "xx"), ("value", "yy")),
         Comparison(R[xx + yy, yy], "==", 0),
     )
     types = {"R": Fn[Nat, Nat, Real], "a": Nat, "b": Nat}
-    (point,) = candidate_points(lemma, [R[a, b]], types)
+    (point,) = candidate_points(fact, [R[a, b]], types)
     assert [render(value) for value in point] == ["a - b", "b"]
 
 
 def test_a_family_of_the_fact_binds_to_a_family_of_the_scope_first() -> None:
     """``f[j]`` against ``x[j]`` under a sum binds ``f`` to ``x``, not to ``j ↦ x[j]``."""
     f, m, j = Var("f"), Var("m"), Var("j")
-    lemma = Lemma(
+    fact = Lemma(
         "total",
         ((f, Fn[Nat, Real]), (m, Nat)),
         (("value", "f"), ("value", "m")),
         Comparison(Sum(((j, Fin[m]),), f[j]), "==", 0),
     )
     types = {"x": Fn[Nat, Real], "n": Nat}
-    (point,) = candidate_points(lemma, [Sum(((k, Fin[n]),), Var("x")[k])], types)
+    (point,) = candidate_points(fact, [Sum(((k, Fin[n]),), Var("x")[k])], types)
     assert render(point[0]) == "x" and render(point[1]) == "n"
-
-
-def test_a_family_bound_to_a_function_is_applied_as_a_fun() -> None:
-    """``one_more_term`` at ``(k ↦ r ** k, n - 1)`` is applied to ``(fun k => r ^ k.toNat)``."""
-    from lanky.oracles.steps import _application
-
-    f, m, j = Var("f"), Var("m"), Var("j")
-    statement = Forall(
-        ((f, Fn[Nat, Real]), (m, Nat)),
-        Comparison(Sum(((j, Fin[m + 1]),), f[j]), "==", Sum(((j, Fin[m]),), f[j]) + f[m]),
-    )
-    uncalled = Citation("one_more_term", statement, "one_more_term")
-    scope = StepScope(types={"r": Real, "n": Nat}, facts=(n >= 1,))
-    (point,) = candidate_points(uncalled.lemma, [Sum(((k, Fin[n]),), r**k)], scope.types)
-    text = _application(uncalled.at(point), scope)
-    assert text == "one_more_term (fun k => r ^ k.toNat) (n - 1) (by omega)"
 
 
 def test_same_reads_indices_as_integers() -> None:
@@ -422,110 +408,59 @@ def test_same_reads_indices_as_integers() -> None:
 # }}}
 
 
-# {{{ the Lean of a step
+# {{{ the Lean of a step, and what the compiler adds
 
 
 def test_the_chain_of_compressed_taylor_is_a_calc() -> None:
     """1.1's chain prints as the check's T3: a ``calc``, each link with its fact at its point."""
-    chain, scope, _, _ = compressed_taylor_case()
-    script = chain_script(chain, scope, claim=R[a, b] == D[a, b])
-    text = script.text()
-    assert text.startswith("calc R a b\n    = (-1) * R (a - 2) (b + 2) := by\n")
-    assert "have h := recurrence (a - 2) (by omega) b (by omega)" in text
+    command = compile_proof(trace_proof(compressed_taylor), mathlib=True)
+    text = command.source
+    assert "  · calc R a b\n        = (-1) * R (a - 2) (b + 2) := by\n" in text
+    assert "have f_2 := recurrence (a - 2) (by omega) b (by omega)" in text
     assert (
-        "have ih := Lanky.compressed_taylor.claim D R pde stored recurrence "
-        "(a - 2) (by omega) (b + 2) (by omega)"
+        "have f_3 := Lanky.compressed_taylor.claim D R (a - 2) (by omega) (b + 2) (by omega) "
+        "pde stored recurrence"
     ) in text
-    assert "have h_1 := pde (a - 2) (by omega) b (by omega)" in text
-    assert "  _ = D a b := by" in text
-    assert ") -ih\n" in text and ") -h_1\n" in text
+    assert "have f_4 := pde (a - 2) (by omega) b (by omega)" in text
+    assert "      _ = D a b := by" in text
+    assert "(-1 : ℝ) * f_3\n" in text and "(-1 : ℝ) * f_4\n" in text
     assert "set_option maxHeartbeats 400000 in" in text
-    assert script.holes == [] and script.restated == {}
-    # every line of the calc says where it came from
-    lines = {line for _, line in script.lines if line is not None}
-    assert lines == {link.line for link in chain.links}
+    assert command.holes == () and command.restated == ()
+    assert command.summary == "induction on a, 2 cases, 4 steps"
 
 
 def test_the_outline_reads_as_the_design_prints_it() -> None:
-    """``--steps`` for 1.1's chain: one row a link, the points lanky found."""
-    chain, scope, _, _ = compressed_taylor_case()
-    script = chain_script(chain, scope, claim=R[a, b] == D[a, b])
-    rows = outline_text(script.outline, __file__)
-    first = chain.line
+    """``--steps`` for 1.1: one row a link, the points the one matcher found."""
+    command = compile_proof(trace_proof(compressed_taylor), mathlib=True)
+    rows = [row[1:] for row in command.outline]
     assert rows == [
-        f"test_chains.py:{first}  R[a, b] == -R[a - 2, b + 2]  by recurrence, at (a - 2, b)",
-        f"test_chains.py:{first + 1}          == -D[a - 2, b + 2]  by the claim at (a - 2, b + 2)",
-        f"test_chains.py:{first + 2}          == D[a, b]           by pde, at (a - 2, b)",
+        ("if a < 2:", "R[a, b]", "==", "D[a, b]", "by stored, at (a, b)"),
+        ("otherwise:", "R[a, b]", "==", "-R[a - 2, b + 2]", "by recurrence, at (a - 2, b)"),
+        ("", "-R[a - 2, b + 2]", "==", "-D[a - 2, b + 2]", "by the claim at (a - 2, b + 2)"),
+        ("", "-D[a - 2, b + 2]", "==", "D[a, b]", "by pde, at (a - 2, b)"),
     ]
 
 
-def test_a_chain_that_ends_elsewhere_is_a_fact_of_the_case() -> None:
-    """Ends that do not print as the claim's sides: ``have chain := calc ...``, then the claim."""
-    chain, scope, _, _ = compressed_taylor_case()
-    script = chain_script(chain, scope, claim=D[a, b] == R[a, b])
-    text = script.text()
-    assert text.startswith("have chain :=\n  calc R a b\n")
-    assert "| exact chain.symm" in text
-    assert "(-1 : ℝ) * chain" in text
-
-
-def test_a_chain_that_is_not_about_the_claim_is_refused() -> None:
-    """A chain of equations whose end is not the claim's other side is named, with both terms."""
-    pytest.importorskip("sympy")
-    chain, scope, _, _ = compressed_taylor_case()
-    with pytest.raises(StepError, match=r"the chain ends at D\[a, b\]; the claim's right side is"):
-        chain_script(chain, scope, claim=R[a, b] == D[a, b] + D[a - 2, b + 2])
-
-
-def test_a_hole_is_a_sorry_at_a_recorded_line() -> None:
-    """``by=...`` compiles to ``sorry``, its Python line recorded and its command line found."""
-    chain, scope, claim, facts = compressed_taylor_case()
-    # fmt: off
-    holed = (
-        R[a, b]
-        .equals(-R[a - 2, b + 2], by=facts["recurrence"])
-        .equals(-D[a - 2, b + 2], by=...)
-        .equals(D[a, b], by=facts["pde"])
-    )
-    # fmt: on
-    script = chain_script(holed, scope, claim=R[a, b] == D[a, b])
-    assert script.holes == [holed.links[1].line]
-    (sorry,) = script.sorry_lines(10)
-    assert script.lines[sorry - 10][0].strip() == "sorry"
-    assert script.python_line(sorry, 10) == holed.links[1].line
-
-
-def test_a_named_step_is_a_have() -> None:
-    """1.2's ``recurrence = a[n].equals(..., by=ode)``: ``have recurrence : ...``."""
-    recurrence, _, scope = line_taylor_case()
-    script = named_script(recurrence, scope)
-    text = script.text()
-    assert text.startswith("have recurrence : a n = ")
-    assert "have h := ode (n - 1) (by omega) (by omega)" in text
+def test_a_named_step_and_the_return_that_cites_it() -> None:
+    """1.2: ``have recurrence : ...``, then the shift, the nonzero facts and one combination."""
+    command = compile_proof(trace_proof(line_taylor), mathlib=True)
+    text = command.source
+    assert "  · have recurrence : a n = " in text
+    assert "have f_2 := ode (n - 1) (by omega) (by omega)" in text
     assert "try have nz : ((n : Int) : ℂ) ≠ 0" in text
-    assert "linear_combination" in text
-
-
-def test_a_return_cites_the_named_step_and_the_claim() -> None:
-    """1.2's ``return recurrence, claim(n - 1)``: the shift, the nonzero facts, one combination."""
-    recurrence, ih, scope = line_taylor_case()
-    named_script(recurrence, scope)
-    goal = line_taylor.goal.body
-    script = step_script(goal, (recurrence, ih), scope, 99)
-    text = script.text()
-    assert "have ih := Lanky.line_taylor.claim alpha beta a nonzero first_term ode (n - 1)" in text
-    assert "have recurrence_" not in text
+    assert (
+        "have f_3 := Lanky.line_taylor.claim alpha beta a (n - 1) (by omega) nonzero first_term "
+        "ode (by omega)"
+    ) in text
     assert "rw [show n.toNat = (n - 1).toNat + 1 by omega, pow_succ]" in text
     assert "((n - 1 : Int) : ℂ) ≠ 0" in text
-    assert "linear_combination" in text and "recurrence + " in text
-    if find_spec("sympy") is not None:
-        # the multiplier of the claim at n - 1, which lanky's search finds
-        assert "* ih" in text
+    assert "recurrence + " in text and "* f_3" in text
+    assert command.summary == "induction on n, 2 cases, 3 steps, 1 named fact"
 
 
 def test_shifts_and_nonzero_facts_follow_from_the_case() -> None:
     """A shift only where the case shows the lower exponent natural; a nonzero fact likewise."""
-    scope = StepScope(types={"n": Nat, "x": Real}, facts=(n >= 1,))
+    scope = _Scope(types={"n": Nat, "x": Real}, facts=(n >= 1,))
     assert shift_lines(x**n, [Comparison(x ** (n - 1), "==", 1)], scope) == [
         "rw [show n.toNat = (n - 1).toNat + 1 by omega, pow_succ]"
     ]
@@ -533,12 +468,12 @@ def test_shifts_and_nonzero_facts_follow_from_the_case() -> None:
     assert shift_lines(
         x**n,
         [Comparison(x ** (n - 2), "==", 1)],
-        StepScope(types={"n": Nat, "x": Real}, facts=(n >= 2,)),
+        _Scope(types={"n": Nat, "x": Real}, facts=(n >= 2,)),
     ) == ["rw [show n.toNat = (n - 2).toNat + 2 by omega, pow_add]"]
     lines = nonzero_lines([x / n, x / (n - 1)], scope)
     assert any("((n : Int) : ℝ) ≠ 0" in line for line in lines)
     assert not any("n - 1" in line for line in lines)
-    assert nonzero_lines([x / n], StepScope(types={"n": Nat, "x": Real}, mathlib=False)) == []
+    assert nonzero_lines([x / n], _Scope(types={"n": Nat, "x": Real}, mathlib=False)) == []
 
 
 def test_an_exponent_the_case_shows_natural_prints_inside_a_step() -> None:
@@ -548,156 +483,134 @@ def test_an_exponent_the_case_shows_natural_prints_inside_a_step() -> None:
         render_term(x ** (n - 1), types, mathlib=True)
     with proof_exponents(lambda exponent: True):
         assert render_term(x ** (n - 1), types, mathlib=True) == "x ^ (n - 1).toNat"
-    scope = StepScope(types=types, facts=(n >= 1,))
+    scope = _Scope(types=types, facts=(n >= 1,))
     assert scope.render(x ** (n - 1)) == "x ^ (n - 1).toNat"
+
+
+def test_a_family_bound_to_a_function_prints_as_a_fun() -> None:
+    """``k ↦ r ** k``, the value of an ``f: Fn[Nat, Real]``, is ``(fun k => r ^ k.toNat)``."""
+    scope = _Scope(types={"r": Real, "n": Nat}, facts=(n >= 1,))
+    family = FamilyValue((k,), r**k)
+    assert scope.render(family, atomic=True, sort=Fn[Nat, Real]) == "(fun k => r ^ k.toNat)"
+
+
+# }}}
+
+
+# {{{ citations by their proved texts
 
 
 def test_a_theorem_is_cited_by_its_proved_text_or_its_printed_one() -> None:
     """A theorem cited restates the text its own command proved, where the check recorded one."""
-    citation = citation_of(compressed_taylor)
-    assert citation.kind == "theorem" and not citation.proved_text
-    assert citation.restated == print_lean(compressed_taylor.term, mathlib=True)
-    assert citation.fact_id == compressed_taylor.fact_id
+    assert cited_text(compressed_taylor, True) == print_lean(compressed_taylor.term, mathlib=True)
     with proved_texts({compressed_taylor.fact_id: "∀ D R, True"}):
-        proved = citation_of(compressed_taylor)
-    assert proved.proved_text and proved.restated == "∀ D R, True"
-
-
-def test_a_step_that_cites_a_theorem_says_what_the_declaration_takes() -> None:
-    """A cited theorem is a hypothesis of the declaration, and the claim rests on its id."""
-
-    @theorem
-    def doubled(f: Fn[Nat, Real], m: Nat) -> f[m] + f[m] == 2 * f[m]:
-        """A fact to cite."""
-
-    g, i = Var("g"), Var("i")
-    scope = StepScope(types={"g": Fn[Nat, Real], "i": Nat})
-    script = step_script(Comparison(g[i] + g[i], "==", 2 * g[i]), (doubled,), scope, 7)
-    assert set(script.restated) == {"doubled"}
-    assert script.rests_on == [doubled.fact_id]
-    assert "have h := doubled g i (by omega)" in script.text()
+        assert cited_text(compressed_taylor, True) == "∀ D R, True"
 
 
 def test_a_theorem_cited_restates_the_theorems_its_own_proof_cited() -> None:
-    """``B``'s ``as_cited`` takes ``C``: citing ``B`` restates both, and rests on both."""
+    """``B``'s ``as_cited`` takes ``C``: citing ``B`` restates both, and a gap or circle refuses."""
 
     @theorem
     def premise(f: Fn[Nat, Real], m: Nat) -> f[m] == f[m]:
         """C."""
 
-    @theorem
-    def doubled(f: Fn[Nat, Real], m: Nat) -> f[m] + f[m] == 2 * f[m]:
-        """B, proved citing C."""
-
-    g, i = Var("g"), Var("i")
-    goal = Comparison(g[i] + g[i], "==", 2 * g[i])
     texts = {
         doubled.fact_id: CitedText("doubled", "∀ f m, B", (premise.fact_id,)),
         premise.fact_id: CitedText("premise", "∀ f m, C"),
     }
-    scope = StepScope(types={"g": Fn[Nat, Real], "i": Nat})
     with proved_texts(texts):
-        script = step_script(goal, (doubled,), scope, 7)
-    assert {name: cited.restated for name, cited in script.restated.items()} == {
-        "doubled": "∀ f m, B",
-        "premise": "∀ f m, C",
-    }
-    assert script.rests_on == [doubled.fact_id, premise.fact_id]
+        (found,) = premises_of(doubled.fact_id)
+    assert isinstance(found, Premise)
+    assert (found.__name__, found.fact_id, found.text) == ("premise", premise.fact_id, "∀ f m, C")
     missing = {doubled.fact_id: CitedText("doubled", "∀ f m, B", (premise.fact_id,))}
-    with proved_texts(missing), pytest.raises(StepError, match="which has no proved text"):
-        step_script(goal, (doubled,), StepScope(types=scope.types), 7)
+    with proved_texts(missing), pytest.raises(ValueError, match="which has no proved text"):
+        premises_of(doubled.fact_id)
     circle = {
         doubled.fact_id: CitedText("doubled", "B", (premise.fact_id,)),
         premise.fact_id: CitedText("premise", "C", (doubled.fact_id,)),
     }
-    with proved_texts(circle), pytest.raises(StepError, match="go round in a circle"):
-        step_script(goal, (doubled,), StepScope(types=scope.types), 7)
+    with proved_texts(circle), pytest.raises(ValueError, match="go round in a circle"):
+        premises_of(doubled.fact_id)
+
+
+def test_a_text_is_kept_only_from_a_command_that_states_it() -> None:
+    """The design's 3.5: the kept text is compared with the command that closed, its cache entry."""
+    text = "∀ n : Int, 0 ≤ n → n ≥ 0"
+    source = (
+        "theorem Lanky.nonneg (n : Int) (h0 : 0 ≤ n) : n ≥ 0 := by\n  omega\n\n"
+        f"theorem Lanky.nonneg.as_cited :\n    {text} :=\n  Lanky.nonneg\n"
+    )
+    assert closed_with(source, "Lanky.nonneg", text)
+    assert not closed_with(source, "Lanky.nonneg", "∀ n : Int, n ≥ 0")
+    assert not closed_with(source, "Lanky.other", text)
+    written = "theorem Lanky.b.as_cited (c : ∀ x, C) :\n    ∀ y, B := by\n  exact Lanky.b c\n"
+    assert closed_with(written, "Lanky.b", "∀ y, B")
+    texts = ProvedTexts()
+    term = compressed_taylor.term
+    assert texts.record(Proved("t", "Lanky.nonneg", text, False, term, source=source))
+    assert texts.get("t").text == text
+    # a text the command that closed does not state is not kept, and what was kept goes
+    assert not texts.record(Proved("t", "Lanky.nonneg", "∀ n, n ≥ 0", False, term, source=source))
+    assert "t" not in texts
+
+
+def test_a_restated_text_is_compared_with_the_kept_one() -> None:
+    """A command that restates another text than the kept one is refused before Lean is asked."""
+    texts = ProvedTexts()
+    term = compressed_taylor.term
+    texts.record(Proved("t", "Lanky.ct", "∀ D R, P", True, term))
+    assert texts.mismatch([("ct", "t", "∀ D R, P", term)]) == ""
+    assert texts.mismatch([("ct", "other", "anything", term)]) == ""
+    said = texts.mismatch([("ct", "t", "∀ D R, Q", term)])
+    assert said.startswith("the proof restates ct as a text other than the one its command proved")
+    # a text kept for another statement of the theorem is no text of it
+    assert texts.mismatch([("ct", "t", "∀ D R, Q", line_taylor.term)]) == ""
 
 
 def test_citations_without_a_proved_text_raise_the_vacuity_question() -> None:
     """Printed texts are asked whether together they prove ``False``; proved ones are not."""
-    printed = citation_of(compressed_taylor)
-    question = vacuity_question("theorem:t.owner@1", [printed], "t.py:1")
+    question = vacuity_question("theorem:t.owner@1", [compressed_taylor], "t.py:1")
     assert question.kind == "hypotheses" and question.term.body is False
     assert structurally_equal(question.term.guard, compressed_taylor.term)
     assert "compressed_taylor" in question.statement
     with proved_texts({compressed_taylor.fact_id: "∀ D R, True"}):
-        proved = citation_of(compressed_taylor)
-    assert vacuity_question("theorem:t.owner@1", [proved]) is None
+        assert vacuity_question("theorem:t.owner@1", [compressed_taylor]) is None
 
 
-# }}}
-
-
-# {{{ the verdict on holes
-
-
-def _response(errors=(), sorries=()):
-    """A REPL response with errors and sorries at lines, as lean_interact gives them."""
-    messages = [
-        SimpleNamespace(severity="error", data=text, start_pos=SimpleNamespace(line=line))
-        for line, text in errors
-    ]
-    found = [SimpleNamespace(start_pos=SimpleNamespace(line=line)) for line in sorries]
-    return SimpleNamespace(messages=messages, sorries=found)
-
-
-def test_a_proof_with_sorries_only_at_its_holes_closes_with_holes() -> None:
-    """Closed; closed with holes; and failed for an error or a sorry lanky did not write."""
-    assert holes_verdict(_response(), ()) == ("closed", [])
-    assert holes_verdict(_response(sorries=[12]), [12]) == (CLOSED_WITH_HOLES, [])
-    verdict, messages = holes_verdict(_response(sorries=[12, 14]), [12])
-    assert verdict == "failed" and messages == [
-        (14, "a sorry lanky did not write for a step left open")
-    ]
-    verdict, messages = holes_verdict(_response(errors=[(9, "linarith failed")]), ())
-    assert verdict == "failed" and messages == [(9, "linarith failed")]
-
-
-# }}}
-
-
-# {{{ without Lean: each step drawn
-
-
-@theorem
-def squares_differ(u: Real, v: Real) -> (u + v) * (u - v) == u**2 - v**2:
-    """A claim to draw the steps of."""
-
-
-def test_each_link_is_drawn_and_a_wrong_one_is_caught_at_its_line() -> None:
-    """Without Lean the links are claims drawn at points: a wrong link is refuted at its line."""
-    u, v = Var("u"), Var("v")
-    # fmt: off
-    chain = (
-        ((u + v) * (u - v))
-        .equals(u * u - u * v + v * u - v * v)
-        .equals(u**2 + v**2)
+def test_the_vacuity_question_is_asked_at_symbolic_points_in_a_case() -> None:
+    """Inside an induction, the texts at ``(a - 2, b)``, ``a`` and ``b`` bound, the case assumed."""
+    question = vacuity_question(
+        "theorem:t.owner@1",
+        [doubled],
+        "t.py:1",
+        [(doubled.fact_id, (Var("g"), a - 2))],
+        variables=[(Var("g"), Fn[Nat, Real]), (a, Nat)],
+        conditions=[LogicalNot(a < 2)],
+        case="in the case at t.py:9",
     )
-    # fmt: on
-    draws = draw_links(chain, list(squares_differ.variables))
-    assert [draw.outcome for draw in draws] == ["tested", "refuted"]
-    outcome, message = drawn_status("squares_differ", draws, __file__)
-    assert outcome == "refuted"
-    assert message.startswith(f"the step at test_chains.py:{chain.links[1].line}")
-    right = ((u + v) * (u - v)).equals(u**2 - v**2)
-    outcome, message = drawn_status("squares_differ", draw_links(right, [("u", Real), ("v", Real)]))
-    assert outcome == "tested"
-    assert message == (
-        "the proof of squares_differ was tested step by step at drawn points, not checked by Lean"
+    assert question.id == "theorem:t.owner@1:citations@in-the-case-at-t-py-9"
+    assert question.statement.endswith("are inconsistent in the case at t.py:9")
+    (part,) = question.term.lean_obligation().parts
+    assert [var.name for var, _ in part.term.binders] == ["g", "a"]
+    assert render(part.term.guard).endswith(" and not (a < 2)")
+    (instance,) = part.hints.instances
+    assert instance.hypothesis == 0 and render(instance.arguments[1]) == "a - 2"
+    # points with variables and no binders for them are not asked
+    assert (
+        vacuity_question(
+            "theorem:t.owner@1", [doubled], variables=[(a, Nat)], conditions=[a >= 2]
+        )
+        is None
     )
 
 
-def test_a_link_over_a_family_that_cannot_be_drawn_leaves_the_claim_assumed() -> None:
-    """1.2's family over ``Nat`` cannot be drawn: the claim reads assumed, and says why."""
-    recurrence, _, _ = line_taylor_case()
-    variables = [*line_taylor.variables, ("n", Nat)]
-    draws = draw_links(recurrence, variables, [prop for _, prop in line_taylor.hypotheses])
-    assert [draw.outcome for draw in draws] == ["undrawn"]
-    outcome, message = drawn_status("line_taylor", draws)
-    assert outcome == "undrawn"
-    assert message.startswith("line_taylor reads assumed: ")
-    assert "cannot tabulate a family over Nat" in message
+def test_a_case_is_asked_only_where_some_values_satisfy_it() -> None:
+    """A case with no point found among small numbers is not asked: its question may be vacuous."""
+    assert satisfiable([(a, Nat), (b, Nat)], [LogicalNot(a < 2), b < 1])
+    assert not satisfiable([(a, Nat)], [a < 0])
+    assert satisfiable([(n, Int)], [n < 0])
+    assert satisfiable([(Var("i"), Fin[n]), (n, Nat)], [Var("i") >= 1])
+    assert not satisfiable([(alpha, Fn[Nat, Real])], [alpha[0] > 0])
 
 
 # }}}
@@ -706,53 +619,11 @@ def test_a_link_over_a_family_that_cannot_be_drawn_leaves_the_claim_assumed() ->
 # {{{ with Lean: the design's 1.1 and 1.2, checked
 
 
-def _parameters(thm) -> str:
-    """The declaration's parameters, the hypotheses under their Python names."""
-    parts = [f"({name} : {lean_type(sort, mathlib=True)})" for name, sort in thm.variables]
-    parts += [f"({name} : {print_lean(prop, mathlib=True)})" for name, prop in thm.hypotheses]
-    return " ".join(parts)
-
-
-def compressed_taylor_lean(chain_text: str) -> str:
-    """The check's T3, with its second case the chain lanky compiled."""
-    return f"""set_option autoImplicit false in
-theorem Lanky.compressed_taylor.claim {_parameters(compressed_taylor)}
-    (a : Int) (ha : 0 ≤ a) (b : Int) (hb : 0 ≤ b) : R a b = D a b := by
-  by_cases case_1 : a < 2
-  · exact stored a ha b hb case_1
-  · {chain_text.lstrip()}
-termination_by a.toNat
-decreasing_by omega
-"""
-
-
-def line_taylor_lean(case_text: str) -> str:
-    """The check's T7, with its second case what lanky compiled."""
-    return f"""set_option autoImplicit false in
-theorem Lanky.line_taylor.claim {_parameters(line_taylor)}
-    (n : Int) (hn0 : 0 ≤ n) (hn1 : n ≥ 1) :
-    a n = (-1) * ((-1) * beta / alpha) ^ n.toNat / (n : ℂ) := by
-  by_cases case_1 : n = 1
-  · subst case_1
-    linear_combination (norm := ((try push_cast) <;> field_simp <;> ring1)) (1 / alpha) * first_term
-  · {case_text.lstrip()}
-termination_by n.toNat
-decreasing_by omega
-"""
-
-
-def _first_line(source: str, script) -> int:
-    """The line of the command, counted from 1, that the script's first line is on."""
-    first = script.lines[0][0]
-    for number, line in enumerate(source.splitlines(), start=1):
-        if line.endswith(first) and line.strip().lstrip("· ") == first.strip():
-            return number
-    raise AssertionError("the script is not in the command")
-
-
 @pytest.fixture(scope="module")
-def mathlib_session(mathlib_project):
-    """A Lean session with Mathlib, or a skip that says why not."""
+def mathlib_oracle(mathlib_project):
+    """A Lean oracle with Mathlib, or a skip that says why not."""
+    from lanky.oracles.lean import LeanOracle, LeanSession
+
     if mathlib_project is None or os.environ.get("LANKY_LEAN_DISABLE"):
         if os.environ.get("LANKY_LEAN_MATHLIB_TEST_REQUIRED"):
             pytest.fail("LANKY_LEAN_MATHLIB_TEST_REQUIRED is set, but there is no Mathlib session")
@@ -762,156 +633,18 @@ def mathlib_session(mathlib_project):
     available, reason = oracle.availability()
     if not available or not oracle.session.start():
         pytest.skip(f"no Mathlib session here: {reason or oracle.session.error}")
-    yield oracle.session
+    yield oracle
     oracle.session.close()
 
 
-def test_compressed_taylor_by_its_chain_closes_in_lean(mathlib_session) -> None:
-    """1.1: the chain lanky compiled closes the case, and a hole in it closes with holes."""
-    chain, scope, _, facts = compressed_taylor_case()
-    script = chain_script(chain, scope, claim=R[a, b] == D[a, b])
-    source = compressed_taylor_lean(script.text(indent=4))
-    verdict, messages, answered = mathlib_session.answer_with_holes(source)
-    assert answered and (verdict, messages) == ("closed", [])
-
-    # fmt: off
-    holed = (
-        R[a, b]
-        .equals(-R[a - 2, b + 2], by=facts["recurrence"])
-        .equals(-D[a - 2, b + 2], by=...)
-        .equals(D[a, b], by=facts["pde"])
-    )
-    # fmt: on
-    script = chain_script(holed, scope, claim=R[a, b] == D[a, b])
-    source = compressed_taylor_lean(script.text(indent=4))
-    holes = script.sorry_lines(_first_line(source, script))
-    verdict, messages, _ = mathlib_session.answer_with_holes(source, holes)
-    assert (verdict, messages) == (CLOSED_WITH_HOLES, [])
-
-
-def test_a_chain_whose_ends_are_the_claim_turned_round_closes_in_lean(mathlib_session) -> None:
-    """The chain shows ``R = D`` and the claim is ``D = R``: the chain is a fact, turned round."""
-    chain, scope, _, _ = compressed_taylor_case()
-    script = chain_script(chain, scope, claim=D[a, b] == R[a, b])
-    source = (
-        compressed_taylor_lean(script.text(indent=4))
-        .replace(": R a b = D a b := by", ": D a b = R a b := by")
-        .replace("· exact stored a ha b hb case_1", "· exact (stored a ha b hb case_1).symm")
-    )
-    verdict, messages, answered = mathlib_session.answer_with_holes(source)
-    assert answered and (verdict, messages) == ("closed", [])
-
-
-def test_a_wrong_step_fails_at_its_line(mathlib_session) -> None:
-    """The claim at ``(a - 2, b + 3)`` does not give the step; Lean says so at that link."""
-    chain, scope, claim, facts = compressed_taylor_case()
-    # fmt: off
-    wrong = (
-        R[a, b]
-        .equals(-R[a - 2, b + 2], by=facts["recurrence"])
-        .equals(-D[a - 2, b + 2], by=claim(a - 2, b + 3))
-        .equals(D[a, b], by=facts["pde"])
-    )
-    # fmt: on
-    script = chain_script(wrong, scope, claim=R[a, b] == D[a, b])
-    source = compressed_taylor_lean(script.text(indent=4))
-    verdict, messages, _ = mathlib_session.answer_with_holes(source)
-    assert verdict == "failed" and messages
-    first = _first_line(source, script)
-    lines = {script.python_line(line, first) for line, _ in messages if line is not None}
-    assert wrong.links[1].line in lines
-
-
-def test_line_taylor_by_its_named_step_closes_in_lean(mathlib_session) -> None:
-    """1.2: the named step and the return lanky compiled close the case, with clean axioms."""
-    recurrence, ih, scope = line_taylor_case()
-    named = named_script(recurrence, scope)
-    final = step_script(line_taylor.goal.body, (recurrence, ih), scope, 99)
-    body = named.text(indent=4).lstrip() + "\n" + final.text(indent=4)
-    source = line_taylor_lean(body) + "\n#print axioms Lanky.line_taylor.claim\n"
-    verdict, messages, answered = mathlib_session.answer_with_holes(source)
-    assert answered and (verdict, messages) == ("closed", [])
-
-
-# }}}
-
-
-# {{{ core Lean: a claim over integers alone
-
-
-@theorem
-def compressed_taylor_over_integers(
-    D: Fn[Nat, Nat, Int],
-    R: Fn[Nat, Nat, Int],
-    pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
-    stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
-    recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
-) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    """1.1 over integer tables: core Lean checks it, with no Mathlib."""
-
-
-@pytest.fixture(scope="module")
-def core_session():
-    """A core Lean session, or a skip that says why not."""
-    if os.environ.get("LANKY_LEAN_DISABLE"):
-        if os.environ.get("LANKY_LEAN_TEST_REQUIRED"):
-            pytest.fail("LANKY_LEAN_TEST_REQUIRED is set, but the Lean oracle is disabled")
-        pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
-    timeout = float(os.environ.get("LANKY_LEAN_TEST_TIMEOUT", "120"))
-    oracle = LeanOracle(session=LeanSession(timeout))
-    available, reason = oracle.availability()
-    if not available or not oracle.session.start():
-        if os.environ.get("LANKY_LEAN_TEST_REQUIRED"):
-            pytest.fail(f"LANKY_LEAN_TEST_REQUIRED is set, but {reason or oracle.session.error}")
-        pytest.skip(f"no Lean session here: {reason or oracle.session.error}")
-    yield oracle.session
-    oracle.session.close()
-
-
-def test_a_chain_over_integers_closes_in_core_lean(core_session) -> None:
-    """Without Mathlib a chain over integers is checked by ``omega``, its indices normalized."""
-    facts = hypotheses(compressed_taylor_over_integers)
-    claim = Claim(
-        Citation(
-            "the claim",
-            compressed_taylor_over_integers.goal,
-            "Lanky.compressed_taylor_over_integers.claim D R pde stored recurrence",
-            kind="claim",
-        )
-    )
-    # fmt: off
-    chain = (
-        R[a, b]
-        .equals(-R[a - 2, b + 2], by=facts["recurrence"])
-        .equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))
-        .equals(D[a, b], by=facts["pde"])
-    )
-    # fmt: on
-    types = {**dict(compressed_taylor_over_integers.variables), "a": Nat, "b": Nat}
-    scope = StepScope(types=types, facts=(LogicalNot(a < 2),), mathlib=False)
-    script = chain_script(chain, scope, claim=R[a, b] == D[a, b])
-    assert "omega" in script.text() and "linear_combination" not in script.text()
-    parameters = " ".join(
-        [
-            f"({name} : {lean_type(sort)})"
-            for name, sort in compressed_taylor_over_integers.variables
-        ]
-        + [
-            f"({name} : {print_lean(prop)})"
-            for name, prop in compressed_taylor_over_integers.hypotheses
-        ]
-    )
-    source = f"""set_option autoImplicit false in
-theorem Lanky.compressed_taylor_over_integers.claim {parameters}
-    (a : Int) (ha : 0 ≤ a) (b : Int) (hb : 0 ≤ b) : R a b = D a b := by
-  by_cases case_1 : a < 2
-  · exact stored a ha b hb case_1
-  · {script.text(indent=4).lstrip()}
-termination_by a.toNat
-decreasing_by omega
-"""
-    verdict, messages, answered = core_session.answer_with_holes(source)
-    assert answered and (verdict, messages) == ("closed", [])
+@pytest.mark.parametrize("thm", [compressed_taylor, line_taylor], ids=["1.1", "1.2"])
+def test_the_designs_proofs_close_in_lean(mathlib_oracle, thm) -> None:
+    """1.1 by its chain and 1.2 by its named step close, with the audit's three axioms."""
+    proof = trace_proof(thm)
+    command = compile_proof(proof, mathlib=True)
+    record, said, _cached = mathlib_oracle.written(command.source)
+    assert record is not None, said
+    assert verdict(proof, command, record) == ("closed", [])
 
 
 # }}}

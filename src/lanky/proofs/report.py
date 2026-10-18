@@ -33,15 +33,9 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky.audit import TRUSTED_AXIOMS, audit_failure
-from lanky.proofs.match import (
-    Shape,
-    affine,
-    applications,
-    from_affine,
-    shape_of,
-    unify,
-)
-from lanky.proofs.trace import Citation, ClaimDef, Given, Leaf, Proof, ProofError, shown
+from lanky.citations import Citation
+from lanky.proofs.cases import Shape, affine, from_affine, shape_of
+from lanky.proofs.trace import ClaimDef, Given, Leaf, Proof, ProofError, shown
 from lanky.terms import Forall, Var, init_args, render
 
 __all__ = [
@@ -330,7 +324,8 @@ def fix_for(step: Any, proof: Proof, measure: Any = None) -> tuple[int, Citation
     """A fact of the step cited at another point that makes the step follow, as Python finds it.
 
     Each fact cited at a point is put, in turn, at every point at which one
-    of its terms is a term of the claim or of another fact of the step, and
+    of its terms is a term of the claim or of another fact of the step, as
+    the matcher lines it up (:func:`lanky.matching.candidate_points`), and
     the step is tried again with the multiplier search
     (:func:`combination`): the first that works is the fix, as the index of
     the fact among the step's and the citation at the new point. Lean is
@@ -339,6 +334,9 @@ def fix_for(step: Any, proof: Proof, measure: Any = None) -> tuple[int, Citation
     (:class:`lanky.proofs.compile.Measure`): never at its own point, which
     would make the step a circle.
     """
+    from lanky.induction import Lemma
+    from lanky.matching import candidate_points, instantiate
+
     instances = list(step.instances)
     claim = step.claim
     for index, instance in enumerate(instances):
@@ -349,30 +347,35 @@ def fix_for(step: Any, proof: Proof, measure: Any = None) -> tuple[int, Citation
         if instance.part >= len(shapes):
             continue
         shape = shapes[instance.part]
+        if not isinstance(shape.body, prim.Comparison):
+            continue
         unknowns = [var.name for var, _ in shape.binders]
         others = [other.body for position, other in enumerate(instances) if position != index]
-        targets: list[Any] = []
-        for term in (*others, claim):
-            for atom in applications(term):
-                if all(render(atom) != render(seen) for seen in targets):
-                    targets.append(atom)
-        tried: set[tuple[str, ...]] = {tuple(render(value) for value in citation.values)}
-        for pattern in applications(shape.body):
-            for atom in targets:
-                solution = unify(pattern, atom, unknowns, list(step.types))
-                if solution is None or set(solution) != set(unknowns):
-                    continue
-                values = tuple(solution[name] for name in unknowns)
-                key = tuple(render(value) for value in values)
-                if key in tried:
-                    continue
-                if citation.is_claim and not _smaller(citation.source, values, measure):
-                    continue
-                tried.add(key)
-                body, _guards = shape.at(solution)
-                if combination(claim, [*others, body], step.types) is not None:
-                    return index, Citation(citation.source, values, citation.line)
+        lemma = Lemma(citation.name, shape.binders, shape.premises, shape.body)
+        tried: set[tuple[str, ...]] = {tuple(_key(value) for value in citation.values)}
+        try:
+            points = candidate_points(lemma, [*others, claim], step.types)
+        except Exception:  # noqa: BLE001 - a fact the matcher cannot line up has no fix
+            continue
+        for values in points:
+            key = tuple(_key(value) for value in values)
+            if key in tried:
+                continue
+            if citation.is_claim and not _smaller(citation.source, values, measure):
+                continue
+            tried.add(key)
+            body = instantiate(shape.body, dict(zip(unknowns, values, strict=True)))
+            if combination(claim, [*others, body], step.types) is not None:
+                return index, Citation(citation.source, tuple(values), citation.line)
     return None
+
+
+def _key(value: Any) -> str:
+    """A value as text, to tell points apart: a term rendered, a family's value as a function."""
+    shown_value = getattr(value, "shown", None)
+    if callable(shown_value):
+        return shown_value()
+    return render(value) if hasattr(value, "mapper_method") else repr(value)
 
 
 def _smaller(claim: ClaimDef, values: Sequence[Any], measure: Any) -> bool:

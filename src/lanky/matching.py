@@ -31,15 +31,21 @@ for a product (:func:`higher_order_value`).
 
 Which point. A fact is lined up with every subterm of the step at every
 place it could fit: the subterms of its own that apply a family, and each of
-its two sides. That gives candidate points (:func:`candidate_points`). A
-candidate whose integer conditions do not follow from what the case knows is
-dropped (``x >= 0`` where ``x = a - 4`` and the case knows only ``a >= 2``;
-:func:`implied`), and of the rest the point is the one at which the fact is
-about the step and nothing else: every application of a family in the fact,
-at that point, is one the step has, or one side of the fact is a subterm of
-the step (:func:`fits`). Exactly one such point is the answer
+its two sides. That gives candidate points (:func:`candidate_points`). Of
+those, the point is the one at which the fact is about the step and nothing
+else: every application of a family in the fact, at that point, is one the
+step has, or one side of the fact is a subterm of the step (:func:`fits`).
+Where no point is, the point is the one at which one of the fact's
+applications is one of the step's (:func:`touches`): a case's claim ``R[i, a,
+b] == D[i, a, b]`` given by ``return copies, stored``, where ``copies`` says
+``R[i, a, b] == C[i, a, b]`` and lines up with the claim's left side alone.
+Where several points fit, a candidate whose integer conditions do not follow
+from what the case knows is dropped (``x >= 0`` where ``x = a - 4`` and the
+case knows only ``a >= 2``; :func:`implied`). Exactly one point is the answer
 (:func:`single_point`); none, or more than one, asks the proof to write the
-point, naming them.
+point, naming them. This is the one matcher of the facts a proof cites: a
+written proof's uncalled facts, its links and its returns, and the fixes its
+report offers (:func:`candidate_points`) all line facts up by these rules.
 
 Nothing here is trusted. A point is printed into the Lean the step compiles
 to, and Lean checks the fact there, its conditions and all; a wrong point
@@ -83,6 +89,7 @@ __all__ = [
     "same",
     "single_point",
     "solve_index",
+    "touches",
 ]
 
 #: The key an affine form keeps its constant under; no variable is named "".
@@ -98,11 +105,15 @@ class NoSinglePoint(LookupError):
     Attributes:
         candidates: The points that fit, or that were tried; each a tuple of
             values, one per binder of the fact.
+        several: Whether several points fit, rather than none.
     """
 
-    def __init__(self, message: str, candidates: Sequence[tuple[Any, ...]] = ()) -> None:
+    def __init__(
+        self, message: str, candidates: Sequence[tuple[Any, ...]] = (), several: bool = False
+    ) -> None:
         super().__init__(message)
         self.candidates = tuple(candidates)
+        self.several = several
 
 
 # {{{ a family's value, bound by the higher-order rule
@@ -879,7 +890,7 @@ def _patterns(lemma: Lemma, types: Mapping[str, Any]) -> list[Any]:
     for application in _applications(lemma.equation, families):
         if _names(application) & unknowns:
             out.append(application)
-    for side in (lemma.equation.left, lemma.equation.right):
+    for side in _sides(lemma.equation):
         if isinstance(side, prim.ExpressionNode) and _names(side) & unknowns:
             if not isinstance(side, prim.Variable):
                 out.append(side)
@@ -969,9 +980,34 @@ def fits(
         return all(any(same(found, other) for other in present) for found in applications)
     return any(
         any(same(side, other) for other in present)
-        for side in (instance.left, instance.right)
+        for side in _sides(instance)
         if isinstance(side, prim.ExpressionNode)
     )
+
+
+def touches(
+    lemma: Lemma, point: tuple[Any, ...], terms: Sequence[Any], types: Mapping[str, Any]
+) -> bool:
+    """Whether one application of a family of the scope in the fact, at ``point``, is the step's.
+
+    The second rule of :func:`single_point`, for a fact that gives one side of
+    the step: ``copies``, ``R[i, a, b] == C[i, a, b]``, against the claim
+    ``R[i, a, b] == D[i, a, b]``, touches it at ``(i, a, b)``.
+    """
+    values = dict(zip((var.name for var, _ in lemma.binders), point, strict=True))
+    instance = instantiate(lemma.equation, values)
+    present = [subterm for subterm, _ in _subterms_of(terms)]
+    return any(
+        any(same(found, other) for other in present)
+        for found in _applications(instance, _families(types))
+    )
+
+
+def _sides(comparison: Any) -> tuple[Any, ...]:
+    """The two sides of a comparison; none for a fact that is no comparison."""
+    if isinstance(comparison, prim.Comparison):
+        return (comparison.left, comparison.right)
+    return ()
 
 
 def single_point(
@@ -983,9 +1019,13 @@ def single_point(
 ) -> tuple[Any, ...]:
     """The one point at which a fact left uncalled supports a step (see the module docstring).
 
-    ``facts`` are what the case knows, propositions over the scope's names,
-    which with the bounds the types give are what a candidate's integer
-    conditions have to follow from (:func:`implied`).
+    ``terms`` are what the step is about: a link's two sides, or a case's
+    claim. The point is one at which the fact is about the step alone
+    (:func:`fits`), or, where there is none, one at which it gives one of
+    the step's terms (:func:`touches`). ``facts`` are what the case knows,
+    propositions over the scope's names, which with the bounds the types
+    give are what a candidate's integer conditions have to follow from
+    where several fit (:func:`implied`).
 
     Raises:
         NoSinglePoint: If no candidate fits, or several do, naming the fix:
@@ -999,8 +1039,18 @@ def single_point(
             point for point in fitting if _conditions(lemma, point, facts, types) is not False
         ]
         fitting = shown_ones or fitting
+    if not fitting:
+        fitting = [point for point in candidates if touches(lemma, point, terms, types)]
+        if len(fitting) > 1:
+            # several give one of its terms: the ones the case rules out go, and
+            # a point the case merely does not show stays a choice to write
+            fitting = [
+                point for point in fitting if not _refuted(lemma, point, facts, types)
+            ] or fitting
     if len(fitting) == 1:
         return fitting[0]
+    # the points whose conditions the case shows come first, the fix a message names
+    fitting.sort(key=lambda point: _conditions(lemma, point, facts, types) is not True)
     shown = [f"({', '.join(_key(value) for value in point)})" for point in fitting or candidates]
     arguments = ", ".join(var.name for var, _ in lemma.binders)
     if not fitting:
@@ -1014,7 +1064,22 @@ def single_point(
         f"{name} fits this step at {len(fitting)} points, {', '.join(shown)}; write the "
         f"one meant, as by={name}{shown[0]}",
         fitting,
+        several=True,
     )
+
+
+def _refuted(
+    lemma: Lemma, point: tuple[Any, ...], facts: Sequence[Any], types: Mapping[str, Any]
+) -> bool:
+    """Whether the case rules out a condition of the fact at ``point``: its negation follows."""
+    values = dict(zip((var.name for var, _ in lemma.binders), point, strict=True))
+    for guard in lemma.guards:
+        here = instantiate(guard, values)
+        if isinstance(here, prim.Comparison) and here.operator in _NEGATED:
+            negation = Comparison(here.left, _NEGATED[here.operator], here.right)
+            if implied(negation, facts, types) is True:
+                return True
+    return False
 
 
 def _conditions(

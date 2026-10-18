@@ -24,10 +24,9 @@ import pytest
 
 from conftest import claims
 from lanky.check import check_path, import_path
-from lanky.citations import CitedText, proved_texts
+from lanky.citations import CitedText, Premise, proved_texts
 from lanky.ledger import Status
 from lanky.proofs import ProofError, compile_proof, prove, trace_proof
-from lanky.proofs.compile import Premise
 from lanky.proofs.report import CLOSED_WITH_HOLES, verdict
 from lanky.proofs.trace import Named
 

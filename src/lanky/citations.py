@@ -1,102 +1,81 @@
-"""What a proof cites: facts, at a point or not, and how each is restated in Lean.
+"""What a proof cites: one :class:`Citation` for every fact cited, and how each is restated in Lean.
 
 The design idea. A step of a proof gives its reasons by name: a hypothesis of
 the theorem (``pde``), a theorem (``log_of_a_power``), the claim at a smaller
 point (``claim(a - 2, b + 2)``), or a fact on the way that an earlier line
-named (``recurrence``). Each reason is a :class:`Citation`: what the proof
-called it, the fact as a lanky term, how Lean applies it, and the point it is
-cited at, if the proof wrote one. A fact left uncalled, ``by=pde``, has no
-point here; :mod:`lanky.matching` finds it from the step's own terms.
-
-What a proof body holds while it is traced is not a citation but a handle the
-tracer gave it: the hypothesis ``pde`` as a parameter, ``claim`` as a function
-that records its calls. Any object can be a reason that answers
-``__lanky_citation__()`` with its :class:`Citation`; :class:`Hypothesis` is the
-handle for a hypothesis (calling it, ``pde(a - 2, b)``, cites it at a point),
-and :func:`citation_of` also reads a named chain (:class:`lanky.chains.Chain`)
-and a :class:`lanky.theory.Theorem` passed as it is.
+named (``recurrence``). A part a plugin states cites theorems the same way, as
+hypotheses: loopty's part that applies ``compressed_taylor`` to a kernel's
+postcondition, the series a kernel adds (``line_taylor``), the passes a
+program's postcondition unfolds through (``sum_factorization``). Each is a
+:class:`Citation`: what is cited, and where. In a written proof, where is the
+line and the point, if the proof wrote one; a fact left uncalled, ``by=pde``,
+has no point, and :mod:`lanky.matching` finds it from the step's own terms. In
+a part, where is the hypothesis of the part that restates the theorem.
 
 A theorem is cited through its *cited text*. A citation of a theorem ``B``
 in a proof of ``A`` is a hypothesis of ``A``'s Lean declaration, ``(B : ...)``,
-and a hypothesis restated wrongly, one that drops a condition, proves
-anything. So the text restated is the one ``B``'s own command proved, its
-``Lanky.B.as_cited`` theorem, read from what the check of ``B`` recorded
-(:func:`proved_texts`), byte for byte; where there is none, ``B`` was not
-proved, and the text is printed from ``B``'s term, trusting the printer as
-every citation did before, with ``B``'s id in what ``A`` rests on so that the
-ledger bounds ``A`` by ``B``'s status. The citation says which it is
-(:attr:`Citation.proved_text`).
-
-Where the texts come from. A proof that cites a theorem takes the theorem's
-statement as a hypothesis, and so does a part a plugin builds: loopty's part
-that applies ``compressed_taylor`` to a kernel's
-postcondition (:class:`lanky.obligations.Application`), the series a kernel
-adds (``line_taylor``), the passes a program's postcondition unfolds through
-(``sum_factorization``). Lean then checks the step from the hypothesis to the
-claim, and nothing checks the hypothesis: it is printed from the theorem's
-term, and a printer that dropped a condition of it would hand the part a
-hypothesis that proves anything. ``log_of_a_power`` restated without ``0 ≤
-n`` proves ``1 = 0``, with no error and no axiom beyond Lean's own.
+and so is a part's: Lean checks the step from the hypothesis to the claim, and
+nothing checks the hypothesis. A hypothesis restated wrongly, one that drops a
+condition, proves anything: ``log_of_a_power`` restated without ``0 ≤ n``
+proves ``1 = 0``, with no error and no axiom beyond Lean's own.
 
 So the text a citation restates is never printed for the citation. Each
 claim's command proves one more theorem after its own,
 ``Lanky.name.as_cited``, whose statement is the claim as one proposition
 (:attr:`lanky.lean.LeanStatement.as_cited`), proved from the claim's theorem;
 when the command closes, that text is a proved fact, and the oracle keeps it
-here, by the claim's fact id (:class:`ProvedTexts`), whether Lean answered
-now or the proof cache kept its answer. A part that cites the claim
-(:class:`lanky.obligations.Citation`) restates exactly that text, byte for
-byte, as a hypothesis before any variable of its own, where no name of the
-part can mean anything in it (:func:`restatements`). Its source holds the
-text, so its proof-cache entry is the entry of a proof from that text.
+here, by the claim's fact id (:class:`ProvedTexts`), whether Lean answered now
+or the proof cache kept its answer. A text is kept only from a command whose
+source holds it as that theorem's statement, byte for byte
+(:func:`closed_with`): on a warm check, the source is the one the proof cache
+kept its answer for, so the string is compared with ``B``'s cache entry and
+not with what the printer says today. A citation restates exactly that text,
+and a written proof's restated texts are compared again with the kept ones
+before Lean is asked, warm or not. A part's citation restates the text as a
+hypothesis before any variable of its own, where no name of the part can mean
+anything in it (:func:`restatements`). The citing source holds the text, so
+its proof-cache entry is the entry of a proof from that text.
 
-Two checks keep the restatement honest:
+Two more checks keep a restatement honest:
 
-- The conjunct the part cites has to be the claim's term as its theory
-  states it (:func:`lanky.terms.structurally_equal`). A part that cites a
-  claim and restates something else is refused before Lean is asked, with
-  the claim named: that is the misrestated citation, caught where it is
-  made.
-- A text is kept only from a command that closed with it, so a cited claim
-  whose ``as_cited`` did not follow from its own theorem (a printer whose two
-  readings of the claim disagree) has no text kept, and is not proved
-  either.
+- The conjunct a part cites has to be the claim's term as its theory states
+  it (:func:`lanky.terms.structurally_equal`). A part that cites a claim and
+  restates something else is refused before Lean is asked, with the claim
+  named: that is the misrestated citation, caught where it is made.
+- A text is kept only for the term it was proved for, so a theorem changed in
+  a long-lived process is not cited by its old text (:meth:`ProvedTexts.stale`).
 
 A claim with no text kept (one only tested, an axiom, one whose Lean attempt
 failed, or one this process did not check) is restated by the printer, as
-every citation was before, and the part says so (``restated by the
-printer``). The ledger bounds what rests on it: a fact is worth at most what
-it rests on, and a part's fact rests on the claims it cites.
+every citation was before, and the citation says so (``restated by the
+printer``). The ledger bounds what rests on it, a fact being worth at most
+what it rests on, and Lean is asked whether those printed texts prove
+``False`` where the proof takes them (:func:`vacuity_question`).
 """
 
 from __future__ import annotations
 
-import sys
+import itertools
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
-import pymbolic.primitives as prim
-
-from lanky.induction import Lemma, domain_conditions, substitute
-from lanky.terms import Forall, Var, conjuncts, render, structurally_equal
+from lanky.terms import Forall, conjuncts, render, structurally_equal
 
 __all__ = [
     "Citation",
-    "Cited",
     "CitedText",
-    "Hypothesis",
+    "Premise",
     "Proved",
     "ProvedTexts",
     "Restatement",
-    "citation_of",
-    "fact_lemma",
+    "closed_with",
     "premises_of",
     "proved_text",
     "proved_texts",
-    "restated_text",
     "restatements",
     "vacuity_question",
 ]
@@ -104,248 +83,90 @@ __all__ = [
 
 @dataclass(frozen=True, eq=False)
 class Citation:
-    """One reason a step gives: a fact, how Lean applies it, and where it is cited.
+    """One fact cited, and where: by a step of a written proof, or by a hypothesis of a part.
 
     Attributes:
-        name: What the proof called it, for messages and outlines: ``pde``,
-            ``recurrence``, ``log_of_a_power``, or ``the claim``.
-        proposition: The fact as a lanky term: a :class:`~lanky.terms.Forall`
-            over the values it is cited at, or a closed proposition.
-        head: The Lean text the fact is applied by, its values after it:
-            ``pde``, ``recurrence``, ``Lanky.compressed_taylor.claim D R pde
-            stored recurrence``.
-        point: The values the proof cited it at, one per binder of
-            :attr:`proposition`, in order; ``None`` for a fact left uncalled,
-            whose point a step's terms give (:mod:`lanky.matching`). A fact
-            with no binders is at the empty point.
-        line: The line the citation was written on.
-        kind: ``"hypothesis"``, ``"theorem"``, ``"claim"`` or ``"named"``.
-        fact_id: For a theorem, the ledger id the citing claim rests on.
-        restated: For a theorem, the text the citing declaration takes it as,
-            a hypothesis named :attr:`head` (see :func:`restated_text`).
-        proved_text: Whether :attr:`restated` is the text the theorem's own
-            command proved, and not one printed here.
-        premises: For a theorem whose own proof cited others, those
-            theorems, each by its proved text: its ``as_cited`` theorem takes
-            them as hypotheses, so a citer restates them too (see
-            :class:`CitedText`).
+        source: What is cited: a hypothesis of the theorem being proved
+            (:class:`lanky.proofs.trace.Given`), a theorem
+            (:class:`lanky.theory.Theorem`), the claim at a point
+            (:class:`lanky.proofs.trace.ClaimDef`), a fact on the way
+            (:class:`lanky.proofs.trace.Named`), or a theorem known by its
+            proved text alone (:class:`Premise`).
+        values: The point, a value per variable of the fact, outermost
+            first; ``None`` for a fact cited by its name alone, whose point
+            the step it supports gives (:mod:`lanky.matching`).
+        line: The line of the proof the citation was written on.
+        hypothesis: For a part's citation, the position of the hypothesis
+            that restates the theorem among the conjuncts of the part's guard,
+            as an :class:`lanky.obligations.Instance`'s is. The conjunct has
+            to be the theorem's term as its theory states it.
     """
 
-    name: str
-    proposition: Any
-    head: str
-    point: tuple[Any, ...] | None = None
+    source: Any
+    values: tuple[Any, ...] | None = None
     line: int | None = None
-    kind: str = "hypothesis"
-    fact_id: str | None = None
-    restated: str | None = None
-    proved_text: bool = False
-    premises: tuple[Citation, ...] = ()
+    hypothesis: int | None = None
 
     @property
-    def lemma(self) -> Lemma:
-        """The fact as a lemma: its binders, the premises Lean applies it to, its proposition."""
-        lemma = fact_lemma(self.head, self.proposition)
-        if lemma is None:
-            raise TypeError(
-                f"{self.name} states {render(self.proposition)}, which is no fact a step "
-                "can cite: a comparison, under universals"
-            )
-        return lemma
+    def name(self) -> str:
+        """The name the fact is cited by: ``pde``, ``log_of_a_power``, ``claim``."""
+        source = self.source
+        for attribute in ("__name__", "name"):
+            name = getattr(source, attribute, None)
+            if isinstance(name, str) and name:
+                return name
+        return getattr(source, "qualname", None) or repr(source)
 
     @property
-    def binders(self) -> tuple[tuple[Var, Any], ...]:
-        """The values the fact is cited at, as its binders: ``(variable, domain)`` pairs."""
-        return self.lemma.binders
-
-    def at(self, point: tuple[Any, ...]) -> Citation:
-        """The same fact, at ``point``."""
-        return replace(self, point=tuple(point))
+    def fact(self) -> str:
+        """The ledger id of a cited theorem, which the citing claim rests on; ``""`` for none."""
+        return getattr(self.source, "fact_id", None) or ""
 
     @property
-    def instance(self) -> Any:
-        """The fact at its point, as a comparison; ``None`` for a fact with no point yet."""
-        if self.point is None:
-            return None
-        lemma = self.lemma
-        values = dict(zip((var.name for var, _ in lemma.binders), self.point, strict=True))
-        return substitute(lemma.equation, values)
+    def is_claim(self) -> bool:
+        """Whether this is the claim at a point, which is the induction."""
+        from lanky.proofs.trace import ClaimDef
 
-    @property
-    def guards(self) -> tuple[Any, ...]:
-        """What the fact needs at its point: its premises' propositions there, in order."""
-        if self.point is None:
-            return ()
-        lemma = self.lemma
-        values = dict(zip((var.name for var, _ in lemma.binders), self.point, strict=True))
-        return tuple(substitute(guard, values) for guard in lemma.guards)
+        return isinstance(self.source, ClaimDef)
 
-    def described(self, point: tuple[Any, ...] | None = None) -> str:
-        """The citation as an outline says it: ``pde, at (a - 2, b)``, ``the claim at (a - 2)``."""
-        point = self.point if point is None else point
-        if not point:
+    def text(self, values: tuple[Any, ...] | None = None) -> str:
+        """How the citation is written: ``pde(i, a - 2, b)``, or ``stored`` alone."""
+        values = self.values if values is None else values
+        if values is None:
             return self.name
-        values = ", ".join(_shown(value) for value in point)
-        if self.kind == "claim":
-            return f"{self.name} at ({values})"
-        return f"{self.name}, at ({values})"
+        return f"{self.name}({', '.join(_shown(value) for value in values)})"
 
 
 def _shown(value: Any) -> str:
-    """A value as a message prints it: a term rendered, a family's value as a function."""
+    """A value as a citation writes it: a term rendered, a family's value as a function."""
     shown = getattr(value, "shown", None)
     if callable(shown):
         return shown()
-    if isinstance(value, prim.ExpressionNode):
-        return render(value)
-    return repr(value)
+    return render(value) if hasattr(value, "mapper_method") else repr(value)
 
 
-def fact_lemma(head: str, proposition: Any) -> Lemma | None:
-    """A fact as a lemma: its binders, the premises Lean applies it to, its comparison.
+class Premise:
+    """A theorem a cited theorem's own proof cited, known by the text its command proved.
 
-    As :func:`lanky.induction.lemma_of`, level by level as Lean prints a
-    universal: each binder with its domain's guards after it, and a level's
-    own guard after its last binder, one premise per conjunct. A comparison of
-    any kind is taken, ``<=`` and ``!=`` as well as ``==``, so a step can cite
-    an inequality. ``None`` for a fact whose innermost body is no comparison,
-    and for one whose levels rebind a name.
-    """
-    binders: list[tuple[Var, Any]] = []
-    premises: list[tuple[str, Any]] = []
-    node = proposition
-    while isinstance(node, Forall):
-        for var, domain in node.binders:
-            binders.append((var, domain))
-            premises.append(("value", var.name))
-            premises += [("proof", guard) for guard in domain_conditions(var, domain)]
-        premises += [("proof", guard) for guard in conjuncts(node.guard)]
-        node = node.body
-    if not isinstance(node, prim.Comparison):
-        return None
-    names = [var.name for var, _ in binders]
-    if len(set(names)) != len(names):
-        return None
-    return Lemma(head, tuple(binders), tuple(premises), node)
-
-
-# {{{ handles a proof body holds
-
-
-class Hypothesis:
-    """A hypothesis of the theorem being proved, as a proof body holds it.
-
-    Cited uncalled, ``by=pde``, at the point a step's terms give; called,
-    ``pde(a - 2, b)``, at that point (a :class:`Cited`). Its values are the
-    binders of its universal, in order, and a call with another number of
-    them is refused at its line.
+    Its ``as_cited`` text is a hypothesis of the cited theorem's ``as_cited``,
+    ``theorem Lanky.B.as_cited (C : ⟨C's text⟩) : ⟨B's text⟩ := Lanky.B C``,
+    so a citation of ``B`` restates ``C``'s text as well, and rests on it,
+    all the way down (:func:`premises_of`). It has a theorem's ``__name__``
+    and ``fact_id``, which is all a restatement reads, its ``text``, and its
+    own ``premises``.
     """
 
-    def __init__(self, name: str, proposition: Any, head: str | None = None) -> None:
-        self.name = name
-        self.proposition = proposition
-        self.head = head or name
-
-    def __lanky_citation__(self) -> Citation:
-        """The hypothesis, uncalled."""
-        return Citation(self.name, self.proposition, self.head)
-
-    def __call__(self, *values: Any) -> Cited:
-        """The hypothesis at a point, cited from the line of the call.
-
-        Raises:
-            TypeError: If the number of values is not the number of its binders.
-        """
-        frame = sys._getframe(1)
-        citation = self.__lanky_citation__()
-        expected = [var.name for var, _ in citation.binders]
-        if len(values) != len(expected):
-            names = ", ".join(expected) or "none"
-            raise TypeError(
-                f"line {frame.f_lineno}: {self.name} is cited at {len(values)} "
-                f"value{'s' if len(values) != 1 else ''}, and it takes {len(expected)} "
-                f"({names}), in that order"
-            )
-        return Cited(replace(citation, point=tuple(values), line=frame.f_lineno))
+    def __init__(
+        self, name: str, fact_id: str, text: str, premises: tuple[Premise, ...] = ()
+    ) -> None:
+        self.__name__ = name
+        self.fact_id = fact_id
+        self.text = text
+        self.premises = premises
 
     def __repr__(self) -> str:
-        """``<hypothesis pde: all(...)>``."""
-        return f"<hypothesis {self.name}: {render(self.proposition)}>"
-
-
-class Cited:
-    """A fact at a point, as ``pde(a - 2, b)`` gives it."""
-
-    def __init__(self, citation: Citation) -> None:
-        self.citation = citation
-
-    def __lanky_citation__(self) -> Citation:
-        """The citation, at its point."""
-        return self.citation
-
-    def __repr__(self) -> str:
-        """``<pde, at (a - 2, b)>``."""
-        return f"<{self.citation.described()}>"
-
-
-# }}}
-
-
-# {{{ reading a reason
-
-
-def citation_of(reason: Any, *, mathlib: bool = True) -> Citation:
-    """The :class:`Citation` a reason given to ``by=`` or returned by a case stands for.
-
-    A citation is itself; an object that answers ``__lanky_citation__`` is
-    what it answers; a named chain (:class:`lanky.chains.Chain`) is the fact
-    it shows, cited by its name; a :class:`lanky.theory.Theorem` is the
-    theorem, uncalled, restated by its cited text (:func:`restated_text`), in
-    the dialect ``mathlib`` says.
-
-    Raises:
-        TypeError: For anything else, naming what it is.
-    """
-    from lanky.chains import Chain
-
-    if isinstance(reason, Citation):
-        return reason
-    answer = getattr(reason, "__lanky_citation__", None)
-    if callable(answer):
-        found = answer()
-        if not isinstance(found, Citation):
-            raise TypeError(f"{reason!r} answered {found!r} for its citation")
-        return found
-    if isinstance(reason, Chain):
-        name = reason.name
-        if name is None:
-            where = reason.links[-1].where or "its line"
-            raise TypeError(
-                f"the chain at {where} is cited without a name; name it, as in "
-                "recurrence = a[n].equals(..., by=ode), and cite recurrence"
-            )
-        return Citation(name, reason.claim, name, (), reason.line, "named")
-    from lanky.theory import Theorem
-
-    if isinstance(reason, Theorem):
-        text, proved = restated_text(reason, mathlib=mathlib)
-        return Citation(
-            reason.__name__,
-            reason.term,
-            reason.__name__,
-            kind="theorem",
-            fact_id=reason.fact_id,
-            restated=text,
-            proved_text=proved,
-            premises=premises_of(reason.fact_id, term=reason.term) if proved else (),
-        )
-    raise TypeError(
-        f"{reason!r} is no fact a step can cite: a hypothesis, a theorem, a fact on the "
-        "way or the claim at a point"
-    )
-
-
-# }}}
+        """``<premise log_of_a_power>``."""
+        return f"<premise {self.__name__}>"
 
 
 # {{{ cited texts
@@ -357,9 +178,8 @@ class CitedText:
 
     The command that proves a theorem ``B`` ends with ``Lanky.B.as_cited``,
     whose statement is the text a citation of ``B`` restates. Where ``B``'s
-    proof cites ``C``, that theorem takes ``C``'s text as a hypothesis,
-    ``theorem Lanky.B.as_cited (C : ⟨C's text⟩) : ⟨B's text⟩ := Lanky.B C``,
-    so a citation of ``B`` restates ``C``'s text as well, and rests on it.
+    proof cites ``C``, that theorem takes ``C``'s text as a hypothesis, so a
+    citation of ``B`` restates ``C``'s text as well, and rests on it.
 
     Attributes:
         name: The theorem's name, under which a citing declaration takes the text.
@@ -408,11 +228,6 @@ def proved_text(fact_id: str | None, term: Any = None) -> CitedText | None:
     theorem changed in a long-lived process, whose new statement Lean has
     not proved) is no proved text of it, and ``None`` is returned.
     """
-    return _proved(fact_id, term)
-
-
-def _proved(fact_id: str | None, term: Any = None) -> CitedText | None:
-    """The proved text recorded for a theorem, as a :class:`CitedText`, or ``None``."""
     texts = _PROVED_TEXTS.get()
     found = None if texts is None or fact_id is None else texts.get(fact_id)
     if found is None or isinstance(found, CitedText):
@@ -424,28 +239,8 @@ def _proved(fact_id: str | None, term: Any = None) -> CitedText | None:
     return CitedText(fact_id or "", str(found))
 
 
-def restated_text(theorem: Any, *, mathlib: bool = True) -> tuple[str, bool]:
-    """The text a citation of ``theorem`` restates, and whether its own command proved it.
-
-    The proved text when the check recorded one (:func:`proved_texts`); else
-    the statement printed from the theorem's term, in the dialect ``mathlib``
-    says, which trusts the printer, as a citation without a proved text does
-    (:func:`vacuity_question` is then what bounds the damage).
-
-    Raises:
-        lanky.lean.UnsupportedTerm: If there is no proved text and the
-            printer declines the theorem's statement.
-    """
-    found = _proved(theorem.fact_id, theorem.term)
-    if found is not None:
-        return found.text, True
-    from lanky.lean import print_lean
-
-    return print_lean(theorem.term, mathlib=mathlib), False
-
-
-def premises_of(fact_id: str, seen: tuple[str, ...] = (), term: Any = None) -> tuple[Citation, ...]:
-    """The theorems a proved theorem's ``as_cited`` takes, each a citation by its proved text.
+def premises_of(fact_id: str, seen: tuple[str, ...] = (), term: Any = None) -> tuple[Premise, ...]:
+    """The theorems a proved theorem's ``as_cited`` takes, each by its proved text.
 
     Each premise has to be a proved text itself: the soundness of a
     citation is an induction over what each proved theorem rests on, and a
@@ -457,41 +252,63 @@ def premises_of(fact_id: str, seen: tuple[str, ...] = (), term: Any = None) -> t
         ValueError: If a premise has no proved text, naming it, or if the
             premises come round to a theorem again, naming the circle.
     """
-    found = _proved(fact_id, term)
+    found = proved_text(fact_id, term)
     if found is None:
         return ()
-    out: list[Citation] = []
+    out: list[Premise] = []
     for premise in found.premises:
         if premise in (*seen, fact_id):
             circle = " -> ".join((*seen, fact_id, premise))
             raise ValueError(f"the citations go round in a circle: {circle}")
-        cited = _proved(premise)
+        cited = proved_text(premise)
         if cited is None:
             raise ValueError(
                 f"{found.name} was proved citing {premise}, which has no proved text; "
                 "a citation rests on proved texts all the way down"
             )
         out.append(
-            Citation(
-                cited.name,
-                None,
-                cited.name,
-                kind="theorem",
-                fact_id=premise,
-                restated=cited.text,
-                proved_text=True,
-                premises=premises_of(premise, (*seen, fact_id)),
-            )
+            Premise(cited.name, premise, cited.text, premises_of(premise, (*seen, fact_id)))
         )
     return tuple(out)
 
 
+def closed_with(source: str, name: str, text: str) -> bool:
+    """Whether the command ``source`` proves ``text`` as ``name.as_cited``, byte for byte.
+
+    ``name`` is the theorem's Lean name, ``Lanky.B``. The command that
+    proves ``B`` states its ``as_cited`` theorem on a line of its own after
+    the theorem's head, ``theorem Lanky.B.as_cited ... :`` and then
+    ``    <text> :=``, as :meth:`lanky.lean.LeanStatement.source` and a
+    written proof's command (:mod:`lanky.proofs.compile`) both write it.
+    The text is compared as the string it is: a command that states any
+    other text, or none, did not prove it.
+    """
+    head = f"theorem {name}.as_cited"
+    lines = source.splitlines()
+    for index, line in enumerate(lines[:-1]):
+        if not (line == head + " :" or (line.startswith(head + " (") and line.endswith(" :"))):
+            continue
+        statement = lines[index + 1]
+        if statement in (f"    {text} :=", f"    {text} := by"):
+            return True
+    return False
+
+
+# }}}
+
+
+# {{{ the vacuity question
+
+
 def vacuity_question(
     owner: str,
-    citations: Sequence[Citation],
+    theorems: Sequence[Any],
     where: str | None = None,
     points: Sequence[tuple[str, tuple[Any, ...]]] = (),
     mathlib: bool = False,
+    variables: Sequence[tuple[Any, Any]] = (),
+    conditions: Sequence[Any] = (),
+    case: str = "",
 ) -> Any:
     """Whether the cited theorems without a proved text prove ``False`` together, as a fact.
 
@@ -499,56 +316,76 @@ def vacuity_question(
     that dropped a condition could prove anything (the check's T4: a
     ``log_of_a_power`` without ``n >= 0`` proves ``1 = 0``). So the check
     asks, as it asks whether a claim's hypotheses are vacuous
-    (:func:`lanky.check.hypotheses_fact`), whether those texts alone prove
+    (:func:`lanky.check.hypotheses_fact`), whether those texts prove
     ``False``: the fact returned is that question, of kind ``"hypotheses"``,
     which the Lean oracle answers with its short ladder and the vacuity
     budget; established, the citing claim has to fail. ``None`` where every
-    citation is by a proved text, and there is nothing to ask.
+    theorem cited has a proved text, and there is nothing to ask.
 
     A text that dropped a condition is false at a point, and no tactic of
-    the short ladder looks for one. ``points`` are where the citing proof
-    applied the theorems, ``(fact id, values)`` with values that are
-    numbers: the question is then a part whose hypotheses are taken at
-    them (:class:`lanky.obligations.Instance`), as the proof took them, in
-    the dialect ``mathlib`` says.
+    the short ladder looks for one; a proof that exploits it takes it at
+    such a point. ``points`` are where the citing proof takes the theorems,
+    ``(fact id, values)``, and the question is then a part whose hypotheses
+    are taken there (:class:`lanky.obligations.Instance`), as the proof
+    took them, in the dialect ``mathlib`` says. Points with variables, the
+    claim's ``(a - 2, b)`` inside an induction, need those variables bound:
+    ``variables`` are ``(Var, sort)`` binders over them and ``conditions``
+    what holds in the case the points are taken in, the hypotheses after
+    the texts. Such a question shows the texts prove ``False`` only if the
+    case can happen, so the caller asks it only where some values satisfy
+    ``conditions`` (:func:`satisfiable`), and ``case`` names it.
     """
     from lanky.ledger import Fact
     from lanky.terms import LogicalAnd
 
     printed = [
-        citation
-        for citation in citations
-        if citation.kind == "theorem"
-        and not citation.proved_text
-        and citation.proposition is not None
+        theorem
+        for theorem in dict.fromkeys(theorems)
+        if getattr(theorem, "term", None) is not None
+        and proved_text(getattr(theorem, "fact_id", None), theorem.term) is None
     ]
     if not printed:
         return None
-    terms = tuple(citation.proposition for citation in printed)
-    guard = terms[0] if len(terms) == 1 else LogicalAnd(terms)
-    names = ", ".join(citation.name for citation in printed)
-    term: Any = Forall((), False, guard)
-    position = {citation.fact_id: index for index, citation in enumerate(printed)}
-    taken = [
-        (position[fact_id], tuple(values))
-        for fact_id, values in dict.fromkeys(points)
-        if fact_id in position and isinstance(terms[position[fact_id]], Forall)
-    ]
+    terms = tuple(theorem.term for theorem in printed)
+    guards = (*terms, *conditions)
+    guard = guards[0] if len(guards) == 1 else LogicalAnd(guards)
+    names = ", ".join(theorem.__name__ for theorem in printed)
+    term: Any = Forall(tuple(variables), False, guard)
+    position = {theorem.fact_id: index for index, theorem in enumerate(printed)}
+    taken: list[tuple[int, tuple[Any, ...]]] = []
+    seen: set[tuple[str, tuple[str, ...]]] = set()
+    for fact_id, values in points:
+        # a point once, told apart by its text: a term is not hashed
+        key = (fact_id, tuple(_shown(value) for value in values))
+        if key in seen or fact_id not in position:
+            continue
+        seen.add(key)
+        if isinstance(terms[position[fact_id]], Forall):
+            taken.append((position[fact_id], tuple(values)))
+    if variables and not taken:
+        return None
     if taken:
         from lanky.obligations import Hints, Instance, Obligation, Part
 
+        label = f"the theorems {owner} cites without a proved text, where its proof takes them"
+        if case:
+            label += f" {case}"
         part = Part(
             "citations",
-            f"the theorems {owner} cites without a proved text, where its proof takes them",
+            label,
             term,
             Hints(instances=tuple(Instance(index, values) for index, values in taken)),
             mathlib=mathlib,
         )
-        term = _Question(Obligation(parts=(part,)), names)
+        term = _Question(Obligation(parts=(part,)), names, case)
+    suffix = "@" + re.sub(r"[^0-9A-Za-z]+", "-", case).strip("-") if case else ""
+    said = f" {case}" if case else ""
     return Fact(
-        id=f"{owner}:citations",
+        id=f"{owner}:citations{suffix}",
         kind="hypotheses",
-        statement=f"the theorems {owner} cites without a proved text ({names}) are inconsistent",
+        statement=(
+            f"the theorems {owner} cites without a proved text ({names}) are inconsistent{said}"
+        ),
         term=term,
         where=where,
         owner=owner,
@@ -558,15 +395,71 @@ def vacuity_question(
 class _Question:
     """The question of :func:`vacuity_question` taken at points, as Lean is asked it."""
 
-    def __init__(self, obligation: Any, names: str) -> None:
+    def __init__(self, obligation: Any, names: str, case: str = "") -> None:
         self.obligation = obligation
         self.names = names
+        self.case = case
 
     def lean_obligation(self) -> Any:
         return self.obligation
 
     def __str__(self) -> str:
-        return f"{self.names}, where the proof takes them, prove False"
+        where = f" {self.case}" if self.case else ""
+        return f"{self.names}, where the proof takes them{where}, prove False"
+
+
+#: The values tried for each integer variable when a case is looked for a point of.
+_INTEGERS = (0, 1, 2, 3, 4, 5, 6, -1, -2, -3)
+
+#: The values tried for a real or complex variable.
+_NUMBERS = (1, 2, 0, -1, 3)
+
+#: How many points are tried at most.
+_TRIES = 4096
+
+
+def satisfiable(variables: Sequence[tuple[Any, Any]], conditions: Sequence[Any]) -> bool:
+    """Whether some values of ``variables`` satisfy ``conditions`` and their domains, as found.
+
+    A point is looked for among small numbers: each integer variable
+    (``Nat``, ``Int``, a point of ``Fin``) from ``0`` up and a little below,
+    each real or complex one among a few. ``True`` where one is found; a
+    question taken in a case with no point found is not asked
+    (:func:`vacuity_question`). A family, a variable of another sort, or a
+    condition that cannot be evaluated at numbers, makes it ``False``.
+    """
+    from lanky.induction import domain_conditions
+    from lanky.prelude import FinType, FnType, Refined, Sort
+    from lanky.terms import evaluate
+
+    choices: list[tuple[Any, ...]] = []
+    tests = list(conditions)
+    for var, sort in variables:
+        base = sort
+        while isinstance(base, Refined):
+            base = base.base
+        tests += list(domain_conditions(var, sort))
+        if isinstance(base, FinType) or (isinstance(base, Sort) and base.name in ("Nat", "Int")):
+            choices.append(_INTEGERS)
+        elif isinstance(base, Sort) and base.name in ("Real", "Complex"):
+            choices.append(_NUMBERS)
+        elif isinstance(base, FnType):
+            # a family is a value of its own sort, whatever the point; no
+            # condition of the case may read it
+            choices.append((None,))
+        else:
+            return False
+    names = [var.name for var, _ in variables]
+    for count, values in enumerate(itertools.product(*choices)):
+        if count >= _TRIES:
+            return False
+        context = {name: value for name, value in zip(names, values, strict=True)}
+        try:
+            if all(evaluate(test, context) is True for test in tests):
+                return True
+        except Exception:  # noqa: BLE001 - a condition that cannot be evaluated finds no point
+            return False
+    return False
 
 
 # }}}
@@ -585,7 +478,9 @@ class Proved:
     dialect, and ``term`` the claim's term, which a citation's conjunct has
     to be. ``premises`` are the fact ids of the theorems the claim's own
     proof cited, which its ``as_cited`` takes as hypotheses (a written
-    proof's citations; see :class:`CitedText`).
+    proof's citations; see :class:`CitedText`). ``source`` is the command
+    that closed, the one Lean answered or the proof cache kept the answer
+    for, which has to state ``text`` as its ``as_cited`` (:func:`closed_with`).
     """
 
     fact: str
@@ -594,6 +489,7 @@ class Proved:
     mathlib: bool
     term: Any = field(compare=False)
     premises: tuple[str, ...] = ()
+    source: str = field(default="", compare=False, repr=False)
 
 
 class ProvedTexts:
@@ -608,17 +504,25 @@ class ProvedTexts:
     def __init__(self) -> None:
         self._texts: dict[str, Proved] = {}
 
-    def record(self, proved: Proved) -> None:
-        """Keep the text a claim's command proved.
+    def record(self, proved: Proved) -> bool:
+        """Keep the text a claim's command proved; whether it was kept.
 
-        A text that replaces another drops the texts that took the old one
-        as a premise (:meth:`forget`), since their ``as_cited`` theorems
-        take the old text as a hypothesis.
+        A text whose command is given and does not state it as the claim's
+        ``as_cited`` is not kept (:func:`closed_with`): on a warm check the
+        command is the one the proof cache kept an answer for, so this is
+        the comparison of the text with the cited theorem's cache entry. A
+        text that replaces another drops the texts that took the old one as
+        a premise (:meth:`forget`), since their ``as_cited`` theorems take
+        the old text as a hypothesis.
         """
+        if proved.source and not closed_with(proved.source, proved.name, proved.text):
+            self.forget(proved.fact)
+            return False
         old = self._texts.get(proved.fact)
         if old is not None and old.text != proved.text:
             self._forget_citers(proved.fact)
         self._texts[proved.fact] = proved
+        return True
 
     def forget(self, fact: str) -> None:
         """Drop what was kept of a claim that is no longer proved.
@@ -658,6 +562,31 @@ class ProvedTexts:
                 dropped.append(fact)
         return dropped
 
+    def mismatch(self, restated: Sequence[tuple[str, str, str, Any]]) -> str:
+        """Why a command's restated texts are not the kept ones; ``""`` when every one is.
+
+        ``restated`` holds ``(name, fact id, text, term)`` for each theorem a
+        citing command takes as a hypothesis, ``term`` its statement (``None``
+        for a :class:`Premise`). Each with a text kept here for that term has
+        to restate that text, byte for byte. One with none kept is restated
+        by the printer, which :func:`vacuity_question` is about.
+        """
+        for name, fact, text, term in restated:
+            kept = self._texts.get(fact)
+            if kept is None or kept.text == text:
+                continue
+            if term is not None and kept.term is not None and not structurally_equal(
+                kept.term, term
+            ):
+                # a text kept for the theorem's old statement is no text of it
+                continue
+            return (
+                f"the proof restates {name} as a text other than the one its command proved, "
+                "so Lean is not asked: a hypothesis that is not what Lean proved of it could "
+                "prove anything"
+            )
+        return ""
+
     def get(self, fact: str) -> Proved | None:
         """The text kept for the claim ``fact``, or ``None``."""
         return self._texts.get(fact)
@@ -687,10 +616,11 @@ class Restatement:
 def restatements(part: Any, proved: ProvedTexts) -> Restatement:
     """The texts ``part`` restates its citations as, or why it is refused.
 
-    Each :class:`~lanky.obligations.Citation` whose claim has a proved text
-    is restated as that text, once its conjunct is shown to be the claim's
-    term. One whose conjunct is something else refuses the part. One whose
-    claim has no proved text is left to the printer, and noted.
+    Each :class:`Citation` of the part names the hypothesis that restates a
+    theorem. One whose claim has a proved text is restated as that text,
+    once its conjunct is shown to be the claim's term. One whose conjunct is
+    something else refuses the part. One whose claim has no proved text is
+    left to the printer, and noted.
     """
     citations = tuple(getattr(part, "citations", ()) or ())
     if not citations:
@@ -699,14 +629,12 @@ def restatements(part: Any, proved: ProvedTexts) -> Restatement:
     guards = list(conjuncts(term.guard)) if isinstance(term, Forall) else []
     texts: dict[int, str] = {}
     notes: list[dict[str, Any]] = []
-    for citation in sorted(citations, key=lambda citation: citation.hypothesis):
+    for citation in sorted(citations, key=lambda citation: citation.hypothesis or 0):
         name = citation.name or citation.fact
-        if not 0 <= citation.hypothesis < len(guards):
+        position = citation.hypothesis
+        if position is None or not 0 <= position < len(guards):
             return Restatement(
-                refused=(
-                    f"the part cites {name} at hypothesis {citation.hypothesis}, and has "
-                    f"{len(guards)}"
-                )
+                refused=f"the part cites {name} at hypothesis {position}, and has {len(guards)}"
             )
         found = proved.get(citation.fact)
         if found is None:
@@ -719,7 +647,7 @@ def restatements(part: Any, proved: ProvedTexts) -> Restatement:
                 }
             )
             continue
-        if not structurally_equal(guards[citation.hypothesis], found.term):
+        if not structurally_equal(guards[position], found.term):
             return Restatement(
                 refused=(
                     f"the part restates {name} as something other than the statement "
@@ -727,7 +655,7 @@ def restatements(part: Any, proved: ProvedTexts) -> Restatement:
                     f"what {found.name} proves could prove anything"
                 )
             )
-        texts[citation.hypothesis] = found.text
+        texts[position] = found.text
         notes.append(
             {
                 "theorem": name,

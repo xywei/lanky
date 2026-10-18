@@ -79,10 +79,11 @@ Each is a step of the argument, not a suggestion: where one of them is given,
 the script is the one the plugin asked for, and a product or a quotient that
 cannot be written fails it rather than being dropped.
 
-A hypothesis that is a cited theorem's statement is named as a
-:class:`Citation`: the Lean oracle restates it from the text the theorem's
-own command proved, never by printing the theorem again, and refuses a part
-whose conjunct is not the theorem's statement (:mod:`lanky.citations`).
+A hypothesis that is a cited theorem's statement is named by a
+:class:`lanky.citations.Citation` of the theorem at that hypothesis: the Lean
+oracle restates it from the text the theorem's own command proved, never by
+printing the theorem again, and refuses a part whose conjunct is not the
+theorem's statement (:mod:`lanky.citations`).
 
 A part about real numbers is printed in the Mathlib dialect and checked where
 Mathlib is (:attr:`Part.mathlib`), its cases closed by ``linarith`` where an
@@ -129,7 +130,6 @@ from lanky.terms import Exists, Forall, conjuncts, init_args
 
 __all__ = [
     "Application",
-    "Citation",
     "Counterexample",
     "Hints",
     "Instance",
@@ -309,26 +309,6 @@ class Hints:
 
 
 @dataclass(frozen=True)
-class Citation:
-    """A hypothesis of a part that restates a claim proved elsewhere: a cited theorem.
-
-    ``hypothesis`` is its position among the conjuncts of the part's guard,
-    as an :class:`Instance`'s is, and the conjunct is the claim's term as
-    its theory states it (:attr:`lanky.theory.Theorem.term`); ``fact`` is the
-    claim's fact id and ``name`` what a message calls it. The Lean oracle
-    restates the hypothesis from the text the claim's own command proved
-    (:attr:`lanky.lean.LeanStatement.as_cited`), never by printing the term
-    again, so that a printer that dropped a condition of the claim could not
-    hand the part a hypothesis that proves anything. A conjunct that is not
-    the claim's term is refused before Lean is asked.
-    """
-
-    hypothesis: int
-    fact: str
-    name: str = ""
-
-
-@dataclass(frozen=True)
 class Part:
     """One conjunct of a claim, proved by Lean on its own.
 
@@ -350,9 +330,11 @@ class Part:
     part's are by ``omega``. Without Mathlib the claim is left to the oracles
     after Lean, which says why.
 
-    ``citations`` name the hypotheses that restate a cited claim
-    (:class:`Citation`), which the Lean oracle restates from the text the
-    claim's command proved.
+    ``citations`` name the hypotheses that restate a cited claim, each a
+    :class:`lanky.citations.Citation` of the theorem with the position of
+    its conjunct among the guard's (``Citation(theorem, hypothesis=0)``),
+    which the Lean oracle restates from the text the claim's command proved.
+    The conjunct has to be the theorem's term as its theory states it.
     """
 
     name: str
@@ -361,7 +343,7 @@ class Part:
     hints: Hints = field(default_factory=Hints)
     fallback: Any = field(default=None, compare=False, repr=False)
     mathlib: bool = False
-    citations: tuple[Citation, ...] = ()
+    citations: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -429,7 +411,7 @@ def part_statement(
     Mathlib dialect for a part about real numbers (:attr:`Part.mathlib`).
     ``restated`` gives the hypotheses restated from a cited claim's proved
     text, by their position among the guard's conjuncts (see
-    :class:`Citation` and :func:`lanky.lean.statement_of`).
+    :class:`lanky.citations.Citation` and :func:`lanky.lean.statement_of`).
 
     Raises:
         UnsupportedTerm: If the part's term leaves the printer's fragment.
