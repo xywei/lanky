@@ -6,6 +6,22 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-18
+
+A theorem's body can be its proof, written in Python and checked by Lean. A
+proof reads like a textbook argument: a chain of equal terms, each link with
+its reason (`x.equals(y, by=fact)`, and `.at_most` and the other inequality
+words), case splits with `if`, induction as a local `claim` that calls itself
+on smaller values, steps worth naming, and `return f, g` for facts that
+suffice. With no body lanky still finds the proof. `lanky.known` holds facts
+from Mathlib under plain names (`log_of_a_power`, `modulus_squared`,
+`one_more_term`, ...). `lanky check --proofs` prints the proof lanky found in
+this form, and `--steps` its outline. Every Lean command ends with an axiom
+audit read positively, raw tactic scripts are screened, and a cited theorem is
+restated only from the text Lean proved for it, so a dropped condition, an
+`#exit` or a decoy namespace can no longer make a claim read proved. loopty
+0.5.0 needs this release.
+
 ### Added
 
 - **`lanky check --proofs` prints the proof lanky found, in Python** (the
