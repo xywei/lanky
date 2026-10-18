@@ -6,7 +6,7 @@ proof writes the same calculation as an ``assert`` of Python's own chained
 comparison, its reasons after it::
 
     assert R[a, b] == -R[a - 2, b + 2] == -D[a - 2, b + 2] == D[a, b], by(
-        recurrence, claim[a - 2, b + 2], pde
+        recurrence, compressed_taylor.conclusion[a - 2, b + 2], pde
     )
 
 Each comparison is a *link*: the relation and the term it reaches. ``==``,

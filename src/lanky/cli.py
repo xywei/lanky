@@ -1016,12 +1016,12 @@ def report_written(ledger: Ledger) -> bool:
 
         UNPROVED every_box at every_box.py:30: a step of its proof does not follow.
 
-          every_box.py:52    yield by(recurrence, claim[i, a - 2, b + 3], pde)
+          every_box.py:52    yield by(recurrence, every_box.conclusion[i, a - 2, b + 3], pde)
 
           When a + b != 0 and a >= 2 (every_box.py:48, 50), the step needs
           R[i, a, b] == D[i, a, b]
           ...
-          Fix: claim[i, a - 2, b + 2] makes the step follow (checked).
+          Fix: every_box.conclusion[i, a - 2, b + 2] makes the step follow (checked).
 
     A claim lanky proved alone keeps its row, proved by lanky's own proof,
     and the block says so instead: ``WARNING every_box at every_box.py:30:
@@ -1223,7 +1223,7 @@ def report_proofs(ledger: Ledger, text: str = "") -> None:
 
     The body is in the surface a written proof uses, in the theorem's own
     names, and pastes under the theorem's docstring: for an induction over
-    families, ``for a, b in claim.dom:`` with a case per base and the facts each
+    families, ``for a, b in name.conclusion.domain:`` with a case per base and the facts each
     case rests on, at the points the search found, written as the user
     writes them; for an exchange of sums, the chain through the left side
     with its sums put in order. For a proof by any other rung of the

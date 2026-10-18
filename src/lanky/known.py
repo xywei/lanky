@@ -46,7 +46,7 @@ injective. So ``examples/nicomachus.py``'s proof cites it as it stands::
         == sum(i for i in Fin[n]) ** 2 + n**3
         == (sum(i for i in Fin[n]) + n) ** 2
         == sum(i for i in Fin[n + 1]) ** 2
-    ), by(one_more_term, claim(n - 1), gauss(n - 1))
+    ), by(one_more_term, nicomachus.conclusion[n - 1], gauss(n - 1))
 
 A fact here has no hypothesis it does not need. ``log_of_a_power`` holds for
 every real ``x``, ``0`` and the negative numbers included, because Lean's

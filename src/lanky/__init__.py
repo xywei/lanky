@@ -26,10 +26,10 @@ Three commands over one file: ``python file.py`` runs it, ``pytest`` tests the
 theorems, ``lanky check file.py`` prints the ledger of every claim and who
 decided it.
 
-Where a proof helps, the theorem's body is the proof, in the Python an
+Where a proof helps, the claim's body is the proof, in the Python an
 engineer already writes: ``assert x == y, by(f)`` for a step, ``if`` for
-cases, ``for n in claim.dom:`` and ``yield by(...)`` for each point of the
-conclusion (see :mod:`lanky.proofs`).
+cases, ``for n in name.conclusion.domain:`` and ``yield by(...)`` for each
+point of the conclusion (see :mod:`lanky.proofs`).
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from lanky.ledger import Fact, Ledger, Status, Support, fact_id
 from lanky.plugins import Executor, Oracle, Registry, Theory, Verb, registry
 from lanky.prelude import Bool, Complex, Fin, Fn, Int, Nat, Prop, Real, Sort
 from lanky.rewrites import Rewrite, RewriteTerm, rewrite
-from lanky.surface import by, claim
+from lanky.surface import by
 from lanky.terms import (
     Abs,
     Elementary,
@@ -64,7 +64,7 @@ from lanky.terms import (
     sqrt,
 )
 from lanky.terms import sum_ as sum  # noqa: A004 - lanky.sum is a reduction term
-from lanky.theory import Axiom, Theorem, axiom, theorem
+from lanky.theory import Axiom, Theorem, axiom, claim, theorem
 
 __version__ = "0.5.0"
 

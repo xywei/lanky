@@ -11,13 +11,20 @@ writes them, ``a - 2`` where the search worked with a fresh ``k``. Where it
 cannot, the rung of the ladder that closed the claim is named in words.
 
 Two views read the same record. ``--proofs`` prints a body, ready to paste
-under the theorem's docstring::
+under the claim's docstring::
 
-    for a, b in claim.dom:
+    for a, b in ct.conclusion.domain:
         if a < 2:
             yield by(stored)
         else:
-            yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
+            yield by(recurrence[a - 2, b], ct.conclusion[a - 2, b + 2], pde[a - 2, b])
+
+It prints a loop only where the loop's order fits the proof it found: the
+conclusion at an earlier point comes earlier in the loop, lexicographic in
+the conclusion's ``for`` (design 3.5). Where the induction is on a variable
+that is not the first, and an earlier one changes, no loop over the
+conclusion's points as written fits, and the strategy is said in words,
+with the order of the ``for`` that would fit.
 
 and ``--steps`` prints its outline in lanky's notation, a chain of equations
 for each case, with the point and the reason of every link. Nothing is read
@@ -33,13 +40,13 @@ mistake here can print a body that does not say what Lean checked, never a
 claim Lean did not check. Building it never costs a proof, since a record
 that cannot be built is left with the rung's name alone.
 
-Points. A fact is cited at a point (``pde(a - 2, b)``) unless the point is
+Points. A fact is cited at a point (``pde[a - 2, b]``) unless the point is
 the only one at which the fact fits the case's claim, matched as a written
 proof's uncalled fact is matched: each application of a family in the fact
 against each in the claim, solving offsets such as ``x + 2 == a``. Then the
-fact is cited by its name alone (``return stored``). The induction hypothesis
-is always cited at its point, ``claim(a - 2, b + 2)``, because that point is
-the induction.
+fact is cited by its name alone (``yield by(stored)``). The conclusion at an
+earlier point is always cited at its point, ``name.conclusion[a - 2, b +
+2]``, because that point is the induction.
 """
 
 from __future__ import annotations
@@ -234,11 +241,12 @@ def found_proof(
     plan = getattr(tactic, "plan", None)
     rung = getattr(tactic, "rung", "") or _rung_of_text(str(tactic).strip())
     record: dict[str, Any] = {"how": rung}
+    owner = getattr(fact, "owner", None) or "claim"
     try:
         if isinstance(plan, FamilyPlan):
-            record.update(_family_record(plan, hypothesis_names(fact, statement)))
+            record.update(_family_record(plan, hypothesis_names(fact, statement), owner))
         elif isinstance(plan, SumPlan):
-            record.update(_sum_record(plan))
+            record.update(_sum_record(plan, owner))
     except Exception:  # noqa: BLE001 - the record is a view, and never costs the proof
         pass
     return record
@@ -301,8 +309,16 @@ def _family_how(plan: FamilyPlan) -> str:
     return words
 
 
-def _family_record(plan: FamilyPlan, names: Mapping[str, str]) -> dict[str, Any]:
-    """The body and the outline of an induction over families."""
+def _family_record(
+    plan: FamilyPlan, names: Mapping[str, str], owner: str = "claim"
+) -> dict[str, Any]:
+    """The body and the outline of an induction over families.
+
+    The body is a loop over ``owner.conclusion.domain``, printed only where
+    its order fits the induction found (:func:`_loop_fits`); else the record
+    holds the strategy in words alone, with the order of the conclusion's
+    ``for`` that would fit.
+    """
     variables = [var.name for var, _ in plan.goal.binders]
     order = plan.target.name
     cases: list[tuple[str | None, Any, tuple[Any, ...]]] = []
@@ -317,14 +333,15 @@ def _family_record(plan: FamilyPlan, names: Mapping[str, str]) -> dict[str, Any]
         cases.append((condition, case, uses))
     cases.append((None, *plan.inductive))
 
-    body = [f"for {', '.join(variables)} in claim.dom:"]
+    body = [f"for {', '.join(variables)} in {owner}.conclusion.domain:"]
     outline: list[tuple[str, list[tuple[str, str]]]] = []
+    points: list[tuple[Any, ...]] = []
     for index, (condition, case, uses) in enumerate(cases):
-        cited = _citations(plan, case, uses, names)
+        cited = _citations(plan, case, uses, names, owner, points)
         # the two conjuncts of p & q at one point are one citation
         texts = list(dict.fromkeys(text for text, _ in cited))
-        # a point that yields nothing is lanky's to finish
-        closed = f"yield by({', '.join(texts)})" if texts else "pass"
+        # by() adds nothing: the case follows directly
+        closed = f"yield by({', '.join(texts)})"
         if condition is None and index == 0:
             body.append(f"    {closed}")
         elif condition is None:
@@ -337,7 +354,39 @@ def _family_record(plan: FamilyPlan, names: Mapping[str, str]) -> dict[str, Any]
 
     point = variables[0] if len(variables) == 1 else f"({', '.join(variables)})"
     head = f"the claim at {point}, for every {_binders_words(plan.goal)}, {_family_how(plan)}"
-    return {"how": _family_how(plan), "body": body, "steps": [head, *_outline(outline)]}
+    steps = [head, *_outline(outline)]
+    if _loop_fits(variables, points):
+        return {"how": _family_how(plan), "body": body, "steps": steps}
+    fitting = [order, *(name for name in variables if name != order)]
+    how = _family_how(plan)
+    if _loop_fits(fitting, [_reordered(variables, fitting, values) for values in points]):
+        how += (
+            f"; a loop over {owner}.conclusion.domain fits it with the conclusion's for "
+            f"written {', '.join(fitting)}"
+        )
+    return {"how": how, "steps": steps}
+
+
+def _loop_fits(variables: list[str], points: list[tuple[Any, ...]]) -> bool:
+    """Whether each point the induction cites comes earlier in a loop over ``variables``.
+
+    The loop's order is lexicographic in the conclusion's ``for``, outer
+    variables first (design 3.5): the first variable where a cited point
+    differs from the loop's has to be smaller there.
+    """
+    from lanky.proofs.trace import _earlier
+
+    return all(
+        _earlier(variables, values, [1] * len(variables)) is None
+        and any(_key((value,)) != name for name, value in zip(variables, values, strict=True))
+        for values in points
+    )
+
+
+def _reordered(variables: list[str], order: list[str], values: tuple[Any, ...]) -> tuple[Any, ...]:
+    """A point's values in another order of the variables."""
+    at = dict(zip(variables, values, strict=True))
+    return tuple(at[name] for name in order)
 
 
 def _binders_words(goal: Forall) -> str:
@@ -374,7 +423,12 @@ def _point(values: tuple[Any, ...]) -> str:
 
 
 def _citations(
-    plan: FamilyPlan, case: Any, uses: tuple[Any, ...], names: Mapping[str, str]
+    plan: FamilyPlan,
+    case: Any,
+    uses: tuple[Any, ...],
+    names: Mapping[str, str],
+    owner: str = "claim",
+    points: list[tuple[Any, ...]] | None = None,
 ) -> list[tuple[str, Any]]:
     """Each fact a case's certificate uses, cited as a written proof cites it, in chain order.
 
@@ -387,11 +441,11 @@ def _citations(
     index = [var.name for var, _ in plan.goal.binders].index(plan.target.name)
 
     # the points each fact is used at, to tell whether its name alone says which
-    points: dict[str, set[str]] = {}
+    found: dict[str, set[str]] = {}
     for use in ordered:
         if use.lemma != plan.hypothesis and use.lemma in lemmas:
             name = names.get(use.lemma, use.lemma)
-            points.setdefault(name, set()).add(_key(use.arguments))
+            found.setdefault(name, set()).add(_key(use.arguments))
 
     cited: list[tuple[str, Any]] = []
     for use in ordered:
@@ -402,13 +456,15 @@ def _citations(
         if use.lemma == plan.hypothesis:
             # the hypothesis takes the smaller order first; the claim, its variables in order
             values = (*values[1 : index + 1], values[0], *values[index + 1 :])
-            text = f"claim[{', '.join(python_source(value) for value in values)}]"
+            text = f"{owner}.conclusion[{', '.join(python_source(value) for value in values)}]"
+            if points is not None:
+                points.append(values)
         else:
             name = names.get(use.lemma, use.lemma)
             alone = not lemma.binders or (
-                len(points[name]) == 1 and _fits_alone(lemma, use, case)
+                len(found[name]) == 1 and _fits_alone(lemma, use, case)
             )
-            text = name if alone else f"{name}({', '.join(map(python_source, values))})"
+            text = name if alone else f"{name}[{', '.join(map(python_source, values))}]"
         cited.append((text, use))
     return cited
 
@@ -549,7 +605,7 @@ def _reason(plan: FamilyPlan, use: Any, text: str, lemma: Any, multiplier: str |
     if use.lemma == plan.hypothesis:
         reason = f"by the claim at {_point_of_call(text)}"
     else:
-        name = text.split("(", 1)[0]
+        name = text.split("[", 1)[0]
         reason = f"by {name}"
         if lemma is not None and lemma.binders:
             reason += f", at {_point(tuple(_user(plan, value) for value in use.arguments))}"
@@ -579,8 +635,8 @@ def _together(plan: FamilyPlan, cited: list[tuple[str, Any]], lemmas: Mapping[st
 
 
 def _point_of_call(text: str) -> str:
-    """The point of a citation ``claim[a - 2, b + 2]``: ``(a - 2, b + 2)``, or ``n - 1``."""
-    inside = text[len("claim[") : -1]
+    """The point of ``name.conclusion[a - 2, b + 2]``: ``(a - 2, b + 2)``, or ``n - 1``."""
+    inside = text[text.index("[") + 1 : -1]
     return f"({inside})" if "," in inside else inside
 
 
@@ -734,7 +790,7 @@ def _outline(cases: list[tuple[str, list[tuple[str, str]]]]) -> list[str]:
 # {{{ the sums
 
 
-def _sum_record(plan: SumPlan) -> dict[str, Any]:
+def _sum_record(plan: SumPlan, owner: str = "claim") -> dict[str, Any]:
     """The chain of an exchange of sums: the left side, its sums in one order, the right side."""
     goal = plan.goal
     body_term = goal.body if isinstance(goal, Forall) else goal
@@ -766,9 +822,13 @@ def _sum_record(plan: SumPlan) -> dict[str, Any]:
     asserted = ["assert (", *(f"    {line}" for line in chain), ")"]
     if isinstance(goal, Forall):
         signature = ", ".join(var.name for var, _ in goal.binders)
-        body = [f"for {signature} in claim.dom:", *(f"    {line}" for line in asserted)]
+        body = [
+            f"for {signature} in {owner}.conclusion.domain:",
+            *(f"    {line}" for line in asserted),
+            "    yield by()",
+        ]
     else:
-        body = asserted
+        body = [*asserted, "return by()"]
     steps = [
         f"{indent}{first} == {python_source(middle)}",
         f"{indent}{' ' * (len(first) + 1)}== {python_source(right)}",

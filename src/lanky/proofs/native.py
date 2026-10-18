@@ -5,14 +5,16 @@ steps are tests for free: lanky runs the body as plain Python at the values
 the check draws (:func:`lanky.testing.valid_draws`), exact ``Fraction`` values and
 exact complex numbers, never floats, before Lean is asked. There:
 
-- ``claim.dom`` gives the domain's first points, in the loop's order, up to
-  the tester's draw bound (:data:`lanky.testing.MAX_NAT` for a natural), the
-  conclusion's guard holding at each;
+- ``name.conclusion.domain`` gives the domain's first points, in the loop's
+  order (from the top down under ``reversed(...)``), up to the tester's
+  draw bound (:data:`lanky.testing.MAX_NAT` for a natural), the
+  conclusion's guard holding at each; a nested ``for`` is walked at the
+  point of the loop around it;
 - each ``assert`` is Python's own: a false step raises, and lanky reports it
   at its line, with the values there and the two sides of the comparison
   that failed;
-- each point's claim is checked when the loop moves on, so a point no step
-  of the proof can reach is caught too;
+- each point's conclusion is checked when the loop moves on, so a point no
+  step of the proof can reach is caught too;
 - ``by(...)`` is read only where a step fails, as Python reads it, and a
   citation in it is inert.
 
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import itertools
 import types as pytypes
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack
@@ -42,19 +45,18 @@ from lanky.proofs.trace import (
     namespace,
     running,
 )
-from lanky.surface import claiming
 
 __all__ = ["NATIVE_DRAWS", "ExactInt", "PointFalse", "native_failure", "run_by_hand"]
 
 #: How many of the check's draws the body is run at.
 NATIVE_DRAWS = 50
 
-#: How many points of ``claim.dom`` one run walks at most.
+#: How many points of a conclusion's domain one loop walks at most.
 POINT_LIMIT = 200
 
 
 class PointFalse(AssertionError):
-    """The claim is false at a point of ``claim.dom`` a native run reached."""
+    """The conclusion is false at a point of its domain a native run reached."""
 
 
 class ExactInt(int):
@@ -132,11 +134,21 @@ class _Fact:
         """How the citation is written."""
         return self.text_
 
+    def __getitem__(self, point: Any) -> _Fact:
+        """The fact at a point of its domain, ``pde[i, a - 2, b]``, as inert as the fact."""
+        values = point if isinstance(point, tuple) else (point,)
+        return _Fact(f"{self.text_}[{', '.join(_number(value) for value in values)}]")
+
     def __call__(self, *values: Any, **named: Any) -> _Fact:
-        """The fact at a point, as inert as the fact."""
+        """Refused: a point is given in brackets (lanky 0.5 gave it in parentheses)."""
+        from lanky.surface import RemovedForm
+
         shown = [_number(value) for value in values]
-        shown += [f"{key}={_number(value)}" for key, value in named.items()]
-        return _Fact(f"{self.text_}({', '.join(shown)})")
+        raise RemovedForm(
+            f"{self.text_}({', '.join(shown)}) is how lanky 0.5 cited a condition at a point; "
+            "brackets give a point of its domain",
+            f"{self.text_}[{', '.join(shown)}]",
+        )
 
     def __bool__(self) -> bool:
         """Refuse: a fact has no truth value."""
@@ -146,54 +158,85 @@ class _Fact:
         return self.text_
 
 
+class _Called(_Fact):
+    """Another claim called for inputs in a native run, ``gauss(n - 1)``: inert, with its tree."""
+
+    @property
+    def conclusion(self) -> Any:
+        """``other(x).conclusion``, inert: its points in brackets."""
+        return _Fact(f"{self.text_}.conclusion")
+
+
 class _Point:
-    """Where a native run's loop is: the point, and the line that closed it."""
+    """Where a native run's loops are: the point, how many levels deep, the line that closed it."""
 
     def __init__(self) -> None:
         self.values: dict[str, Any] | None = None
+        self.depth = 0
         self.line: int | None = None
         self.checked = True
 
 
 class _Run:
-    """One native run of a body at one draw: what ``claim`` and a theorem's call mean there."""
+    """One native run of a body at one draw: what the claim's tree and a call mean there."""
 
     def __init__(self, theorem: Any, context: Mapping[str, Any], bound: int) -> None:
+        from lanky.surface import levels
+
         self.theorem = theorem
         self.context = dict(context)
         self.bound = bound
-        goal = theorem.goal
-        from lanky.terms import Forall
-
-        self.binders = list(goal.binders) if isinstance(goal, Forall) else []
-        self.guard = goal.guard if isinstance(goal, Forall) else None
-        self.body = goal.body if isinstance(goal, Forall) else goal
+        self.levels = levels(theorem.goal)
         self.point = _Point()
         self.loop_line: int | None = None
 
-    # {{{ what claim stands for
+    @property
+    def name(self) -> str:
+        """The claim's name, as its proof spells it."""
+        return getattr(self.theorem, "qualname", None) or self.theorem.__name__
 
-    def dom(self, frame: Any) -> Iterator[Any]:
-        """``claim.dom``: the conclusion's first points, in the loop's order."""
-        if not self.binders:
-            raise TypeError("claim.dom is the domain of the claim's variables, and it has none")
-        self.loop_line = getattr(frame, "f_lineno", None)
-        return self._walk()
+    def statement_at(self, depth: int) -> Any:
+        """The conclusion at a point ``depth`` levels deep: the goal under those ``for`` levels."""
+        node = self.theorem.goal
+        for _ in range(depth):
+            node = node.body
+        return node
 
-    def _walk(self) -> Iterator[Any]:
-        names = [var.name for var, _ in self.binders]
-        for count, values in enumerate(_points(self.binders, self.guard, self.context, self.bound)):
+    # {{{ what the claim's tree and a call mean here
+
+    def loop(self, conclusion: Any, reverse: bool, frame: Any) -> Iterator[Any]:
+        """``name.conclusion.domain``: the conclusion's first points, in the loop's order."""
+        level = len(conclusion.point)
+        outer: dict[str, Any] = {}
+        for index, values in enumerate(conclusion.point):
+            names = [var.name for var, _ in self.levels[index][0]]
+            outer.update(zip(names, values, strict=False))
+        if self.loop_line is None:
+            self.loop_line = getattr(frame, "f_lineno", None)
+        return self._walk(level, outer, reverse)
+
+    def _walk(self, level: int, outer: dict[str, Any], reverse: bool) -> Iterator[Any]:
+        if level and self.point.depth == level:
+            # the outer point is checked at each point of its own domain instead
+            self.point.checked = True
+        binders, guard = self.levels[level]
+        names = [var.name for var, _ in binders]
+        points: Any = _points(list(binders), guard, {**self.context, **outer}, self.bound)
+        if reverse:
+            points = list(itertools.islice(points, POINT_LIMIT))[::-1]
+        for count, values in enumerate(points):
             if count >= POINT_LIMIT:
                 break
             self.check_point()
-            self.point.values = dict(zip(names, values, strict=True))
+            self.point.values = {**outer, **dict(zip(names, values, strict=True))}
+            self.point.depth = level + 1
             self.point.line = None
             self.point.checked = False
             yield values[0] if len(values) == 1 else tuple(values)
         self.check_point()
 
     def check_point(self) -> None:
-        """Check the claim at the point the loop is leaving.
+        """Check the conclusion at the point the loop is leaving.
 
         Raises:
             PointFalse: Where it is false there.
@@ -205,33 +248,39 @@ class _Run:
         from lanky.terms import evaluate
 
         try:
-            holds = evaluate(self.body, {**self.context, **point.values})
+            holds = evaluate(self.statement_at(point.depth), {**self.context, **point.values})
         except Exception:  # noqa: BLE001 - a point with no answer is no counterexample
             return
         if holds is False:
             raise PointFalse(point)
 
-    def at(self, point: Any, frame: Any) -> _Fact:
-        """``claim[p]``, inert."""
-        values = point if isinstance(point, tuple) else (point,)
-        return _Fact(f"claim[{', '.join(_number(value) for value in values)}]")
+    def condition(self, claim: Any, name: str, frame: Any) -> _Fact:
+        """``name.conditions.ode`` in the claim's own proof: the fact, inert."""
+        if claim is not self.theorem:
+            from lanky.surface import FormError
 
-    def call(self, values: tuple, named: Mapping[str, Any], frame: Any) -> _Fact:
-        """``claim(...)``, inert."""
-        return _Fact("claim")(*values, **named)
-
-    def handle(self, name: str) -> str:
-        """``claim.n``: the name."""
-        return f"{self.theorem.__name__}.claim.{name}"
+            raise FormError(f"{name} is a condition of {claim.__name__}, which its proof assumes")
+        return _Fact(name)
 
     def cite_theorem(
         self, theorem: Any, values: tuple, named: Mapping[str, Any], frame: Any
     ) -> Any:
-        """A theorem called in a native run: inert, a citation for a ``by(...)``."""
-        return _Fact(theorem.__name__)(*values, **named)
+        """A claim called in a native run: inert, a citation for a ``by(...)``.
+
+        Raises:
+            lanky.surface.FormError: For the claim calling itself, which the
+                trace refuses with the fix.
+        """
+        if theorem is self.theorem:
+            from lanky.surface import FormError
+
+            raise FormError(f"{self.name} calls itself in its own proof")
+        shown = [_number(value) for value in values]
+        shown += [f"{key}={_number(value)}" for key, value in named.items()]
+        return _Called(f"{theorem.__name__}({', '.join(shown)})")
 
     def __repr__(self) -> str:
-        return f"<claim of {self.theorem.__name__}, run at drawn values>"
+        return f"<the proof of {self.name}, run at drawn values>"
 
     # }}}
 
@@ -300,7 +349,7 @@ def native_namespace(theorem: Any) -> dict[str, Any]:
 
 
 def _run(theorem: Any, values: Mapping[str, Any], run: _Run) -> None:
-    """Run the body as plain Python at ``values``, ``claim`` standing for ``run``."""
+    """Run the body as plain Python at ``values``, ``run`` answering the claim's tree."""
     from lanky.terms import concrete_sorts, exact_reading
 
     fn = theorem.fn
@@ -326,7 +375,6 @@ def _run(theorem: Any, values: Mapping[str, Any], run: _Run) -> None:
 
     with ExitStack() as stack:
         stack.enter_context(running(run))
-        stack.enter_context(claiming(run))
         stack.enter_context(exact_reading())
         stack.enter_context(concrete_sorts(points))
         if is_generator(fn):
@@ -378,8 +426,8 @@ def run_by_hand(theorem: Any, **values: Any) -> None:
     """Run ``theorem``'s proof as plain Python at ``values``, as a REPL or pdb would.
 
     A value for each variable, by name, as :meth:`lanky.theory.Theorem.__call__`
-    takes them; a family as a sequence or a table. ``claim.dom`` gives its
-    first points, to the tester's draw bound, and a citation is inert. A
+    takes them; a family as a sequence or a table. ``name.conclusion.domain``
+    gives its first points, to the tester's draw bound, and a citation is inert. A
     false step raises Python's own ``AssertionError``, its message the
     step's ``by(...)``; a point where the claim is false raises
     :class:`PointFalse`. Floats compare exactly here, so a step can fail on
@@ -526,17 +574,18 @@ def _sides(node: ast.Assert, frame: Any) -> tuple[Any, Any, str] | None:
 
 
 def _point_failure(theorem: Any, run: _Run) -> Any:
-    """The report of a point of ``claim.dom`` where the claim is false."""
+    """The report of a point of the conclusion's domain where the conclusion is false."""
     from lanky.proofs.report import Failure
     from lanky.terms import render
 
     at = _assignment(theorem, run)
     line = run.point.line or run.loop_line
+    said = render(run.statement_at(run.point.depth))
     return Failure(
         "false",
         line,
-        "its claim is false at a point its proof reaches",
-        (f"At {at}: the claim there, {render(run.body)}, is false.",),
+        "its conclusion is false at a point its proof reaches",
+        (f"At {at}: the conclusion there, {said}, is false.",),
         None,
     )
 

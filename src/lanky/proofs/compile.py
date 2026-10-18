@@ -5,16 +5,16 @@ the annotations by lanky's printer, as it always is, with each hypothesis
 under its Python name, so that a bug here can make a proof fail and never
 prove another claim. One command holds the whole proof:
 
-- The claim the proof cites, ``claim[p]`` or ``claim(...)``, or loops over,
-  ``for a, b in claim.dom:``, is a theorem of its own, ``Lanky.<name>.claim``,
-  with the theorem's variables and the conclusion's as parameters, the
-  goal's guard among its hypotheses, and the goal's body as its statement.
-  A citation of the claim inside it is a recursive call, which
-  ``termination_by`` with the measure lanky finds (:func:`measure`) has Lean
-  check is closer to a base case. The theorem itself is ``Lanky.<name>``,
-  proved by applying the claim. A parameter of the theorem that some
-  ``claim(...)`` changes is generalized: the recursive call gives it a
-  value, and the hypotheses that mention it become conditions to show there.
+- The conclusion the proof loops over, ``for a, b in
+  name.conclusion.domain:``, and cites at earlier points,
+  ``name.conclusion[a - 2, b + 2]``, is a theorem of its own,
+  ``Lanky.<name>.claim``, with the theorem's variables and the conclusion's
+  as parameters (the variables of each nested ``for`` the proof loops over,
+  in order), the goal's guards among its hypotheses, and the goal's body as
+  its statement. A citation of the conclusion inside it is a recursive
+  call, which ``termination_by`` with the measure lanky finds
+  (:func:`measure`) has Lean check is closer to a base case. The theorem
+  itself is ``Lanky.<name>``, proved by applying the claim.
 - ``if c:`` is ``by_cases``. A branch whose condition fixes integers, ``n ==
   1`` or ``a + b == 0`` among naturals, substitutes them.
 - A fact at a point is the hypothesis applied to the values, each condition
@@ -31,8 +31,8 @@ prove another claim. One command holds the whole proof:
   or ``linarith`` and ``nlinarith`` with the facts, in Mathlib; ``exact``,
   ``omega`` after the indices are normalized, or ``grind``, in core Lean.
   Where a step the case asserted starts at the claim's left side, the step
-  is the rest of the way, from where that one ended. A point or a case that
-  gives no reason is lanky's whole-goal closers on it, after the steps it
+  is the rest of the way, from where that one ended. A case closed with
+  ``by()`` is lanky's whole-goal closers on it, after the steps it
   asserted.
 - The compiler adds what a reader never writes: that an integer denominator
   the case shows is not zero is not zero in the field (:func:`nonzero_lines`),
@@ -676,8 +676,8 @@ def measure(claim: ClaimDef, calls: Sequence[Citation], conditions: Sequence[Any
         f"{call.text()} is not at smaller values: {which}",
         return_line,
         fix=(
-            "call the claim where one argument is smaller, as a - 2, and stays a natural "
-            "number, or climbs toward a bound"
+            "cite the conclusion where one value is smaller, as a - 2, and stays a natural "
+            "number, or loop over a bounded domain with reversed(...) for one that climbs"
         ),
     )
 
@@ -985,7 +985,8 @@ class _Compiler:
         self.theorem = proof.theorem
         self.mathlib = mathlib
         theorem = proof.theorem
-        self.goal = theorem.goal
+        # the conclusion as the proof closes it: nested for levels it loops over taken as one
+        self.goal = proof.conclusion
         taken = _mentioned(theorem.term) | {name for name, _ in theorem.variables}
         if proof.claim is not None:
             taken |= set(proof.claim.params)
@@ -1286,6 +1287,14 @@ class _Compiler:
             with dialect(self.mathlib):
                 names, _variables, _guards, _naturals, introduced = _goal_intro(main)
             lines.append(_Line(f"intro {' '.join(names)}", origin))
+            taken = {
+                *names,
+                *(name for name, _ in main.binders),
+                *(name for name, _ in main.hypotheses),
+            }
+            more = self._inner_intro(introduced, taken)
+            if more:
+                lines.append(_Line(f"intro {' '.join(more)}", origin))
         arguments = []
         for param in claim_params:
             if param.binder:
@@ -1296,6 +1305,45 @@ class _Compiler:
                 arguments.append("(by assumption)")
         lines.append(_Line(f"exact {self.claim_declared} {' '.join(arguments)}".rstrip(), origin))
         return lines
+
+    def _inner_intro(self, introduced: dict[str, str], taken: set[str]) -> list[str]:
+        """The names ``intro`` gives the nested ``for`` levels the proof loops over, past the first.
+
+        The theorem's goal states them nested, ``∀ i, ... → ∀ a b, ... →``,
+        and the claim takes them flat, so each level's variables are
+        introduced with their domain's guards and the level's own guard
+        after them, as the printer writes them; the claim is applied to the
+        variables, and its guards are found by ``assumption``.
+        """
+        from lanky.lean import domain_guards
+        from lanky.surface import levels
+
+        claim = self.proof.claim
+        depth = len(claim.levels) if claim is not None and claim.levels else 1
+        found = levels(self.theorem.goal)[:depth]
+        names: list[str] = []
+        scope = dict(self.types)
+        used = set(taken)
+
+        def fresh(stem: str) -> str:
+            name, index = stem, 1
+            while name in used:
+                name = f"{stem}_{index}"
+                index += 1
+            used.add(name)
+            return name
+
+        for binders, guard in found[1:]:
+            for var, domain in binders:
+                lean = fresh(lean_identifier(var.name))
+                introduced[var.name] = lean
+                names.append(lean)
+                for _ in domain_guards(var, domain, scope, mathlib=self.mathlib):
+                    names.append(fresh("hd"))
+                scope[var.name] = domain
+            for _ in conjuncts(guard):
+                names.append(fresh("hg"))
+        return names
 
     # {{{ the tree
 
@@ -1846,6 +1894,8 @@ class _Compiler:
             if shape.binders:
                 if citation.values is None:
                     values = self._point(citation, shape, context, claim, link, extra)
+                elif any(value is None for value in citation.values):
+                    values = self._rest_of_point(citation, shape, context, claim, link, extra)
                 else:
                     values = citation.values
             else:
@@ -2058,6 +2108,40 @@ class _Compiler:
             return False
         return kind.endswith("Int")
 
+    def _rest_of_point(
+        self,
+        citation: Citation,
+        shape: Shape,
+        context: _Context,
+        claim: Any,
+        link: bool,
+        extra: Sequence[Any] = (),
+    ) -> tuple:
+        """The point of a fact cited with some of its values: ``gauss(m)``, ``other.conclusion[p]``.
+
+        The values given are put in, and the rest found by matching the fact
+        there against the step, as a fact cited by its name alone is matched.
+        """
+        assert citation.values is not None
+        given = list(citation.values)
+        known = {
+            var.name: value
+            for (var, _), value in zip(shape.binders, given, strict=True)
+            if value is not None
+        }
+        missing = [
+            (var, domain)
+            for (var, domain), value in zip(shape.binders, given, strict=True)
+            if value is None
+        ]
+        reduced = Shape(
+            tuple(missing),
+            tuple(("value", var.name) for var, _ in missing),
+            instantiate(shape.body, known),
+        )
+        found = iter(self._point(citation, reduced, context, claim, link, extra))
+        return tuple(next(found) if value is None else value for value in given)
+
     def _point(
         self,
         citation: Citation,
@@ -2091,9 +2175,9 @@ class _Compiler:
             raise ProofError(
                 "no-point",
                 f"{name} says {render(shape.body)}, which lines up with no step; write its "
-                f"point, as {name}({', '.join(unknowns)}) with the values meant",
+                f"point, as {_spelled_point(citation, unknowns)} with the values meant",
                 citation.line,
-                fix=f"{name}({', '.join(unknowns)})",
+                fix=_spelled_point(citation, unknowns),
             )
         lemma = Lemma(name, shape.binders, shape.premises, shape.body)
         terms = [claim.left, claim.right] if isinstance(claim, Comparison) else [claim]
@@ -2107,20 +2191,17 @@ class _Compiler:
         if not failed.several and _binds_a_family(failed.candidates):
             # the matcher's points bind a family to a function: the fix is one
             # of them, written with a lambda
-            point = ", ".join(_shown(value) for value in failed.candidates[0])
-            raise ProofError(
-                "no-point", f"{name}: {failed}", citation.line, fix=f"{name}({point})"
-            )
+            fix = _spelled_point(citation, None, failed.candidates[0])
+            raise ProofError("no-point", f"{name}: {failed}", citation.line, fix=fix)
         if not failed.several:
             raise ProofError(
                 "no-point",
                 f"{name}: no point of {name} fits a term of {what}, {render(claim)}; write "
-                f"its point, as {name}({', '.join(unknowns)}) with the values meant",
+                f"its point, as {_spelled_point(citation, unknowns)} with the values meant",
                 citation.line,
-                fix=f"{name}({', '.join(unknowns)})",
+                fix=_spelled_point(citation, unknowns),
             )
-        example = ", ".join(_shown(value) for value in failed.candidates[0])
-        fix = f"{name}({example})"
+        fix = _spelled_point(citation, None, failed.candidates[0])
         raise ProofError(
             "no-point",
             f"{name}: no single point of {name} fits {what}, {render(claim)}, since "
@@ -2413,6 +2494,26 @@ def _ring_of_sort(sort: Any) -> str | None:
     if isinstance(sort, Sort):
         return {"Nat": "Int", "Int": "Int", "Real": "ℝ", "Complex": "ℂ"}.get(sort.name)
     return None
+
+
+def _spelled_point(
+    citation: Citation, unknowns: Sequence[str] | None, found: Sequence[Any] = ()
+) -> str:
+    """A fact at a point as a proof writes it: ``pde[a - 2, b]``, ``gauss(m)``, ``f.conclusion[k]``.
+
+    ``unknowns`` names the values left to write, each by its variable's
+    name; or ``found`` gives them, the values the matcher found.
+    """
+    values = list(found) if unknowns is None else [Var(name) for name in unknowns]
+    filled = iter(values)
+    if citation.values is None:
+        point = tuple(values)
+    else:
+        point = tuple(next(filled, None) if value is None else value for value in citation.values)
+    try:
+        return replace(citation, values=point).text()
+    except Exception:  # noqa: BLE001 - a fact that cannot say itself is written by name
+        return f"{citation.name}[{', '.join(_shown(value) for value in values)}]"
 
 
 def _binds_a_family(points: Sequence[tuple[Any, ...]]) -> bool:

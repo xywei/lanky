@@ -3337,7 +3337,7 @@ def _annotations(theorem: Any) -> list[_Annotation] | str:
     seen: set[str] = set()
     sources = [
         (index, condition.fn, condition.snapshot.namespace, condition.__name__)
-        for index, condition in enumerate(getattr(theorem, "conditions", ()), start=1)
+        for index, condition in enumerate(getattr(theorem, "held_under", ()), start=1)
     ]
     sources.append((0, theorem.fn, theorem.namespace, None))
     for world, fn, namespace, owner in sources:
@@ -3426,7 +3426,7 @@ def faithful_fact(theorem: Any) -> Fact:
             return declined(annotations)
         parameters = [*inspect.signature(theorem.fn).parameters, *getattr(theorem, "bound", ())]
         snapshot = theorem.snapshot
-        conditions = tuple(getattr(theorem, "conditions", ()))
+        conditions = tuple(getattr(theorem, "held_under", ()))
         codes = [annotation.code for annotation in annotations if annotation.code is not None]
         extent = _extent(theorem, codes, snapshot.namespace)
         watched = [*snapshot.watched]
@@ -3580,7 +3580,7 @@ def _condition_worlds(theorem: Any, tally: _Tally) -> dict[str, Any]:
     not make again is counted in ``tally``, as the claim's own module's is.
     """
     worlds = []
-    for condition in getattr(theorem, "conditions", ()):
+    for condition in getattr(theorem, "held_under", ()):
         namespace, shared = condition.snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
         worlds.append((namespace, list(inspect.signature(condition.fn).parameters)))
