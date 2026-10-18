@@ -2230,31 +2230,55 @@ class _Compiler:
 
         Kept by the step in the hint cache (:mod:`lanky.proofs.hints`), so
         that a check of an unchanged proof runs no sympy and writes the same
-        Lean source. Lean checks whatever they are.
+        Lean source. Lean checks whatever they are. Only the equations among
+        the instances are combined, the others taking ``0``; and where the
+        search finds nothing with all of them, which a fact the step does
+        not need can cause (a link of an ``assert`` has the facts of all its
+        links), it is asked again with one of them, then two.
         """
         if not (isinstance(claim, prim.Comparison) and claim.operator == "=="):
             return None
-        if not instances or not all(
-            isinstance(instance.body, prim.Comparison) and instance.body.operator == "=="
-            for instance in instances
-        ):
+        equations = [
+            index
+            for index, instance in enumerate(instances)
+            if isinstance(instance.body, prim.Comparison) and instance.body.operator == "=="
+        ]
+        if not equations:
             return None
         from lanky.proofs import hints
         from lanky.proofs.report import combination
 
-        bodies = [instance.body for instance in instances]
+        bodies = [instances[index].body for index in equations]
         cache = hints.HintCache(hints.default_hint_dir())
-        key = hints.hint_key(claim, bodies, self.types)
+        key = hints.hint_key(claim, [instance.body for instance in instances], self.types)
         kept = cache.get(key)
         if kept is not hints.MISSING:
             return kept
         found = combination(claim, bodies, self.types)
+        chosen: Sequence[int] = range(len(bodies))
+        if found is None and len(bodies) > 1:
+            from itertools import combinations
+
+            for size in range(1, min(len(bodies), 3)):
+                for subset in combinations(range(len(bodies)), size):
+                    found = combination(claim, [bodies[index] for index in subset], self.types)
+                    if found is not None:
+                        chosen = subset
+                        break
+                if found is not None:
+                    break
+        multipliers: tuple[Any, ...] | None = None
+        if found is not None:
+            full: list[Any] = [0] * len(instances)
+            for position, multiplier in zip(chosen, found, strict=True):
+                full[equations[position]] = multiplier
+            multipliers = tuple(full)
         from lanky.induction import _sympy
 
-        if found is not None or _sympy() is not None:
+        if multipliers is not None or _sympy() is not None:
             # no multipliers is an answer only where the search could run
-            cache.put(key, found)
-        return None if found is None else tuple(found)
+            cache.put(key, multipliers)
+        return multipliers
 
     def _closer(self, step: Step, origin: Origin, context: _Context) -> list[_Line]:
         """The step's closing tactic: what turns the facts into the step's claim.

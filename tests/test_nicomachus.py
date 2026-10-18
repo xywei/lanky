@@ -18,6 +18,7 @@ where ``LANKY_LEAN_MATHLIB`` names a project, and skip where it does not.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -144,7 +145,7 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim, theorem
 from lanky.known import one_more_term
 from lanky.prelude import Fin, Nat, Real
 
@@ -157,31 +158,28 @@ def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
 @theorem
 def written(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """Nicomachus's theorem, the family written as a lambda."""
-
-    def claim(n):
-        if n == 0:
-            return
-        return (
-            sum(i**3 for i in Fin[n + 1])
-            .equals(sum(i**3 for i in Fin[n]) + n**3, by=one_more_term(lambda i: i**3, n))
-            .equals(sum(i for i in Fin[n]) ** 2 + n**3, by=claim(n - 1))
-            .equals((sum(i for i in Fin[n]) + n) ** 2, by=gauss(n - 1))
-            .equals(sum(i for i in Fin[n + 1]) ** 2, by=one_more_term(lambda k: k, n))
-        )
-
-    return claim
+    if n == 0:
+        return
+    assert (
+        sum(i**3 for i in Fin[n + 1])
+        == sum(i**3 for i in Fin[n]) + n**3
+        == sum(i for i in Fin[n]) ** 2 + n**3
+        == (sum(i for i in Fin[n]) + n) ** 2
+        == sum(i for i in Fin[n + 1]) ** 2
+    ), by(
+        one_more_term(lambda i: i**3, n),
+        claim(n - 1),
+        gauss(n - 1),
+        one_more_term(lambda k: k, n),
+    )
 
 
 @theorem
 def geometric(r: Real, n: Nat) -> (r - 1) * sum(r**k for k in Fin[n]) == r**n - 1:
-    """The design's geometric sum: one more term, and the claim at n - 1."""
-
-    def claim(n):
-        if n == 0:
-            return
-        return one_more_term, claim(n - 1)
-
-    return claim
+    """The design's geometric sum: one more term, and the theorem at n - 1."""
+    if n == 0:
+        return
+    return by(one_more_term, claim(r, n - 1))
 '''
 
 
@@ -202,8 +200,8 @@ def example() -> object:
 def test_a_lambda_at_a_familys_place_is_the_familys_value(cases) -> None:
     """``one_more_term(lambda i: i**3, n)`` cites the fact with ``f`` at ``i ↦ i**3``."""
     proof = trace_proof(cases.written)
-    chain = proof.leaves[-1].chain
-    first, last = chain.links[0].facts[0], chain.links[-1].facts[0]
+    (asserted,) = proof.leaves[-1].steps
+    first, last = asserted.facts[0], asserted.facts[-1]
     assert first.text() == "one_more_term(lambda i: i**3, n)"
     assert last.text() == "one_more_term(lambda k: k, n)"
     assert isinstance(first.values[0], FamilyValue)
@@ -217,23 +215,26 @@ def test_the_fact_over_the_reals_is_restated_over_the_integers(example) -> None:
     assert "one_more_term (fun i => (i ^ 3 : ℝ)) n (by omega)" in source
     assert "one_more_term (fun i => (i : ℝ)) n (by omega)" in source
     assert (
-        "have f_1 : ∑ k ∈ Finset.Ico (0 : ℤ) (n + 1), k ^ 3 = "
+        " : ∑ k ∈ Finset.Ico (0 : ℤ) (n + 1), k ^ 3 = "
         "(∑ k ∈ Finset.Ico (0 : ℤ) n, k ^ 3) + n ^ 3 := by"
     ) in source
     assert "(apply (Int.cast_injective (α := ℝ)); push_cast at cast ⊢; exact cast)" in source
-    # the claim at n - 1 is one of the step's facts up to algebra, and Gauss's
+    # the theorem at n - 1 is one of the step's facts up to algebra, and Gauss's
     # multiplier pairs its sum with the step's
-    assert ") f_2\n" in source
-    assert "((-1) * n : Int) * f_3" in source
+    assert re.search(r"\) f_\d+\n", source)
+    assert re.search(r"\(\(-1\) \* n : Int\) \* f_\d+", source)
+    assert "exact step_1\n" in source
     assert command.summary == (
         "induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss"
     )
+    # one row for the assert, its links under it, and the facts each link fits
     reasons = [row[-1] for row in command.outline]
     assert reasons == [
-        "by one_more_term, at (lambda i: i**3, n)",
-        "by the claim at (n - 1)",
-        "by gauss, at (n - 1)",
-        "by one_more_term, at (lambda i: i, n)",
+        "by one_more_term at (lambda i: i**3, n), the claim at (n - 1), gauss at (n - 1) "
+        "and one_more_term at (lambda i: i, n)",
+        "",
+        "",
+        "",
     ]
 
 

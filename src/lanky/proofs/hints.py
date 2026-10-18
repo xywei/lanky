@@ -40,7 +40,7 @@ import pymbolic.primitives as prim
 __all__ = ["HintCache", "default_hint_dir", "hint_key", "decode", "encode"]
 
 #: The format the hints are kept in; a change makes every kept hint a miss.
-FORMAT = 1
+FORMAT = 2
 
 #: The modules a kept node's class may come from.
 _MODULES = ("lanky.terms", "pymbolic.primitives")

@@ -175,8 +175,10 @@ class CheckVerb:
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
-        nothing is checked. An axiom's citation, the reason an oracle declined
-        a fact left assumed, an oracle that raised, a semantics disagreement, a warning about
+        nothing is checked; and 2 under ``python -O``, which removes every
+        ``assert``, and so every step of every written proof. An axiom's
+        citation, the reason an oracle declined a fact left assumed, an
+        oracle that raised, a semantics disagreement, a warning about
         hypotheses no draw satisfied or a pass on thin evidence, and an id a
         fact rests on that the ledger does not hold are printed but do not
         fail the check.
@@ -224,6 +226,11 @@ class CheckVerb:
         files = getattr(args, "files", None)
         files = [*(files if files is not None else [args.file]), *_files_given_as_text(args)]
         files = _in_the_order_given(files, getattr(args, "argv", None))
+        if not __debug__ or sys.flags.optimize:
+            from lanky.check import OPTIMIZED
+
+            print(f"lanky check: {OPTIMIZED}")
+            return 2
         if not files:
             print("lanky check: name a file to check, as in lanky check examples/gauss.py")
             return 2

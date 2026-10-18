@@ -279,7 +279,7 @@ class ClaimDef:
         given = [
             value
             for name, value in zip(self.params, values, strict=True)
-            if name in self.generalized
+            if name in self.generalized or not self.generalized
         ]
         return f"{self.name}({', '.join(shown(value) for value in given)})"
 
@@ -1280,7 +1280,8 @@ class _Tracer:
         given = [shown(value) for value in values]
         given += [f"{key}={shown(value)}" for key, value in (named or {}).items()]
         binders = [var.name for var, _ in self.binders]
-        if given and len(values) == len(binders) and len(values) != len(self.variables):
+        inside = self.path is not None and self.path.state == "at"
+        if given and len(values) == len(binders) and (inside or len(values) != len(self.variables)):
             fix = f"claim[{', '.join(given)}]"
             what = "the claim at an earlier point of the loop over claim.dom"
         else:
@@ -1409,13 +1410,37 @@ class _Tracer:
                 )
             given[key] = value
         full = tuple(family_value(given[name]) if name in given else Var(name) for name in names)
-        shown_values = ", ".join(shown(value) for value in full)
-        written = f"claim({shown_values})"
-        changes = [
-            offset_of(value, name)
+        given_text = [shown(value) for value in values]
+        given_text += [f"{key}={shown(value)}" for key, value in named.items()]
+        written = f"claim({', '.join(given_text)})"
+        changed = [
+            name
             for name, value in zip(names, full, strict=True)
             if not (isinstance(value, Var) and value.name == name)
         ]
+        changes = [offset_of(full[names.index(name)], name) for name in changed]
+        from lanky.proofs.cases import integer_sort
+
+        if changed and not any(integer_sort(self.variables[name]) for name in changed):
+            first = changed[0]
+            value = full[names.index(first)]
+            mentioned = [
+                name
+                for name in names
+                if name != first
+                and integer_sort(self.variables[name])
+                and name in _names_in(value)
+            ]
+            fix = f"claim({mentioned[0]}={shown(value)})" if len(mentioned) == 1 else None
+            raise ProofError(
+                "claim",
+                f"{written} gives {first} the value {shown(value)}: claim(...) takes the "
+                f"theorem's parameters in order, {', '.join(names)}, as calling the theorem "
+                "does, and the theorem at smaller values has one of its integer parameters "
+                "smaller",
+                line,
+                fix=fix,
+            )
         if not changes:
             raise ProofError(
                 "later",
@@ -1429,8 +1454,8 @@ class _Tracer:
         ):
             raise ProofError(
                 "later",
-                f"{written} is at larger values than the proof's "
-                f"{', '.join(name for name in names)}: the theorem is cited at smaller values",
+                f"{written} is at larger values than the proof's {', '.join(changed)}: the "
+                "theorem is cited at smaller values",
                 line,
                 fix=f"cite it at smaller values, as {_smaller_example(names, self.variables)}",
             )
@@ -1806,7 +1831,8 @@ def _parts(holds: list[tuple[Any, int]], reasons: _Reasons, line: int) -> tuple[
 
     The comparisons of Python's chained comparison share their middle terms,
     the very objects, ``y`` in ``x == y <= z``, so a comparison that starts
-    where the one before ended is the next link of its chain.
+    where the one before ended is the next link of its chain, unless it turns
+    the chain the other way, ``x <= y >= z``, which starts another.
     """
     from lanky.terms import Comparison
 
@@ -1821,13 +1847,21 @@ def _parts(holds: list[tuple[Any, int]], reasons: _Reasons, line: int) -> tuple[
             parts.append(TracedChain(start, tuple(links), None, line))
         start, links = None, []
 
+    from lanky.chains import combined_relation
+
     for prop, at in holds:
         if isinstance(prop, Comparison) and prop.operator in ("==", "<=", "<", ">=", ">"):
-            follows = (
+            follows = bool(
                 links
                 and previous is not None
                 and (prop.left is previous or render(prop.left) == render(previous))
             )
+            if follows:
+                try:
+                    combined_relation([*(link.relation for link in links), prop.operator])
+                except ValueError:
+                    # x <= y >= z says x <= y and y >= z: two chains, as Python reads it
+                    follows = False
             if not follows:
                 flush()
                 start = prop.left
@@ -1844,19 +1878,33 @@ def _parts(holds: list[tuple[Any, int]], reasons: _Reasons, line: int) -> tuple[
 def _not_earlier(names: list[str], values: tuple[Any, ...]) -> str | None:
     """``later`` or ``same`` for a point the loop has not filled in; else ``None``.
 
-    The loop's order is lexicographic in the order of ``claim.dom``'s
-    variables: the first variable whose value differs decides. A value that
-    is no variable plus a whole number leaves the order to Lean's measure.
+    The loop fills the claim in order, so a point is filled in before the one
+    the loop is at when one of its variables is smaller there: ``claim[n -
+    1]``, ``claim[i, a - 2, b + 2]``. One with none smaller and one larger,
+    ``claim[n + 1]``, is not filled in yet, and the point itself is the one
+    being filled. A point that is smaller in one variable and larger in
+    another, ``claim[a + 1, n - 1]``, is left to the measure Lean is given
+    (:func:`lanky.proofs.compile.measure`), as is a value that is no
+    variable plus a whole number.
     """
-    for name, value in zip(names, values, strict=True):
-        change = offset_of(value, name)
-        if change is None:
-            return None
-        if change < 0:
-            return None
-        if change > 0:
-            return "later"
-    return "same"
+    changes = [offset_of(value, name) for name, value in zip(names, values, strict=True)]
+    if any(change is None for change in changes):
+        return None
+    if all(change == 0 for change in changes):
+        return "same"
+    if all(change >= 0 for change in changes):
+        return "later"
+    return None
+
+
+def _names_in(value: Any) -> frozenset[str]:
+    """The names a value mentions; none for a number."""
+    from lanky.terms import free_variables
+
+    try:
+        return frozenset(free_variables(value)) if hasattr(value, "mapper_method") else frozenset()
+    except Exception:  # noqa: BLE001 - a value that cannot be read mentions nothing lanky can name
+        return frozenset()
 
 
 def _earlier_example(names: list[str]) -> str:
@@ -1966,6 +2014,29 @@ def _refuse_def_claim(theorem: Any) -> None:
         )
 
 
+def _refuse_rewritten_asserts(theorem: Any, lines: tuple[int, int]) -> None:
+    """Refuse a proof whose ``assert`` steps pytest rewrote into reports of its own.
+
+    pytest rewrites the asserts of the modules it collects as tests, and a
+    rewritten assert asks its question in pytest's code and raises with
+    pytest's message: the steps are no longer the proof's.
+    """
+    globals_ = getattr(theorem.fn, "__globals__", {})
+    if "@py_builtins" not in globals_ and "@pytest_ar" not in globals_:
+        return
+    first, last = lines
+    asserts = [node for node in _asserts_in(theorem.fn.__code__) if first <= node.lineno <= last]
+    if not asserts:
+        return
+    raise ProofError(
+        "assert",
+        "pytest rewrote the asserts of this file, and a proof's asserts are its steps; add "
+        "PYTEST_DONT_REWRITE to the module's docstring, or keep the theorem in a file pytest "
+        "does not collect as a test",
+        asserts[0].lineno,
+    )
+
+
 def trace_proof(theorem: Any) -> Proof:
     """Trace a theorem's written proof (see the module).
 
@@ -1977,6 +2048,7 @@ def trace_proof(theorem: Any) -> Proof:
     if lines is None:
         raise ValueError(f"{theorem.__name__} has no written proof")
     _refuse_def_claim(theorem)
+    _refuse_rewritten_asserts(theorem, lines)
     tracer = _Tracer(theorem)
     leaves: list[Leaf] = []
     pending: list[tuple[list[bool], list[tuple[str, str]] | None, list[_Reasons]]] = [
