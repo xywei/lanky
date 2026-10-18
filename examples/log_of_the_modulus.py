@@ -37,12 +37,12 @@ reader thinks, as Python's ``math.log`` has no value at ``0``.
 
 from __future__ import annotations
 
-from lanky import by, conj, log, real, theorem
+from lanky import by, claim, conj, log, real
 from lanky.known import log_of_a_power, modulus_squared
 from lanky.prelude import Complex
 
 
-@theorem
+@claim
 def log_of_the_modulus(alpha: Complex, nonzero: alpha != 0) -> (
     log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
 ):

@@ -97,33 +97,33 @@ def segment(alpha: Complex, beta: Complex, nonzero: alpha != 0):
 
 with segment as (alpha, beta, nonzero):
 
-    @theorem
+    @claim
     def line_taylor(
         a: Fn[Nat, Complex],
         first_term: alpha * a[1] == beta,
         ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
     ) -> all(a[n] == coefficient(-beta / alpha, n) for n in Nat if n >= 1):
         """The line-Taylor coefficients of log(alpha + tau * beta), at every order."""
-        for n in claim.dom:
+        for n in line_taylor.conclusion.domain:
             if n == 1:
                 yield by(first_term)
             else:
-                assert a[n] == (n - 1) / n * (-beta / alpha) * a[n - 1], by(ode)
-                yield by(claim[n - 1])
+                assert a[n] == (n - 1) / n * (-beta / alpha) * a[n - 1], by(ode[n - 1])
+                yield by(line_taylor.conclusion[n - 1])
 
-    @theorem
+    @claim
     def reciprocal_taylor(
         b: Fn[Nat, Complex],
         first_term: b[0] == 1,
         ode: all(alpha * b[n + 1] + beta * b[n] == 0 for n in Nat),
     ) -> all(b[n] == (-beta / alpha) ** n for n in Nat):
         """The line-Taylor coefficients of alpha / (alpha + tau * beta), at every order."""
-        for n in claim.dom:
+        for n in reciprocal_taylor.conclusion.domain:
             if n == 0:
                 yield by(first_term)
             else:
-                assert b[n] == (-beta / alpha) * b[n - 1], by(ode)
-                yield by(claim[n - 1])
+                assert b[n] == (-beta / alpha) * b[n - 1], by(ode[n - 1])
+                yield by(reciprocal_taylor.conclusion[n - 1])
 '''
 )
 
@@ -142,31 +142,31 @@ def harmonic_table(
 
 with harmonic_table as (D, pde):
 
-    @theorem
+    @claim
     def ct(
         R: Fn[Nat, Nat, Int],
         stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
         recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
     ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
         """What sumpy stores of a harmonic table, rebuilt by the recurrence, is the table."""
-        for a, b in claim.dom:
+        for a, b in ct.conclusion.domain:
             if a < 2:
                 yield by(stored)
             else:
-                yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
+                yield by(recurrence[a - 2, b], ct.conclusion[a - 2, b + 2], pde[a - 2, b])
 
-    @theorem
+    @claim
     def ct_wrong(
         R: Fn[Nat, Nat, Int],
         stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
         recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
     ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-        """The same, citing the claim at a point that does not make the step follow."""
-        for a, b in claim.dom:
+        """The same, citing the conclusion at a point that does not make the step follow."""
+        for a, b in ct_wrong.conclusion.domain:
             if a < 2:
                 yield by(stored)
             else:
-                yield by(recurrence(a - 2, b), claim[a - 2, b + 3], pde(a - 2, b))
+                yield by(recurrence[a - 2, b], ct_wrong.conclusion[a - 2, b + 3], pde[a - 2, b])
 '''
 )
 
@@ -290,7 +290,12 @@ def test_theorems_in_a_with_block_hold_under_the_condition(segment) -> None:
         assert [name for name, _ in claim.variables] == ["alpha", "beta", own]
         assert [name for name, _ in claim.hypotheses] == ["nonzero", "first_term", "ode"]
         assert claim.hypothesis_names == ("nonzero", "first_term", "ode")
-        assert claim.conditions == (segment.segment,)
+        assert claim.held_under == (segment.segment,)
+        assert [condition.name for condition in claim.conditions] == [
+            "nonzero",
+            "first_term",
+            "ode",
+        ]
         assert claim.bound == ("alpha", "beta", "nonzero")
         assert [name for name, _ in claim.own_variables] == [own]
         assert claim.under_label == "segment (nonzero)"
@@ -637,7 +642,7 @@ with mesh as (h, positive):
 def test_conditions_compose_in_one_with_statement_and_by_nesting(tmp_path) -> None:
     module = _module(tmp_path, COMPOSED, "composed_case")
     for claim in (module.in_one_statement, module.nested):
-        assert claim.conditions == (module.mesh, module.speed)
+        assert claim.held_under == (module.mesh, module.speed)
         assert [name for name, _ in claim.variables] == ["h", "c", "x"]
         assert [name for name, _ in claim.hypotheses] == ["positive", "forward", "inside"]
         assert claim.statement.startswith("under mesh (positive), speed (forward): x : Real | ")
@@ -645,12 +650,12 @@ def test_conditions_compose_in_one_with_statement_and_by_nesting(tmp_path) -> No
         assert claim.report().ok
         assert claim.faithful_fact().status is Status.TESTED
     shared = module.parenthesized
-    assert shared.conditions == (module.mesh, module.cfl)
+    assert shared.held_under == (module.mesh, module.cfl)
     assert [name for name, _ in shared.variables] == ["h", "c", "dt", "dx"]
     assert [name for name, _ in shared.hypotheses] == ["positive", "stable", "moves"]
     assert shared.report().ok
     assert shared.faithful_fact().status is Status.TESTED
-    assert module.outer_only.conditions == (module.mesh,)
+    assert module.outer_only.held_under == (module.mesh,)
     assert module.outer_only.under_label == "mesh (positive)"
 
 
@@ -664,7 +669,7 @@ def test_a_written_proof_under_a_condition_reads_the_bound_names(tmp_path) -> No
     module = _module(tmp_path, TABLE, "table_case")
     proof = trace_proof(module.ct)
     cited = {citation.name for leaf in proof.leaves for citation in leaf.facts or ()}
-    assert {"stored", "recurrence", "pde", "claim"} <= cited
+    assert {"stored", "recurrence", "pde", "ct.conclusion"} <= cited
     command = compile_proof(proof, mathlib=False)
     assert "(pde :" in command.source and "theorem Lanky.ct" in command.source
 
@@ -705,7 +710,9 @@ def test_lean_checks_a_written_proof_under_a_condition(tmp_path) -> None:
     assert proved.statement.startswith("under harmonic_table (pde): R : Fn[Nat, Nat, Int] | ")
     (failure,) = checked["ct_wrong"].provenance["proof"]["failures"]
     assert failure["kind"] == "step"
-    assert failure["source"].startswith("yield by(recurrence(a - 2, b), claim[a - 2, b + 3]")
+    assert failure["source"].startswith(
+        "yield by(recurrence[a - 2, b], ct_wrong.conclusion[a - 2, b + 3]"
+    )
 
 
 def test_mathlib_proves_line_taylor_and_reciprocal_taylor_under_segment(

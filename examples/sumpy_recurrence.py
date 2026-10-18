@@ -44,7 +44,8 @@ second derivatives, and the proof in its body adds them, one ``assert`` of a
 chained comparison, read aloud: "Let r2 be x**2 + y**2. The Laplacian equals
 2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0." Each step is algebra,
 once ``r2`` is not zero, which ``away`` says, so the ``assert`` gives no
-reason, and its two ends are the claim, so there is nothing to return.
+reason, and its two ends are the claim, so it closes with ``return by()``:
+nothing to add.
 lanky's search finds the proof alone too, clearing the denominators and then
 by algebra, so the body is for the reader: it says where the calculation
 goes.
@@ -110,7 +111,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
-from lanky import theorem
+from lanky import by, claim
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
@@ -150,7 +151,7 @@ def laplacian(kernel: Any, x: Var, y: Var) -> Any:
     return from_sympy(kernel_term.diff(sx, 2) + kernel_term.diff(sy, 2), {"x": x, "y": y})
 
 
-@theorem
+@claim
 def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) == 0:
     """The 2-D Laplace kernel is harmonic away from the origin: ``G_xx + G_yy == 0``.
 
@@ -159,6 +160,7 @@ def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) 
     """
     r2 = x**2 + y**2
     assert laplacian(log_r, x, y) == 2 / r2 - 2 * (x**2 + y**2) / r2**2 == 0
+    return by()
 
 
 # {{{ the claim

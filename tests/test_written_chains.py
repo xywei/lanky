@@ -38,11 +38,11 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@theorem
+@claim
 def ct_chain(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -50,7 +50,7 @@ def ct_chain(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    for a, b in claim.dom:
+    for a, b in ct_chain.conclusion.domain:
         if a < 2:
             yield by(stored)
         else:
@@ -59,10 +59,11 @@ def ct_chain(
                 == -R[a - 2, b + 2]
                 == -D[a - 2, b + 2]
                 == D[a, b]
-            ), by(recurrence, claim[a - 2, b + 2], pde)
+            ), by(recurrence, ct_chain.conclusion[a - 2, b + 2], pde)
+            yield by()
 
 
-@theorem
+@claim
 def ct_open(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -70,16 +71,17 @@ def ct_open(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    for a, b in claim.dom:
+    for a, b in ct_open.conclusion.domain:
         if a < 2:
             yield by(stored)
         else:
             assert R[a, b] == -R[a - 2, b + 2], by(recurrence)
             assert -R[a - 2, b + 2] == -D[a - 2, b + 2], by(...)
             assert -D[a - 2, b + 2] == D[a, b], by(pde)
+            yield by()
 
 
-@theorem
+@claim
 def ct_reversed(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -87,21 +89,23 @@ def ct_reversed(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    for a, b in claim.dom:
+    for a, b in ct_reversed.conclusion.domain:
         if a < 2:
             yield by(stored)
         else:
             assert D[a, b] == -D[a - 2, b + 2] == -R[a - 2, b + 2] == R[a, b], by(
-                pde, claim[a - 2, b + 2], recurrence
+                pde, ct_reversed.conclusion[a - 2, b + 2], recurrence
             )
+            yield by()
 
 
-@theorem
+@claim
 def doubled(f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat)) -> f[3] + f[3] == 12:
     assert f[3] == 6, by(h)
+    return by()
 
 
-@theorem
+@claim
 def at_two(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -109,27 +113,31 @@ def at_two(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> R[2, 0] == D[2, 0]:
-    return by(ct_chain(D, R, 2, 0))
+    return by(ct_chain(D, R).conclusion[2, 0])
 
 
-@theorem
+@claim
 def square(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1, by(h)
+    return by()
 
 
-@theorem
+@claim
 def square_wrong(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 2, by(h)
+    return by()
 
 
-@theorem
+@claim
 def square_positional(x: Int, y: Int, /, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1, by(h)
+    return by()
 
 
-@theorem
+@claim
 def mixed(x: Int, y: Int, h: y == x + 1) -> y * y >= x * x + 2 * x:
     assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1 >= x * x + 2 * x, by(h)
+    return by()
 '''
 
 
@@ -155,7 +163,7 @@ def test_an_asserted_chain_is_one_step_whose_links_share_its_reasons(cases) -> N
     (base, step) = proof.leaves
     assert base.steps == () and base.facts[0].name == "stored"
     (asserted,) = step.steps
-    assert step.facts is None  # the point yields nothing: the assert is its proof
+    assert step.facts is None  # the point closes with by(): the assert is its proof
     (chain,) = asserted.parts
     assert isinstance(chain, TracedChain)
     assert asserted.line == _line(cases, "            assert (")
@@ -167,11 +175,11 @@ def test_an_asserted_chain_is_one_step_whose_links_share_its_reasons(cases) -> N
     ]
     assert [citation.text() for citation in asserted.facts] == [
         "recurrence",
-        "claim[a - 2, b + 2]",
+        "ct_chain.conclusion[a - 2, b + 2]",
         "pde",
     ]
     assert all(link.facts == asserted.facts for link in chain.links)
-    assert [citation.text() for citation in proof.calls] == ["claim[a - 2, b + 2]"]
+    assert [citation.text() for citation in proof.calls] == ["ct_chain.conclusion[a - 2, b + 2]"]
 
 
 def test_a_chain_mixes_relations_as_python_does(cases) -> None:
@@ -201,7 +209,7 @@ def test_a_chain_is_a_have_by_calc_whose_links_are_steps(cases) -> None:
     assert "recurrence (a - 2) (by omega) b (by omega)" in source
     assert "pde (a - 2) (by omega) b (by omega)" in source
     assert "termination_by a.toNat" in source
-    # the point yields nothing: the assert states its claim
+    # the point closes with by(): the assert states its claim
     assert "    exact step_1\n" in source
     assert command.summary == "induction on a, 2 cases, 4 steps"
     assert [step.where for step in command.steps] == [
@@ -242,29 +250,31 @@ def test_a_hole_is_a_sorry_whose_line_is_recorded(cases) -> None:
     assert said == "failed"
 
 
-def test_a_citation_given_too_many_values_or_one_twice_is_refused(tmp_path) -> None:
-    """``h(a, b, k=c)`` of a fact of one variable is refused, not read as ``h(c)``.
+def test_a_point_given_too_many_values_or_in_parentheses_is_refused(tmp_path) -> None:
+    """``h[a, b]`` of a fact of one variable is refused, not read as ``h[b]``.
 
-    And so is ``h(a, k=c)``, which gives ``k`` twice (Codex, #171).
+    And so is ``h(3)``, how lanky 0.5 gave a point, with the bracket to write.
     """
     path = tmp_path / "surplus_cases.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import by, theorem\n"
+        "from lanky import by, claim\n"
         "from lanky.prelude import Fn, Int, Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def surplus(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
-        "    return by(h(1, 2, k=3))\n\n\n"
-        "@theorem\n"
-        "def twice(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
-        "    return by(h(1, k=3))\n",
+        "    return by(h[1, 3])\n\n\n"
+        "@claim\n"
+        "def parenthesized(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
+        "    return by(h(3))\n",
         encoding="utf-8",
     )
     module = import_path(path)
-    with pytest.raises(ProofError, match="takes 1 value, its variable k, and is given 3"):
+    with pytest.raises(ProofError, match="takes 1 value, its variable k, and is given 2") as raised:
         trace_proof(module.surplus)
-    with pytest.raises(ProofError, match="is given k twice"):
-        trace_proof(module.twice)
+    assert raised.value.fix == "h[k]"
+    with pytest.raises(ProofError, match=r"h\(3\) is how lanky 0.5 cited a condition") as raised:
+        trace_proof(module.parenthesized)
+    assert raised.value.fix == "h[3]"
 
 
 def test_a_theorem_with_positional_only_parameters_is_traced(cases) -> None:
@@ -437,16 +447,16 @@ T4_CASES = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, by, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="the design's T4: a printer that dropped a condition")
+@claim(cite="the design's T4: a printer that dropped a condition")
 def every_integer_is_nonnegative(n: Int) -> n >= 0:
     """What a theorem about naturals would say if the printer dropped its condition."""
 
 
-@theorem
+@claim
 def any_two_cells(f: Fn[Nat, Int]) -> f[0] == f[1]:
     return by(every_integer_is_nonnegative(-1))
 '''
@@ -458,16 +468,16 @@ CIRCLE = '''\
 
 from __future__ import annotations
 
-from lanky import by, theorem
+from lanky import by, claim
 from lanky.prelude import Int
 
 
-@theorem
+@claim
 def ping(x: Int) -> x + 1 > x:
     return by(pong(x))
 
 
-@theorem
+@claim
 def pong(x: Int) -> x + 1 > x:
     return by(ping(x))
 '''
@@ -531,25 +541,25 @@ T4_INDUCTION = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="a table that does not change from one cell to the next")
+@claim(cite="a table that does not change from one cell to the next")
 def steady(g: Fn[Nat, Int], m: Nat) -> g[m + 1] == g[m]:
     """Each cell is the one before it."""
 
 
-@axiom(cite="a printer that dropped a condition, inside an induction")
+@claim(cite="a printer that dropped a condition, inside an induction")
 def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
     """What a statement about the cells past the first would say with m >= 1 dropped."""
 
 
-@theorem
+@claim
 def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
-    for n in claim.dom:
+    for n in every_cell_is_seven.conclusion.domain:
         if n >= 1:
-            yield by(steady(f, n - 1), claim[n - 1])
+            yield by(steady(f, n - 1), every_cell_is_seven.conclusion[n - 1])
         else:
             yield by(grows(f, n))
 '''
@@ -641,39 +651,39 @@ T4_UNSAMPLED = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="a printer that dropped a condition")
+@claim(cite="a printer that dropped a condition")
 def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
     """What a statement about the cells past the first would say with m >= 1 dropped."""
 
 
-@theorem
+@claim
 def cell_one_hundred(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat if n == 100):
-    for n in claim.dom:
+    for n in cell_one_hundred.conclusion.domain:
         yield by(grows(f, n - 100))
 
 
-@theorem
+@claim
 def threes_are_sevens(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
-    for n in claim.dom:
+    for n in threes_are_sevens.conclusion.domain:
         if f[n] == 3:
             yield by(grows(f, 0))
         else:
             yield by(grows(f, 0))
 
 
-@theorem
+@claim
 def past_a_hundred(
     f: Fn[Nat, Int], seven: all(f[m] == 7 for m in Nat if m >= 100)
 ) -> all(f[n] == 7 for n in Nat if n >= 100):
-    for n in claim.dom:
+    for n in past_a_hundred.conclusion.domain:
         if n < 50:
             yield by(grows(f, n))
         else:
-            yield by(seven(n))
+            yield by(seven[n])
 '''
 
 

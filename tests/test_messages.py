@@ -195,11 +195,11 @@ STEPS = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, conj, log, real, theorem
+from lanky import by, claim, conj, log, real
 from lanky.prelude import Complex, Fn, Nat, Real
 
 
-@theorem
+@claim
 def without_pde(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -207,16 +207,16 @@ def without_pde(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    for a, b in claim.dom:
+    for a, b in without_pde.conclusion.domain:
         if a + b == 0:
             yield by(stored)
         elif a < 2:
             yield by(stored)
         else:
-            yield by(recurrence(a - 2, b), claim[a - 2, b + 2])
+            yield by(recurrence[a - 2, b], without_pde.conclusion[a - 2, b + 2])
 
 
-@theorem
+@claim
 def nested(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -224,17 +224,17 @@ def nested(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    for a, b in claim.dom:
+    for a, b in nested.conclusion.domain:
         if a < 2:
             if b < 2:
                 yield by(stored)
             else:
                 yield by(stored)
         else:
-            yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
+            yield by(recurrence[a - 2, b], nested.conclusion[a - 2, b + 2], pde[a - 2, b])
 
 
-@theorem
+@claim
 def bare_modulus(alpha: Complex, nonzero: alpha != 0) -> (
     log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
 ):
@@ -243,6 +243,7 @@ def bare_modulus(alpha: Complex, nonzero: alpha != 0) -> (
         == log(abs(alpha) ** 2) / 2
         == log(real(alpha * conj(alpha))) / 2
     )
+    return by()
 '''
 
 
@@ -280,10 +281,12 @@ def test_a_step_short_of_a_fact_says_which_it_also_needs(steps) -> None:
     command = compile_proof(proof, mathlib=True)
     leaf = proof.leaves[-1]
     failure = _failure_at(proof, command, leaf.line)
-    assert "It also needs pde(a - 2, b), which says D[a, b] + D[a - 2, b + 2] == 0." in (
+    assert "It also needs pde[a - 2, b], which says D[a, b] + D[a - 2, b + 2] == 0." in (
         failure.lines
     )
-    assert failure.fix == "yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))"
+    assert failure.fix == (
+        "yield by(recurrence[a - 2, b], without_pde.conclusion[a - 2, b + 2], pde[a - 2, b])"
+    )
     assert failure.repair[0] == "add"
 
 
@@ -349,13 +352,14 @@ def test_without_lean_the_line_says_so_in_a_clause(tmp_path, monkeypatch, capsys
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import by, claim
             from lanky.prelude import Real
 
 
-            @theorem
+            @claim
             def doubled(x: Real) -> 2 * x == x + x:
                 assert 2 * x == x + x
+                return by()
             """
         ),
         encoding="utf-8",
@@ -453,47 +457,47 @@ NAMES = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@theorem
+@claim
 def count_ih(
     f: Fn[Nat, Int],
     ih: f[0] == 0,
     hk: all(f[n + 1] == f[n] + 1 for n in Nat),
 ) -> all(f[n] == n for n in Nat):
-    for n in claim.dom:
+    for n in count_ih.conclusion.domain:
         if n == 0:
             yield by(ih)
         else:
-            yield by(hk(n - 1), claim[n - 1])
+            yield by(hk[n - 1], count_ih.conclusion[n - 1])
 
 
-@theorem
+@claim
 def count_hn(
     f: Fn[Nat, Int],
     hn: f[0] == 0,
     case_1: all(f[n + 1] == f[n] + 1 for n in Nat),
 ) -> all(f[n] == n for n in Nat):
-    for n in claim.dom:
+    for n in count_hn.conclusion.domain:
         if n == 0:
             yield by(hn)
         else:
-            yield by(case_1(n - 1), claim[n - 1])
+            yield by(case_1[n - 1], count_hn.conclusion[n - 1])
 
 
-@theorem
+@claim
 def count_pin(
     f: Fn[Nat, Int],
     pin_1: f[0] == 0,
     hstep: all(f[n + 1] == f[n] + 1 for n in Nat),
 ) -> all(f[n] == n for n in Nat):
-    for n in claim.dom:
+    for n in count_pin.conclusion.domain:
         if n == 0:
             yield by(pin_1)
         else:
-            yield by(hstep(n - 1), claim[n - 1])
+            yield by(hstep[n - 1], count_pin.conclusion[n - 1])
 '''
 
 

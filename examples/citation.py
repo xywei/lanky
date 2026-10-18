@@ -13,7 +13,7 @@ Check it and test it as ``gauss.py`` is checked and tested.
 
 ``nicomachus`` is Nicomachus's theorem: the sum of the first cubes is the square
 of the sum of the first numbers. Here it enters the ledger on the word of a
-reference, through ``@axiom(cite=...)``, as a result does before its proof is
+reference, through ``@claim(cite=...)``, as a result does before its proof is
 written, or where the proof needs more than the machine has: every statement
 here has a sum in it, which only Lean with Mathlib states.
 ``examples/nicomachus.py`` proves it, by a chain through ``one_more_term``. It
@@ -27,21 +27,21 @@ because a citation copied down wrong says something the reference does not.
 
 from __future__ import annotations
 
-from lanky import axiom, theorem
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``."""
 
 
-@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+@claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
 def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """The sum of the first cubes is the square of the sum of the first numbers."""
 
 
-@theorem(uses=[nicomachus, gauss])
+@claim(uses=[nicomachus, gauss])
 def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
     """Four times the sum of the cubes of ``0 .. n`` is ``(n * (n + 1)) ** 2``.
 

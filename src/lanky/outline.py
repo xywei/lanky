@@ -361,8 +361,8 @@ def _family_record(
     how = _family_how(plan)
     if _loop_fits(fitting, [_reordered(variables, fitting, values) for values in points]):
         how += (
-            f"; a loop over {owner}.conclusion.domain fits it with the conclusion's for "
-            f"written {', '.join(fitting)}"
+            f"; write the conclusion's for over {', '.join(fitting)} in that order, and a "
+            f"loop over {owner}.conclusion.domain fits it"
         )
     return {"how": how, "steps": steps}
 
