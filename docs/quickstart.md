@@ -868,19 +868,19 @@ claim takes on a citation:
 $ uv run lanky check examples/sumpy_recurrence.py
 STATUS                                 EFFECTIVE            BY      WHERE                    OWNER              STATEMENT
 -------------------------------------  -------------------  ------  -----------------------  -----------------  ---------------------------------------------------------------------------------------------------
-decided (heuristic)                    tested               cas     sumpy_recurrence.py:151  harmonic           x : Real, y : Real
+decided (heuristic)                    tested               cas     sumpy_recurrence.py:153  harmonic           x : Real, y : Real
                                                                                                                 | away: x**2 + y**2 > 0
                                                                                                                 |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
-tested                                 tested               python  sumpy_recurrence.py:151  harmonic           the term computes what the annotations compute
-tested                                 tested               mpmath  sumpy_recurrence.py:895  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-decided (heuristic)                    decided (heuristic)  cas     sumpy_recurrence.py:895  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
+tested                                 tested               python  sumpy_recurrence.py:153  harmonic           the term computes what the annotations compute
+tested                                 tested               mpmath  sumpy_recurrence.py:893  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
+decided (heuristic)                    decided (heuristic)  cas     sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                                                                   == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-assumed (axiom)                        assumed              -       sumpy_recurrence.py:895  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
+assumed (axiom)                        assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
                                                                                                                   diff(G, x, a + 2, y, b) + diff(G, x, a, y, b + 2) == 0 for every a, b,
                                                                                                                   with G = log(sqrt(x**2 + y**2)): harmonic differentiated a times in x and b times in y
-assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:895  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
+assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:893  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
                                                                                                                   by reconstructed(a + 2, b) == -reconstructed(a, b + 2)
-assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:895  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
+assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:893  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
                                                                                                                   by reconstructed(a + 2, b) == -reconstructed(a, b + 2) inside it
 
 7 facts: 3 assumed, 2 decided, 2 tested
@@ -888,9 +888,9 @@ assumed under harmonic at every order  assumed              -       sumpy_recurr
 WITHOUT LEAN: harmonic and compressed_taylor are not proved. To have Lean prove what it can: pip install "lanky[lean]", and Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1).
 WITHOUT MATHLIB: harmonic and compressed_taylor are not proved, since only Lean with Mathlib can state them. To have Lean prove them: python -m lanky.mathlib ~/mathlib (about 7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.
 
-CITED compressed_taylor at sumpy_recurrence.py:895: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+CITED compressed_taylor at sumpy_recurrence.py:893: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 
-NOT CHECKED harmonic at sumpy_recurrence.py:151: without Lean, each step of its proof was tested at drawn points instead (lines 161 and 162).
+NOT CHECKED harmonic at sumpy_recurrence.py:153: without Lean, each step of its proof was tested at drawn points instead (line 161).
 ```
 
 - **The harmonicity.** `harmonic` is a theorem: `G_xx + G_yy == 0` away from
@@ -1120,25 +1120,25 @@ every order, the one step they take on a citation:
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/sumpy_recurrence.py
 STATUS                                EFFECTIVE            BY      WHERE                    OWNER              STATEMENT
 ------------------------------------  -------------------  ------  -----------------------  -----------------  ---------------------------------------------------------------------------------------------------
-proved                                tested               lean    sumpy_recurrence.py:151  harmonic           x : Real, y : Real
+proved                                tested               lean    sumpy_recurrence.py:153  harmonic           x : Real, y : Real
                                                                                                                | away: x**2 + y**2 > 0
                                                                                                                |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
-                                                                                                               by its proof, sumpy_recurrence.py:158-163: 2 steps
-tested                                tested               python  sumpy_recurrence.py:151  harmonic           the term computes what the annotations compute
-tested                                tested               mpmath  sumpy_recurrence.py:895  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-decided (heuristic)                   decided (heuristic)  cas     sumpy_recurrence.py:895  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
+                                                                                                               by its proof, sumpy_recurrence.py:160-161: 2 steps
+tested                                tested               python  sumpy_recurrence.py:153  harmonic           the term computes what the annotations compute
+tested                                tested               mpmath  sumpy_recurrence.py:893  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
+decided (heuristic)                   decided (heuristic)  cas     sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                                                                  == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-assumed (axiom)                       assumed              -       sumpy_recurrence.py:895  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
+assumed (axiom)                       assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
                                                                                                                  diff(G, x, a + 2, y, b) + diff(G, x, a, y, b + 2) == 0 for every a, b,
                                                                                                                  with G = log(sqrt(x**2 + y**2)): harmonic differentiated a times in x and b times in y
-proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:895  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
+proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:893  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
                                                                                                                  by reconstructed(a + 2, b) == -reconstructed(a, b + 2)
-proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:895  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
+proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:893  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
                                                                                                                  by reconstructed(a + 2, b) == -reconstructed(a, b + 2) inside it
 
 7 facts: 1 assumed, 1 decided, 3 proved, 2 tested
 
-CITED compressed_taylor at sumpy_recurrence.py:895: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+CITED compressed_taylor at sumpy_recurrence.py:893: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
 
 The claim is over two tables, `D` and `R` (see the
@@ -1406,19 +1406,19 @@ and with Mathlib:
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py
 STATUS               EFFECTIVE            BY      WHERE               OWNER          STATEMENT
--------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------------------
-proved               tested               lean    line_taylor.py:116  line_ode       alpha : Complex, beta : Complex, tau : Real
+-------------------  -------------------  ------  ------------------  -------------  ------------------------------------------------------------------------------
+proved               tested               lean    line_taylor.py:117  line_ode       alpha : Complex, beta : Complex, tau : Real
                                                                                      | off: alpha + tau*beta != 0
                                                                                      |- (alpha + tau*beta)*(beta / (alpha + beta*tau)) == beta
-tested               tested               python  line_taylor.py:116  line_ode       the term computes what the annotations compute
-proved               tested               lean    line_taylor.py:132  line_taylor    alpha : Complex, beta : Complex, a : Fn[Nat, Complex]
+tested               tested               python  line_taylor.py:117  line_ode       the term computes what the annotations compute
+proved               tested               lean    line_taylor.py:133  line_taylor    alpha : Complex, beta : Complex, a : Fn[Nat, Complex]
                                                                                      | nonzero: alpha != 0
                                                                                      | first_term: alpha*a[1] == beta
                                                                                      | ode: forall n in Nat where n >= 1. (n + 1)*alpha*a[n + 1] + n*beta*a[n] == 0
                                                                                      |- forall n in Nat where n >= 1. a[n] == -(-beta / alpha)**n / n
-                                                                                     by its proof, line_taylor.py:146-154: induction on n, 2 cases, 3 steps, 1 named fact
-tested               tested               python  line_taylor.py:132  line_taylor    the term computes what the annotations compute
-decided (heuristic)  decided (heuristic)  cas     line_taylor.py:303  qbx_expansion  a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j
+                                                                                     by its proof, line_taylor.py:147-152: induction on n, 2 cases, 3 steps
+tested               tested               python  line_taylor.py:133  line_taylor    the term computes what the annotations compute
+decided (heuristic)  decided (heuristic)  cas     line_taylor.py:301  qbx_expansion  a0, a1, b0, b1 : Real | a0**2 + a1**2 > 0 |- with alpha = a0 + a1*1j
                                                                                        and beta = b0 + b1*1j, sumpy's coefficient(0) == log(abs(alpha))
                                                                                        and coefficient(k) / k! == re(-(-beta / alpha)**k / k) for 1 <= k <= 6
 
@@ -1456,14 +1456,13 @@ the shorter form a proof takes when every step is routine algebra:
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --proofs line_taylor
 ...
-PROOF line_taylor at line_taylor.py:132, by induction on n, two at a time:
+PROOF line_taylor at line_taylor.py:133, by induction on n, two at a time:
 
-    def claim(n):
+    for n in claim.dom:
         if n == 1:
-            return first_term
-        return ode(n - 1), claim(n - 1)
-
-    return claim
+            yield by(first_term)
+        else:
+            yield by(ode(n - 1), claim[n - 1])
 ```
 
 Read aloud: the claim at `n`; if `n` is 1, it is `first_term`; otherwise it
@@ -1486,11 +1485,11 @@ the other way round, `if a < 2 and b >= 2:`.
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --steps line_taylor
 ...
-STEPS line_taylor at line_taylor.py:132, as its proof says them:
-  the claim, induction on n, 2 cases, 3 steps, 1 named fact
-  line_taylor.py:150  if n == 1:              a[1] == -(-beta / alpha)**1 / 1               by first_term
-  line_taylor.py:151  otherwise:  recurrence: a[n] == (n - 1) / n*(-beta / alpha)*a[n - 1]  by ode, at (n - 1)
-  line_taylor.py:152                          a[n] == -(-beta / alpha)**n / n               by recurrence and the claim at (n - 1)
+STEPS line_taylor at line_taylor.py:133, as its proof says them:
+  the claim, induction on n, 2 cases, 3 steps
+  line_taylor.py:149  if n == 1:  a[1] == -(-beta / alpha)**1 / 1               by first_term
+  line_taylor.py:151  otherwise:  a[n] == (n - 1) / n*(-beta / alpha)*a[n - 1]  by ode, at (n - 1)
+  line_taylor.py:152              a[n] == -(-beta / alpha)**n / n               by the claim at (n - 1)
 ```
 
 lanky builds both from the proof, and reads nothing back from Lean. An
@@ -1566,11 +1565,11 @@ row says how, in a line of its own:
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/every_box.py
 STATUS  EFFECTIVE  BY      WHERE            OWNER      STATEMENT
 ...
-proved  tested     lean    every_box.py:61  every_box  n : Nat, p : Nat, c : Fn[Nat, Int, Real], D : Fn[Nat, Nat, Nat, Real], R : Fn[Nat, Nat, Nat, Real]
+proved  tested     lean    every_box.py:66  every_box  n : Nat, p : Nat, c : Fn[Nat, Int, Real], D : Fn[Nat, Nat, Nat, Real], R : Fn[Nat, Nat, Nat, Real]
                                                        | pde: forall i in Fin(n), a in Nat, b in Nat. D[i, a + 2, b] + D[i, a, b + 2] == 0
                                                        ...
                                                        |- forall i in Fin(n), a in Nat, b in Nat where a + b <= p. R[i, a, b] == D[i, a, b]
-                                                       by its proof, every_box.py:106-113: induction on a, 3 cases, 3 steps
+                                                       by its proof, every_box.py:110-116: induction on a, 3 cases, 3 steps
 ```
 
 The proof is Lean's to check and Python's to find the details of. `def claim`
@@ -1718,10 +1717,10 @@ rests on is in the ledger it is counted in:
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/log_of_the_modulus.py
 STATUS  EFFECTIVE  BY      WHERE                     OWNER               STATEMENT
 ------  ---------  ------  ------------------------  ------------------  -----------------------------------------------------------------------------------
-proved  tested     lean    log_of_the_modulus.py:42  log_of_the_modulus  alpha : Complex | alpha != 0 |- log(abs(alpha)) == log(real(alpha*conj(alpha))) / 2
-                                                                         by its proof, log_of_the_modulus.py:47-51: 2 steps, using log_of_a_power
+proved  tested     lean    log_of_the_modulus.py:45  log_of_the_modulus  alpha : Complex | alpha != 0 |- log(abs(alpha)) == log(real(alpha*conj(alpha))) / 2
+                                                                         by its proof, log_of_the_modulus.py:50-51: 2 steps, using log_of_a_power
                                                                            and modulus_squared from lanky.known
-tested  tested     python  log_of_the_modulus.py:42  log_of_the_modulus  the term computes what the annotations compute
+tested  tested     python  log_of_the_modulus.py:45  log_of_the_modulus  the term computes what the annotations compute
 proved  tested     lean    lanky.known               log_of_a_power      x : Real, n : Nat |- log(x**n) == n*log(x)
 tested  tested     python  lanky.known               log_of_a_power      the term computes what the annotations compute
 proved  tested     lean    lanky.known               modulus_squared     z : Complex |- real(z*conj(z)) == abs(z)**2
@@ -1737,7 +1736,7 @@ again for the citation. Where a claim has no proof and Lean found none alone,
 each fits, and its values there:
 
 ```text
-NOT PROVED log_of_the_modulus at log_of_the_modulus.py:42: alpha : Complex | alpha != 0 |- log(abs(alpha)) == ...
+NOT PROVED log_of_the_modulus at log_of_the_modulus.py:45: alpha : Complex | alpha != 0 |- log(abs(alpha)) == ...
   Lean found no proof alone. What lanky knows of its shape:
     modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)), at z = alpha
   A proof cites them by name: from lanky.known import modulus_squared
@@ -1800,12 +1799,12 @@ yourself, write it as a `lambda`: `by=one_more_term(lambda i: i**3, n)`.
 ```text
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check --steps nicomachus examples/nicomachus.py
 ...
-STEPS nicomachus at nicomachus.py:53, as its proof says them:
+STEPS nicomachus at nicomachus.py:60, as its proof says them:
   the claim, induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss
-  nicomachus.py:62  otherwise:  sum(i**3 for i in Fin(n + 1)) == sum(i**3 for i in Fin(n)) + n**3  by one_more_term, at (lambda i: i**3, n)
-  nicomachus.py:63                                            == sum(i for i in Fin(n))**2 + n**3  by the claim at (n - 1)
-  nicomachus.py:64                                            == (sum(i for i in Fin(n)) + n)**2   by gauss, at (n - 1)
-  nicomachus.py:65                                            == sum(i for i in Fin(n + 1))**2     by one_more_term, at (lambda i: i, n)
+  nicomachus.py:65  otherwise:  sum(i**3 for i in Fin(n + 1)) == sum(i**3 for i in Fin(n)) + n**3  by one_more_term at (lambda i: i**3, n), the claim at (n - 1), gauss at (n - 1) and one_more_term at (lambda i: i, n)
+                                                              == sum(i for i in Fin(n))**2 + n**3
+                                                              == (sum(i for i in Fin(n)) + n)**2
+                                                              == sum(i for i in Fin(n + 1))**2
 ```
 
 The sums of `lanky.known` are stated over the reals, and these are sums of
@@ -1820,14 +1819,14 @@ and `Int`s as they are. With Mathlib all three theorems of the file read
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/nicomachus.py
 STATUS  EFFECTIVE  BY      WHERE             OWNER          STATEMENT
 ------  ---------  ------  ----------------  -------------  -----------------------------------------------------------------------------------------------
-proved  tested     lean    nicomachus.py:48  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
-tested  tested     python  nicomachus.py:48  gauss          the term computes what the annotations compute
-proved  tested     lean    nicomachus.py:53  nicomachus     n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
-                                                            by its proof, nicomachus.py:57-68:
+proved  tested     lean    nicomachus.py:55  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested  tested     python  nicomachus.py:55  gauss          the term computes what the annotations compute
+proved  tested     lean    nicomachus.py:60  nicomachus     n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
+                                                            by its proof, nicomachus.py:63-71:
                                                               induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss
-tested  tested     python  nicomachus.py:53  nicomachus     the term computes what the annotations compute
-proved  tested     lean    nicomachus.py:71  cubes          n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
-tested  tested     python  nicomachus.py:71  cubes          the term computes what the annotations compute
+tested  tested     python  nicomachus.py:60  nicomachus     the term computes what the annotations compute
+proved  tested     lean    nicomachus.py:74  cubes          n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
+tested  tested     python  nicomachus.py:74  cubes          the term computes what the annotations compute
 proved  tested     lean    lanky.known       one_more_term  f : Fn[Nat, Real], n : Nat |- sum(f[k] for k in Fin(n + 1)) == sum(f[k] for k in Fin(n)) + f[n]
 tested  tested     python  lanky.known       one_more_term  the term computes what the annotations compute
 

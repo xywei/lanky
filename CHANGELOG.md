@@ -6,6 +6,94 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+Proofs read as engineers write checks (the decision of 2026-10-18). A step is
+an `assert` with its reason after it, `assert x == y, by(f, g)`; a
+calculation is Python's own chained comparison; cases are `if`; a claim over
+a domain is a loop over its points, `for n in claim.dom:`, each point closed
+with `yield by(...)`, and `claim[n - 1]` is the claim at a point the loop has
+filled in. No function stands for a proof, and no theorem calls itself. Under
+`lanky check` the body is also run as plain Python at the check's draws, so a
+false step is caught at its line, with its numbers, before Lean is asked.
+
+### Breaking
+
+The forms of 0.5's proofs are refused, each with the line to write:
+
+| 0.5 | 0.6 |
+|---|---|
+| `def claim(n): ...` and `return claim` | `for n in claim.dom:` (variables of the conclusion), or the body itself (variables that are parameters) |
+| `return f, g` inside `claim` | `yield by(f, g)` (over a domain) or `return by(f, g)` (no variables) |
+| `return f` | `yield by(f)` or `return by(f)` |
+| bare `return` | unchanged |
+| `x.equals(y, by=f)` | `assert x == y, by(f)` |
+| `.at_most`, `.less_than`, `.at_least`, `.more_than` | `<=`, `<`, `>=`, `>` inside the `assert` |
+| `x.equals(y, by=f).equals(z, by=g)` | `assert x == y == z, by(f, g)`, or one `assert` per link |
+| `name = x.equals(y, by=f)` | `assert x == y, by(f)`: known for the rest of the case, with no name |
+| `claim(n - 1)` inside `def claim` | `claim[n - 1]` (a point of the conclusion) or `claim(n - 1)` (parameters) |
+| `by=...` | `by(...)` |
+
+- `lanky check` refuses to run under `python -O` (or `PYTHONOPTIMIZE`), which
+  removes every `assert`, and so every step of every proof; it exits 2.
+- A proof's `assert`s in a file pytest rewrites (a test module) are refused,
+  with the fix: `PYTEST_DONT_REWRITE` in the module's docstring.
+- The multipliers kept in the hint cache are kept in a new format: a cache
+  from 0.5 is read as empty, once.
+
+### Added
+
+- **`from lanky import by, claim`.** `by(f, g)` is the reason for a step: in
+  an `assert`'s message, which Python reads only when the step fails, after
+  `yield` for the point the loop is at, after `return` for a claim with no
+  variables. `by(...)`, Python's `Ellipsis`, leaves a step open, and the
+  claim's row names its line. `claim` is the theorem being proved, as Flask's
+  `request` is the request being served: `claim.dom` the domain of its
+  conclusion, `claim[p]` the conclusion at a point the loop has filled in,
+  `claim(...)` the theorem at smaller values of its parameters, taken in
+  order as a call takes them, and `claim.n` a variable of the conclusion as a
+  handle. Outside a theorem's body `claim` refuses: "claim is the theorem
+  being proved; it means something only inside a theorem's body".
+- **An `assert` is a step.** The trace answers its question "false" once,
+  reads `by(...)` from the `AssertionError`, and runs the body again with the
+  step answered "true": the per-path re-run an `if` already makes, told from
+  an `if` by the bytecode. `x == y <= z` is one step of two links, each at the
+  line of the term it reaches, `<=`, `<`, `>=` and `>` mixing as in Python. A
+  step is a `have` in Lean, known for the rest of its case: a later `yield` or
+  `return` is asked only for the rest of the way from where the step ended,
+  and a point that yields nothing is finished from the steps asserted for it.
+  The facts of a chain's `by(...)` serve the links they fit, each fact cited
+  by name alone matched against its link.
+- **A fact cited by name alone is matched against the terms of the step's
+  other facts too**, so `yield by(recurrence, claim[i, a - 2, b + 2], pde)`
+  finds `recurrence` and `pde` at `(i, a - 2, b)`, where each is about the
+  claim's cells and those of the claim at the earlier point.
+- **A cited point the loop has not filled in is refused before Lean is
+  asked**: "claim[n + 1] is not filled in yet when the loop is at n". So is
+  the point itself, and `claim(...)` at values no smaller, or changing no
+  integer parameter.
+- **The native run.** `lanky check` runs the body as plain Python at the
+  check's draws, exact `Fraction` values and exact complex numbers, with
+  `claim.dom` giving the conclusion's first points to the draw bound, and
+  integers whose quotient is exact. A false `assert` is reported at its line,
+  with the values there and the two sides that differ ("At n = 3, alpha = 2,
+  beta = 1: the left side is -1/24, the right side 1/24."), and so is a point
+  where the claim is false; the proof fails without Lean. The run only tests:
+  it never proves a step. `Theorem.run_proof(**values)` runs a proof the same
+  way by hand, in a REPL or under pdb.
+- **A statement's names the function does not take as parameters** (a
+  variable or a condition bound outside the theorem) are given their symbolic
+  or drawn values in the namespace the body runs in, traced or native
+  (`lanky.proofs.trace.body_arguments`).
+- `lanky check --proofs` prints the proofs lanky finds in the new surface,
+  `for a, b in claim.dom:` with `yield by(...)` in each case, and `--steps`
+  prints a row per `assert` and per `yield` at its Python line, a chain's
+  links under its first.
+
+### Changed
+
+- The examples `every_box.py`, `nicomachus.py`, `log_of_the_modulus.py`,
+  `line_taylor.py` and `sumpy_recurrence.py`'s `harmonic` are proved in the
+  new surface, as the decision writes them.
+
 ## [0.5.0] - 2026-10-18
 
 A theorem's body can be its proof, written in Python and checked by Lean. A

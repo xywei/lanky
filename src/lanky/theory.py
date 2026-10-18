@@ -502,8 +502,8 @@ class Theorem:
         ``lanky check`` runs, calling a theorem is citing it, at the values
         given, its variables outermost first and then the goal's, positional
         or by name. What decides is whether a trace is running, not the
-        arguments' types. A theorem that calls itself in its own proof is
-        refused, with ``def claim`` as the fix.
+        arguments' types. A theorem that cites itself by name in its own
+        proof is refused, with ``claim(...)`` or ``claim[...]`` as the fix.
 
         Raises:
             lanky.terms.Undecided: If the statement applies a family outside
@@ -543,6 +543,22 @@ class Theorem:
             },
             goal=truth_value(evaluate(self.goal, context), self.goal),
         )
+
+    def run_proof(self, **values: Any) -> None:
+        """Run the written proof as plain Python at ``values``, as a REPL or pdb would.
+
+        The values are given by name, as :meth:`__call__` takes them.
+        ``claim.dom`` gives the conclusion's first points, to the tester's
+        draw bound, a citation is inert, and ``by(...)`` is read only where a
+        step fails. A false step raises Python's own ``AssertionError``, its
+        message the step's ``by(...)``; a point where the claim is false
+        raises :class:`lanky.proofs.native.PointFalse`. It only tests: Lean
+        checks the proof under ``lanky check``. Floats compare exactly here,
+        so a step can fail on rounding: give ``Fraction`` values.
+        """
+        from lanky.proofs.native import run_by_hand
+
+        run_by_hand(self, **values)
 
     # {{{ property testing
 

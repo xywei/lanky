@@ -175,8 +175,10 @@ class CheckVerb:
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
-        nothing is checked. An axiom's citation, the reason an oracle declined
-        a fact left assumed, an oracle that raised, a semantics disagreement, a warning about
+        nothing is checked; and 2 under ``python -O``, which removes every
+        ``assert``, and so every step of every written proof. An axiom's
+        citation, the reason an oracle declined a fact left assumed, an
+        oracle that raised, a semantics disagreement, a warning about
         hypotheses no draw satisfied or a pass on thin evidence, and an id a
         fact rests on that the ledger does not hold are printed but do not
         fail the check.
@@ -224,6 +226,11 @@ class CheckVerb:
         files = getattr(args, "files", None)
         files = [*(files if files is not None else [args.file]), *_files_given_as_text(args)]
         files = _in_the_order_given(files, getattr(args, "argv", None))
+        if not __debug__ or sys.flags.optimize:
+            from lanky.check import OPTIMIZED
+
+            print(f"lanky check: {OPTIMIZED}")
+            return 2
         if not files:
             print("lanky check: name a file to check, as in lanky check examples/gauss.py")
             return 2
@@ -1009,12 +1016,12 @@ def report_written(ledger: Ledger) -> bool:
 
         UNPROVED every_box at every_box.py:30: a step of its proof does not follow.
 
-          every_box.py:52    return recurrence(i, a - 2, b), claim(i, a - 2, b + 3), ...
+          every_box.py:52    yield by(recurrence, claim[i, a - 2, b + 3], pde)
 
           When a + b != 0 and a >= 2 (every_box.py:48, 50), the step needs
           R[i, a, b] == D[i, a, b]
           ...
-          Fix: claim(i, a - 2, b + 2) makes the step follow (checked).
+          Fix: claim[i, a - 2, b + 2] makes the step follow (checked).
 
     A claim lanky proved alone keeps its row, proved by lanky's own proof,
     and the block says so instead: ``WARNING every_box at every_box.py:30:
@@ -1022,7 +1029,7 @@ def report_written(ledger: Ledger) -> bool:
     Either fails the check, since a broken proof is a failing test. A proof
     not checked, on a machine without Lean, or without Mathlib for a claim
     only Mathlib states, gets a ``NOT CHECKED`` line, which does not, and so
-    does a proof Lean accepted with steps left open, ``by=...``, whose
+    does a proof Lean accepted with steps left open, ``by(...)``, whose
     ``LEFT OPEN`` line names them.
     """
     broken = False
@@ -1045,7 +1052,7 @@ def report_written(ledger: Ledger) -> bool:
             print()
             print(
                 f"LEFT OPEN {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
-                f"holds but for the steps left open at {holes} (by=...); until they are "
+                f"holds but for the steps left open at {holes} (by(...)); until they are "
                 "written, the claim reads as the other oracles leave it"
             )
             continue
@@ -1216,7 +1223,7 @@ def report_proofs(ledger: Ledger, text: str = "") -> None:
 
     The body is in the surface a written proof uses, in the theorem's own
     names, and pastes under the theorem's docstring: for an induction over
-    families, ``def claim(a, b):`` with a case per base and the facts each
+    families, ``for a, b in claim.dom:`` with a case per base and the facts each
     case rests on, at the points the search found, written as the user
     writes them; for an exchange of sums, the chain through the left side
     with its sums put in order. For a proof by any other rung of the

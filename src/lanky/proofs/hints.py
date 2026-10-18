@@ -1,6 +1,6 @@
 """The multipliers a step was closed with, kept so that a warm check runs no sympy.
 
-The design idea. A step of a written proof, ``return f, g``, is closed by
+The design idea. A step of a written proof, ``yield by(f, g)``, is closed by
 ``linear_combination`` with multipliers that Python finds: sympy's linear
 algebra over the step's terms (:func:`lanky.proofs.report.combination`). The
 search is the slow part of compiling a proof, and the multipliers are part of
@@ -40,7 +40,7 @@ import pymbolic.primitives as prim
 __all__ = ["HintCache", "default_hint_dir", "hint_key", "decode", "encode"]
 
 #: The format the hints are kept in; a change makes every kept hint a miss.
-FORMAT = 1
+FORMAT = 2
 
 #: The modules a kept node's class may come from.
 _MODULES = ("lanky.terms", "pymbolic.primitives")

@@ -39,7 +39,7 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim, theorem
 from lanky.prelude import Fin, Fn, Int, Nat
 
 
@@ -51,12 +51,11 @@ def ct(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in claim.dom:
         if a < 2:
-            return stored
-        return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)
-
-    return claim
+            yield by(stored)
+        else:
+            yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
 
 
 @theorem
@@ -67,12 +66,11 @@ def ct_wrong(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in claim.dom:
         if a < 2:
-            return stored
-        return recurrence(a - 2, b), claim(a - 2, b + 3), pde(a - 2, b)
-
-    return claim
+            yield by(stored)
+        else:
+            yield by(recurrence(a - 2, b), claim[a - 2, b + 3], pde(a - 2, b))
 
 
 @theorem
@@ -83,10 +81,8 @@ def ct_negative(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
-        return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)
-
-    return claim
+    for a, b in claim.dom:
+        yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
 
 
 @theorem
@@ -97,12 +93,11 @@ def ct_condition(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in claim.dom:
         if a < 2:
-            return stored
-        return stored
-
-    return claim
+            yield by(stored)
+        else:
+            yield by(stored)
 
 
 @theorem
@@ -128,41 +123,32 @@ def every_box(
         for i in Fin[n] for a in Nat for b in Nat if a + b + 2 <= p
     ),
 ) -> all(R[i, a, b] == D[i, a, b] for i in Fin[n] for a in Nat for b in Nat if a + b <= p):
-    def claim(i, a, b):
+    for i, a, b in claim.dom:
         if a + b == 0:
-            return centre_copy, centre
-        if a < 2:
-            return copies, stored
-        return recurrence(i, a - 2, b), claim(i, a - 2, b + 2), pde(i, a - 2, b)
-
-    return claim
+            yield by(centre_copy, centre)
+        elif a < 2:
+            yield by(copies, stored)
+        else:
+            yield by(recurrence, claim[i, a - 2, b + 2], pde)
 
 
 @theorem
 def sum_to(
     n: Nat, S: Fn[Nat, Int], base: S[0] == 0, step: all(S[k + 1] == S[k] + 1 for k in Nat)
 ) -> S[n] == n:
-    def claim(n):
-        if n == 0:
-            return base
-        return step(n - 1), claim(n - 1)
-
-    return claim
+    if n == 0:
+        return by(base)
+    return by(step(n - 1), claim(n - 1))
 
 
 @theorem
-def climb(
-    p: Nat,
-    H: Fn[Nat, Int],
-    top: H[p] == 0,
-    step: all(H[k] == H[k + 1] for k in Nat if k < p),
-) -> all(H[k] == 0 for k in Nat if k <= p):
-    def claim(k):
-        if k == p:
-            return top
-        return step(k), claim(k + 1)
-
-    return claim
+def stepped(
+    n: Nat, S: Fn[Nat, Int], base: S[0] == 0, step: all(S[k + 1] == S[k] + 1 for k in Nat)
+) -> S[n] == n:
+    if n == 0:
+        return by(base)
+    assert S[n] == S[n - 1] + 1, by(step)
+    return by(claim(n - 1))
 
 
 @theorem
@@ -172,38 +158,37 @@ def lex(
     down_b: all(R[a, b + 1] == R[a, b] for a in Nat for b in Nat),
     down_a: all(R[a + 1, 0] == R[a, 7] for a in Nat),
 ) -> all(R[a, b] == 0 for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in claim.dom:
         if b >= 1:
-            return down_b(a, b - 1), claim(a, b - 1)
-        if a >= 1:
-            return down_a(a - 1), claim(a - 1, 7)
-        return base
-
-    return claim
+            yield by(down_b(a, b - 1), claim[a, b - 1])
+        elif a >= 1:
+            yield by(down_a(a - 1), claim[a - 1, 7])
+        else:
+            yield by(base)
 
 
 @theorem
 def routine(n: Nat, m: Nat, h: m == n + 1) -> m - n == 1:
     if n == 0:
         return
-    return h
+    return by(h)
 
 
 @theorem
 def zero_times(f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat if k >= 1)) -> f[0] * 0 == 0:
-    return h(0)
+    return by(h(0))
 
 
 @theorem
 def both_parts(
     S: Fn[Nat, Int], T: Fn[Nat, Int], starts: (S[0] == 1) & (T[0] == 2)
 ) -> S[0] + T[0] == 3:
-    return starts
+    return by(starts)
 
 
 @theorem
 def cites_later(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:
-    return identity_at(f, 3)
+    return by(identity_at(f, 3))
 
 
 @theorem
@@ -217,7 +202,7 @@ REFUSED = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim, theorem
 from lanky.prelude import Fn, Int, Nat
 
 
@@ -228,19 +213,18 @@ def small(x):
 
 
 @theorem
-def ct_measure(
+def ct_later(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
     pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in claim.dom:
         if a < 2:
-            return stored
-        return recurrence(a - 2, b), claim(a, b + 2), pde(a - 2, b)
-
-    return claim
+            yield by(stored)
+        else:
+            yield by(recurrence(a - 2, b), claim[a, b + 2], pde(a - 2, b))
 
 
 @theorem
@@ -251,51 +235,43 @@ def ct_self(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in claim.dom:
         if a < 2:
-            return stored
-        return recurrence(a - 2, b), ct_self(a - 2, b + 2), pde(a - 2, b)
-
-    return claim
+            yield by(stored)
+        else:
+            yield by(recurrence(a - 2, b), ct_self(a - 2, b + 2), pde(a - 2, b))
 
 
 @theorem
 def ct_nopoint(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
-    pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
+    E: Fn[Nat, Int],
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
-    recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
-) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
-        if a < 2:
-            return stored
-        return recurrence(a - 2, b), claim(a - 2, b + 2), pde
-
-    return claim
+    apart: all(E[a] == 0 for a in Nat),
+) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2):
+    for a, b in claim.dom:
+        yield by(stored, apart)
 
 
 @theorem
 def foreign_if(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
-    def claim(a):
+    for a in claim.dom:
         if small(a):
-            return h
-        return h
-
-    return claim
+            yield by(h)
+        else:
+            yield by(h)
 
 
 @theorem
 def and_as_a_value(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
-    def claim(a):
+    for a in claim.dom:
         either = (a < 2) or (a > 5)
-        return h
-
-    return claim
+        yield by(h)
 
 
 @theorem
@@ -304,36 +280,103 @@ def returns_a_number(n: Nat) -> n + 0 == n:
 
 
 @theorem
-def claim_out_of_order(
-    R: Fn[Nat, Nat, Int], h: all(R[a, b] == 0 for a in Nat for b in Nat)
-) -> all(R[a, b] == 0 for a in Nat for b in Nat):
-    def claim(b, a):
-        return h
-
-    return claim
-
-
-@theorem
-def claim_unknown_parameter(
-    R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
-) -> all(R[a] == 0 for a in Nat):
-    def claim(a, x):
-        return h
-
-    return claim
-
-
-@theorem
 def asked_twice(
     R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
 ) -> all(R[a] == 0 for a in Nat):
-    def claim(a):
+    for a in claim.dom:
         if a < 2:
             if a < 2:
-                return h
+                yield by(h)
+        else:
+            yield by(h)
+
+
+@theorem
+def old_claim(
+    R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
+) -> all(R[a] == 0 for a in Nat):
+    def claim(a):
         return h
 
     return claim
+
+
+@theorem
+def old_induction(
+    n: Nat, S: Fn[Nat, Int], base: S[0] == 0, step: all(S[k + 1] == S[k] + 1 for k in Nat)
+) -> S[n] == n:
+    def claim(n):
+        if n == 0:
+            return base
+        return step(n - 1), claim(n - 1)
+
+    return claim
+
+
+@theorem
+def old_return(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
+    return h, h
+
+
+@theorem
+def old_chain(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
+    return S[n].equals(0, by=h)
+
+
+@theorem
+def old_at_most(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] <= 0:
+    return S[n].at_most(0, by=h)
+
+
+@theorem
+def same_point(
+    R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
+) -> all(R[a] == 0 for a in Nat):
+    for a in claim.dom:
+        yield by(claim[a])
+
+
+@theorem
+def larger_values(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
+    return by(claim(n + 1))
+
+
+@theorem
+def yield_outside(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
+    yield by(h)
+
+
+@theorem
+def return_in_the_loop(
+    R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
+) -> all(R[a] == 0 for a in Nat):
+    for a in claim.dom:
+        return by(h)
+
+
+@theorem
+def two_yields(
+    R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)
+) -> all(R[a] == 0 for a in Nat):
+    for a in claim.dom:
+        yield by(h)
+        yield by(h)
+
+
+@theorem
+def no_variables(n: Nat) -> n + 0 == n:
+    for k in claim.dom:
+        yield
+
+
+@theorem
+def a_message(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[n] == 0:
+    assert S[n] == 0, "it is zero"
+
+
+@theorem
+def false_as_written(n: Nat) -> n + 0 == n:
+    assert 1 == 2
 '''
 
 
@@ -428,7 +471,7 @@ def test_outside_a_proof_a_theorem_is_evaluated_at_values_given_by_name(cases) -
 # {{{ the trace
 
 
-def test_the_trace_splits_the_cases_and_records_what_each_return_cites(cases) -> None:
+def test_the_trace_splits_the_cases_and_records_what_each_yield_cites(cases) -> None:
     proof = trace_proof(cases.every_box)
     assert proof.claim.params == ("i", "a", "b") and proof.claim.generalized == ()
     paths = [
@@ -443,16 +486,32 @@ def test_the_trace_splits_the_cases_and_records_what_each_return_cites(cases) ->
         ([("a + b == 0", False), ("a < 2", True)], ["copies", "stored"]),
         (
             [("a + b == 0", False), ("a < 2", False)],
-            ["recurrence(i, a - 2, b)", "claim(i, a - 2, b + 2)", "pde(i, a - 2, b)"],
+            ["recurrence", "claim[i, a - 2, b + 2]", "pde"],
         ),
     ]
     assert [leaf.line for leaf in proof.leaves] == [
-        _line(cases, "return centre_copy, centre"),
-        _line(cases, "return copies, stored"),
-        _line(cases, "return recurrence(i, a - 2, b), claim(i, a - 2, b + 2)"),
+        _line(cases, "yield by(centre_copy, centre)"),
+        _line(cases, "yield by(copies, stored)"),
+        _line(cases, "yield by(recurrence, claim[i, a - 2, b + 2], pde)"),
     ]
+    assert all(leaf.point for leaf in proof.leaves)
     assert proof.calls[0].is_claim and proof.calls[0].line == proof.leaves[2].line
-    assert proof.where.startswith(f"cases_core.py:{_line(cases, 'def claim(i, a, b)')}-")
+    loop = _line(cases, "for i, a, b in claim.dom:")
+    assert proof.claim.line == loop
+    assert proof.where.startswith(f"cases_core.py:{loop}-")
+
+
+def test_an_assert_is_a_step_read_by_running_the_body_again(cases) -> None:
+    """The first run answers the assert "false" and reads ``by(...)``; the next answers "true"."""
+    proof = trace_proof(cases.stepped)
+    base, step = proof.leaves
+    assert base.steps == () and [c.text() for c in base.facts] == ["base"]
+    (asserted,) = step.steps
+    assert asserted.line == _line(cases, "assert S[n] == S[n - 1] + 1, by(step)")
+    assert [render(prop) for prop in asserted.props] == ["S[n] == S[n - 1] + 1"]
+    assert [citation.text() for citation in asserted.facts] == ["step"]
+    assert [citation.text() for citation in step.facts] == ["claim(n - 1)"]
+    assert proof.claim.params == ("n",) and proof.claim.generalized == ("n",)
 
 
 def test_a_question_asked_twice_on_a_path_is_answered_alike(refused) -> None:
@@ -474,36 +533,101 @@ def test_or_used_as_a_value_is_refused(refused) -> None:
     assert raised.value.line == _line(refused, "either = (a < 2) or (a > 5)")
 
 
-def test_a_theorem_that_calls_itself_is_refused_with_claim_as_the_fix(refused) -> None:
+def test_a_theorem_that_cites_itself_is_refused_with_claim_as_the_fix(refused) -> None:
     with pytest.raises(ProofError) as raised:
         trace_proof(refused.ct_self)
     error = raised.value
     assert error.kind == "self-reference"
     line = _line(refused, "ct_self(a - 2, b + 2)")
     assert error.message == (
-        f"ct_self calls itself at refused.py:{line}. To argue from smaller values, write "
-        "def claim(a, b) and call claim(a - 2, b + 2)"
+        f"ct_self cites itself by name at refused.py:{line}; in its own proof the theorem is "
+        "claim, and the claim at an earlier point of the loop over claim.dom is "
+        "claim[a - 2, b + 2]"
     )
+    assert error.fix == "claim[a - 2, b + 2]"
 
 
-def test_a_return_of_something_that_is_no_fact_is_refused(refused) -> None:
-    with pytest.raises(ProofError, match="this returns a int") as raised:
+def test_a_return_of_something_that_is_no_reason_is_refused(refused) -> None:
+    with pytest.raises(ProofError, match="this return gives a int") as raised:
         trace_proof(refused.returns_a_number)
     assert raised.value.kind == "return"
 
 
-def test_claim_takes_the_claims_variables_by_name_and_in_order(refused) -> None:
-    with pytest.raises(ProofError, match=r"in another order than the claim, a, b") as raised:
-        trace_proof(refused.claim_out_of_order)
-    assert raised.value.fix == "def claim(a, b)"
-    with pytest.raises(ProofError, match="neither a variable of the claim"):
-        trace_proof(refused.claim_unknown_parameter)
+def test_the_forms_of_lanky_0_5_are_refused_with_the_line_to_write(refused) -> None:
+    """``def claim``, ``return f, g`` and ``.equals``: each refused, the 0.6 line its fix."""
+    cases = {
+        "old_claim": (
+            "removed",
+            "def claim(a) is how lanky 0.5 wrote a proof",
+            "for a in claim.dom:",
+        ),
+        "old_induction": (
+            "removed",
+            "def claim(n) is how lanky 0.5 wrote an induction on the theorem's parameters",
+            "the body itself, citing claim(n - 1)",
+        ),
+        "old_return": ("removed", "return h, h is how lanky 0.5", "return by(h, h)"),
+        "old_chain": (
+            "removed",
+            ".equals(...) is how lanky 0.5 wrote a step",
+            "assert S[n] == 0, by(h)",
+        ),
+        "old_at_most": ("removed", ".at_most(...) is how lanky 0.5", "assert S[n] <= 0, by(h)"),
+    }
+    for name, (kind, said, fix) in cases.items():
+        with pytest.raises(ProofError) as raised:
+            trace_proof(getattr(refused, name))
+        assert raised.value.kind == kind, name
+        assert said in raised.value.message, (name, raised.value.message)
+        assert raised.value.fix == fix, (name, raised.value.fix)
 
 
-def test_a_parameter_of_claim_that_names_the_theorems_generalizes_it(cases) -> None:
+def test_a_point_the_loop_has_not_filled_in_is_refused_before_lean(refused) -> None:
+    """The design's 3.5: ``claim[p]`` must come earlier in the loop, ``claim(...)`` be smaller."""
+    with pytest.raises(ProofError) as raised:
+        trace_proof(refused.ct_later)
+    assert raised.value.kind == "later"
+    assert raised.value.message == (
+        "claim[a, b + 2] is not filled in yet when the loop is at (a, b)"
+    )
+    assert raised.value.line == _line(refused, "claim[a, b + 2]")
+    with pytest.raises(ProofError, match=r"claim\[a\] is the point the loop is at, a"):
+        trace_proof(refused.same_point)
+    with pytest.raises(ProofError, match=r"claim\(n \+ 1\) is at larger values") as raised:
+        trace_proof(refused.larger_values)
+    assert raised.value.fix == "cite it at smaller values, as claim(n - 1)"
+
+
+def test_yield_closes_the_point_the_loop_is_at_once(refused) -> None:
+    with pytest.raises(ProofError, match="outside a loop over claim.dom") as raised:
+        trace_proof(refused.yield_outside)
+    assert raised.value.kind == "yield"
+    first = "leaves the loop over claim.dom at its first point"
+    with pytest.raises(ProofError, match=first) as raised:
+        trace_proof(refused.return_in_the_loop)
+    assert raised.value.fix == "yield by(h)"
+    with pytest.raises(ProofError, match="the point was closed already at line"):
+        trace_proof(refused.two_yields)
+    with pytest.raises(ProofError, match="no_variables's conclusion has none"):
+        trace_proof(refused.no_variables)
+
+
+def test_an_assert_gives_its_reason_as_by(refused) -> None:
+    with pytest.raises(ProofError, match="this one gives the text 'it is zero'") as raised:
+        trace_proof(refused.a_message)
+    assert raised.value.kind == "assert"
+    assert raised.value.line == _line(refused, 'assert S[n] == 0, "it is zero"')
+    with pytest.raises(ProofError, match="false as Python evaluates it") as raised:
+        trace_proof(refused.false_as_written)
+    assert raised.value.kind == "false"
+
+
+def test_a_parameter_the_theorem_is_cited_at_is_generalized(cases) -> None:
     proof = trace_proof(cases.sum_to)
     assert proof.claim.params == ("n",) and proof.claim.generalized == ("n",)
     assert [str(question.prop) for question in proof.leaves[0].questions] == ["n == 0"]
+    cited = [citation.text() for citation in proof.leaves[1].facts]
+    assert cited == ["step(n - 1)", "claim(n - 1)"]
 
 
 def test_a_later_theorem_is_cited_from_the_live_globals(cases) -> None:
@@ -511,6 +635,24 @@ def test_a_later_theorem_is_cited_from_the_live_globals(cases) -> None:
     (citation,) = proof.leaves[0].facts
     assert citation.source is cases.identity_at and citation.text() == "identity_at(f, 3)"
     assert proof.cited == [cases.identity_at]
+
+
+def test_claim_outside_a_body_says_what_it_is() -> None:
+    from lanky import by, claim
+    from lanky.surface import OutsideAProof
+
+    with pytest.raises(OutsideAProof, match="it means something only inside a theorem's body"):
+        claim.dom  # noqa: B018 - the refusal is what is tested
+    with pytest.raises(OutsideAProof):
+        claim[1]
+    assert "inside a theorem's body" in repr(claim)
+    assert repr(by(...)) == "by(...)"
+    with pytest.raises(TypeError, match="names no fact"):
+        by("pde")
+    with pytest.raises(TypeError, match="takes no facts beside it"):
+        by(claim, ...)
+    with pytest.raises(TypeError, match="not a condition"):
+        bool(by())
 
 
 # }}}
@@ -558,7 +700,7 @@ def test_naturals_that_sum_to_nothing_are_each_nothing() -> None:
 
 def _calls(*values: tuple) -> list[Citation]:
     claim = ClaimDef("claim", ("a", "b"), (Nat, Nat), (), 1)
-    return [Citation(claim, value, 10) for value in values]
+    return [Citation(claim, value, 10, bracket=True) for value in values]
 
 
 def test_the_measure_is_down_up_or_a_pair() -> None:
@@ -573,7 +715,7 @@ def test_the_measure_is_down_up_or_a_pair() -> None:
         measure(claim, _calls((a, b + 2)), [])
     assert raised.value.kind == "measure"
     assert raised.value.message == (
-        "claim(a, b + 2) is not at smaller values: neither a nor b is smaller than at (a, b)"
+        "claim[a, b + 2] is not at smaller values: neither a nor b is smaller than at (a, b)"
     )
 
 
@@ -589,14 +731,21 @@ def test_a_fact_cited_by_name_is_applied_at_the_point_of_the_case(cases) -> None
 def test_no_single_point_asks_for_the_point(refused) -> None:
     with pytest.raises(ProofError) as raised:
         compile_proof(trace_proof(refused.ct_nopoint), mathlib=False)
-    assert raised.value.kind == "no-point" and raised.value.fix == "pde(a - 2, b)"
-    assert "since 2 do; write it, as pde(a - 2, b)" in raised.value.message
+    assert raised.value.kind == "no-point" and raised.value.fix == "apart(a)"
+    assert "no point of apart fits a term of this case's claim" in raised.value.message
 
 
-def test_a_claim_not_at_smaller_values_is_refused_at_its_line(refused) -> None:
-    with pytest.raises(ProofError) as raised:
-        compile_proof(trace_proof(refused.ct_measure), mathlib=False)
-    assert raised.value.line == _line(refused, "claim(a, b + 2)")
+def test_a_fact_by_name_is_matched_against_the_terms_of_the_steps_other_facts(cases) -> None:
+    """``by(recurrence, claim[i, a - 2, b + 2], pde)``: each fits at ``(i, a - 2, b)``.
+
+    Against the claim's cells alone, ``pde`` touches ``D[i, a, b]`` at two
+    points; with the cells of the claim at the earlier point, one of them
+    is about those cells and nothing else.
+    """
+    command = compile_proof(trace_proof(cases.every_box), mathlib=False)
+    source = command.source
+    assert "recurrence i (by omega) (by omega) (a - 2) (by omega) b (by omega)" in source
+    assert "pde i (by omega) (by omega) (a - 2) (by omega) b (by omega)" in source
 
 
 # }}}
@@ -628,10 +777,15 @@ def test_a_generalized_parameter_is_given_a_value_at_each_call(cases) -> None:
     assert "subst n" in source
 
 
-def test_a_climb_toward_a_bound_is_measured_by_the_distance(cases) -> None:
-    source = compile_proof(trace_proof(cases.climb), mathlib=False).source
-    assert "termination_by (p - k).toNat\ndecreasing_by omega" in source
-    assert "have pin_1 : k = p := by omega\n" in source
+def test_an_asserted_step_is_a_have_the_rest_of_its_case_uses(cases) -> None:
+    """``assert S[n] == S[n - 1] + 1``, then ``return by(claim(n - 1))`` for the rest of the way."""
+    command = compile_proof(trace_proof(cases.stepped), mathlib=False)
+    source = command.source
+    assert "have step_1 : S n = S (n - 1) + 1 := by" in source
+    assert "have rest_1 : S (n - 1) + 1 = n := by" in source
+    assert "exact step_1.trans rest_1" in source
+    assert "Lanky.stepped.claim (n - 1) (by omega) S base step" in source
+    assert command.summary == "induction on n, 2 cases, 3 steps"
 
 
 def test_a_pair_that_gets_smaller_is_measured_as_a_pair(cases) -> None:
@@ -675,13 +829,13 @@ def test_a_hypothesis_named_like_a_lean_word_keeps_meaning_one_thing(tmp_path) -
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import by, theorem
             from lanky.prelude import Nat
 
 
             @theorem
             def odd_names(n: Nat, fun: n >= 1, Real: n <= 5) -> n >= 1:
-                return fun, Real
+                return by(fun, Real)
             """
         ),
         encoding="utf-8",
@@ -762,7 +916,7 @@ def test_an_error_at_a_call_below_zero_reads_as_a_negative_argument(cases) -> No
     (failure,) = failures
     assert failure.kind == "negative"
     assert failure.lines == (
-        "claim(a - 2, b + 2) is at a negative a when a = 1: split off a < 2 first.",
+        "claim[a - 2, b + 2] is at a negative a when a = 1: split off a < 2 first.",
     )
 
 
@@ -779,13 +933,13 @@ def test_a_step_that_does_not_follow_says_what_is_left_and_the_fix(cases) -> Non
     assert failure.lines[0] == (
         f"When a >= 2 (cases_core.py:{split}), the step needs   R[a, b] == D[a, b]"
     )
-    assert failure.lines[2] == "  claim(a - 2, b + 3)  says   R[a - 2, b + 3] == D[a - 2, b + 3]"
+    assert failure.lines[2] == "  claim[a - 2, b + 3]  says   R[a - 2, b + 3] == D[a - 2, b + 3]"
     assert failure.lines[3] == "  pde(a - 2, b)        says   D[a, b] + D[a - 2, b + 2] == 0"
     assert failure.lines[4] == "Left over:"
     left = failure.lines[5]
     for term in ("R[a - 2, b + 3]", "- R[a - 2, b + 2]", "D[a - 2, b + 2]", "- D[a - 2, b + 3]"):
         assert term in left
-    assert failure.fix == "claim(a - 2, b + 2) makes the step follow"
+    assert failure.fix == "claim[a - 2, b + 2] makes the step follow"
 
 
 def test_the_axiom_audit_is_read_positively() -> None:
@@ -814,6 +968,127 @@ def test_a_case_is_said_with_the_lines_of_its_ifs() -> None:
     a, b = Var("a"), Var("b")
     text = case_text([(a + b != 0, 48), (a >= 2, 50)], "/x/every_box.py")
     assert text == "When a + b != 0 and a >= 2 (every_box.py:48, 50)"
+
+
+# }}}
+
+
+# {{{ the native run
+
+
+#: Proofs whose steps can be run as plain Python at drawn values.
+NATIVE = '''\
+from __future__ import annotations
+
+from lanky import by, claim, theorem
+from lanky.prelude import Fin, Fn, Int, Nat
+
+
+@theorem
+def doubling(
+    n: Nat,
+    f: Fn[Fin[n + 1], Int],
+    start: f[0] == 0,
+    step: all(f[k + 1] == f[k] + 2 for k in Fin[n]),
+) -> all(f[k] == 2 * k for k in Fin[n + 1]):
+    for k in claim.dom:
+        if k == 0:
+            yield by(start)
+        else:
+            assert f[k] == f[k - 1] + 2, by(step)
+            yield by(claim[k - 1])
+
+
+@theorem
+def doubling_wrong(
+    n: Nat,
+    f: Fn[Fin[n + 1], Int],
+    start: f[0] == 0,
+    step: all(f[k + 1] == f[k] + 2 for k in Fin[n]),
+) -> all(f[k] == 2 * k for k in Fin[n + 1]):
+    for k in claim.dom:
+        if k == 0:
+            yield by(start)
+        else:
+            assert f[k] == f[k - 1] + 3, by(step)
+            yield by(claim[k - 1])
+
+
+@theorem
+def capped(
+    n: Nat,
+    f: Fn[Fin[n + 1], Int],
+    start: f[0] == 0,
+    step: all(f[k + 1] == f[k] + 2 for k in Fin[n]),
+) -> all(f[k] <= 3 for k in Fin[n + 1]):
+    for k in claim.dom:
+        yield by(step)
+
+
+@theorem
+def halves(n: Nat, k: Nat, h: k >= 1) -> (n + k) / k == n / k + 1:
+    assert (n + k) / k == n / k + k / k == n / k + 1
+'''
+
+
+@pytest.fixture(scope="module")
+def native(tmp_path_factory) -> object:
+    """The native cases, imported."""
+    path = tmp_path_factory.mktemp("native") / "native_cases.py"
+    path.write_text(NATIVE, encoding="utf-8")
+    return import_path(path)
+
+
+def test_the_native_run_finds_a_false_step_at_its_line_with_its_values(native) -> None:
+    """The design's 3.6: a counterexample at the step's line, with the numbers there."""
+    from lanky.proofs.native import native_failure
+
+    assert native_failure(native.doubling) is None
+    failure = native_failure(native.doubling_wrong)
+    assert failure.kind == "false" and failure.headline == "a step of its proof is false"
+    assert failure.line == _line(native, "assert f[k] == f[k - 1] + 3, by(step)")
+    (said,) = failure.lines
+    assert said.startswith("At k = 1, n = ")
+    assert said.endswith(": the left side is 2, the right side 3.")
+
+
+def test_the_native_run_checks_each_point_as_the_loop_moves_on(native) -> None:
+    from lanky.proofs.native import native_failure
+
+    failure = native_failure(native.capped)
+    assert failure.kind == "false"
+    assert failure.line == _line(native, "yield by(step)")
+    (said,) = failure.lines
+    assert said.startswith("At k = 2, n = ") and said.endswith(
+        ": the claim there, f[k] <= 3, is false."
+    )
+
+
+def test_the_native_run_divides_exactly(native) -> None:
+    """``n / k`` of two drawn naturals is a ``Fraction`` there, so no step fails on rounding."""
+    from lanky.proofs.native import native_failure
+
+    assert native_failure(native.halves) is None
+
+
+def test_a_proof_can_be_run_by_hand_at_values_of_ones_own(native) -> None:
+    native.doubling.run_proof(n=2, f=[0, 2, 4])
+    with pytest.raises(AssertionError) as raised:
+        native.doubling_wrong.run_proof(n=2, f=[0, 2, 4])
+    assert repr(raised.value.args[0]) == "by(step)"
+
+
+def test_without_lean_a_false_step_fails_the_proof(native, monkeypatch) -> None:
+    from lanky.proofs import prove
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    fact = prove(native.doubling_wrong, native.doubling_wrong.fact())
+    account = fact.provenance["proof"]
+    assert account["closed"] is False
+    (failure,) = account["failures"]
+    assert failure["kind"] == "false" and failure["source"] == (
+        "assert f[k] == f[k - 1] + 3, by(step)"
+    )
 
 
 # }}}
@@ -889,7 +1164,7 @@ def test_without_lean_a_proof_is_not_checked_and_the_check_passes(
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import by, claim, theorem
             from lanky.prelude import Fn, Int, Nat
 
 
@@ -898,12 +1173,9 @@ def test_without_lean_a_proof_is_not_checked_and_the_check_passes(
                 n: Nat, S: Fn[Nat, Int], base: S[0] == 0,
                 step: all(S[k + 1] == S[k] + 1 for k in Nat),
             ) -> S[n] == n:
-                def claim(n):
-                    if n == 0:
-                        return base
-                    return step(n - 1), claim(n - 1)
-
-                return claim
+                if n == 0:
+                    return by(base)
+                return by(step(n - 1), claim(n - 1))
             """
         ),
         encoding="utf-8",
@@ -933,7 +1205,7 @@ def test_a_body_is_traced_after_every_run_and_draw_of_the_check(tmp_path, monkey
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import by, theorem
             from lanky.prelude import Nat
 
             ORDER = None
@@ -942,7 +1214,7 @@ def test_a_body_is_traced_after_every_run_and_draw_of_the_check(tmp_path, monkey
             @theorem
             def first(n: Nat, h: n >= 1) -> n >= 1:
                 ORDER.append("traced first")
-                return h
+                return by(h)
 
 
             @theorem
@@ -997,7 +1269,7 @@ def checked(tmp_path_factory) -> dict[str, Fact]:
 
 @pytest.mark.parametrize(
     "owner",
-    ["ct", "every_box", "sum_to", "climb", "lex", "routine", "both_parts", "cites_later"],
+    ["ct", "every_box", "sum_to", "stepped", "lex", "routine", "both_parts", "cites_later"],
 )
 def test_lean_accepts_the_written_proofs(checked, owner) -> None:
     fact = checked[owner]
@@ -1020,8 +1292,8 @@ def test_lean_finds_the_step_that_does_not_follow_and_checks_the_fix(checked) ->
     pytest.importorskip("sympy")
     (failure,) = checked["ct_wrong"].provenance["proof"]["failures"]
     assert failure["kind"] == "step"
-    assert failure["fix"] == "claim(a - 2, b + 2) makes the step follow (checked)"
-    assert failure["source"].startswith("return recurrence(a - 2, b), claim(a - 2, b + 3)")
+    assert failure["fix"] == "claim[a - 2, b + 2] makes the step follow (checked)"
+    assert failure["source"].startswith("yield by(recurrence(a - 2, b), claim[a - 2, b + 3]")
 
 
 def test_lean_finds_the_call_below_zero_and_the_condition_not_met(checked) -> None:
@@ -1047,7 +1319,7 @@ def test_lanky_check_exits_nonzero_on_a_broken_proof(tmp_path, capsys) -> None:
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import by, theorem
             from lanky.prelude import Fn, Int, Nat
 
 
@@ -1055,7 +1327,7 @@ def test_lanky_check_exits_nonzero_on_a_broken_proof(tmp_path, capsys) -> None:
             def zero_times(
                 f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat if k >= 1)
             ) -> f[0] * 0 == 0:
-                return h(0)
+                return by(h(0))
             """
         ),
         encoding="utf-8",
@@ -1064,7 +1336,7 @@ def test_lanky_check_exits_nonzero_on_a_broken_proof(tmp_path, capsys) -> None:
     out = capsys.readouterr().out
     lines = path.read_text(encoding="utf-8").splitlines()
     claim = next(number for number, line in enumerate(lines, 1) if line == "@theorem")
-    body = next(number for number, line in enumerate(lines, 1) if "return h(0)" in line)
+    body = next(number for number, line in enumerate(lines, 1) if "return by(h(0))" in line)
     assert f"WARNING zero_times at broken.py:{claim}: your proof fails at broken.py:{body};" in out
     assert "  h(0) needs 0 >= 1, and this case has nothing that shows it." in out
 

@@ -275,7 +275,7 @@ def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order
     )
     assert re.search(
         r"^NOT CHECKED harmonic at sumpy_recurrence\.py:\d+: without (Lean|Mathlib), each step "
-        r"of its proof was tested at drawn points instead \(lines \d+ and \d+\)\.$",
+        r"of its proof was tested at drawn points instead \(line \d+\)\.$",
         printed,
         re.M,
     )

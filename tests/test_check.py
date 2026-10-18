@@ -1517,12 +1517,11 @@ def reflexive(n: Nat) -> n == n:
 
 
 def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
-    """#28: ``-O``, ``-W`` and ``-X`` given to the command's interpreter reach each child.
+    """#28: ``-W`` and ``-X`` given to the command's interpreter reach each child.
 
     A child was started as ``python -P -c ...``, so only the environment
-    variables that mirror some of the options reached it: under ``python -O``
-    a checked file ran with its assertions on in a child, and off where its
-    root was the only one.
+    variables that mirror some of the options reached it. ``-O`` is refused
+    before any child starts (see the next test).
     """
     import subprocess
 
@@ -1530,7 +1529,7 @@ def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
     flags.parent.mkdir()
     flags.write_text(FLAGS, encoding="utf-8")
     good = _rooted(tmp_path / "b", 2)
-    options = ("-O", "-W", "always::UserWarning", "-X", "int_max_str_digits=5000")
+    options = ("-W", "always::UserWarning", "-X", "int_max_str_digits=5000")
     command = _lanky_check(
         tmp_path, flags, good, options=options, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
@@ -1538,8 +1537,29 @@ def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
     assert command.returncode == 0, (out, err)
     printed = [line for line in out.decode().splitlines() if line.startswith("child options:")]
     assert printed == [
-        "child options: 1 ['always::UserWarning'] [('int_max_str_digits', '5000')]"
+        "child options: 0 ['always::UserWarning'] [('int_max_str_digits', '5000')]"
     ]
+
+
+def test_check_refuses_to_run_under_python_o(tmp_path) -> None:
+    """``python -O`` removes every ``assert``, so every step of every written proof: refused.
+
+    The refusal is the command's, before any file is imported, with exit
+    code 2, as for a file that is not there; ``check_path`` refuses too.
+    """
+    import subprocess
+
+    flags = tmp_path / "a" / "flags.py"
+    flags.parent.mkdir()
+    flags.write_text(FLAGS, encoding="utf-8")
+    command = _lanky_check(
+        tmp_path, flags, options=("-O",), stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    out, err = command.communicate(timeout=120)
+    assert command.returncode == 2, (out, err)
+    text = out.decode()
+    assert "python -O removes every assert" in text
+    assert "child options:" not in text
 
 
 #: A checked file that writes its process's pid and sleeps. The pid is written

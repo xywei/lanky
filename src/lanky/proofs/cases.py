@@ -34,6 +34,7 @@ __all__ = [
     "from_affine",
     "integer_sort",
     "negated",
+    "offset_of",
     "pins",
     "shape_of",
 ]
@@ -94,6 +95,24 @@ def affine(term: Any) -> dict[str | None, Fraction] | None:
         _accumulate(out, numerator, 1 / divisor)
         return out
     return None
+
+
+def offset_of(value: Any, name: str) -> int | None:
+    """How far ``value`` is above the variable ``name``: ``-2`` for ``a - 2``; else ``None``.
+
+    ``None`` for anything but ``name`` plus a whole number: ``2 * a``, ``a +
+    b``, ``a / 2``.
+    """
+    form = affine(value)
+    if form is None:
+        return None
+    rest = dict(form)
+    if rest.pop(name, 0) != 1:
+        return None
+    if any(key is not None for key in rest):
+        return None
+    constant = rest.get(None, 0)
+    return int(constant) if constant == int(constant) else None
 
 
 def _accumulate(

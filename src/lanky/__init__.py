@@ -25,6 +25,11 @@ oracle discharges.
 Three commands over one file: ``python file.py`` runs it, ``pytest`` tests the
 theorems, ``lanky check file.py`` prints the ledger of every claim and who
 decided it.
+
+Where a proof helps, the theorem's body is the proof, in the Python an
+engineer already writes: ``assert x == y, by(f)`` for a step, ``if`` for
+cases, ``for n in claim.dom:`` and ``yield by(...)`` for each point of the
+conclusion (see :mod:`lanky.proofs`).
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from lanky.ledger import Fact, Ledger, Status, Support, fact_id
 from lanky.plugins import Executor, Oracle, Registry, Theory, Verb, registry
 from lanky.prelude import Bool, Complex, Fin, Fn, Int, Nat, Prop, Real, Sort
 from lanky.rewrites import Rewrite, RewriteTerm, rewrite
+from lanky.surface import by, claim
 from lanky.terms import (
     Abs,
     Elementary,
@@ -95,7 +101,9 @@ __all__ = [
     "__version__",
     "abs_",
     "axiom",
+    "by",
     "check_path",
+    "claim",
     "conj",
     "evaluate",
     "exists",

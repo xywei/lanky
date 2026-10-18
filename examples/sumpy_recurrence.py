@@ -40,12 +40,14 @@ equals the derivative it stands for. The constant factor ``-1/(2 pi)`` of the
 kernel is left out, since the reconstruction is linear.
 
 The harmonicity is a theorem here, ``harmonic``. sympy takes the kernel's
-second derivatives, and the proof in its body adds them, read aloud: "Let r2
-be x**2 + y**2. The Laplacian equals 2 / r2 minus 2 (x**2 + y**2) / r2**2,
-which equals 0." Each step is algebra, once ``r2`` is not zero, which
-``away`` says. lanky's search finds the proof alone too, clearing the
-denominators and then by algebra, so the body is for the reader: it says
-where the calculation goes.
+second derivatives, and the proof in its body adds them, one ``assert`` of a
+chained comparison, read aloud: "Let r2 be x**2 + y**2. The Laplacian equals
+2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0." Each step is algebra,
+once ``r2`` is not zero, which ``away`` says, so the ``assert`` gives no
+reason, and its two ends are the claim, so there is nothing to return.
+lanky's search finds the proof alone too, clearing the denominators and then
+by algebra, so the body is for the reader: it says where the calculation
+goes.
 
 The first two rows do not rest on it: each checks the reconstruction against
 the derivatives themselves, one order at a time. The third does. For every
@@ -156,11 +158,7 @@ def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) 
     of ``G_xx = 1 / r2 - 2 x**2 / r2**2`` and ``G_yy``, the same in ``y``.
     """
     r2 = x**2 + y**2
-    return (
-        laplacian(log_r, x, y)
-        .equals(2 / r2 - 2 * (x**2 + y**2) / r2**2)
-        .equals(0)
-    )
+    assert laplacian(log_r, x, y) == 2 / r2 - 2 * (x**2 + y**2) / r2**2 == 0
 
 
 # {{{ the claim
