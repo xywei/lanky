@@ -137,7 +137,7 @@ def _algebra(claim: Any, types: Mapping[str, Any]) -> Any:
         if isinstance(sort, FnType):
             families.add(name)
     case = Case("step", claim, (), dict(types), {}, frozenset(families))
-    return _Algebra(sympy, case)
+    return _Algebra(sympy, case, sums=True)
 
 
 def combination(claim: Any, bodies: Sequence[Any], types: Mapping[str, Any]) -> list[Any] | None:
@@ -146,24 +146,54 @@ def combination(claim: Any, bodies: Sequence[Any], types: Mapping[str, Any]) -> 
     lanky's certificate search (:func:`lanky.induction._solve`), limited to
     the instances the step cites. The multipliers are terms over the case's
     names, which ``linear_combination`` is handed; Lean checks them.
+
+    The search is linear in the atoms, the applications of families and the
+    sums. A step that is one of its facts up to algebra, with an atom
+    squared on both sides, is not linear in that atom: the claim at ``n -
+    1`` that the cubes sum to the square of the sum, for the step from
+    ``sum(i**3 for i in Fin(n)) + n**3`` to ``sum(i for i in Fin(n))**2 +
+    n**3``. Where the search finds nothing, a fact the step is, or is the
+    negation of, once each side is less the other, is taken alone, with the
+    multiplier ``1`` or ``-1``.
     """
     from lanky.induction import _Instance, _solve, _Unsupported
 
     algebra = _algebra(claim, types)
     if algebra is None:
         return None
+    sympy = algebra.sympy
     try:
         goal = algebra.side(claim, {})
         instances = []
         for body in bodies:
             side = algebra.side(body, {})
             instances.append(_Instance(None, (), side, algebra.applications(side)))  # type: ignore[arg-type]
-        multipliers = _solve(algebra.sympy, goal, instances)
     except (_Unsupported, Exception):  # noqa: BLE001 - what the search cannot read has none
         return None
+    try:
+        multipliers = _solve(sympy, goal, instances)
+    except Exception:  # noqa: BLE001 - what the search cannot read has none
+        multipliers = None
+    if multipliers is None:
+        multipliers = _one_of_them(sympy, goal, [instance.side for instance in instances])
     if multipliers is None:
         return None
     return [algebra.back(multiplier) for multiplier in multipliers]
+
+
+def _one_of_them(sympy: Any, goal: Any, sides: Sequence[Any]) -> list[Any] | None:
+    """Multipliers ``1`` or ``-1`` for the one fact the goal is, and ``0`` for the rest."""
+    for index, side in enumerate(sides):
+        for sign in (1, -1):
+            try:
+                if sympy.expand(goal - sign * side) != 0:
+                    continue
+            except Exception:  # noqa: BLE001 - what sympy cannot expand is not this fact
+                break
+            multipliers = [sympy.Integer(0)] * len(sides)
+            multipliers[index] = sympy.Integer(sign)
+            return multipliers
+    return None
 
 
 def left_over(claim: Any, bodies: Sequence[Any], types: Mapping[str, Any]) -> Any | None:
@@ -227,17 +257,21 @@ def back(algebra: Any, expr: Any) -> Any:
     :meth:`lanky.induction._Algebra.back` reads an expression with no
     application in it, a multiplier; what is left over of a step has them,
     ``D(a - 2, b + 3)``, each of which is read back as the family at its
-    arguments, ``D[a - 2, b + 3]``.
+    arguments, ``D[a - 2, b + 3]``, and a sum's atom as the sum.
     """
     from lanky.cas import from_sympy
 
     sympy = algebra.sympy
     atoms = sorted(algebra.applications(expr), key=str)
     variables: dict[str, Any] = {name: Var(name) for name in algebra.case.variables}
+    sums = {atom: term for term, atom in getattr(algebra, "atoms", ())}
     marks = {}
     for index, atom in enumerate(atoms):
         mark = sympy.Symbol(f"lanky_application_{index}")
         marks[atom] = mark
+        if atom in sums:
+            variables[mark.name] = sums[atom]
+            continue
         arguments = tuple(_tidy_argument(from_sympy(argument, variables)) for argument in atom.args)
         family = Var(str(atom.func))
         variables[mark.name] = family[arguments if len(arguments) > 1 else arguments[0]]

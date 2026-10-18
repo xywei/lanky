@@ -297,13 +297,34 @@ class _Algebra:
     arguments is sympy's ``subs`` and finding the atoms is ``atoms``. An
     integer variable is an integer symbol, so that an argument of a family
     reads as the integer expression it is.
+
+    With ``sums``, a finite sum is an atom too, an application of a function
+    of no arguments, one per sum up to the names of its binders and the
+    integer its bounds are (:func:`lanky.matching.same`): a step of a written
+    proof that cites ``gauss(n - 1)`` at ``sum(i for i in Fin(n - 1 + 1))``
+    is about the step's ``sum(i for i in Fin(n))``, and the multiplier that
+    pairs the two is found as it is for two applications of a family.
+    :meth:`back` writes such an atom as its sum again.
     """
 
-    def __init__(self, sympy: Any, case: Case) -> None:
+    def __init__(self, sympy: Any, case: Case, sums: bool = False) -> None:
         self.sympy = sympy
         self.case = case
         self.symbols: dict[str, Any] = {}
         self.functions: dict[str, Any] = {}
+        self.sums = sums
+        self.atoms: list[tuple[Any, Any]] = []
+
+    def _sum_atom(self, expr: Any) -> Any:
+        """The atom a sum is, the same one for every sum that is the same up to its binders."""
+        from lanky.matching import same
+
+        for term, atom in self.atoms:
+            if same(term, expr):
+                return atom
+        atom = self.sympy.Function(f"_sum{len(self.atoms)}")()
+        self.atoms.append((expr, atom))
+        return atom
 
     def symbol(self, name: str, sort: Any = None) -> Any:
         """The sympy symbol of a variable of the case, made the first time it is asked for."""
@@ -383,6 +404,8 @@ class _Algebra:
             return function(self.convert(expr.argument, scope))
         if isinstance(expr, Abs):
             return sympy.Abs(self.convert(expr.operand, scope))
+        if self.sums and isinstance(expr, Sum):
+            return self._sum_atom(expr)
         raise _Unsupported(f"a {type(expr).__name__}")
 
     def side(self, equation: Any, scope: Mapping[str, Any]) -> Any:
@@ -417,7 +440,16 @@ class _Algebra:
         """
         from lanky.cas import from_sympy
 
-        return _numbers_last(from_sympy(expr, {name: Var(name) for name in self.case.variables}))
+        variables: dict[str, Any] = {name: Var(name) for name in self.case.variables}
+        if self.atoms:
+            # a sum's atom is put back as the sum it stands for
+            marks = {}
+            for index, (term, atom) in enumerate(self.atoms):
+                name = f"_sum{index}"
+                marks[atom] = self.sympy.Symbol(name)
+                variables[name] = term
+            expr = expr.xreplace(marks)
+        return _numbers_last(from_sympy(expr, variables))
 
 
 def _numbers_last(term: Any) -> Any:

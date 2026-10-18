@@ -240,11 +240,19 @@ _ELEMENTARY_LEMMAS = (
 def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[str, ...]:
     """The whole-goal attempts of Mathlib mode, with ``lemmas`` for the elementary functions.
 
+    ``field_simp`` clears the denominators it knows are not zero, from the
+    hypotheses, and closes what is left only where that is trivial; followed
+    by ``ring``, it closes an identity of rational functions, which is what
+    is left of most (#173): sympy's Laplacian of ``log r``, ``(1 - 2*x**2 /
+    (x**2 + y**2)) / (x**2 + y**2) + ...`` under ``x**2 + y**2 > 0``, is one.
+    It comes after the attempts that close a claim without it, so that a
+    claim one of them proves is proved as it was.
+
     ``refuting`` is for a goal that is ``False`` under binders, the question
-    whether a fact is vacuous: ``positivity``, ``ring``, ``field_simp`` and
-    ``ring`` after ``push_cast`` close an order, an equation or what
-    ``field_simp`` simplifies to one, and none of them can show ``False``
-    from the hypotheses, so they are left out (#83).
+    whether a fact is vacuous: ``positivity``, ``ring``, ``field_simp``,
+    ``field_simp`` with ``ring``, and ``ring`` after ``push_cast`` close an
+    order, an equation or what ``field_simp`` simplifies to one, and none of
+    them can show ``False`` from the hypotheses, so they are left out (#83).
     """
     tactics = (
         "norm_num",
@@ -254,6 +262,7 @@ def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[s
         "linarith",
         "nlinarith",
         "(push_cast; ring)",
+        "(field_simp; ring)",
         f"simp [{', '.join(lemmas)}]",
         f"simp_all [{', '.join(lemmas)}] <;> linarith",
     )
@@ -264,7 +273,9 @@ def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[s
 
 #: The whole-goal attempts of Mathlib mode that cannot close ``False`` (see
 #: :func:`_mathlib_tactics`).
-_CANNOT_REFUTE = frozenset({"positivity", "ring", "field_simp", "(push_cast; ring)"})
+_CANNOT_REFUTE = frozenset(
+    {"positivity", "ring", "field_simp", "(field_simp; ring)", "(push_cast; ring)"}
+)
 
 
 #: The whole-goal attempts Mathlib mode adds after :data:`BASE_TACTICS`. An

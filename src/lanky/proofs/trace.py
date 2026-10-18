@@ -63,6 +63,7 @@ from lanky.terms import (
     asking_proof_questions,
     code_reads,
     conjuncts,
+    lift,
     render,
 )
 
@@ -236,8 +237,44 @@ class ClaimDef:
 
 
 def shown(value: Any) -> str:
-    """A value as lanky writes it in a citation or a report."""
+    """A value as lanky writes it in a citation or a report.
+
+    A family's value is the ``lambda`` a proof writes for it, ``lambda i:
+    i**3``, so that a point lanky found reads as the citation that would
+    give it.
+    """
+    from lanky.matching import FamilyValue
+
+    if isinstance(value, FamilyValue):
+        return value.shown()
     return render(value) if hasattr(value, "mapper_method") else repr(value)
+
+
+def family_value(value: Any) -> Any:
+    """A function written at a family's place in a citation, as the family's value it gives.
+
+    ``one_more_term(lambda i: i**3, n)`` cites the fact with its family
+    ``f`` at ``i ↦ i**3``: the function is called once, at a variable per
+    parameter named as it names them, and what it returns is the body of
+    the value (:class:`lanky.matching.FamilyValue`). Anything else is
+    returned as it is.
+    """
+    from lanky.matching import FamilyValue
+
+    if not isinstance(value, pytypes.FunctionType):
+        return value
+    try:
+        signature = inspect.signature(value)
+    except (TypeError, ValueError):
+        return value
+    parameters = list(signature.parameters.values())
+    if not parameters or any(
+        parameter.kind not in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+        for parameter in parameters
+    ):
+        return value
+    variables = tuple(Var(parameter.name) for parameter in parameters)
+    return FamilyValue(variables, lift(value(*variables)))
 
 
 @dataclass(frozen=True, eq=False)
@@ -739,7 +776,7 @@ class _Tracer:
                 line,
                 fix=f"{called}({', '.join(names)})" if names else None,
             )
-        citation = Citation(source, tuple(values), line)
+        citation = Citation(source, tuple(family_value(value) for value in values), line)
         if self.path is not None:
             self.path.events.append(("cite", citation.text()))
         return citation
