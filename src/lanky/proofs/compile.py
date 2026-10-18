@@ -1841,23 +1841,26 @@ class _Compiler:
         try:
             return tuple(single_point(lemma, terms, self.types, context.facts, name))
         except NoSinglePoint as exc:
-            if not exc.several:
-                raise ProofError(
-                    "no-point",
-                    f"{name}: no point of {name} fits a term of {what}, {render(claim)}; write "
-                    f"its point, as {name}({', '.join(unknowns)}) with the values meant",
-                    citation.line,
-                    fix=f"{name}({', '.join(unknowns)})",
-                ) from None
-            example = ", ".join(_shown(value) for value in exc.candidates[0])
-            fix = f"{name}({example})"
+            failed: NoSinglePoint = exc
+        except Exception:  # noqa: BLE001 - a fact the matcher cannot read fits no point it finds
+            failed = NoSinglePoint("", ())
+        if not failed.several:
             raise ProofError(
                 "no-point",
-                f"{name}: no single point of {name} fits {what}, {render(claim)}, since "
-                f"{len(exc.candidates)} do; write it, as {fix}",
+                f"{name}: no point of {name} fits a term of {what}, {render(claim)}; write "
+                f"its point, as {name}({', '.join(unknowns)}) with the values meant",
                 citation.line,
-                fix=fix,
-            ) from None
+                fix=f"{name}({', '.join(unknowns)})",
+            )
+        example = ", ".join(_shown(value) for value in failed.candidates[0])
+        fix = f"{name}({example})"
+        raise ProofError(
+            "no-point",
+            f"{name}: no single point of {name} fits {what}, {render(claim)}, since "
+            f"{len(failed.candidates)} do; write it, as {fix}",
+            citation.line,
+            fix=fix,
+        )
 
     def _claim_call(
         self, citation: Citation, context: _Context
