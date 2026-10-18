@@ -42,7 +42,6 @@ since only a proof has the inputs it is the domain at.
 
 from __future__ import annotations
 
-import inspect
 import sys
 from typing import Any
 

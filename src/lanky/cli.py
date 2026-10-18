@@ -30,8 +30,8 @@ the refuted one, and a fact resting on an assumption is no more a failure than
 the assumption.
 
 Six more things are printed under the table and do not change the exit code.
-Each axiom is named in a ``CITED`` line with the citation it is taken on,
-which is the one thing that stands behind an ``assumed (axiom)`` row. A fact
+Each cited claim is named in a ``CITED`` line with the source it is taken on,
+which is the one thing that stands behind an ``assumed (cited)`` row. A fact
 left ``assumed`` that an oracle looked at and declined, saying why, gets a
 ``DECLINED`` line with that reason, the standard provenance key ``declined``
 (see :func:`decline_lines`): an ``assumed`` row is otherwise read as "no oracle
@@ -542,12 +542,12 @@ class CheckVerb:
     def _report_citations(ledger: Ledger) -> None:
         """Name each axiom under the table, with the citation it is taken on.
 
-        An axiom is ``assumed`` on its author's word that a reference says
-        what it says, so the citation is what a reader of its row needs, and
-        it used to be in the JSON alone. The lines come right under the table,
-        one per axiom in the table's order, because they explain rows of it:
-        the ``assumed (axiom)`` ones, and every ``under`` that names one. A
-        refuted axiom keeps its line, since the reference is where to look
+        A cited claim is ``assumed`` on its author's word that a reference
+        says what it says, so the citation is what a reader of its row needs,
+        and it used to be in the JSON alone. The lines come right under the
+        table, one per cited claim in the table's order, because they explain
+        rows of it: the ``assumed (cited)`` ones, and every ``under`` that
+        names one. A refuted cited claim keeps its line, since the reference is where to look
         for what was copied down wrong. A citation of several lines is
         indented under its first.
         """

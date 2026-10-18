@@ -918,9 +918,12 @@ def test_the_tree_outside_a_proof_says_what_it_is(cases) -> None:
         iter(cases.sum_to.conclusion.domain)
     assert repr(cases.sum_to.conclusion) == "<sum_to.conclusion: all(S[n] == n for n in Nat)>"
     assert repr(cases.sum_to.conclusion.domain) == "<sum_to.conclusion.domain: n in Nat>"
-    assert repr(cases.sum_to.conditions) == "<sum_to.conditions: base, step>"
-    assert repr(cases.sum_to.conditions.base) == "<sum_to.conditions.base: S[0] == 0>"
-    with pytest.raises(AttributeError, match="S is an input of sum_to, not a condition"):
+    assert repr(cases.sum_to.conditions) == (
+        "<sum_to.conditions(S: Fn[Nat, Int], base: S[0] == 0, "
+        "step: all(S[k + 1] == S[k] + 1 for k in Nat))>"
+    )
+    assert render(cases.sum_to.conditions.base) == "S[0] == 0"
+    with pytest.raises(AttributeError, match="S is a variable of sum_to, not one of its"):
         cases.sum_to.conditions.S  # noqa: B018 - the refusal is what is tested
     with pytest.raises(FormError, match="a claim has no domain of its own"):
         cases.sum_to.domain  # noqa: B018 - the refusal is what is tested
@@ -1018,7 +1021,7 @@ def test_no_single_point_asks_for_the_point(refused) -> None:
 
 
 def test_a_fact_by_name_is_matched_against_the_terms_of_the_steps_other_facts(cases) -> None:
-    """``by(recurrence, claim[i, a - 2, b + 2], pde)``: each fits at ``(i, a - 2, b)``.
+    """``by(recurrence, every_box.conclusion[i, a - 2, b + 2], pde)``: each at ``(i, a - 2, b)``.
 
     Against the claim's cells alone, ``pde`` touches ``D[i, a, b]`` at two
     points; with the cells of the claim at the earlier point, one of them
