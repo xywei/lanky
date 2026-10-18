@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import ast
 import builtins
-import collections
 import types as pytypes
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack
@@ -228,10 +227,9 @@ class _Run:
             self.point.checked = True
         binders, guard = self.levels[level]
         names = [var.name for var, _ in binders]
-        points: Any = _points(list(binders), guard, {**self.context, **outer}, self.bound)
-        if reverse:
-            # the top of the domain first: its last points, not its first ones reversed
-            points = list(collections.deque(points, maxlen=POINT_LIMIT))[::-1]
+        # reversed, the top of the domain first: each level walked from its top
+        # down, so a large bounded domain is never walked in full to reach it
+        points = _points(list(binders), guard, {**self.context, **outer}, self.bound, reverse)
         for count, values in enumerate(points):
             if count >= POINT_LIMIT:
                 break
@@ -294,9 +292,18 @@ class _Run:
 
 
 def _points(
-    binders: list[tuple[Any, Any]], guard: Any, context: Mapping[str, Any], bound: int
+    binders: list[tuple[Any, Any]],
+    guard: Any,
+    context: Mapping[str, Any],
+    bound: int,
+    reverse: bool = False,
 ) -> Iterator[tuple[Any, ...]]:
-    """The points of the conclusion's domain, in the loop's order, its guard holding at each."""
+    """The points of the conclusion's domain, in the loop's order, its guard holding at each.
+
+    Reversed, each binder's values are walked from the top down, which is the
+    loop's order reversed: the points of a lexicographic order, reversed, are
+    every level's values reversed.
+    """
     from lanky.terms import evaluate
 
     def walk(index: int, scope: dict[str, Any]) -> Iterator[tuple[Any, ...]]:
@@ -310,14 +317,19 @@ def _points(
             yield tuple(scope[var.name] for var, _ in binders)
             return
         var, domain = binders[index]
-        for value in _domain_values(domain, var, scope, bound):
+        for value in _domain_values(domain, var, scope, bound, reverse):
             yield from walk(index + 1, {**scope, var.name: value})
 
     yield from walk(0, dict(context))
 
 
-def _domain_values(domain: Any, var: Any, scope: Mapping[str, Any], bound: int) -> Iterator[Any]:
-    """The first values of a binder's domain: a ``Fin``'s points, the naturals to the bound."""
+def _domain_values(
+    domain: Any, var: Any, scope: Mapping[str, Any], bound: int, reverse: bool = False
+) -> Iterator[Any]:
+    """The first values of a binder's domain: a ``Fin``'s points, the naturals to the bound.
+
+    Reversed, its last values first, from the top down.
+    """
     from lanky.prelude import FinType, Refined, Sort
     from lanky.terms import evaluate
 
@@ -336,6 +348,8 @@ def _domain_values(domain: Any, var: Any, scope: Mapping[str, Any], bound: int) 
         values = sorted(range(-bound, bound + 1), key=lambda value: (abs(value), value < 0))
     else:
         raise TypeError(f"the native run does not walk {domain}")
+    if reverse:
+        values = reversed(values)
     for value in values:
         exact_value = ExactInt(value)
         if props:

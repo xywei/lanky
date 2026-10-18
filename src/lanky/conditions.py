@@ -44,9 +44,10 @@ statement binds off its bytecode, refuses a count or a name other than the
 signature's, and sets a context variable that :class:`lanky.theory.Claim`
 reads when it is decorated (:func:`in_force`); :meth:`Assuming.__exit__`
 clears it. The names are bound to what lanky reads them as, a variable's
-:class:`~lanky.terms.Var` and a named condition's proposition, and each value
-is remembered (:func:`bound_by`), so that a claim defined after the block
-that still uses one is refused, with the block to put it in.
+:class:`~lanky.terms.Var` and a named condition's proposition, and each
+module-level binding is remembered (:func:`bound_by`), so that a claim
+defined after the block that still uses one is refused, with the block to put
+it in.
 
 A condition is a fact of the ledger too (:meth:`Condition.fact`): its row is
 the check that its conditions can hold at all, by draws, and is never
@@ -83,6 +84,8 @@ __all__ = [
     "in_force",
     "suggested_conditions",
     "under_label",
+    "with_clause",
+    "with_line",
 ]
 
 
@@ -132,9 +135,13 @@ class Under:
 #: What is in force where a claim is decorated, outermost first.
 _IN_FORCE: ContextVar[tuple[Under, ...]] = ContextVar("lanky_conditions", default=())
 
-#: Every value a ``with`` statement has bound, by its id: the value (kept
-#: alive, so that the id stays its own), what it assumed and its name.
-_BOUND: dict[int, tuple[Any, Any, str]] = {}
+#: Every name a ``with`` statement has bound at a module's top level, by the
+#: module's namespace and the name: the namespace and the value (both kept,
+#: so that their ids stay their own) and what it assumed. The binding, not the
+#: value: a named condition can be a shared object (``True``, a proposition
+#: another name holds too), and another name holding it is no name the block
+#: bound.
+_BOUND: dict[tuple[int, str], tuple[dict, Any, Any]] = {}
 
 
 def in_force() -> tuple[Under, ...]:
@@ -147,17 +154,33 @@ def anything_bound() -> bool:
     return bool(_BOUND)
 
 
-def bound_by(value: Any) -> tuple[Any, str] | None:
-    """What a ``with`` statement assumed when it bound ``value``, and the name; or ``None``.
+def bound_by(namespace: Mapping[str, Any], name: str) -> tuple[Any, str] | None:
+    """What a ``with`` statement assumed when it bound ``name`` in ``namespace``; or ``None``.
 
     Asked of a module-level name a claim reads: after its block, ``alpha``
     still holds what ``with away_from_zero as (alpha, beta, nonzero)`` bound
-    it to, and a claim that uses it outside the block is refused.
+    it to, and a claim that uses it outside the block is refused. A name the
+    module has bound to something else since is its own again.
     """
-    entry = _BOUND.get(id(value))
-    if entry is None or entry[0] is not value:
+    entry = _BOUND.get((id(namespace), name))
+    if entry is None or entry[0] is not namespace:
         return None
-    return entry[1], entry[2]
+    if name not in namespace or namespace[name] is not entry[1]:
+        return None
+    return entry[2], name
+
+
+def with_clause(assumed: Any) -> str:
+    """``cfl as (nu, stable)``: what follows ``with``; the name alone where nothing is bound."""
+    names = tuple(assumed.names)
+    if not names:
+        return assumed.__name__
+    return f"{assumed.__name__} as ({', '.join(names)})"
+
+
+def with_line(assumed: Any) -> str:
+    """``with cfl as (nu, stable):``, the line that assumes ``assumed``."""
+    return f"with {with_clause(assumed)}:"
 
 
 def under_label(under: Sequence[Under]) -> str:
@@ -253,9 +276,14 @@ class Assuming:
                 a variable both declare with one sort.
         """
         names = self.names
-        line = f"with {self.__name__} as ({', '.join(names)}):"
-        targets = _targets(sys._getframe(1))
-        if targets is not None and targets != list(names):
+        line = with_line(self)
+        frame = sys._getframe(1)
+        targets = _targets(frame)
+        # ``as (n)`` is ``as n``, one store: the one name, given bare. With no
+        # names, ``with item:`` binds nothing, as it should.
+        bare = len(names) == 1 and targets == names[0]
+        nothing = not names and targets == ""
+        if targets is not None and not bare and not nothing and targets != list(names):
             raise TypeError(self._wrong_targets(targets, line))
         outer = in_force()
         if any(entry.condition is self for entry in outer):
@@ -286,9 +314,14 @@ class Assuming:
                     f"as {other.signature} names it; give one of the two another name"
                 )
             value = Var(name) if name in sorts else props[name]
-            _BOUND[id(value)] = (value, self, name)
             values.append((name, value))
+        if frame.f_locals is frame.f_globals:
+            # a module's top level, where a claim after the block could read them
+            for name, value in values:
+                _BOUND[(id(frame.f_globals), name)] = (frame.f_globals, value, self)
         self._token_stack().append(_IN_FORCE.set((*outer, Under(self, tuple(values)))))
+        if bare:
+            return values[0][1]
         return tuple(value for _, value in values)
 
     def __exit__(self, *exc: object) -> bool:
@@ -302,10 +335,7 @@ class Assuming:
         """Why a claim's conditions, or a whole claim, are refused outside its own conditions."""
         owner = getattr(self, "claim", self)
         held = ", ".join(needed.__name__ for needed in missing)
-        lines = [
-            f"{needed.__name__} as ({', '.join(needed.names)})"
-            for needed in (*missing, self)
-        ]
+        lines = [with_clause(needed) for needed in (*missing, self)]
         return (
             f"{line} assumes {owner.__name__}, which holds under {held}, and {held} is "
             f"not in force here; write with {', '.join(lines)}:"
@@ -316,6 +346,8 @@ class Assuming:
         names = self.names
         count = len(names)
         what = f"{count} {self.what}"
+        if isinstance(targets, str) and targets and count == 1:
+            targets = [targets]  # one name for one: a name other than the signature's
         if isinstance(targets, str):
             written = (
                 f"with {self.__name__}:" if targets == "" else f"with {self.__name__} as {targets}:"
@@ -593,7 +625,7 @@ class Condition(Assuming):
 
 def _attribute_refusal(assumed: Any, name: str) -> str:
     """Why ``cfl.nu`` names nothing, and where ``nu`` comes from instead."""
-    line = f"with {assumed.__name__} as ({', '.join(assumed.names)}):"
+    line = with_line(assumed)
     return (
         f"{assumed.__name__}.{name} names nothing: {name} is bound by {line}, and a claim "
         f"outside the block ranges over {name} in its own for, or takes it as a parameter"
@@ -917,8 +949,7 @@ def suggested_conditions(
                 ):
                     lines.append(
                         f"The condition {found.__name__} in this file excludes every failing "
-                        f"draw: put the claim under with {found.__name__} as "
-                        f"({', '.join(found.names)})."
+                        f"draw: put the claim under with {with_clause(found)}."
                     )
     except Exception:  # noqa: BLE001 - a suggestion that cannot be made is not made
         return []

@@ -55,6 +55,8 @@ from lanky.conditions import (
     Conditions,
     _call_arguments,
     _holds_term,
+    with_clause,
+    with_line,
 )
 from lanky.ledger import Fact, Status, fact_id
 from lanky.plugins import registry
@@ -1142,7 +1144,7 @@ def _refuse_a_bound_parameter(fn: Any, under: Any) -> None:
                 condition = entry.condition
                 raise TypeError(
                     f"{_where(fn)}: {name} is {condition.__name__}'s, which with "
-                    f"{condition.__name__} as ({', '.join(entry.names)}) assumes for every "
+                    f"{with_clause(condition)} assumes for every "
                     f"claim in the block; drop the parameter {name}, or define "
                     f"{fn.__name__} outside the block"
                 )
@@ -1180,13 +1182,13 @@ def _refuse_a_name_bound_elsewhere(fn: Any, bound: Mapping[str, Any]) -> None:
     for name in dict.fromkeys(reads):
         if name in parameters or name in bound or name not in namespace:
             continue
-        found = bound_by(namespace[name])
+        found = bound_by(namespace, name)
         if found is None:
             continue
         condition, _ = found
         raise TypeError(
-            f"{_where(fn)}: {name} belongs to {condition.__name__}; use it inside with "
-            f"{condition.__name__} as ({', '.join(condition.names)}):"
+            f"{_where(fn)}: {name} belongs to {condition.__name__}; use it inside "
+            f"{with_line(condition)}"
         )
 
 

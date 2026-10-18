@@ -1331,6 +1331,13 @@ def from_the_top(
 
 
 @claim
+def near_the_top(n: Nat) -> all(k <= n for k in Fin[n + 1]):
+    for k in reversed(near_the_top.conclusion.domain):
+        assert k + 200 > n
+        yield by()
+
+
+@claim
 def table(n: Nat, f: Fn[Fin[n], Fin[n], Int]) -> all(
     all(f[i, j] + i * j <= f[i, j] + i for j in Fin[n]) for i in Fin[n]
 ):
@@ -1392,6 +1399,15 @@ def test_the_native_run_walks_reversed_and_nested_domains(native) -> None:
     assert said.startswith("At i = 1, j = 2, n = ") and said.endswith(
         ": the conclusion there, f[i, j] + i*j <= f[i, j] + i, is false."
     )
+
+
+def test_a_reversed_loop_over_a_large_domain_starts_at_its_top(native) -> None:
+    """Its first points from the top down, without walking the domain to find the top (Codex)."""
+    import time
+
+    start = time.monotonic()
+    native.near_the_top.run_proof(n=10**9)
+    assert time.monotonic() - start < 30
 
 
 def test_the_native_run_divides_exactly(native) -> None:

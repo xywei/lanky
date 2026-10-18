@@ -24,7 +24,9 @@ A point of a hypothesis that reads a cell past the filled extent is left
 out. The run walks the first :data:`lanky.testing.MAX_NAT` points of a
 domain, well inside the extent, so the points it reaches rest on points
 that are inside too. A filling that contradicts a hypothesis at a point,
-or puts a value outside the family's sort, is dropped; and a family the
+leaves a point of one with no answer in Python (Lean's reading may give it
+one: a division by zero is zero there), or puts a value outside the
+family's sort, is dropped; and a family the
 hypotheses do not reach this way (a quantifier over the reals, a hypothesis
 whose guard reads the family) is not filled at all, so the run tests
 nothing there, as before, rather than report a step false at values its
@@ -264,7 +266,9 @@ def _instances(prop: Any, scope: dict[str, Any]) -> Iterator[tuple[Any, dict[str
 
 
 #: A point of a hypothesis that has no answer at the values filled (a
-#: division by zero, a value Python cannot compute): it is left out.
+#: division by zero, a value Python cannot compute). The filling is dropped:
+#: Lean's reading may answer it (``f[0] % 0 == 0`` forces ``f[0] == 0``
+#: there), and a draw that breaks that answer could report a valid step false.
 _NO_ANSWER = object()
 
 
@@ -351,7 +355,7 @@ class _Filling:
             return True
         if not found:
             self.done[k] = True
-            return truth is True or truth is _NO_ANSWER
+            return truth is True
         if len(found) == 1:
             solved = self._solve(k, found[0])
             if solved is not None:

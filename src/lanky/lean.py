@@ -1169,9 +1169,11 @@ def _render_extremum(expr: Extremum, outer: int, types: _Types) -> str:
         )
     first, *rest = expr.arguments
     text = _render(first, _ATOM, types)
-    for argument in rest:
+    for index, argument in enumerate(rest):
         text = f"{expr.function} {text} {_render(argument, _ATOM, types)}"
-        if argument is not rest[-1]:
+        # by position: in max(x, y, y) both y are one term, and an identity
+        # test would take the first for the last and leave max max x y y
+        if index < len(rest) - 1:
             text = f"({text})"
     return _parens(text, _APP, outer)
 

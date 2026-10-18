@@ -238,6 +238,9 @@ def test_max_and_min_of_terms_are_one_node_every_reading_reads() -> None:
     with pytest.raises(TypeError, match=r"applies Python's max to a symbolic value"):
         max_([x, y])
     assert render_term(max_(x, y, 0), {"x": Int, "y": Int}) == "max (max x y) 0"
+    # the last argument by position: both y are one term (Codex, #187)
+    assert render_term(max_(x, y, y), {"x": Int, "y": Int}) == "max (max x y) y"
+    assert render_term(min_(y, x, y, y), {"x": Int, "y": Int}) == "min (min (min y x) y) y"
     with pytest.raises(UnsupportedTerm, match="complex numbers, which have no order"):
         render_term(max_(x, y), {"x": Complex, "y": Complex}, mathlib=True)
 

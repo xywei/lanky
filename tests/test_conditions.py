@@ -545,6 +545,107 @@ def test_a_bound_name_used_after_the_block_is_refused(tmp_path) -> None:
     assert "beta belongs to segment" in in_body
 
 
+def test_a_name_holding_what_a_block_bound_is_not_the_blocks_unless_it_bound_it(tmp_path) -> None:
+    """The binding is remembered, not the value: ``True`` is anyone's (Codex, #187)."""
+    module = _module(
+        tmp_path,
+        HEAD
+        + textwrap.dedent(
+            '''
+
+            FLAG = True
+
+
+            @condition
+            def plain(x: Int, always: True):
+                """A condition whose named condition is Python's True."""
+
+
+            with plain as (x, always):
+
+                @claim
+                def inside(y: Int) -> x + y == y + x:
+                    """Inside."""
+
+
+            @claim
+            def outside(y: Int, h: FLAG) -> y + 0 == y:
+                """Outside, reading another name that holds True."""
+
+
+            x = 3
+
+
+            @claim
+            def rebound(y: Int) -> y + x == x + y:
+                """Outside, reading x after the module bound it again."""
+            '''
+        ),
+        "bindings",
+    )
+    assert module.outside(2) is True and module.rebound(2) is True
+
+
+def test_a_with_statement_binds_one_name_bare_and_none_without_as(tmp_path) -> None:
+    """``as (x)`` is ``as x``, and a claim with no inputs is assumed by ``with name:`` (Codex)."""
+    module = _module(
+        tmp_path,
+        HEAD
+        + textwrap.dedent(
+            '''
+
+            @claim
+            def one(x: Int) -> x + 0 == x:
+                """One input."""
+
+
+            @claim
+            def none() -> 1 + 1 == 2:
+                """No inputs."""
+
+
+            with one as (x):
+
+                @claim
+                def under_one(y: Int) -> x + y == y + x:
+                    """x is one's."""
+
+
+            with one as (x,):
+
+                @claim
+                def under_one_again(y: Int) -> x * y == y * x:
+                    """x is one's, bound from a one-tuple."""
+
+
+            with none:
+
+                @claim
+                def under_none(y: Int) -> y + 1 + 1 == y + 2:
+                    """Under none, which binds nothing."""
+            '''
+        ),
+        "arities",
+    )
+    assert isinstance(module.x, Var) and module.x.name == "x"
+    assert [entry.condition.__name__ for entry in module.under_one.under] == ["one"]
+    assert [entry.condition.__name__ for entry in module.under_none.under] == ["none"]
+    renamed = _refused(
+        tmp_path,
+        HEAD + '\n\n@claim\ndef one(x: Int) -> x + 0 == x:\n    """One."""\n\n\n'
+        "with one as (y):\n    pass\n",
+    )
+    assert renamed.startswith("with one as (y): names them otherwise than one(x: Int) does")
+    assert renamed.endswith("write with one as (x):")
+    (tmp_path / "none").mkdir()  # a file of its own, not the import above
+    named = _refused(
+        tmp_path / "none",
+        HEAD + '\n\n@claim\ndef none() -> 1 + 1 == 2:\n    """None."""\n\n\n'
+        "with none as (y, z):\n    pass\n",
+    )
+    assert named.endswith("write with none:")
+
+
 def test_a_condition_in_force_twice_or_a_name_two_conditions_bind_is_refused(tmp_path) -> None:
     head = HEAD + textwrap.dedent(
         '''
@@ -746,6 +847,8 @@ def test_lean_proves_claims_under_a_claim_and_under_its_conditions(tmp_path) -> 
 def test_mathlib_proves_line_taylor_and_reciprocal_taylor_under_segment(
     mathlib_project, monkeypatch, tmp_path
 ) -> None:
+    if os.environ.get("LANKY_LEAN_DISABLE"):
+        pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
     if mathlib_project is None:
         if os.environ.get("LANKY_LEAN_MATHLIB_TEST_REQUIRED"):
             pytest.fail("LANKY_LEAN_MATHLIB_TEST_REQUIRED is set, but no project is named")

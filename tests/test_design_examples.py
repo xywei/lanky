@@ -628,7 +628,7 @@ def _lean_or_skip() -> None:
 
 
 def test_a_family_its_hypotheses_do_not_reach_is_not_filled(tmp_path) -> None:
-    """A quantifier over the reals, or hypotheses that contradict: the run tests nothing."""
+    """Over the reals, contradicting, or with no answer in Python: the run tests nothing."""
     from lanky.proofs.filled import filled_draws
     from lanky.proofs.native import native_failure
 
@@ -651,9 +651,17 @@ def contradicts(f: Fn[Nat, Real], one: f[0] == 1, two: f[0] == 2) -> all(f[n] ==
     for n in contradicts.conclusion.domain:
         assert f[n] == 7, by(one, two)
         yield by(one, two)
+
+
+@claim
+def no_answer(f: Fn[Nat, Int], h: f[0] % 0 == 0) -> f[0] == 0:
+    assert f[0] == 0, by(h)
+    return by()
 ''',
     )
-    for stated in (module.over_the_reals, module.contradicts):
+    # no_answer: Python has no value for f[0] % 0, and Lean's reading (n % 0 is n)
+    # forces f[0] == 0, so a filling that drew f[0] could call the step false (Codex)
+    for stated in (module.over_the_reals, module.contradicts, module.no_answer):
         assert filled_draws(stated) == []
         assert native_failure(stated) is None
 
@@ -734,6 +742,8 @@ def test_the_cfl_condition_and_the_green_claim_at_numbers(tmp_path) -> None:
 
 
 def test_mathlib_proves_the_design_examples(mathlib_project, monkeypatch, tmp_path) -> None:
+    if os.environ.get("LANKY_LEAN_DISABLE"):
+        pytest.skip("the Lean oracle is disabled by LANKY_LEAN_DISABLE")
     if mathlib_project is None:
         if os.environ.get("LANKY_LEAN_MATHLIB_TEST_REQUIRED"):
             pytest.fail("LANKY_LEAN_MATHLIB_TEST_REQUIRED is set, but no project is named")
