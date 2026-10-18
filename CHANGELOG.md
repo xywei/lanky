@@ -259,6 +259,39 @@ All notable changes to lanky are recorded here. The format follows
   Lean is asked and before the proof cache is read, and a proof that
   restates another text is refused, naming the theorem.
 
+- **A step of a written proof that does not follow says what it also needs.**
+  Where no fact the step cites works at another point, the report tries
+  each fact the proof could cite and did not (the theorem's hypotheses, the
+  claim at a smaller point, the theorems the proof cites elsewhere) at the
+  points the step's terms give, and names the first with which the
+  multiplier search finds the step, with the step as it would be written,
+  confirmed by Lean where Lean is (`lanky.proofs.report.also_needs`):
+
+  ```text
+    It also needs pde(a - 2, b), which says D[a, b] + D[a - 2, b + 2] == 0.
+    Fix: return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b) (checked).
+  ```
+
+  Where nothing the proof has gets there, the report names the facts of
+  `lanky.known` whose shape the step has, as a claim with no proof gets
+  them, and says to cite one or to split the step in two; a case left to
+  lanky, a bare `return`, gets them too:
+
+  ```text
+    No fact the proof cites gets there. What lanky knows of its shape:
+      log_of_a_power rewrites log(x**n); here log(abs(alpha)**2), at x = abs(alpha), n = 2
+    Fix: cite one of them, after from lanky.known import log_of_a_power, modulus_squared; or split the step in two.
+  ```
+
+- **The multipliers a step is closed with are kept** (`lanky.proofs.hints`),
+  by the step's claim, its facts at their points and the sorts of its
+  names, in `hints` beside the proof cache (off with it,
+  `LANKY_LEAN_PROOF_CACHE=off`). A check of a proof that has not changed
+  runs no sympy and sends Lean the same text, which the proof cache then
+  answers. A hint is untrusted: Lean checks the combination, so a wrong or
+  stale one costs a failed step and never a wrong proof, and one the cache
+  cannot read is a miss.
+
 ### Changed
 
 - **One of each: one matcher, one step compiler, one citation.**
@@ -288,6 +321,20 @@ All notable changes to lanky are recorded here. The format follows
     `vacuity_question` takes the theorems cited.
   - What was left of `lanky.proofs.match`, the algebra of a proof's cases
     (`decide`, `pins`, `shape_of`), is `lanky.proofs.cases`.
+
+- **The outline names each case as the body reads.** `lanky check --steps`
+  lists a written proof's cases in the body's order, so a case says only
+  what the ones before it did not: `every_box`'s three cases read `if a + b
+  == 0:`, `if a < 2:` and `otherwise:`, where the second read `when a + b !=
+  0 and a < 2:`. A split under one that held says its condition the other
+  way round, `if a < 2 and b >= 2:`.
+
+- **A proof not checked for want of Lean says so in a clause.** The
+  `WITHOUT LEAN` and `WITHOUT MATHLIB` lines say what is missing and how to
+  get it, so the `NOT CHECKED` line under them is short: `NOT CHECKED
+  harmonic at sumpy_recurrence.py:151: without Lean, each step of its proof
+  was tested at drawn points instead (lines 161 and 162).` The long reason
+  stays in the provenance (`proof.reason`), and the clause is `proof.said`.
 
 - **A theorem's hypotheses have their Python names in Lean.** The printed
   theorem calls them what the file does, `(pde : ∀ a : Int, ...)`,
@@ -341,6 +388,12 @@ All notable changes to lanky are recorded here. The format follows
 
 ### Fixed
 
+- The script that takes a complex number apart (`part_scripts`) names the
+  facts it adds apart from the theorem's hypotheses, so a hypothesis named
+  `hz0` is not hidden by one. The other scripts already drew their names
+  (`ih`, `hk`, `hstep`, `case_1`, `pin_1`) fresh from the statement's,
+  which a test now holds for written proofs.
+
 - **A claim reads proved only on a positive axiom audit.** Every command
   ends with `#print axioms _root_.Lanky.<name>` of each theorem it declares,
   and Lean has to answer, once per theorem and about exactly that theorem,
@@ -352,10 +405,24 @@ All notable changes to lanky are recorded here. The format follows
   `native_decide`'s axiom (`lanky.audit`).
 
 - **`use_tactic` screens the script it is given.** A script is the proof
-  after `:= by`, and lanky writes every command around it, so a `#`
-  command, `set_option`, `native_decide`, `decide +native`, a `namespace`,
-  `end`, a declaration, a definition of syntax and a block comment left
-  open are refused where `use_tactic` is called, with what was found.
+  after `:= by`, and lanky writes every command around it, so a script with
+  a `#` command, `set_option`, `native_decide`, `decide +native`, a
+  `namespace`, `end`, a declaration, a definition of syntax or a block
+  comment left open is never sent to Lean. Importing the file still works,
+  with no traceback, as `python file.py` needs it to; the claim reads as
+  the other oracles leave it, and `lanky check` names the script under the
+  table with what was found and what to write instead, and fails, on a
+  machine without Lean too (`lanky.cli.report_refused`; the fix is
+  `lanky.audit.refusal`'s, the reason `screen`'s, and the provenance keeps
+  both as `tactic_refused`). The check forgets a refused script once it has
+  said so (`lanky.oracles.lean.refused_scripts`, `forget_scripts`), so a
+  script taken out of the file is not refused when the file is checked again
+  in the same process:
+
+  ```text
+  REFUSED scan_monotone at gauss.py:39: the script use_tactic gives it is not sent to Lean, since it has #exit, a Lean command.
+    Fix: take #exit out; lanky writes every command around the script, and lanky check --show-lean prints them.
+  ```
 
 - **A cited theorem is restated only from the text its own command proved.**
   A claim's command now proves one more theorem after its own,
@@ -368,7 +435,9 @@ All notable changes to lanky are recorded here. The format follows
   citation restated without a condition proves `1 = 0` with no error and no
   axiom beyond Lean's own (`lanky.citations`). A citation whose claim has
   no proved text, an axiom or a claim only tested, is restated by the
-  printer as before, and the fact says so (`lean_restated_by_printer`).
+  printer as before, and the fact says so (`lean_restated_by_printer`), in
+  words under its statement in the table: `trusts how lanky prints
+  line_taylor, which Lean did not prove in this check`.
 
 - **`python -m lanky.mathlib DIR` starts without a warning** (#162). The
   command the `WITHOUT MATHLIB` line and the README give printed a

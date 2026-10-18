@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pymbolic.primitives as prim
@@ -41,6 +41,7 @@ from lanky.terms import Forall, Var, init_args, render
 __all__ = [
     "CLOSED_WITH_HOLES",
     "Failure",
+    "also_needs",
     "audit",
     "case_text",
     "combination",
@@ -64,6 +65,10 @@ class Failure:
         headline: The report's first line, without the claim's name.
         lines: What follows, in lanky's notation.
         fix: What to write instead, when there is a fix to name.
+        repair: How the fix changes the proof, for Lean to confirm it
+            (:func:`lanky.proofs._checked_fix`): ``("point", index,
+            citation)`` puts the step's fact at ``index`` at another point,
+            ``("add", citation)`` cites one more fact. Not kept in the ledger.
     """
 
     kind: str
@@ -71,6 +76,7 @@ class Failure:
     headline: str
     lines: tuple[str, ...] = ()
     fix: str | None = None
+    repair: Any = field(default=None, compare=False, repr=False)
 
     def to_dict(self, path: str | None = None) -> dict[str, Any]:
         """The failure as the ledger keeps it, with the line's source when ``path`` is given."""
@@ -397,6 +403,134 @@ def _smaller(claim: ClaimDef, values: Sequence[Any], measure: Any) -> bool:
     )
 
 
+def also_needs(step: Any, proof: Proof, measure: Any = None) -> Citation | None:
+    """A fact the proof has that the step does not cite, with which the step follows.
+
+    The step's facts do not give its claim, and none of them cited at
+    another point does either (:func:`fix_for`). So each fact the proof can
+    cite is tried as one more: the theorem's hypotheses, in the order they
+    are written, the claim at points closer to a base case, and the theorems
+    the proof cites elsewhere. Each is put at every point at which one of
+    its terms is a term of the step's claim or of a fact the step cites, and
+    the first with which the multiplier search (:func:`combination`) finds
+    the claim is the answer, cited at that point (by its name alone for a
+    fact with no variables). ``None`` where none is found, and where the
+    step's own facts already give its claim as Python sees it, which leaves
+    Lean's failure to some other cause. Lean is asked to confirm it before
+    the report calls it checked.
+    """
+    from lanky.induction import Lemma
+    from lanky.matching import candidate_points
+
+    instances = list(step.instances)
+    bodies = [instance.body for instance in instances]
+    if not _equation(step.claim) or not all(_equation(body) for body in bodies):
+        # a combination is of equations, into an equation
+        return None
+    if combination(step.claim, bodies, step.types) is not None:
+        return None
+    terms = [*bodies, step.claim]
+    cited: dict[str, set[tuple[str, ...]]] = {}
+    for instance in instances:
+        key = tuple(_key(value) for value in instance.values)
+        cited.setdefault(instance.citation.name, set()).add(key)
+    for source in _candidates(proof):
+        shapes = _shapes(source, proof)
+        if not shapes:
+            continue
+        unknowns = [var.name for var, _ in shapes[0].binders]
+        if any([var.name for var, _ in shape.binders] != unknowns for shape in shapes):
+            # the parts of p & q at different points: one citation cannot give both
+            continue
+        name = Citation(source, None, None).name
+        tried = set(cited.get(name, ()))
+        if not all(_equation(shape.body) for shape in shapes):
+            continue
+        if not unknowns:
+            if () in tried:
+                continue
+            extra = [shape.body for shape in shapes]
+            if combination(step.claim, [*bodies, *extra], step.types) is not None:
+                return Citation(source, None, step.where)
+            continue
+        for shape in shapes:
+            # the points at which one of its terms is one of the step's, as the
+            # one matcher lines them up (:func:`lanky.matching.candidate_points`)
+            lemma = Lemma(name, shape.binders, shape.premises, shape.body)
+            try:
+                points = candidate_points(lemma, terms, step.types)
+            except Exception:  # noqa: BLE001 - a fact the matcher cannot line up adds nothing
+                continue
+            for values in points:
+                key = tuple(_key(value) for value in values)
+                if key in tried:
+                    continue
+                tried.add(key)
+                if isinstance(source, ClaimDef) and not _smaller(source, values, measure):
+                    continue
+                solution = dict(zip(unknowns, values, strict=True))
+                extra = [each.at(solution)[0] for each in shapes]
+                if combination(step.claim, [*bodies, *extra], step.types) is not None:
+                    return Citation(source, tuple(values), step.where)
+    return None
+
+
+def _equation(term: Any) -> bool:
+    """Whether a term is an equation, ``x == y``, which a linear combination combines."""
+    return isinstance(term, prim.Comparison) and term.operator == "=="
+
+
+def _candidates(proof: Proof) -> list[Any]:
+    """What a proof can cite: the theorem's hypotheses, the claim, and the theorems it cites."""
+    givens: dict[str, Given] = {}
+    for leaf in proof.leaves:
+        for citation in leaf.citations:
+            if isinstance(citation.source, Given):
+                givens.setdefault(citation.source.name, citation.source)
+    out: list[Any] = []
+    for name, prop in getattr(proof.theorem, "hypotheses", ()):
+        # a fact has no truth value to ask for, so not ``givens.get(name) or ...``
+        out.append(givens[name] if name in givens else Given(name, prop, None))  # type: ignore[arg-type]
+    if proof.claim is not None:
+        out.append(proof.claim)
+    out.extend(proof.cited)
+    return out
+
+
+def written_with(step: Any, citation: Citation) -> str:
+    """The step written to cite ``citation`` too: ``return f, g, h``, or ``by=(f, g)``."""
+    leaf: Leaf = step.leaf
+    if step.line is not None:
+        for chain in (*leaf.named, *((leaf.chain,) if leaf.chain is not None else ())):
+            for link in chain.links:
+                if link.line == step.line:
+                    texts = [*(fact.text() for fact in link.facts), citation.text()]
+                    return f"by={texts[0]}" if len(texts) == 1 else f"by=({', '.join(texts)})"
+    texts = [*(fact.text() for fact in leaf.facts or ()), citation.text()]
+    return f"return {', '.join(texts)}"
+
+
+def known_lines(
+    claim: Any, types: Mapping[str, Any], exclude: Sequence[str] = ()
+) -> tuple[list[str], list[str]]:
+    """What :mod:`lanky.known` has of a step's shape, as the report says it, and the names.
+
+    Each fact whose statement fits a term of ``claim`` (:func:`lanky.suggest.suggestions`),
+    a line each: ``log_of_a_power rewrites log(x**n); here log(abs(alpha)**2),
+    at x = abs(alpha), n = 2``; and the facts' names, each once, for the
+    import. A suggestion is help, and one that cannot be made is left out
+    without a word: two empty lists.
+    """
+    try:
+        from lanky.suggest import suggestions
+
+        fitting = suggestions(claim, dict(types), exclude=tuple(exclude))
+    except Exception:  # noqa: BLE001 - a suggestion is help, and its failure no one's
+        return [], []
+    names = list(dict.fromkeys(suggestion.name for suggestion in fitting))
+    return [suggestion.text for suggestion in fitting], names
+
+
 # }}}
 
 
@@ -512,12 +646,19 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
         claim = detail.get("claim")
         case = case_text(detail.get("conditions") or (), proof.path)
         lead = f"{case}, the" if case else "The"
+        lines = [f"{lead} case's claim is {render(claim)}, and lanky could not show it alone."]
+        fix = "cite the facts it needs, as return f, g"
+        known, names = known_lines(claim, _case_types(proof), exclude=(proof.theorem.__name__,))
+        if known:
+            lines.append("What lanky knows of its shape:")
+            lines += [f"  {line}" for line in known]
+            fix += f", after from lanky.known import {', '.join(names)}"
         return Failure(
             "routine",
             origin.line,
             "a case lanky was left to close does not follow",
-            (f"{lead} case's claim is {render(claim)}, and lanky could not show it alone.",),
-            "cite the facts it needs, as return f, g",
+            tuple(lines),
+            fix,
         )
     if origin.kind == "measure":
         claim = proof.claim
@@ -569,6 +710,18 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
     return Failure(
         "lean", origin.line, "Lean did not accept the proof", ("--show-lean shows what Lean said",)
     )
+
+
+def _case_types(proof: Proof) -> dict[str, Any]:
+    """The sort of every name a case of the proof has: the theorem's variables and the claim's."""
+    types = dict(getattr(proof.theorem, "variables", ()))
+    if proof.claim is not None:
+        types.update(zip(proof.claim.params, proof.claim.domains, strict=True))
+    else:
+        goal = getattr(proof.theorem, "goal", None)
+        if isinstance(goal, Forall):
+            types.update((var.name, domain) for var, domain in goal.binders)
+    return types
 
 
 def _condition(proof: Proof, origin: Any) -> Failure:
@@ -636,12 +789,51 @@ def _step(proof: Proof, command: Any, step: Any) -> Failure:
         lines.append("Left over:")
         lines.append(f"    {render(tidy(remainder))} == 0")
     fix = None
+    repair: Any = None
     found = fix_for(step, proof, command.measure)
     if found is not None:
-        _index, citation = found
+        index, citation = found
         fix = f"{citation.text()} makes the step follow"
+        repair = ("point", index, citation)
+    else:
+        extra = also_needs(step, proof, command.measure)
+        if extra is not None:
+            said = _instance_bodies(extra, proof)
+            says = f", which says {render(tidy(said[0]))}" if len(said) == 1 else ""
+            lines.append(f"It also needs {_label(extra, ())}{says}.")
+            fix = written_with(step, extra)
+            repair = ("add", extra)
+    if fix is None:
+        cited = [instance.citation.name for instance in step.instances]
+        known, names = known_lines(step.claim, step.types, exclude=(*cited, proof.theorem.__name__))
+        if known:
+            lines.append("No fact the proof cites gets there. What lanky knows of its shape:")
+            lines += [f"  {line}" for line in known]
+            one = "it" if len(names) == 1 else "one of them"
+            fix = (
+                f"cite {one}, after from lanky.known import {', '.join(names)}; "
+                "or split the step in two"
+            )
+        elif remainder is not None and not _is_zero(remainder):
+            fix = "cite the fact that gives what is left over, or split the step in two"
     del leaf
-    return Failure("step", step.where, "a step of its proof does not follow", tuple(lines), fix)
+    return Failure(
+        "step", step.where, "a step of its proof does not follow", tuple(lines), fix, repair
+    )
+
+
+def _instance_bodies(citation: Citation, proof: Proof) -> list[Any]:
+    """What a cited fact says at its point: one term per part."""
+    shapes = _shapes(citation.source, proof)
+    if citation.values is None:
+        return [shape.body for shape in shapes]
+    out = []
+    for shape in shapes:
+        values = {
+            var.name: value for (var, _), value in zip(shape.binders, citation.values, strict=False)
+        }
+        out.append(shape.at(values)[0])
+    return out
 
 
 # }}}

@@ -305,8 +305,15 @@ that. When the ladder runs out, the fact comes back unchanged with
 the ladder cannot find one, and the ledger records a pinned script exactly the
 way it records a found one. The script is the proof that follows `:= by`, and
 lanky writes every command around it, so a script with a `#` command such as
-`#exit`, `set_option`, `native_decide`, a `namespace` or a declaration is
-refused where `use_tactic` is called, with what was found.
+`#exit`, `set_option`, `native_decide`, a `namespace` or a declaration is never
+sent to Lean. Importing the file still works, as `python` needs it to;
+`lanky check` reads the claim as the other oracles leave it, names the script
+under the table with what was found and what to write instead, and fails:
+
+```text
+REFUSED scan_monotone at gauss.py:39: the script use_tactic gives it is not sent to Lean, since it has #exit, a Lean command.
+  Fix: take #exit out; lanky writes every command around the script, and lanky check --show-lean prints them.
+```
 
 The same source is one flag away without the JSON: `lanky check
 examples/gauss.py --show-lean` prints, after everything else, the Lean of every
@@ -881,7 +888,7 @@ WITHOUT MATHLIB: harmonic and compressed_taylor are not proved, since only Lean 
 
 CITED compressed_taylor at sumpy_recurrence.py:895: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 
-NOT CHECKED harmonic at sumpy_recurrence.py:151: its proof, sumpy_recurrence.py:158-163, was not checked: Lean is not available here (disabled by LANKY_LEAN_DISABLE); the proof of harmonic was tested step by step at drawn points (sumpy_recurrence.py:161, 162), not checked by Lean
+NOT CHECKED harmonic at sumpy_recurrence.py:151: without Lean, each step of its proof was tested at drawn points instead (lines 161 and 162).
 ```
 
 - **The harmonicity.** `harmonic` is a theorem: `G_xx + G_yy == 0` away from
@@ -1465,7 +1472,10 @@ written, where the theorem has one, a row per step at its Python line, with
 the case it is in and the facts it follows from at the points lanky found;
 and otherwise of the proof the search found, each case a chain of equations
 from the claim's left side to its right, with the fact, the point and the
-multiplier of every link:
+multiplier of every link. Each case is named as the body reads, in its
+order: after `if a + b == 0:`, the next case of `every_box` is `if a < 2:`,
+and the last `otherwise:`; a split under one that held says its condition
+the other way round, `if a < 2 and b >= 2:`.
 
 ```console
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --steps line_taylor
@@ -1591,7 +1601,27 @@ UNPROVED ct at cases.py:25: a step of its proof does not follow.
 
 Python computes what is left over, from the facts at their points; Lean only
 says that the step failed. The fix is the fact at another point, and
-`(checked)` means Lean accepted the proof with it. A condition that is not
+`(checked)` means Lean accepted the proof with it. Where no fact the step
+cites works at any point, the report looks for one the proof can cite and
+did not, a hypothesis, the claim at a smaller point or a theorem the proof
+cites elsewhere, and names it with the step as it would be written:
+
+```text
+  It also needs pde(a - 2, b), which says D[a, b] + D[a - 2, b + 2] == 0.
+  Fix: return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b) (checked).
+```
+
+And where nothing in the proof gets there, it names the facts of
+`lanky.known` whose shape the step has, the term each fits and its values
+there, as for a claim with no proof (see below):
+
+```text
+  No fact the proof cites gets there. What lanky knows of its shape:
+    log_of_a_power rewrites log(x**n); here log(abs(alpha)**2), at x = abs(alpha), n = 2
+    modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)), at z = alpha
+  Fix: cite one of them, after from lanky.known import log_of_a_power, modulus_squared; or split the step in two.
+```
+ A condition that is not
 met says `stored, at (a, b) needs a < 2, and this case has a >= 2.`; a call
 of the claim below zero, `claim(a - 2, b + 2) is at a negative a when a = 1:
 split off a < 2 first.`; a call not at smaller values, a theorem that calls
@@ -1601,7 +1631,11 @@ for a claim lanky proves alone, whose row still reads `proved`, by lanky's own
 proof, with `WARNING ct at cases.py:25: your proof fails at cases.py:36;
 lanky proved the claim without it`. Without Lean, or without Mathlib for a
 claim only Mathlib can state, the proof is not checked, a `NOT CHECKED` line
-says why, and nothing fails.
+says so in a clause (`without Lean, each step of its proof was tested at drawn
+points instead (lines 161 and 162)`), and nothing fails. The multipliers each
+step is closed with are kept, by the step, beside the proof cache, so a check
+of a proof that has not changed runs no sympy and sends Lean the same text;
+Lean checks them whatever they are.
 
 ### What lanky knows
 
