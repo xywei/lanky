@@ -152,6 +152,23 @@ def test_lanky_check_names_a_refused_script_under_the_table_and_fails(
     assert "Traceback" not in out
 
 
+def test_a_refused_script_lasts_only_the_check_of_the_file_that_gave_it(
+    tmp_path, monkeypatch
+) -> None:
+    """Codex on #179: a script taken out of the file is not refused when it is checked again."""
+    from lanky.oracles.lean import _lean_oracles
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "pinned_again.py"
+    path.write_text(REFUSED_FILE, encoding="utf-8")
+    (fact,) = claims(check_path(path))
+    assert fact.provenance["tactic_refused"]["fix"].startswith("take #exit out")
+    assert all(fact.id not in oracle.tactics for oracle in _lean_oracles())
+    path.write_text(REFUSED_FILE.split("\n\nuse_tactic(")[0] + "\n", encoding="utf-8")
+    (again,) = claims(check_path(path))
+    assert "tactic_refused" not in again.provenance
+
+
 # }}}
 
 

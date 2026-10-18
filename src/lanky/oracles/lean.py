@@ -3637,12 +3637,13 @@ class LeanOracle:
                         fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
                     )
                 # a script use_tactic gave: lanky check names it, with the fix (report_refused)
-                reason = f"the script use_tactic gives it is not sent to Lean, since {why}"
+                said = refused_account(override)
+                assert said is not None
                 return fact.with_status(
                     fact.status,
-                    lean_declined=reason,
-                    declined=f"{self.name}: {reason}",
-                    tactic_refused={"reason": reason, "fix": fix},
+                    lean_declined=said["reason"],
+                    declined=f"{self.name}: {said['reason']}",
+                    tactic_refused=said,
                 )
             ladder = [override]
         else:
@@ -4719,8 +4720,59 @@ def use_tactic(claim: Any, script: str) -> None:
     """
     fact_id = _claim_id(claim)
     for oracle in _lean_oracles():
-        # screened where it is used (LeanOracle.establish), which says why in the ledger
+        # screened where it is used: lanky check says why in the ledger, and
+        # forgets a refused script after the check (refused_scripts)
         oracle.tactics[fact_id] = script
+
+
+def refused_account(script: str) -> dict[str, str] | None:
+    """Why the screen keeps a script ``use_tactic`` gave from Lean, and the fix; ``None`` if not.
+
+    ``{"reason": "the script use_tactic gives it is not sent to Lean, since it
+    has #exit, a Lean command", "fix": "take #exit out; ..."}``, as the
+    provenance keeps it (``tactic_refused``) and ``lanky check`` prints it
+    (:func:`lanky.cli.report_refused`).
+    """
+    refused = refusal(script)
+    if refused is None:
+        return None
+    why, fix = refused
+    reason = f"the script use_tactic gives it is not sent to Lean, since {why}"
+    return {"reason": reason, "fix": fix}
+
+
+def refused_scripts() -> dict[str, dict[str, str]]:
+    """Each script ``use_tactic`` gave the registered Lean oracles that the screen refuses.
+
+    By fact id, as :func:`refused_account` says it. :func:`lanky.check.check_path`
+    reads them once the file is imported, records each in its claim's row
+    whether or not Lean is here to be asked, and then forgets them
+    (:func:`forget_scripts`), so that a script taken out of the file, or
+    corrected, is not still refused when the file is checked again in the
+    same process.
+    """
+    import lanky.oracles  # noqa: F401 - importing registers the built-in oracles
+    from lanky.plugins import registry
+
+    found: dict[str, dict[str, str]] = {}
+    for oracle in registry.oracles:
+        if not isinstance(oracle, LeanOracle):
+            continue
+        for fact_id, script in oracle.tactics.items():
+            said = refused_account(script)
+            if said is not None:
+                found.setdefault(fact_id, said)
+    return found
+
+
+def forget_scripts(fact_ids: Any) -> None:
+    """Take the scripts pinned for ``fact_ids`` off every registered Lean oracle."""
+    from lanky.plugins import registry
+
+    for oracle in registry.oracles:
+        if isinstance(oracle, LeanOracle):
+            for fact_id in fact_ids:
+                oracle.tactics.pop(fact_id, None)
 
 
 def use_certificate(claim: Any, finder: Finder) -> None:

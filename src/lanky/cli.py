@@ -981,22 +981,15 @@ def report_refused(ledger: Ledger) -> bool:
           lanky check --show-lean prints them.
 
     It fails the check, as a written proof that does not hold does: the
-    script is the proof the file gives, and it was not checked. The script
-    is screened on a machine without Lean too, where no oracle sent it.
+    script is the proof the file gives, and it was not checked. The check
+    records it in the claim's row (``tactic_refused``) on a machine without
+    Lean too, where no oracle was asked (:func:`lanky.check.check_path`).
     """
-    refused: list[tuple[Fact, dict]] = []
-    scripts = _given_scripts()
-    for fact in ledger:
-        said = fact.provenance.get("tactic_refused")
-        if not isinstance(said, dict) and fact.id in scripts:
-            from lanky.audit import refusal
-
-            found = refusal(scripts[fact.id])
-            if found is not None:
-                reason = f"the script use_tactic gives it is not sent to Lean, since {found[0]}"
-                said = {"reason": reason, "fix": found[1]}
-        if isinstance(said, dict):
-            refused.append((fact, said))
+    refused = [
+        (fact, fact.provenance["tactic_refused"])
+        for fact in ledger
+        if isinstance(fact.provenance.get("tactic_refused"), dict)
+    ]
     if not refused:
         return False
     print()
@@ -1005,20 +998,6 @@ def report_refused(ledger: Ledger) -> bool:
         if _recorded(said.get("fix")):
             print(f"  Fix: {said['fix']}.")
     return True
-
-
-def _given_scripts() -> dict[str, str]:
-    """The scripts ``use_tactic`` gave the registered Lean oracles, by fact id."""
-    try:
-        from lanky.oracles.lean import LeanOracle
-    except Exception:  # noqa: BLE001 - no Lean oracle, no script
-        return {}
-    scripts: dict[str, str] = {}
-    for oracle in registry.oracles:
-        if isinstance(oracle, LeanOracle):
-            for fact_id, script in oracle.tactics.items():
-                scripts.setdefault(fact_id, script)
-    return scripts
 
 
 def report_written(ledger: Ledger) -> bool:

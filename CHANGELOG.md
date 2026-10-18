@@ -350,7 +350,10 @@ All notable changes to lanky are recorded here. The format follows
   table with what was found and what to write instead, and fails, on a
   machine without Lean too (`lanky.cli.report_refused`; the fix is
   `lanky.audit.refusal`'s, the reason `screen`'s, and the provenance keeps
-  both as `tactic_refused`):
+  both as `tactic_refused`). The check forgets a refused script once it has
+  said so (`lanky.oracles.lean.refused_scripts`, `forget_scripts`), so a
+  script taken out of the file is not refused when the file is checked again
+  in the same process:
 
   ```text
   REFUSED scan_monotone at gauss.py:39: the script use_tactic gives it is not sent to Lean, since it has #exit, a Lean command.
