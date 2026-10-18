@@ -43,8 +43,8 @@ the PDE."
   entry may use one the loop filled in before:
   ``every_box.conclusion[i, a - 2, b + 2]`` is the conclusion at an order
   with two fewer ``x``'s, which is the induction. lanky checks that the loop
-  has filled it in (``a``, smaller, comes first in the loop's order), and
-  Lean that ``a`` gets smaller and stays a natural number.
+  has filled it in (``i`` the same and ``a`` smaller, so it comes earlier in
+  the loop), and Lean that ``a`` gets smaller and stays a natural number.
 - ``if a + b == 0`` is a case split. Among naturals it fixes ``a`` and ``b``
   at ``0``, and lanky substitutes both, so the case's conclusion is
   ``R[i, 0, 0] == D[i, 0, 0]``.

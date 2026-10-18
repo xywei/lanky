@@ -514,6 +514,10 @@ class Theorem:
         shown = ", ".join(_shown(value) for value in values)
         raise self._not_on_the_tree(f"[{shown}]", f"conclusion[{shown}]")
 
+    #: A claim is not iterated: ``__getitem__`` only refuses, and Python's
+    #: fallback from ``iter`` to it would make every claim look iterable.
+    __iter__ = None
+
     def _not_on_the_tree(self, written: str, spelled: str) -> Exception:
         """The refusal of ``name.domain`` or ``name[p]``, with the part of the tree meant."""
         from lanky.surface import FormError
