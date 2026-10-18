@@ -95,7 +95,7 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky import mathlib as mathlib_mode
-from lanky.audit import audit_failure, audited, declares, screen
+from lanky.audit import audit_failure, audited, declares, refusal
 from lanky.citations import Proved, ProvedTexts, restatements
 from lanky.deadline import Expired, deadline
 from lanky.induction import (
@@ -2800,8 +2800,10 @@ def part_scripts(statement: LeanStatement) -> list[str]:
                             )
                     except UnsupportedTerm:
                         pass
+    # drawn fresh, so that a hypothesis named hz0 is not hidden by the fact named for it
+    used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     lines = [
-        f"try have hz{k} : (({norm_sq} ({z}) : ℝ) : ℂ) ≠ 0 := "
+        f"try have {_fresh(f'hz{k}', used)} : (({norm_sq} ({z}) : ℝ) : ℂ) ≠ 0 := "
         f"by exact_mod_cast ({positive}.mpr (by assumption)).ne'"
         for k, z in enumerate(dict.fromkeys(nonzero))
     ]
@@ -3626,12 +3628,21 @@ class LeanOracle:
                 )
             library = override is not None
         if override is not None:
-            refused = screen(override, library=library)
+            refused = refusal(override, library=library)
             if refused is not None:
-                # set on the oracle by hand, past use_tactic's screen
-                reason = f"the tactic script given for it is not sent to Lean: {refused}"
+                why, fix = refused
+                if library:
+                    reason = f"the proof lanky.known keeps for it is not sent to Lean: {why}"
+                    return fact.with_status(
+                        fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+                    )
+                # a script use_tactic gave: lanky check names it, with the fix (report_refused)
+                reason = f"the script use_tactic gives it is not sent to Lean, since {why}"
                 return fact.with_status(
-                    fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+                    fact.status,
+                    lean_declined=reason,
+                    declined=f"{self.name}: {reason}",
+                    tactic_refused={"reason": reason, "fix": fix},
                 )
             ladder = [override]
         else:
@@ -4696,22 +4707,19 @@ def use_tactic(claim: Any, script: str) -> None:
     command around it, the axiom audit that ends it among them
     (:mod:`lanky.audit`). So a script with anything a proof never needs, a
     ``#`` command such as ``#exit``, ``native_decide``, ``set_option``, a
-    ``namespace`` or a declaration, is refused here, where it is written.
+    ``namespace`` or a declaration, is never sent to Lean. Importing the file
+    still works, as ``python file.py`` must: ``lanky check`` reads the claim
+    as the other oracles leave it, names the script under the table with
+    what to write instead, and fails, as a broken written proof does::
 
-    Raises:
-        ValueError: If the script is one the screen refuses
-            (:func:`lanky.audit.screen`), with what it found.
+        REFUSED scan_monotone at gauss.py:39: the script use_tactic gives it is not
+        sent to Lean, since it has #exit, a Lean command.
+          Fix: take #exit out; lanky writes every command around the script, and
+          lanky check --show-lean prints them.
     """
     fact_id = _claim_id(claim)
-    refused = screen(script)
-    if refused is not None:
-        name = getattr(claim, "__name__", None) or fact_id
-        raise ValueError(
-            f"use_tactic({name}, ...): the script is not sent to Lean, because {refused}. "
-            "A script is the proof that follows `:= by`, and lanky writes the "
-            "commands around it."
-        )
     for oracle in _lean_oracles():
+        # screened where it is used (LeanOracle.establish), which says why in the ledger
         oracle.tactics[fact_id] = script
 
 

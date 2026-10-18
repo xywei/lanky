@@ -105,6 +105,7 @@ __all__ = [
     "report_proofs",
     "report_proved",
     "report_raised",
+    "report_refused",
     "report_steps",
     "report_unproved",
     "report_written",
@@ -456,7 +457,8 @@ class CheckVerb:
         vacuous = CheckVerb._report_hypotheses(ledger)
         CheckVerb._report_unresolved(ledger)
         duplicated = CheckVerb._report_duplicates(ledger)
-        broken = report_written(ledger)
+        refused = report_refused(ledger)
+        broken = report_written(ledger) or refused
         refuted = ledger.by_status(Status.REFUTED)
         if refuted:
             print()
@@ -580,6 +582,8 @@ class CheckVerb:
             and not fact.is_axiom
             and (not fact.is_reading or fact.id in resting)
             and decline_lines(fact)
+            # a script use_tactic gave that was not sent has a REFUSED line, with the fix
+            and not isinstance(fact.provenance.get("tactic_refused"), dict)
         ]
         if not declined:
             return
@@ -962,6 +966,61 @@ def report_unproved(ledger: Ledger, *, verbose: bool = False) -> None:
             print(f"  {line}")
 
 
+def report_refused(ledger: Ledger) -> bool:
+    """Name each script ``use_tactic`` gave that the screen kept from Lean; whether any was.
+
+    A script is the proof that follows ``:= by``, and one with anything a
+    proof never needs (a ``#`` command, ``set_option``, a declaration) is not
+    sent (:func:`lanky.audit.refusal`). Importing the file still works, and
+    the claim reads as the other oracles leave it; here the script is named,
+    with what was found and what to write instead::
+
+        REFUSED scan_monotone at gauss.py:39: the script use_tactic gives it is
+        not sent to Lean, since it has #exit, a Lean command.
+          Fix: take #exit out; lanky writes every command around the script, and
+          lanky check --show-lean prints them.
+
+    It fails the check, as a written proof that does not hold does: the
+    script is the proof the file gives, and it was not checked. The script
+    is screened on a machine without Lean too, where no oracle sent it.
+    """
+    refused: list[tuple[Fact, dict]] = []
+    scripts = _given_scripts()
+    for fact in ledger:
+        said = fact.provenance.get("tactic_refused")
+        if not isinstance(said, dict) and fact.id in scripts:
+            from lanky.audit import refusal
+
+            found = refusal(scripts[fact.id])
+            if found is not None:
+                reason = f"the script use_tactic gives it is not sent to Lean, since {found[0]}"
+                said = {"reason": reason, "fix": found[1]}
+        if isinstance(said, dict):
+            refused.append((fact, said))
+    if not refused:
+        return False
+    print()
+    for fact, said in refused:
+        print(f"REFUSED {fact.owner} at {fact.where}: {said.get('reason')}.")
+        if _recorded(said.get("fix")):
+            print(f"  Fix: {said['fix']}.")
+    return True
+
+
+def _given_scripts() -> dict[str, str]:
+    """The scripts ``use_tactic`` gave the registered Lean oracles, by fact id."""
+    try:
+        from lanky.oracles.lean import LeanOracle
+    except Exception:  # noqa: BLE001 - no Lean oracle, no script
+        return {}
+    scripts: dict[str, str] = {}
+    for oracle in registry.oracles:
+        if isinstance(oracle, LeanOracle):
+            for fact_id, script in oracle.tactics.items():
+                scripts.setdefault(fact_id, script)
+    return scripts
+
+
 def report_written(ledger: Ledger) -> bool:
     """Report each written proof that fails, or was not checked; whether one fails.
 
@@ -994,10 +1053,13 @@ def report_written(ledger: Ledger) -> bool:
             continue
         if proof.get("closed") is None and _recorded(proof.get("reason")):
             print()
-            print(
-                f"NOT CHECKED {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
-                f"was not checked: {proof['reason']}"
-            )
+            if _recorded(proof.get("said")):
+                print(f"NOT CHECKED {fact.owner} at {fact.where}: {proof['said']}.")
+            else:
+                print(
+                    f"NOT CHECKED {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
+                    f"was not checked: {proof['reason']}"
+                )
             continue
         if proof.get("closed") == "holes":
             holes = ", ".join(str(hole) for hole in proof.get("holes") or ())

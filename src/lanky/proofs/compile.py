@@ -1085,16 +1085,26 @@ class _Compiler:
         return lines + produced
 
     def _case_label(self, leaf: Leaf) -> str:
-        """``if a < 2``, ``when a >= 2``: the case of a leaf, as an outline names it."""
+        """The case of a leaf as a person reading the proof aloud says it: ``if a < 2:``.
+
+        The outline lists the cases in the order the body has them, as the
+        ``if``s and ``return``s read, so a case says only what the ones
+        before it did not: the splits it went past on the way, their
+        conditions false, are what "if" after them already means. So
+        ``every_box``'s three cases read ``if a + b == 0:``, ``if a < 2:``
+        and ``otherwise:``, and not ``when a + b != 0 and a < 2:``. Under a
+        split that held, a split that did not says its condition the other
+        way round: ``if a < 2 and b >= 2:``. A case past every split, all
+        false, is ``otherwise:``.
+        """
         split = [question for question in leaf.questions if not question.forced]
         if not split:
             return ""
-        said = " and ".join(render(question.condition) for question in split)
-        if len(split) == 1 and split[0].answer:
-            return f"if {said}:"
-        if all(not question.answer for question in split) and len(split) == 1:
+        first = next((index for index, question in enumerate(split) if question.answer), None)
+        if first is None:
             return "otherwise:"
-        return f"when {said}:"
+        said = " and ".join(render(question.condition) for question in split[first:])
+        return f"if {said}:"
 
     def _step(
         self,
@@ -1669,7 +1679,12 @@ class _Compiler:
     # {{{ the step
 
     def _multipliers(self, claim: Any, instances: Sequence[Instance]) -> tuple[Any, ...] | None:
-        """Multipliers that make the instances' combination the claim, as Python finds them."""
+        """Multipliers that make the instances' combination the claim, as Python finds them.
+
+        Kept by the step in the hint cache (:mod:`lanky.proofs.hints`), so
+        that a check of an unchanged proof runs no sympy and writes the same
+        Lean source. Lean checks whatever they are.
+        """
         if not (isinstance(claim, prim.Comparison) and claim.operator == "=="):
             return None
         if not instances or not all(
@@ -1677,9 +1692,21 @@ class _Compiler:
             for instance in instances
         ):
             return None
+        from lanky.proofs import hints
         from lanky.proofs.report import combination
 
-        found = combination(claim, [instance.body for instance in instances], self.types)
+        bodies = [instance.body for instance in instances]
+        cache = hints.HintCache(hints.default_hint_dir())
+        key = hints.hint_key(claim, bodies, self.types)
+        kept = cache.get(key)
+        if kept is not hints.MISSING:
+            return kept
+        found = combination(claim, bodies, self.types)
+        from lanky.induction import _sympy
+
+        if found is not None or _sympy() is not None:
+            # no multipliers is an answer only where the search could run
+            cache.put(key, found)
         return None if found is None else tuple(found)
 
     def _closer(self, step: Step, origin: Origin, context: _Context) -> list[_Line]:

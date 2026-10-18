@@ -273,7 +273,12 @@ def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order
     assert re.search(
         r"^CITED compressed_taylor at sumpy_recurrence\.py:\d+: R\. Kress, ", printed, re.M
     )
-    assert re.search(r"^NOT CHECKED harmonic at sumpy_recurrence\.py:\d+: its proof", printed, re.M)
+    assert re.search(
+        r"^NOT CHECKED harmonic at sumpy_recurrence\.py:\d+: without (Lean|Mathlib), each step "
+        r"of its proof was tested at drawn points instead \(lines \d+ and \d+\)\.$",
+        printed,
+        re.M,
+    )
 
 
 def _by_owner() -> tuple:

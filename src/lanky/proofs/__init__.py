@@ -325,10 +325,10 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
     oracle = _lean_oracle()
     if oracle is None:
-        return _without_lean(fact, where, proof, "no Lean oracle is registered")
+        return _without_lean(fact, where, proof, "Lean", "no Lean oracle is registered")
     available, reason = oracle.availability()
     if not available:
-        return _without_lean(fact, where, proof, f"Lean is not available here ({reason})")
+        return _without_lean(fact, where, proof, "Lean", f"Lean is not available here ({reason})")
     mathlib = oracle.session.mathlib is not None
     from lanky.lean import UnsupportedTerm
     from lanky.oracles.lean import claim_statement
@@ -342,7 +342,11 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
     except UnsupportedTerm as exc:
         if not mathlib:
             return _without_lean(
-                fact, where, proof, "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)"
+                fact,
+                where,
+                proof,
+                "Mathlib",
+                "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
             )
         return _not_checked(fact, where, f"Lean cannot state it: {exc}")
     except ProofError as exc:
@@ -350,7 +354,11 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
             # a theorem it cites, a step's term or a point is about the reals,
             # which core Lean has no words for: not a fault of the proof
             return _without_lean(
-                fact, where, proof, "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)"
+                fact,
+                where,
+                proof,
+                "Mathlib",
+                "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
             )
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
     record, said, _cached = oracle.written(command.source, fact)
@@ -537,7 +545,7 @@ def _holes(fact: Fact, where: str, proof: Proof, command: Command) -> Fact:
     return fact.with_status(fact.status, proof=account)
 
 
-def _without_lean(fact: Fact, where: str, proof: Proof, reason: str) -> Fact:
+def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: str) -> Fact:
     """``fact``, its written proof not checked by Lean: each link of its chains drawn instead.
 
     Where the values can be drawn, each link's two sides are compared at
@@ -545,14 +553,19 @@ def _without_lean(fact: Fact, where: str, proof: Proof, reason: str) -> Fact:
     so that a wrong step is caught at its own line with no Lean at all, and
     fails the check. A link over a family that cannot be drawn, a table over
     ``Nat``, leaves the proof unchecked, and says why.
-    """
-    import os
 
+    ``missing`` is what the machine lacks, ``Lean`` or ``Mathlib``, and the
+    ``NOT CHECKED`` line says it in a clause, since the ``WITHOUT LEAN`` and
+    ``WITHOUT MATHLIB`` lines above it say why and how to get it::
+
+        NOT CHECKED harmonic at sumpy_recurrence.py:151: without Lean, each step
+        of its proof was tested at drawn points instead (lines 161 and 162).
+
+    ``reason`` is the long form, kept for ``--verbose`` and ``--json``.
+    """
     draws = _draw_links(proof)
     if not draws:
-        return _not_checked(fact, where, reason)
-    name = proof.theorem.__name__
-    base = os.path.basename(proof.path)
+        return _not_checked(fact, where, reason, f"without {missing}, its proof was not checked")
     for line, statement, outcome, detail in draws:
         if outcome == "refuted":
             failure = Failure(
@@ -565,15 +578,35 @@ def _without_lean(fact: Fact, where: str, proof: Proof, reason: str) -> Fact:
             return _failed(fact, where, None, [failure], proof.path)
     undrawn = [detail for _line, _statement, outcome, detail in draws if outcome == "undrawn"]
     if undrawn:
-        return _not_checked(fact, where, f"{reason}; its steps could not be drawn: {undrawn[0]}")
+        return _not_checked(
+            fact,
+            where,
+            f"{reason}; its steps could not be drawn: {undrawn[0]}",
+            f"without {missing}, its proof was not checked, and its steps cannot be drawn "
+            f"({_short(undrawn[0])})",
+        )
     lines = sorted({line for line, *_ in draws if line is not None})
-    shown = ", ".join(str(line) for line in lines)
     return _not_checked(
         fact,
         where,
-        f"{reason}; the proof of {name} was tested step by step at drawn points "
-        f"({base}:{shown}), not checked by Lean",
+        f"{reason}; the proof of {proof.theorem.__name__} was tested step by step at drawn "
+        f"points ({', '.join(str(line) for line in lines)}), not checked by Lean",
+        f"without {missing}, each step of its proof was tested at drawn points instead"
+        + (f" ({_lines(lines)})" if lines else ""),
     )
+
+
+def _lines(lines: list[int]) -> str:
+    """``line 161``, ``lines 161 and 162``, ``lines 161, 162 and 165``."""
+    shown = [str(line) for line in lines]
+    if len(shown) == 1:
+        return f"line {shown[0]}"
+    return f"lines {', '.join(shown[:-1])} and {shown[-1]}"
+
+
+def _short(detail: str) -> str:
+    """Why a draw could not be made, in its last clause: ``cannot tabulate a family over Nat``."""
+    return detail.rsplit(": ", 1)[-1].rstrip(".")
 
 
 def _draw_links(proof: Proof, samples: int = 50) -> list[tuple[int | None, str, str, str]]:
@@ -645,9 +678,17 @@ def _failed(
     return fact.with_status(fact.status, proof=account)
 
 
-def _not_checked(fact: Fact, where: str, reason: str) -> Fact:
-    """``fact`` as it was, with why its written proof was not checked."""
-    return fact.with_status(fact.status, proof={"where": where, "closed": None, "reason": reason})
+def _not_checked(fact: Fact, where: str, reason: str, said: str | None = None) -> Fact:
+    """``fact`` as it was, with why its written proof was not checked.
+
+    ``said`` is the clause the ``NOT CHECKED`` line prints in place of ``its
+    proof, file.py:41-48, was not checked: <reason>``, where a shorter one
+    says it (:func:`_without_lean`).
+    """
+    account: dict[str, Any] = {"where": where, "closed": None, "reason": reason}
+    if said is not None:
+        account["said"] = said
+    return fact.with_status(fact.status, proof=account)
 
 
 def _checked_fix(
@@ -656,19 +697,28 @@ def _checked_fix(
     """A step's fix, confirmed by Lean where it can be: ``(checked)`` after the fix when it is.
 
     The fix is the step's fact at another point (:func:`lanky.proofs.report.fix_for`),
-    and the proof with it is compiled and asked of Lean, as the proof was.
+    or one more fact cited (:func:`lanky.proofs.report.also_needs`), and the
+    proof with it is compiled and asked of Lean, as the proof was.
     """
     if failure.kind != "step" or failure.fix is None:
         return failure
     step = next((step for step in command.steps if step.where == failure.line), None)
     if step is None:
         return failure
-    found = fix_for(step, proof, command.measure)
-    if found is None:
-        return failure
-    index, citation = found
-    old = step.instances[index].citation
-    fixed = _with_citation(proof, step.leaf, old, citation)
+    repair = failure.repair
+    if repair is None:
+        found = fix_for(step, proof, command.measure)
+        if found is None:
+            return failure
+        repair = ("point", *found)
+    if repair[0] == "add":
+        fixed = _with_added(proof, step, repair[1])
+        if fixed is None:
+            return failure
+    else:
+        _kind, index, citation = repair
+        old = step.instances[index].citation
+        fixed = _with_citation(proof, step.leaf, old, citation)
     try:
         again = compile_proof(fixed, command.mathlib)
     except Exception:  # noqa: BLE001 - a fix that does not compile is not checked
@@ -680,6 +730,37 @@ def _checked_fix(
     if closed or all(other.line != failure.line for other in failures):
         return replace(failure, fix=f"{failure.fix} (checked)")
     return failure
+
+
+def _with_added(proof: Proof, step: Any, new: Citation) -> Proof | None:
+    """``proof`` with one more fact cited at one step: in its link of a chain, or in its return.
+
+    ``None`` for a link of a fact on the way, whose chain the citations of it
+    name, and which is kept as it is.
+    """
+    leaf = step.leaf
+    if step.line is not None and any(
+        link.line == step.line for chain in leaf.named for link in chain.links
+    ):
+        return None
+    in_the_chain = (
+        step.line is not None
+        and leaf.chain is not None
+        and any(link.line == step.line for link in leaf.chain.links)
+    )
+    leaves = []
+    for each in proof.leaves:
+        if each is leaf:
+            if in_the_chain:
+                links = tuple(
+                    replace(link, facts=(*link.facts, new)) if link.line == step.line else link
+                    for link in each.chain.links
+                )
+                each = replace(each, chain=replace(each.chain, links=links))
+            else:
+                each = replace(each, facts=(*(each.facts or ()), new))
+        leaves.append(each)
+    return replace(proof, leaves=tuple(leaves), root=_tree(leaves))
 
 
 def _with_citation(proof: Proof, leaf: Any, old: Citation, new: Citation) -> Proof:

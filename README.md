@@ -588,7 +588,9 @@ raises its floor to match.
   two `if` clauses in the bytecode. Write `&`.
 - The Lean induction strategy is a shape matcher, not proof search. A statement
   needing a different induction or a lemma falls through to the tester;
-  `lanky.oracles.lean.use_tactic` pins a script by hand. The induction over
+  `lanky.oracles.lean.use_tactic` pins a script by hand (one the screen
+  refuses is not sent, and `lanky check` names it in a `REFUSED` line with
+  the fix, and fails). The induction over
   families searches, but only for a linear combination: a step that needs a
   hypothesis used other than as an equation to combine, an inequality, or an
   instance whose guards are not linear arithmetic over the integers is not

@@ -56,6 +56,7 @@ __all__ = [
     "audit_failure",
     "audit_lines",
     "audited",
+    "refusal",
     "screen",
 ]
 
@@ -283,33 +284,127 @@ def screen(script: str, library: bool = False) -> str | None:
     ``library`` is for the Lean proofs of lanky's library of known facts,
     :mod:`lanky.known`, which may give a slow step its time with ``set_option
     maxHeartbeats N in``, and may not leave a hole (``sorry``, ``admit``).
-    The reason names what was found, in the words of the script.
+    The reason names what was found, in the words of the script; what to
+    write instead is :func:`refusal`'s.
+    """
+    refused = refusal(script, library)
+    return None if refused is None else refused[0]
+
+
+#: What to write instead of a word the screen refuses, by what the word does.
+_DECLARING = frozenset(
+    {
+        "theorem",
+        "lemma",
+        "def",
+        "abbrev",
+        "instance",
+        "example",
+        "structure",
+        "inductive",
+        "class",
+        "opaque",
+    }
+)
+_SCOPING = frozenset({"namespace", "section", "end", "export"})
+_SYNTAX = frozenset(
+    {
+        "run_tac",
+        "run_cmd",
+        "run_elab",
+        "run_meta",
+        "elab",
+        "elab_rules",
+        "macro",
+        "macro_rules",
+        "syntax",
+        "notation",
+        "infix",
+        "infixl",
+        "infixr",
+        "prefix",
+        "postfix",
+    }
+)
+_TRUSTING = frozenset({"axiom", "unsafe", "native", "extern", "implemented_by"})
+
+
+def _fix_for_word(word: str) -> str:
+    """What to write instead of a refused word, in a clause that follows ``Fix:``."""
+    if word == "set_option":
+        return (
+            "take set_option out; to give the claim more time, set LANKY_LEAN_BUDGET "
+            "to the seconds it needs"
+        )
+    if word in _DECLARING:
+        return (
+            f"take {word} out; state what the proof needs with have inside the "
+            "script, or as a @theorem of its own"
+        )
+    if word == "open":
+        return "take open out, and write each name in full, as Finset.sum_comm"
+    if word == "import":
+        return "take import out; lanky imports Mathlib itself where the claim needs it"
+    if word in _SCOPING:
+        return f"take {word} out; the script is one proof, and lanky writes the command around it"
+    if word in _SYNTAX:
+        return f"take {word} out, and write the proof in tactics"
+    if word in _TRUSTING:
+        return f"take {word} out; a proof rests on the kernel and Lean's three axioms alone"
+    return f"take {word} out; a proof changes nothing outside itself"
+
+
+def refusal(script: str, library: bool = False) -> tuple[str, str] | None:
+    """Why the screen refuses ``script``, and what to write instead; ``None`` when it passes.
+
+    The reason is :func:`screen`'s (``it has #exit, a Lean command``), and
+    the fix a clause that can follow ``Fix:`` (``take #exit out; lanky writes
+    every command around the script, and --show-lean prints them``), so that
+    ``lanky check`` names both where it says the script was not sent.
     """
     if not isinstance(script, str):
-        return f"a proof is Lean text, not {type(script).__name__}"
+        return (
+            f"a proof is Lean text, not {type(script).__name__}",
+            "give the script as a string, the tactics that follow := by",
+        )
     text, unclosed = _without_comments(script)
     if unclosed:
         return (
             "it opens a block comment, /-, and does not close it, which hides "
-            "everything after it from Lean"
+            "everything after it from Lean",
+            "close the comment with -/",
         )
     command = _COMMAND.search(text)
     if command is not None:
         word = re.match(r"#\s*[A-Za-z_][A-Za-z0-9_]*", text[command.start() :])
         shown = word.group(0) if word else "#"
-        return f"it has {shown}, a Lean command"
+        return (
+            f"it has {shown}, a Lean command",
+            f"take {shown} out; lanky writes every command around the script, and "
+            "lanky check --show-lean prints them",
+        )
     compiler = _COMPILER.search(text)
     if compiler is not None:
-        return f"it has {compiler.group(0)}, which trusts the compiler and not the kernel"
+        found = compiler.group(0)
+        fix = (
+            "prove it with decide, which the kernel checks"
+            if found == "native_decide"
+            else f"take {found} out; a proof rests on the kernel alone"
+        )
+        return f"it has {found}, which trusts the compiler and not the kernel", fix
     if library:
         text = _HEARTBEATS.sub(" ", text)
     found = _WORD.search(text)
     if found is not None:
-        return f"it has {found.group('word')}, which a proof never needs"
+        word = found.group("word")
+        return f"it has {word}, which a proof never needs", _fix_for_word(word)
     if library:
         hole = _HOLE.search(text)
         if hole is not None:
-            return f"it leaves a hole ({hole.group('word')}), and a library proof leaves none"
+            return (
+                f"it leaves a hole ({hole.group('word')}), and a library proof leaves none",
+                "finish the proof where the hole is",
+            )
     return None
 
 
