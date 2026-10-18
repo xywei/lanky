@@ -495,6 +495,101 @@ theorem with the same draw.
   inside a helper, and a library's own code are not stopped, and run to
   their end ([#108](https://github.com/xywei/lanky/issues/108)).
 
+## Name a condition
+
+Results often share their conditions, and engineers give those conditions a
+name: the CFL condition, a segment that does not pass through zero, a
+conforming mesh. `@condition` states one once, like a theorem with no
+conclusion and no body, and a `with` block holds the theorems that hold
+under it. `examples/upwind.py` names the CFL condition of the upwind scheme
+for `u_t + c u_x = 0`:
+
+```python
+@condition
+def cfl(
+    c: Real,
+    dt: Real,
+    h: Real,
+    forward: c >= 0,
+    positive: (dt > 0) & (h > 0),
+    stable: c * dt <= h,
+):
+    """The CFL condition of the upwind scheme for u_t + c u_x = 0, with c >= 0."""
+
+
+with cfl as (c, dt, h, forward, positive, stable):
+
+    @theorem
+    def courant() -> c * dt / h <= 1:
+        """Under the CFL condition, the Courant number is at most one."""
+
+    @theorem
+    def no_new_extremum(u_left: Real, u: Real, rising: u_left <= u) -> (
+        (u_left <= u - c * dt / h * (u - u_left)) & (u - c * dt / h * (u - u_left) <= u)
+    ):
+        """An upwind step keeps each value between its old value and its upwind neighbour."""
+
+
+@theorem
+def courant_number(c: Real, dt: Real, h: Real, ok: cfl(c, dt, h)) -> 0 <= c * dt / h:
+    """Wherever the CFL condition holds, the Courant number is not negative either."""
+```
+
+Read it aloud: *"The CFL condition is c, dt and h with c not negative, dt
+and h positive, and c dt at most h. Under it, the Courant number is at most
+one, and an upwind step makes no new extremum."* The names in the `with`
+statement are the condition's, in its order, so `c * dt <= h` in a theorem
+under it is the condition's `c`, `dt` and `h`; other names, or another count,
+are refused with the condition's signature. Each theorem's statement is the
+condition's variables and conditions, then its own, and it is cited, run
+and tested by its own name: `no_new_extremum(c=1, dt=..., h=..., u_left=0,
+u=1)` takes the condition's variables like its own. Called at numbers, the
+condition says whether it holds, and in an annotation it is the proposition,
+as `ok: cfl(c, dt, h)` is in `courant_number`:
+
+```console
+$ uv run python examples/upwind.py
+cfl(c=1, dt=1/10, h=1/5) = True
+cfl(c=3, dt=1/10, h=1/5) = False
+courant at them: True
+no_new_extremum at u_left = 0, u = 1: True
+```
+
+The ledger names the condition before each theorem's own variables and
+hypotheses, as the file does:
+
+```console
+$ uv run lanky check examples/upwind.py
+STATUS  BY             WHERE         OWNER            STATEMENT
+------  -------------  ------------  ---------------  --------------------------------------------------------------------------------------------
+tested  property-test  upwind.py:46  courant          under cfl (forward, positive, stable): c*dt / h <= 1
+tested  python         upwind.py:46  courant          the term computes what the annotations compute
+tested  property-test  upwind.py:50  no_new_extremum  under cfl (forward, positive, stable): u_left : Real, u : Real
+                                                      | rising: u_left <= u
+                                                      |- u_left <= u - c*dt / h*(u - u_left) and u - c*dt / h*(u - u_left) <= u
+tested  python         upwind.py:50  no_new_extremum  the term computes what the annotations compute
+tested  property-test  upwind.py:57  courant_number   c : Real, dt : Real, h : Real | c >= 0 and (dt > 0 and h > 0) and c*dt <= h |- c*dt / h >= 0
+tested  python         upwind.py:57  courant_number   the term computes what the annotations compute
+
+6 facts: 6 tested
+```
+
+The property tester draws the condition's variables with each theorem's own,
+and satisfies the condition's conditions as it does a theorem's hypotheses;
+the reading of each claim runs the condition's annotations again at the same
+draws. A first version of `cfl` had no `positive: dt > 0`, and the tester
+refuted `no_new_extremum` at `dt = -7/3`: a step back in time is no upwind
+step. Lean, with Mathlib, is handed each theorem with the condition's
+conditions as hypotheses, and a written proof cites them by name, `stable`
+or `positive`, as it cites its own.
+
+Several conditions compose: `with cfl as (...), mesh as (...):`, Python's
+parenthesized form over several lines, or one `with` inside another. A
+variable two conditions both declare, with one sort, is one variable. A
+theorem in a block that declares one of the block's names itself is refused,
+and so is a theorem after the block that still uses one: `c belongs to cfl;
+use it inside with cfl as (c, dt, h, forward, positive, stable):`.
+
 ## Take a result on a citation
 
 Some results lanky cannot establish. A sum needs Mathlib in Lean, and a theorem

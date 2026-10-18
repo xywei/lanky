@@ -353,13 +353,23 @@ class Theorem:
         self.fn = fn
         functools.update_wrapper(self, fn)
         self.uses = fact_ids(uses)
+        from lanky.conditions import in_force
         from lanky.faithful import capture
 
+        #: The conditions the theorem holds under, outermost first: those
+        #: whose ``with`` blocks it is defined in (:mod:`lanky.conditions`).
+        self.under = in_force()
+        bound = _bound_values(self.under)
+        #: The names the ``with`` statements bound, which the theorem's
+        #: annotations and body read from its namespace, not as parameters.
+        self.bound = tuple(bound)
+        _refuse_a_bound_parameter(fn, self.under)
+        _refuse_a_name_bound_elsewhere(fn, bound)
         # taken before the annotations are read, which may run a helper that
         # changes what it reads
-        self.snapshot = capture(fn)
+        self.snapshot = capture(fn, bound=self.bound)
         self.namespace = self.snapshot.namespace
-        annotations = evaluate_annotations(fn)
+        annotations = evaluate_annotations(fn, bound or None)
         self.goal = annotations.pop("return", None)
         if self.goal is None:
             code = fn.__code__
@@ -370,8 +380,7 @@ class Theorem:
                 f"{article} {self.noun} needs a goal; write the proposition it "
                 "claims as the return annotation, as in `-> n + 0 == n`"
             )
-        variables: list[tuple[str, Any]] = []
-        hypotheses: list[tuple[str, Any]] = []
+        variables, hypotheses = _condition_parts(self.under)
         _refuse_a_builtin_annotation(fn, "return", self.goal)
         for name, annotation in annotations.items():
             _refuse_a_builtin_annotation(fn, name, annotation)
@@ -397,24 +406,79 @@ class Theorem:
 
     @property
     def statement(self) -> str:
-        """The statement as a sequent: variables, hypotheses, then the goal."""
-        variables = ", ".join(f"{name} : {sort}" for name, sort in self.variables)
-        hypotheses = ", ".join(render(prop) for _, prop in self.hypotheses)
+        """The statement as a sequent: variables, hypotheses, then the goal.
+
+        A theorem defined in a ``with`` block says so first, by the
+        condition's name and its named conditions, and then states its own
+        variables and hypotheses, as the file does: ``under segment
+        (nonzero): a : Fn[Nat, Complex] | ... |- ...``.
+        """
+        variables = ", ".join(f"{name} : {sort}" for name, sort in self.own_variables)
+        hypotheses = ", ".join(render(prop) for _, prop in self.own_hypotheses)
         parts = [variables] if variables else []
         if hypotheses:
             parts.append(hypotheses)
         head = " | ".join(parts)
         goal = render(self.goal)
-        return f"{head} |- {goal}" if head else goal
+        said = f"{head} |- {goal}" if head else goal
+        return f"under {self.under_label}: {said}" if self.under else said
 
     @property
     def sequent(self) -> dict[str, Any]:
-        """The parts of :attr:`statement`, as text: variables, named hypotheses, goal."""
-        return {
+        """The parts of :attr:`statement`, as text: variables, named hypotheses, goal.
+
+        The variables and the hypotheses are all of them, the conditions'
+        first, so that a reader pairing each hypothesis with a conjunct of
+        the term's guard pairs them all. Under a condition, ``under`` names
+        it as the statement does, and ``own`` holds the theorem's own
+        variables and hypotheses, which the ledger prints after it.
+        """
+        sequent: dict[str, Any] = {
             "variables": ", ".join(f"{name} : {sort}" for name, sort in self.variables),
             "hypotheses": [[name, render(prop)] for name, prop in self.hypotheses],
             "goal": render(self.goal),
         }
+        if self.under:
+            sequent["under"] = self.under_label
+            sequent["own"] = {
+                "variables": ", ".join(f"{name} : {sort}" for name, sort in self.own_variables),
+                "hypotheses": [[name, render(prop)] for name, prop in self.own_hypotheses],
+            }
+        return sequent
+
+    @property
+    def own_variables(self) -> tuple[tuple[str, Any], ...]:
+        """The variables the theorem declares itself, without its conditions'."""
+        return tuple((name, sort) for name, sort in self.variables if name not in self.bound)
+
+    @property
+    def own_hypotheses(self) -> tuple[tuple[str, Any], ...]:
+        """The hypotheses the theorem declares itself, without its conditions'."""
+        return tuple((name, prop) for name, prop in self.hypotheses if name not in self.bound)
+
+    @property
+    def conditions(self) -> tuple[Any, ...]:
+        """The :class:`~lanky.conditions.Condition` objects it holds under, outermost first."""
+        return tuple(entry.condition for entry in self.under)
+
+    @property
+    def under_label(self) -> str:
+        """``segment (nonzero)``: the conditions, as the statement names them; ``""`` for none."""
+        from lanky.conditions import under_label
+
+        return under_label(self.under)
+
+    @property
+    def cited_under(self) -> str:
+        """``under segment``: what a row that cites the theorem says of its conditions; or ``""``.
+
+        A plugin's row that applies the theorem, or names it as the reason of
+        a step, puts it after the theorem's name: ``by line_taylor under
+        segment``.
+        """
+        if not self.under:
+            return ""
+        return "under " + ", ".join(entry.condition.__name__ for entry in self.under)
 
     @property
     def hypothesis_names(self) -> tuple[str, ...]:
@@ -681,6 +745,124 @@ class Theorem:
     def __repr__(self) -> str:
         """Print the name and the statement."""
         return f"<{self.noun} {self.__name__}: {self.statement}>"
+
+
+def _bound_values(under: Any) -> dict[str, Any]:
+    """What the ``with`` statements in force bound, by name: a ``Var``, or a proposition."""
+    values: dict[str, Any] = {}
+    for entry in under:
+        for name, value in entry.values:
+            values.setdefault(name, value)
+    return values
+
+
+def _condition_parts(under: Any) -> tuple[list[tuple[str, Any]], list[tuple[str, Any]]]:
+    """The variables and the hypotheses of the conditions in force, outermost first, each once."""
+    variables: list[tuple[str, Any]] = []
+    hypotheses: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for entry in under:
+        for name, sort in entry.condition.variables:
+            if name not in seen:
+                seen.add(name)
+                variables.append((name, sort))
+        for name, prop in entry.condition.hypotheses:
+            if name not in seen:
+                seen.add(name)
+                hypotheses.append((name, prop))
+    return variables, hypotheses
+
+
+def _where(fn: Any) -> str:
+    """``line_taylor at layer_potential.py:195``."""
+    code = fn.__code__
+    name = getattr(fn, "__qualname__", fn.__name__)
+    return f"{name} at {os.path.basename(code.co_filename)}:{code.co_firstlineno}"
+
+
+def _refuse_a_bound_parameter(fn: Any, under: Any) -> None:
+    """Refuse a theorem in a ``with`` block that declares one of the block's names itself.
+
+    ``with segment as (alpha, beta, nonzero):`` binds ``alpha``, and the
+    theorems in the block take it from there; a parameter ``alpha`` would be
+    a second variable of the same name, and which one an annotation means
+    would not show.
+    """
+    if not under:
+        return
+    parameters = inspect.signature(fn).parameters
+    for entry in under:
+        for name in entry.names:
+            if name in parameters:
+                condition = entry.condition
+                raise TypeError(
+                    f"{_where(fn)}: {name} is {condition.__name__}'s, which with "
+                    f"{condition.__name__} as ({', '.join(entry.names)}) binds for every "
+                    f"theorem in the block; drop the parameter {name}, or define "
+                    f"{fn.__name__} outside the block"
+                )
+
+
+def _refuse_a_name_bound_elsewhere(fn: Any, bound: Mapping[str, Any]) -> None:
+    """Refuse a theorem that reads a name a ``with`` block bound, outside that block.
+
+    After ``with segment as (alpha, beta, nonzero):`` ends, ``alpha`` still
+    holds what the block bound it to, as any name a ``with`` statement binds
+    does in Python. A theorem after the block that reads it, in an
+    annotation or in its body, would be about segment's ``alpha`` without
+    holding under segment, so it is refused, with the block to put it in.
+    """
+    from lanky.conditions import anything_bound, bound_by
+    from lanky.terms import code_reads
+
+    if not anything_bound():
+        return
+    namespace = getattr(fn, "__globals__", {})
+    parameters = set(inspect.signature(fn).parameters)
+    reads: list[str] = []
+    try:
+        raw = inspect.get_annotations(fn, eval_str=False)
+    except Exception:  # noqa: BLE001 - the reading says what is wrong with them
+        raw = {}
+    for annotation in raw.values():
+        if isinstance(annotation, str):
+            try:
+                code = compile(annotation.lstrip(" \t"), "<string>", "eval")
+            except (SyntaxError, ValueError):
+                continue
+            reads.extend(code_reads(code).names)
+    reads.extend(_global_loads(fn.__code__))
+    for name in dict.fromkeys(reads):
+        if name in parameters or name in bound or name not in namespace:
+            continue
+        found = bound_by(namespace[name])
+        if found is None:
+            continue
+        condition, _ = found
+        raise TypeError(
+            f"{_where(fn)}: {name} belongs to {condition.__name__}; use it inside with "
+            f"{condition.__name__} as ({', '.join(condition.names)}):"
+        )
+
+
+def _global_loads(code: Any) -> list[str]:
+    """The names ``code`` and the code compiled inside it load from the globals."""
+    import dis
+    import types
+
+    names: list[str] = []
+    stack = [code]
+    seen = set()
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        for instruction in dis.get_instructions(current):
+            if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
+                names.append(str(instruction.argval))
+        stack.extend(c for c in current.co_consts if isinstance(c, types.CodeType))
+    return names
 
 
 #: What to write in place of a builtin type a parameter is annotated with.

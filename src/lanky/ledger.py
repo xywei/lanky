@@ -705,6 +705,15 @@ def statement_lines(fact: Fact, width: int = 100) -> list[str]:
         | stored: forall a in Nat, b in Nat where a < 2. R[a, b] == D[a, b]
         |- forall a in Nat, b in Nat. R[a, b] == D[a, b]
 
+    A theorem in a ``with`` block of a condition (:mod:`lanky.conditions`)
+    names the condition first, with its named conditions, and then its own
+    parts, as the file states them::
+
+        under segment (nonzero): a : Fn[Nat, Complex]
+        | first_term: alpha*a[1] == beta
+        | ode: forall n in Nat where n >= 1. (n + 1)*alpha*a[n + 1] + n*beta*a[n] == 0
+        |- forall n in Nat where n >= 1. a[n] == -(-beta / alpha)**n / n
+
     A claim proved by its written proof (:mod:`lanky.proofs`) says so in one
     more line, where the proof is and what it is::
 
@@ -805,12 +814,37 @@ def _sequent_parts(fact: Fact) -> list[tuple[str, str]] | None:
         )
     ):
         return None
+    under = sequent.get("under")
+    own = sequent.get("own")
+    if isinstance(under, str) and isinstance(own, dict):
+        # a theorem in a with block: the condition by its name, then its own
+        # parts, as the file states them
+        own_variables = own.get("variables")
+        own_hypotheses = own.get("hypotheses")
+        if isinstance(own_variables, str) and _named_texts(own_hypotheses):
+            head = f"under {_one_line(under)}:"
+            if own_variables:
+                head += f" {_one_line(own_variables)}"
+            parts = [(head, "  ")]
+            parts += [(f"| {name}: {_one_line(text)}", "    ") for name, text in own_hypotheses]
+            parts.append((f"|- {_one_line(goal)}", "    "))
+            return parts
     if not variables and not hypotheses:
         return None
     parts = [(_one_line(variables), "  ")] if variables else []
     parts += [(f"| {name}: {_one_line(text)}", "    ") for name, text in hypotheses]
     parts.append((f"|- {_one_line(goal)}", "    "))
     return parts
+
+
+def _named_texts(entries: Any) -> bool:
+    """Whether ``entries`` is a list of ``[name, text]`` pairs of strings."""
+    return isinstance(entries, list | tuple) and all(
+        isinstance(entry, list | tuple)
+        and len(entry) == 2
+        and all(isinstance(item, str) for item in entry)
+        for entry in entries
+    )
 
 
 #: The narrowest and the widest the statement column is made to fit a terminal
