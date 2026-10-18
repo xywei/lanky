@@ -432,12 +432,16 @@ def _run(theorem: Any, values: Mapping[str, Any], run: _Run) -> None:
                     run.point.line = frame.f_lineno if frame is not None else None
                 del value
         else:
-            # the line the body returns at, which a false goal is reported at
-            def watch(frame: Any, event: str, _arg: Any) -> None:
+            # the line the body returns at, which a false goal is reported at;
+            # every event goes on to a profiler already installed, as the trace's do
+            previous = sys.getprofile()
+
+            def watch(frame: Any, event: str, arg: Any) -> None:
                 if event == "return" and frame.f_code is fn.__code__:
                     returned.append(frame.f_lineno)
+                if previous is not None:
+                    previous(frame, event, arg)
 
-            previous = sys.getprofile()
             sys.setprofile(watch)
             try:
                 body(*positional, **named)

@@ -68,7 +68,7 @@ from lanky.terms import (
 from lanky.terms import sum_ as sum  # noqa: A004 - lanky.sum is a reduction term
 from lanky.theory import Axiom, CitedClaim, Claim, Theorem, axiom, claim, theorem
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     "Abs",

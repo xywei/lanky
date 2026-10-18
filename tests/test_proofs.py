@@ -1433,6 +1433,24 @@ def test_a_reversed_loop_over_a_large_domain_starts_at_its_top(native) -> None:
     assert time.monotonic() - start < 30
 
 
+def test_the_native_run_hands_profile_events_on(native) -> None:
+    """A profiler installed before a loopless proof runs sees its events still (Codex)."""
+    import sys
+
+    seen: list[str] = []
+
+    def profiler(frame, event, arg) -> None:
+        if frame.f_code.co_name == "halves":  # the body's own, which the run wraps
+            seen.append(event)
+
+    sys.setprofile(profiler)
+    try:
+        native.halves.run_proof(n=1, k=1)
+    finally:
+        sys.setprofile(None)
+    assert "call" in seen and "return" in seen
+
+
 def test_the_native_run_divides_exactly(native) -> None:
     """``n / k`` of two drawn naturals is a ``Fraction`` there, so no step fails on rounding."""
     from lanky.proofs.native import native_failure

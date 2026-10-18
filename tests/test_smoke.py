@@ -9,7 +9,7 @@ from lanky import cli
 
 
 def test_version() -> None:
-    assert lanky.__version__ == "0.5.0"
+    assert lanky.__version__ == "0.6.0"
 
 
 def test_module_has_docstring() -> None:
