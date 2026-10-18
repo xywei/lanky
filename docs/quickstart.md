@@ -997,14 +997,11 @@ NOT CHECKED harmonic at sumpy_recurrence.py:153: without Lean, each step of its 
   body is for the reader.
 
   ```python
-  @theorem
+  @claim
   def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) == 0:
       r2 = x**2 + y**2
-      return (
-          laplacian(log_r, x, y)
-          .equals(2 / r2 - 2 * (x**2 + y**2) / r2**2)
-          .equals(0)
-      )
+      assert laplacian(log_r, x, y) == 2 / r2 - 2 * (x**2 + y**2) / r2**2 == 0
+      return by()
   ```
 
   Without Lean the CAS oracle decides it, and the `NOT CHECKED` line says that
@@ -1430,7 +1427,7 @@ the real parts of those of `log(alpha + tau * beta)`, and the claim for every
 order is
 
 ```python
-@theorem
+@claim
 def line_taylor(
     alpha: Complex,
     beta: Complex,
@@ -1440,15 +1437,12 @@ def line_taylor(
     ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
 ) -> all(a[n] == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
     """The line-Taylor coefficients of ``log(alpha + tau * beta)``, at every order."""
-    ratio = -beta / alpha
-
-    def claim(n):
+    for n in line_taylor.conclusion.domain:
         if n == 1:
-            return first_term
-        recurrence = a[n].equals((n - 1) / n * ratio * a[n - 1], by=ode)
-        return recurrence, claim(n - 1)
-
-    return claim
+            yield by(first_term)
+        else:
+            assert a[n] == (n - 1) / n * (-beta / alpha) * a[n - 1], by(ode[n - 1])
+            yield by(line_taylor.conclusion[n - 1])
 ```
 
 `first_term` and `ode` are the differential equation the logarithm solves
@@ -1462,15 +1456,19 @@ series to state it with (#174). No row claims it. `line_taylor` is about any
 table that satisfies the two hypotheses, and the CAS row below checks sumpy's
 own coefficients, order by order.
 
-The body is the proof, as a reader says it: "Let ratio be -beta / alpha. The
-claim at n: if n is 1, it is the first term. Otherwise, the recurrence: a[n]
-equals (n - 1) / n times ratio times a[n - 1], by the ODE. By the recurrence
-and the claim at n - 1." `claim` calling itself at `n - 1` is the induction,
-`.equals(..., by=ode)` is one step of a calculation with its reason, and the
-name it is assigned to, `recurrence`, is a fact the next line cites. Each
-step becomes a line of Lean, which checks it; `python` never runs a proof. A
-step left open is written `by=...`, and the claim then reads assumed, with
-the line named.
+The body is the proof, as a reader says it: "For each n, in order. At n = 1,
+by the first term. Otherwise the ODE at n − 1 gives a[n] from a[n − 1], and
+it holds by line_taylor at n − 1." The claim's own name is spelled out, and
+its parts are addressed through it: `line_taylor.conclusion.domain` is the
+points the conclusion's `for` ranges over, in increasing order, and
+`line_taylor.conclusion[n - 1]` is the conclusion at the point before, which
+the loop has filled in: the induction. `assert ..., by(ode[n - 1])` is a step
+with its reason, the ODE at the point `n - 1`, and the step is known for the
+rest of its case; `yield by(...)` closes the case. Brackets give a point of a
+domain, and parentheses give another claim its inputs, as `gauss(n - 1)`
+does below. Each step becomes a line of Lean, which checks it; `python` never
+runs a proof. A step left open is written `by(...)`, and the claim then reads
+assumed, with the line named.
 
 The file prints sumpy's coefficients beside the closed form:
 
@@ -1553,19 +1551,24 @@ $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/line_taylor.py --proo
 ...
 PROOF line_taylor at line_taylor.py:133, by induction on n, two at a time:
 
-    for n in claim.dom:
+    for n in line_taylor.conclusion.domain:
         if n == 1:
             yield by(first_term)
         else:
-            yield by(ode(n - 1), claim[n - 1])
+            yield by(ode[n - 1], line_taylor.conclusion[n - 1])
 ```
 
-Read aloud: the claim at `n`; if `n` is 1, it is `first_term`; otherwise it
-follows from `ode` at `n - 1` and the claim at `n - 1`. That proves the
-claim. `claim` calling itself at a smaller order is the induction, and a fact
-is written at a point only where the point says something: `first_term` has
-none, and `ode` fits the claim at `n - 1` and at `n`, so its point is
-written. The multipliers are not: lanky finds them.
+Read aloud: for each `n`; if `n` is 1, by `first_term`; otherwise by `ode` at
+`n - 1` and the conclusion at `n - 1`. The conclusion at a smaller order is
+the induction, and a fact is written at a point only where the point says
+something: `first_term` has none, and `ode` fits the claim at `n - 1` and at
+`n`, so its point is written. The multipliers are not: lanky finds them.
+`--proofs` prints a loop only where its order fits the induction lanky
+found, the conclusion at an earlier point coming earlier in the loop; where
+an induction on the second variable of `for a in Nat for n in Nat` cites the
+conclusion at `(a + 1, n - 1)`, no loop over `(a, n)` fits, and it names the
+strategy in words, with the order of the conclusion's `for` that a loop would
+fit.
 
 `--steps` prints the outline of a proof in lanky's notation: of the proof as
 written, where the theorem has one, a row per step at its Python line, with
@@ -1597,16 +1600,17 @@ term off the sum`.
 ## Write a proof
 
 lanky finds a proof where it can, and a claim it proves alone needs no
-body. Where it cannot, or where a proof helps the reader, the theorem's body
-is the proof: ordinary Python that states facts and gives a reason for each.
-`examples/every_box.py` is sumpy's compressed Taylor table, box by box, in
-sumpy's storage order, where the base case rests on two pairs of hypotheses,
-the centre at order zero and the stored derivatives above it. lanky's search
-does not split a case on the conditions of the facts it combines (#140), so
-the claim read `assumed`. The body says how:
+body. Where it cannot, or where a proof helps the reader, the claim's body
+is the proof: the checks an engineer already writes, `assert`, `if` and
+`for`, with the reason for each step after it. `examples/every_box.py` is
+sumpy's compressed Taylor table, box by box, in sumpy's storage order, where
+the base case rests on two pairs of hypotheses, the centre at order zero and
+the stored derivatives above it. lanky's search does not split a case on the
+conditions of the facts it combines (#140), so the claim read `assumed`. The
+body says how:
 
 ```python
-@theorem
+@claim
 def every_box(
     n: Nat, p: Nat, c: Fn[Nat, Int, Real], D: Fn[Nat, Nat, Nat, Real], R: Fn[Nat, Nat, Nat, Real],
     pde: all(D[i, a + 2, b] + D[i, a, b + 2] == 0 for i in Fin[n] for a in Nat for b in Nat),
@@ -1619,96 +1623,148 @@ def every_box(
     recurrence: all(R[i, a + 2, b] == -R[i, a, b + 2] for i in Fin[n] for a in Nat for b in Nat
                     if a + b + 2 <= p),
 ) -> all(R[i, a, b] == D[i, a, b] for i in Fin[n] for a in Nat for b in Nat if a + b <= p):
-    def claim(i, a, b):
+    for i, a, b in every_box.conclusion.domain:
         if a + b == 0:
-            return centre_copy, centre
-        if a < 2:
-            return copies, stored
-        return recurrence(i, a - 2, b), claim(i, a - 2, b + 2), pde(i, a - 2, b)
-
-    return claim
+            yield by(centre_copy, centre)
+        elif a < 2:
+            yield by(copies, stored)
+        else:
+            yield by(recurrence, every_box.conclusion[i, a - 2, b + 2], pde)
 ```
 
-Read it aloud: "The claim at (i, a, b): at order zero, by the centre's copy
-and the centre. If a < 2, by the copies and what is stored. Otherwise by the
-recurrence, the claim at (i, a − 2, b + 2) and the PDE. That proves the
-claim."
+Read it aloud: "For each point (i, a, b) of the conclusion, in order: at
+order zero, by the centre's copy and the centre. If a < 2, by the copies and
+what is stored. Otherwise by the recurrence, the conclusion at (i, a − 2,
+b + 2) and the PDE."
+
+For an engineer the claim is a table of true and false over its domain, and
+the proof is a loop that fills it in, in order, as the kernel fills its
+table: each entry may use entries already filled. That is the induction,
+with no function standing for a proof.
 
 | You write | It means |
 |---|---|
 | no body (a docstring, `...` or `pass`) | lanky finds the proof, as it always has |
-| `return f, g` | this case's claim follows from these facts; lanky finds how they combine, and Lean checks it |
-| a bare `return` | this case is routine: lanky closes it |
-| `pde(i, a - 2, b)` | a fact at a point: a hypothesis, or a theorem, at these values of its variables; its conditions are checked for you |
-| `stored`, alone | the same fact, at the point lanky finds by matching it against the case's claim; where no single point fits, lanky asks you to write it |
-| `if` / `else` | a case split; each branch proves the claim with its condition true |
-| `def claim(i, a, b):`, then `return claim` | the claim for every `i, a, b`, at one point; its parameters are the claim's variables, by name and in order, and one that names a parameter of the theorem generalizes it |
-| `claim(i, a - 2, b + 2)` inside `claim` | the claim at values closer to a base case: induction |
-| `x.equals(y, by=fact)`, and `.at_most`, `.less_than`, `.at_least`, `.more_than` | one link of a chain, a calculation a link to a line; `by=` takes a fact or a tuple of facts, and with no `by=` the link is algebra alone |
-| `name = x.equals(y, by=fact)` | a fact on the way, named so that a later step can cite it |
-| `by=...` | a step left open: the proof holds but for it, and the claim's row names the line |
+| `assert x == y, by(f, g)` | a step: `x == y` holds by these facts, known for the rest of its case; chains (`x == y == z`) and `<=`, `<`, `>=`, `>` work as in Python |
+| `assert x == y` | a step lanky closes by itself, by algebra |
+| `for i, a, b in every_box.conclusion.domain:` | each point the conclusion's `for` ranges over, in increasing order |
+| `yield by(f, g)` | closes the case at this point: the conclusion there follows from these facts |
+| `return by(f, g)` | closes a claim proved without a loop over its conclusion's domain |
+| `by()` | nothing to add: the case follows directly, by lanky's strategies, after the steps asserted |
+| `by(...)` | a step or case left open: the proof holds but for it, and the claim's row names the line |
+| `if` / `elif` / `else` | a case split; each branch proves the case with its condition true |
+| `every_box.conclusion[i, a - 2, b + 2]` | the conclusion at an earlier point of the loop: induction, checked to be earlier |
+| `pde[i, a - 2, b]` | a condition at a point of its domain; its conditions are checked for you |
+| `stored`, alone | the same fact, at the point lanky finds by matching it against the case; where no single point fits, lanky asks you to write it |
+| `gauss(n - 1)` | another claim for given inputs, its parameters |
+| `every_box.conditions.pde`, `every_box.conclusion` | the two halves of the claim, addressed through its tree |
 | `from lanky.known import log_of_a_power` | a fact lanky knows, under a plain name, cited like any other |
+
+Four rules hold the table together:
+
+- **Brackets give a point of a domain; parentheses give a claim its
+  inputs.** These are Python's own index and call.
+- **Everything is addressed through the claim's tree:** `name.conditions`,
+  `name.conclusion`, `name.conclusion.domain`, `name.conclusion[p]`. A
+  conclusion that nests a `for`, `all(all(... for a in B for b in C) for i
+  in A)`, has a domain at each point: loop over
+  `every_box.conclusion[i].domain` inside the loop over `i`, cite
+  `every_box.conclusion[i][a - 2, b + 2]`, and a `yield` closes the
+  conclusion at the point of the innermost loop. `name.domain`, `name[p]` and
+  `.dom` are refused, with the tree's spelling as the fix.
+- **Every case of a proof ends with a closing line**, `yield by(...)` or
+  `return by(...)`. A bare `return`, `continue`, or a path that ends is
+  refused at its line: `when a < 2 (cases.py:12), continue at line 13 ends
+  the case with no closing line: close it with yield by() if it follows
+  directly, or give its reasons, yield by(f, g)`.
+- **The claim's own name is spelled out** in its proof, with no `this` and
+  no `self` (in a class, `MyClass.name`). A claim refers to itself only
+  through its conclusion's points, so it never calls itself: a variable you
+  induct on belongs in the conclusion's `for`.
+
+A cited point must come earlier in the loop: lexicographic in the binders of
+the conclusion's `for`, outer domains first, and strict. A point smaller in
+one variable and larger in an earlier one is refused before Lean is asked,
+`out_of_order.conclusion[a + 1, b - 1] is not filled in yet when the loop is
+at (a, b)`. An argument from the point above, toward a bound, walks a
+bounded domain from the top down:
+
+```python
+@claim
+def climb(
+    p: Nat, H: Fn[Nat, Int], top: H[p] == 0, step: all(H[k] == H[k + 1] for k in Nat if k < p)
+) -> all(H[k] == 0 for k in Nat if k <= p):
+    for k in reversed(climb.conclusion.domain):
+        if k == p:
+            yield by(top)
+        else:
+            yield by(step[k], climb.conclusion[k + 1])
+```
 
 A hypothesis written `p & q` is cited as both parts. Hypotheses are always in
 scope, for the conditions of the facts you cite. `python examples/every_box.py`
 never runs the proof: `lanky check` traces the body, after every run and draw
 of the check, on the symbolic terms the annotations were read with, and has
-Lean check it in one command. With Mathlib the claim reads `proved`, and its
-row says how, in a line of its own:
+Lean check it in one command. It also runs the body as plain Python at the
+check's draws, exact fractions and exact complex numbers, so a false step is
+caught at its line, with its numbers, before Lean is asked: `At n = 3, alpha =
+2, beta = 1: the left side is -1/24, the right side 1/24.` With Mathlib the
+claim reads `proved`, and its row says how, in a line of its own:
 
 ```text
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/every_box.py
 STATUS  EFFECTIVE  BY      WHERE            OWNER      STATEMENT
 ...
-proved  tested     lean    every_box.py:66  every_box  n : Nat, p : Nat, c : Fn[Nat, Int, Real], D : Fn[Nat, Nat, Nat, Real], R : Fn[Nat, Nat, Nat, Real]
+proved  tested     lean    every_box.py:69  every_box  n : Nat, p : Nat, c : Fn[Nat, Int, Real], D : Fn[Nat, Nat, Nat, Real], R : Fn[Nat, Nat, Nat, Real]
                                                        | pde: forall i in Fin(n), a in Nat, b in Nat. D[i, a + 2, b] + D[i, a, b + 2] == 0
                                                        ...
                                                        |- forall i in Fin(n), a in Nat, b in Nat where a + b <= p. R[i, a, b] == D[i, a, b]
-                                                       by its proof, every_box.py:110-116: induction on a, 3 cases, 3 steps
+                                                       by its proof, every_box.py:113-119: induction on a, 3 cases, 3 steps
 ```
 
-The proof is Lean's to check and Python's to find the details of. `def claim`
-is a theorem of its own, `Lanky.every_box.claim`, which calls itself with
-`termination_by a.toNat`, the measure lanky finds: an argument that gets
-smaller at every call, one that climbs toward a bound, or a pair. `if a + b ==
-0` is a case split, and among naturals it fixes `a` and `b` at `0`, so lanky
-substitutes both. `centre_copy` and `centre`, cited by name, are matched
-against the case's claim, `R[i, 0, 0] == D[i, 0, 0]`, at `i`. Each fact's
-conditions are shown by `omega`, and `return f, g` is closed by
-`linear_combination` with the multipliers Python finds, the same search as
-lanky's own induction's. `--show-lean` prints the command, with each
-hypothesis under its Python name.
+The proof is Lean's to check and Python's to find the details of. The
+conclusion over its points is a theorem of its own, `Lanky.every_box.claim`,
+and a citation of `every_box.conclusion[i, a - 2, b + 2]` is a call of it,
+with `termination_by a.toNat`, the measure lanky finds: an argument that gets
+smaller at every call, one that climbs toward a bound under `reversed(...)`,
+or a pair. `if a + b == 0` is a case split, and among naturals it fixes `a`
+and `b` at `0`, so lanky substitutes both. `centre_copy` and `centre`, cited
+by name, are matched against the case's conclusion, `R[i, 0, 0] == D[i, 0,
+0]`, at `i`. Each fact's conditions are shown by `omega`, and `yield by(f,
+g)` is closed by `linear_combination` with the multipliers Python finds, the
+same search as lanky's own induction's. `--show-lean` prints the command,
+with each hypothesis under its Python name.
 
 A proof that does not hold is reported at the line that fails, in lanky's
 notation, with the fix where lanky can name one. Here the induction is at the
-wrong cells, `claim(a - 2, b + 3)`, in the sumpy demonstration's claim over
-two tables, `R` and `D`, written over the integers so that core Lean checks
-it:
+wrong cells, `ct.conclusion[a - 2, b + 3]`, in the sumpy demonstration's
+claim over two tables, `R` and `D`, written over the integers so that core
+Lean checks it:
 
 ```text
 UNPROVED ct at cases.py:25: a step of its proof does not follow.
 
-  cases.py:36    return recurrence(a - 2, b), claim(a - 2, b + 3), pde(a - 2, b)
+  cases.py:36    yield by(recurrence[a - 2, b], ct.conclusion[a - 2, b + 3], pde[a - 2, b])
 
   When a >= 2 (cases.py:34), the step needs   R[a, b] == D[a, b]
-    recurrence(a - 2, b) says   R[a, b] == -R[a - 2, b + 2]
-    claim(a - 2, b + 3)  says   R[a - 2, b + 3] == D[a - 2, b + 3]
-    pde(a - 2, b)        says   D[a, b] + D[a - 2, b + 2] == 0
+    recurrence[a - 2, b]        says   R[a, b] == -R[a - 2, b + 2]
+    ct.conclusion[a - 2, b + 3] says   R[a - 2, b + 3] == D[a - 2, b + 3]
+    pde[a - 2, b]               says   D[a, b] + D[a - 2, b + 2] == 0
   Left over:
       D[a - 2, b + 2] + R[a - 2, b + 3] - D[a - 2, b + 3] - R[a - 2, b + 2] == 0
-  Fix: claim(a - 2, b + 2) makes the step follow (checked).
+  Fix: ct.conclusion[a - 2, b + 2] makes the step follow (checked).
 ```
 
 Python computes what is left over, from the facts at their points; Lean only
 says that the step failed. The fix is the fact at another point, and
 `(checked)` means Lean accepted the proof with it. Where no fact the step
 cites works at any point, the report looks for one the proof can cite and
-did not, a hypothesis, the claim at a smaller point or a theorem the proof
-cites elsewhere, and names it with the step as it would be written:
+did not, a hypothesis, the conclusion at an earlier point or a claim the
+proof cites elsewhere, and names it with the step as it would be written:
 
 ```text
-  It also needs pde(a - 2, b), which says D[a, b] + D[a - 2, b + 2] == 0.
-  Fix: return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b) (checked).
+  It also needs pde[a - 2, b], which says D[a, b] + D[a - 2, b + 2] == 0.
+  Fix: yield by(recurrence[a - 2, b], ct.conclusion[a - 2, b + 2], pde[a - 2, b]) (checked).
 ```
 
 And where nothing in the proof gets there, it names the facts of
@@ -1722,20 +1778,23 @@ there, as for a claim with no proof (see below):
   Fix: cite one of them, after from lanky.known import log_of_a_power, modulus_squared; or split the step in two.
 ```
  A condition that is not
-met says `stored, at (a, b) needs a < 2, and this case has a >= 2.`; a call
-of the claim below zero, `claim(a - 2, b + 2) is at a negative a when a = 1:
-split off a < 2 first.`; a call not at smaller values, a theorem that calls
-itself by name, and a fact cited by name that no single point fits each say
-so at their line, before Lean is asked. A broken proof fails the check, also
-for a claim lanky proves alone, whose row still reads `proved`, by lanky's own
-proof, with `WARNING ct at cases.py:25: your proof fails at cases.py:36;
-lanky proved the claim without it`. Without Lean, or without Mathlib for a
-claim only Mathlib can state, the proof is not checked, a `NOT CHECKED` line
-says so in a clause (`without Lean, each step of its proof was tested at drawn
-points instead (lines 161 and 162)`), and nothing fails. The multipliers each
-step is closed with are kept, by the step, beside the proof cache, so a check
-of a proof that has not changed runs no sympy and sends Lean the same text;
-Lean checks them whatever they are.
+met says `stored, at (a, b) needs a < 2, and this case has a >= 2.`; the
+conclusion cited below zero, `ct.conclusion[a - 2, b + 2] is at a negative a
+when a = 1: split off a < 2 first.`; a point the loop has not filled in, a
+claim that calls itself (`a claim does not call itself; to argue from an
+earlier case, put n in the conclusion's for, -> all(... for n in ...), and
+cite nicomachus.conclusion[n - 1]`), a case with no closing line, a form of
+lanky 0.5's proofs, and a fact cited by name that no single point fits each
+say so at their line, with the line to write, before Lean is asked. A broken
+proof fails the check, also for a claim lanky proves alone, whose row still
+reads `proved`, by lanky's own proof, with `WARNING ct at cases.py:25: your
+proof fails at cases.py:36; lanky proved the claim without it`. Without
+Lean, or without Mathlib for a claim only Mathlib can state, the proof is not
+checked, a `NOT CHECKED` line says so in a clause (`without Lean, each step of
+its proof was tested at drawn points instead (lines 161 and 162)`), and
+nothing fails. The multipliers each step is closed with are kept, by the
+step, beside the proof cache, so a check of a proof that has not changed runs
+no sympy and sends Lean the same text; Lean checks them whatever they are.
 
 ### What lanky knows
 
@@ -1748,21 +1807,21 @@ why that is right:
 from lanky.known import log_of_a_power, modulus_squared
 
 
-@theorem
+@claim
 def log_of_the_modulus(alpha: Complex, nonzero: alpha != 0) -> (
     log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
 ):
     """log|alpha| with no square root: half the log of alpha times its conjugate."""
-    return (
-        log(abs(alpha))
-        .equals(log(abs(alpha) ** 2) / 2, by=log_of_a_power)
-        .equals(log(real(alpha * conj(alpha))) / 2, by=modulus_squared)
-    )
+    assert log(abs(alpha)) == log(abs(alpha) ** 2) / 2, by(log_of_a_power)
+    return by(modulus_squared)
 ```
 
-Read aloud: "log|alpha| equals half the log of |alpha| squared, by the log of
-a power, then half the log of alpha times its conjugate, by the modulus
-squared." The two facts come from `lanky.known`, under plain names. Each is a
+Read aloud: "log|alpha| is half the log of |alpha| squared, by the log of a
+power; the rest is the modulus squared." The step is known for the rest of
+the proof, so `return by(modulus_squared)` is asked only for the rest of the
+way, from where the step ended to the claim's other side. The claim has no
+`for`, so it is proved without a loop, and closes with `return by(...)`. The
+two facts come from `lanky.known`, under plain names. Each is a
 theorem stated in Python, like any other, with a docstring that cites the
 Mathlib lemma it is:
 
@@ -1802,8 +1861,8 @@ The claim keeps its own `nonzero`, which says where `log` means what its
 reader thinks.
 
 Lean's search alone does not prove `log_of_the_modulus`: no power is in
-sight for the log of a power to apply to, which is why the proof writes the
-term where the two facts meet as the middle of its chain. With the proof, and
+sight for the log of a power to apply to, which is why the proof asserts the
+term where the two facts meet as a step. With the proof, and
 Mathlib, the claim reads `proved`, and the two facts it cites are rows of the
 file's ledger, marked with the module they come from, so that what the claim
 rests on is in the ledger it is counted in:
@@ -1858,29 +1917,37 @@ induction a textbook writes:
 from lanky.known import one_more_term
 
 
-@theorem
-def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+@claim
+def nicomachus() -> all(
+    sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2 for n in Nat
+):
     """The sum of the first cubes is the square of the sum of the first numbers."""
-
-    def claim(n):
+    for n in nicomachus.conclusion.domain:
         if n == 0:
-            return
-        return (
-            sum(i**3 for i in Fin[n + 1])
-            .equals(sum(i**3 for i in Fin[n]) + n**3, by=one_more_term)
-            .equals(sum(i for i in Fin[n]) ** 2 + n**3, by=claim(n - 1))
-            .equals((sum(i for i in Fin[n]) + n) ** 2, by=gauss(n - 1))
-            .equals(sum(i for i in Fin[n + 1]) ** 2, by=one_more_term)
-        )
-
-    return claim
+            yield by()
+        else:
+            assert (
+                sum(i**3 for i in Fin[n + 1])
+                == sum(i**3 for i in Fin[n]) + n**3
+                == sum(i for i in Fin[n]) ** 2 + n**3
+                == (sum(i for i in Fin[n]) + n) ** 2
+                == sum(i for i in Fin[n + 1]) ** 2
+            ), by(one_more_term, nicomachus.conclusion[n - 1], gauss(n - 1))
+            yield by()
 ```
 
-Read it aloud: "The claim at n: if n is 0, it is routine. Otherwise, the cubes
-to n + 1 sum to the cubes to n plus n cubed, by one more term; that is the
-square of the sum to n, plus n cubed, by the claim at n − 1; that is the
-square of the sum to n plus n, by Gauss at n − 1; and that is the square of
-the sum to n + 1, by one more term."
+Read it aloud: "For each n, in order. At n = 0, it follows directly.
+Otherwise, the cubes to n + 1 sum to the cubes to n plus n cubed; that is the
+square of the sum to n, plus n cubed; that is the square of the sum to n plus
+n; and that is the square of the sum to n + 1: by one more term, nicomachus
+at n − 1, and Gauss for n − 1."
+
+`n` is the variable of the conclusion's `for`, not a parameter, because the
+proof argues from smaller `n`: that is where a variable you induct on
+belongs. `gauss` keeps `n` as a parameter, and `gauss(n - 1)` is that claim
+for the input `n - 1`. The calculation is one `assert` of Python's own
+chained comparison; its two ends are the conclusion's two sides, so the case
+closes with `yield by()`, nothing to add.
 
 `one_more_term` is cited by its name alone, and lanky finds the family and the
 point from the link each citation supports: `f` is `i ↦ i**3` at the first
@@ -1888,15 +1955,16 @@ link and `i ↦ i` at the last, both at `n`. The links name their sums' index
 `i` and the fact names it `k`, which is the reader's choice and no
 difference. At `n - 1` the fact's left side is a term of the first link too,
 but only at `n` are both of its sides, so `n` is the point. To say the family
-yourself, write it as a `lambda`: `by=one_more_term(lambda i: i**3, n)`.
+yourself, give it as an input, written as a `lambda`:
+`one_more_term(lambda i: i**3, n)`.
 `--steps` shows the points lanky found:
 
 ```text
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check --steps nicomachus examples/nicomachus.py
 ...
-STEPS nicomachus at nicomachus.py:60, as its proof says them:
+STEPS nicomachus at nicomachus.py:66, as its proof says them:
   the claim, induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss
-  nicomachus.py:65  otherwise:  sum(i**3 for i in Fin(n + 1)) == sum(i**3 for i in Fin(n)) + n**3  by one_more_term at (lambda i: i**3, n), the claim at (n - 1), gauss at (n - 1) and one_more_term at (lambda i: i, n)
+  nicomachus.py:75  otherwise:  sum(i**3 for i in Fin(n + 1)) == sum(i**3 for i in Fin(n)) + n**3  by one_more_term at (lambda i: i**3, n), the claim at (n - 1), gauss at (n - 1) and one_more_term at (lambda i: i, n)
                                                               == sum(i for i in Fin(n))**2 + n**3
                                                               == (sum(i for i in Fin(n)) + n)**2
                                                               == sum(i for i in Fin(n + 1))**2
@@ -1914,14 +1982,14 @@ and `Int`s as they are. With Mathlib all three theorems of the file read
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/nicomachus.py
 STATUS  EFFECTIVE  BY      WHERE             OWNER          STATEMENT
 ------  ---------  ------  ----------------  -------------  -----------------------------------------------------------------------------------------------
-proved  tested     lean    nicomachus.py:55  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
-tested  tested     python  nicomachus.py:55  gauss          the term computes what the annotations compute
-proved  tested     lean    nicomachus.py:60  nicomachus     n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
-                                                            by its proof, nicomachus.py:63-71:
+proved  tested     lean    nicomachus.py:61  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested  tested     python  nicomachus.py:61  gauss          the term computes what the annotations compute
+proved  tested     lean    nicomachus.py:66  nicomachus     forall n in Nat. sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
+                                                            by its proof, nicomachus.py:71-82:
                                                               induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss
-tested  tested     python  nicomachus.py:60  nicomachus     the term computes what the annotations compute
-proved  tested     lean    nicomachus.py:74  cubes          n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
-tested  tested     python  nicomachus.py:74  cubes          the term computes what the annotations compute
+tested  tested     python  nicomachus.py:66  nicomachus     the term computes what the annotations compute
+proved  tested     lean    nicomachus.py:85  cubes          n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
+tested  tested     python  nicomachus.py:85  cubes          the term computes what the annotations compute
 proved  tested     lean    lanky.known       one_more_term  f : Fn[Nat, Real], n : Nat |- sum(f[k] for k in Fin(n + 1)) == sum(f[k] for k in Fin(n)) + f[n]
 tested  tested     python  lanky.known       one_more_term  the term computes what the annotations compute
 

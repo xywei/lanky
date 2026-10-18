@@ -43,9 +43,8 @@ The harmonicity is a theorem here, ``harmonic``. sympy takes the kernel's
 second derivatives, and the proof in its body adds them, one ``assert`` of a
 chained comparison, read aloud: "Let r2 be x**2 + y**2. The Laplacian equals
 2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0." Each step is algebra,
-once ``r2`` is not zero, which ``away`` says, so the ``assert`` gives no
-reason, and its two ends are the claim, so it closes with ``return by()``:
-nothing to add.
+once ``r2`` is not zero, which ``away`` says: the ``assert`` gives no reason,
+and its ends are the claim, so it closes with ``return by()``, nothing to add.
 lanky's search finds the proof alone too, clearing the denominators and then
 by algebra, so the body is for the reader: it says where the calculation
 goes.

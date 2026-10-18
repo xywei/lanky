@@ -13,7 +13,7 @@
     it reads ``proved``, by the proof written in ``every_box``'s body, and the
     row says so in a line of its own::
 
-        by its proof, every_box.py:110-116: induction on a, 3 cases, 3 steps
+        by its proof, every_box.py:113-119: induction on a, 3 cases, 3 steps
 
     Without them it reads ``assumed``, since the property tester draws no
     family over ``Nat``, and a ``NOT CHECKED`` line under the table says why

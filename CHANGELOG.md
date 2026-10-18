@@ -9,13 +9,14 @@ All notable changes to lanky are recorded here. The format follows
 Proofs read as engineers write checks (the decision of 2026-10-18). A step is
 an `assert` with its reason after it, `assert x == y, by(f, g)`; a
 calculation is Python's own chained comparison; cases are `if`; a claim over
-a domain is a loop over its points, `for n in claim.dom:`, each point closed
-with `yield by(...)`, and `claim[n - 1]` is the claim at a point the loop has
-filled in. No function stands for a proof, and no theorem calls itself. Under
-`lanky check` the body is also run as plain Python at the check's draws, so a
-false step is caught at its line, with its numbers, before Lean is asked.
-A named condition, `@condition`, is stated once, and the theorems of a
-`with` block hold under it.
+a domain is a loop over its points, `for n in line_taylor.conclusion.domain:`,
+each case closed with `yield by(...)`, and `line_taylor.conclusion[n - 1]` is
+the conclusion at a point the loop has filled in. The claim's own name is
+spelled out and its parts are addressed through its tree. No function stands
+for a proof, and no claim calls itself. Under `lanky check` the body is also
+run as plain Python at the check's draws, so a false step is caught at its
+line, with its numbers, before Lean is asked. A named condition,
+`@condition`, is stated once, and the claims of a `with` block hold under it.
 
 ### Breaking
 
@@ -23,15 +24,20 @@ The forms of 0.5's proofs are refused, each with the line to write:
 
 | 0.5 | 0.6 |
 |---|---|
-| `def claim(n): ...` and `return claim` | `for n in claim.dom:` (variables of the conclusion), or the body itself (variables that are parameters) |
-| `return f, g` inside `claim` | `yield by(f, g)` (over a domain) or `return by(f, g)` (no variables) |
+| `@theorem` | `@claim` |
+| `@axiom(cite=...)` | `@claim(cite=...)` |
+| a shared set of hypotheses restated in each theorem | `@condition` and `with ... as (...)` |
+| `def claim(n): ...` and `return claim` | `for n in name.conclusion.domain:`; a variable you induct on moves into the conclusion's `for` |
+| `return f, g` | `yield by(f, g)` or `return by(f, g)` |
 | `return f` | `yield by(f)` or `return by(f)` |
-| bare `return` | unchanged |
+| a bare `return` in a proof | `return by()` or `yield by()` |
 | `x.equals(y, by=f)` | `assert x == y, by(f)` |
 | `.at_most`, `.less_than`, `.at_least`, `.more_than` | `<=`, `<`, `>=`, `>` inside the `assert` |
 | `x.equals(y, by=f).equals(z, by=g)` | `assert x == y == z, by(f, g)`, or one `assert` per link |
-| `name = x.equals(y, by=f)` | `assert x == y, by(f)`: known for the rest of the case, with no name |
-| `claim(n - 1)` inside `def claim` | `claim[n - 1]` (a point of the conclusion) or `claim(n - 1)` (parameters) |
+| `name = x.equals(y, by=f)` | `assert x == y, by(f)`: known for the rest of the case |
+| `claim(n - 1)` inside `def claim` | `name.conclusion[n - 1]` |
+| a hypothesis at a point, `pde(i, a - 2, b)` | `pde[i, a - 2, b]` (brackets: a point of its domain) |
+| another theorem for inputs, `gauss(n - 1)` | unchanged: `gauss(n - 1)` (parentheses: inputs) |
 | `by=...` | `by(...)` |
 
 - `lanky check` refuses to run under `python -O` (or `PYTHONOPTIMIZE`), which
@@ -40,51 +46,97 @@ The forms of 0.5's proofs are refused, each with the line to write:
   with the fix: `PYTEST_DONT_REWRITE` in the module's docstring.
 - The multipliers kept in the hint cache are kept in a new format: a cache
   from 0.5 is read as empty, once.
+- `Theorem.conditions` (#185's tuple of the `Condition` objects a theorem
+  holds under) is `Theorem.held_under`; `name.conditions` is the claim's half
+  of its tree now (below).
 
 ### Added
 
-- **`from lanky import by, claim`.** `by(f, g)` is the reason for a step: in
-  an `assert`'s message, which Python reads only when the step fails, after
-  `yield` for the point the loop is at, after `return` for a claim with no
-  variables. `by(...)`, Python's `Ellipsis`, leaves a step open, and the
-  claim's row names its line. `claim` is the theorem being proved, as Flask's
-  `request` is the request being served: `claim.dom` the domain of its
-  conclusion, `claim[p]` the conclusion at a point the loop has filled in,
-  `claim(...)` the theorem at smaller values of its parameters, taken in
-  order as a call takes them, and `claim.n` a variable of the conclusion as a
-  handle. Outside a theorem's body `claim` refuses: "claim is the theorem
-  being proved; it means something only inside a theorem's body".
+- **`by`, and the claim's tree.** `by(f, g)` is the reason for a step: in an
+  `assert`'s message, which Python reads only when the step fails, after
+  `yield` for the point the loop is at, after `return` for a claim proved
+  without a loop. `by()` adds nothing: the case follows directly, by lanky's
+  strategies, after the steps asserted. `by(...)`, Python's `Ellipsis`,
+  leaves a step open, and the claim's row names its line. Inside its body a
+  claim is spelled by its own name, the decorated claim Python resolves in
+  the module (`MyClass.name` in a class), and addressed through its tree:
+  - `name.conditions` and `name.conclusion`, the claim's two halves;
+    `name.conditions.ode` one condition, in the claim's proof the fact `ode`
+    names there;
+  - `name.conclusion.domain`, the points the conclusion's `for` ranges over,
+    in increasing order, `for i, a, b in name.conclusion.domain:` for several
+    variables of one `for`;
+  - `name.conclusion[p]`, the conclusion at a point of its domain, which
+    inside the claim's proof is the conclusion for that proof's inputs;
+  - a nested domain: for `all(all(... for a in B) for i in A)`,
+    `name.conclusion[i].domain` is the domain at `i`, looped over inside the
+    loop over `name.conclusion.domain`, and `name.conclusion[i][a - 2, b]` a
+    point of it; a `yield` closes the conclusion at the point of the
+    innermost loop over a domain.
+
+  Brackets give a point of a domain (`ode[n - 1]`, `pde[i, a - 2, b]`,
+  `name.conclusion[n - 1]`); parentheses give another claim for inputs, its
+  parameters (`gauss(n - 1)`), and its conclusion's point after,
+  `other(x).conclusion[k]`. `name.domain`, `name[p]` and `.dom` are refused
+  with the tree's spelling, and so is a condition at a point in parentheses,
+  with the brackets written. Outside a proof the parts say what they are, in
+  Python, `<line_taylor.conclusion: all(...)>`, and a domain refuses to be
+  walked.
+- **A claim never calls itself.** `name(...)` inside `name`'s proof is
+  refused: "a claim does not call itself; to argue from an earlier case, put
+  n in the conclusion's for, -> all(... for n in ...), and cite
+  name.conclusion[n - 1]". A variable one inducts on belongs in the
+  conclusion's `for`.
+- **Every case closes.** Each case ends with `yield by(...)` or `return
+  by(...)`. A bare `return`, `continue`, a bare `yield`, or a path that ends
+  is refused at its line, naming the case ("when a < 2 (file.py:12),
+  continue at line 13 ends the case with no closing line: close it with
+  yield by() if it follows directly, or give its reasons, yield by(f, g)"),
+  and so is a proof that mixes `yield` with `return by(...)`.
 - **An `assert` is a step.** The trace answers its question "false" once,
   reads `by(...)` from the `AssertionError`, and runs the body again with the
   step answered "true": the per-path re-run an `if` already makes, told from
   an `if` by the bytecode. `x == y <= z` is one step of two links, each at the
   line of the term it reaches, `<=`, `<`, `>=` and `>` mixing as in Python. A
   step is a `have` in Lean, known for the rest of its case: a later `yield` or
-  `return` is asked only for the rest of the way from where the step ended,
-  and a point that yields nothing is finished from the steps asserted for it.
+  `return` is asked only for the rest of the way from where the step ended.
   The facts of a chain's `by(...)` serve the links they fit, each fact cited
   by name alone matched against its link.
 - **A fact cited by name alone is matched against the terms of the step's
-  other facts too**, so `yield by(recurrence, claim[i, a - 2, b + 2], pde)`
-  finds `recurrence` and `pde` at `(i, a - 2, b)`, where each is about the
-  claim's cells and those of the claim at the earlier point.
-- **A cited point the loop has not filled in is refused before Lean is
-  asked**: "claim[n + 1] is not filled in yet when the loop is at n". So is
-  the point itself, and `claim(...)` at values no smaller, or changing no
-  integer parameter.
+  other facts too**, so `yield by(recurrence, every_box.conclusion[i, a - 2, b
+  + 2], pde)` finds `recurrence` and `pde` at `(i, a - 2, b)`, where each is
+  about the conclusion's cells and those of the conclusion at the earlier
+  point. A claim called for its inputs, `gauss(m)`, has its conclusion's point
+  found the same way.
+- **Earlier points are earlier in the loop.** A cited
+  `name.conclusion[point]` must come earlier in the loops over its domains:
+  lexicographic in the binders, outer domains first, and strict, so a point
+  smaller in one variable and larger in an earlier one is refused before
+  Lean is asked: "out_of_order.conclusion[a + 1, b - 1] is not filled in yet
+  when the loop is at (a, b)". An argument from the point above, 0.5's climb
+  toward a bound, is `for k in reversed(name.conclusion.domain):` over a
+  bounded domain (`k in Fin[p]`, or `k <= p` in the conclusion's `for`),
+  where "earlier" is earlier in the reversed loop; Lean's measure is the
+  distance to the bound. The refusal of a climbing citation in a forward
+  loop over a bounded domain names the reversed loop as its fix.
 - **The native run.** `lanky check` runs the body as plain Python at the
   check's draws, exact `Fraction` values and exact complex numbers, with
-  `claim.dom` giving the conclusion's first points to the draw bound, and
-  integers whose quotient is exact. A false `assert` is reported at its line,
-  with the values there and the two sides that differ ("At n = 3, alpha = 2,
-  beta = 1: the left side is -1/24, the right side 1/24."), and so is a point
-  where the claim is false; the proof fails without Lean. The run only tests:
-  it never proves a step. `Theorem.run_proof(**values)` runs a proof the same
-  way by hand, in a REPL or under pdb.
+  `name.conclusion.domain` giving the conclusion's first points to the draw
+  bound (from the top under `reversed(...)`, and a nested domain at each
+  point of the loop around it), and integers whose quotient is exact. A false
+  `assert` is reported at its line, with the values there and the two sides
+  that differ ("At n = 3, alpha = 2, beta = 1: the left side is -1/24, the
+  right side 1/24."), and so is a point where the conclusion is false; the
+  proof fails without Lean. The run only tests: it never proves a step.
+  `Theorem.run_proof(**values)` runs a proof the same way by hand, in a REPL
+  or under pdb.
 - `lanky check --proofs` prints the proofs lanky finds in the new surface,
-  `for a, b in claim.dom:` with `yield by(...)` in each case, and `--steps`
-  prints a row per `assert` and per `yield` at its Python line, a chain's
-  links under its first.
+  `for a, b in name.conclusion.domain:` with `yield by(...)` in each case,
+  conditions at their points in brackets, and only where the loop's order
+  fits the induction found; where it does not, the strategy is said in
+  words, with the order of the conclusion's `for` a loop would fit.
+  `--steps` prints a row per `assert` and per `yield` at its Python line, a
+  chain's links under its first.
 
 - **Named conditions: `@condition`, and the theorems of a `with` block
   holding under one** (the decision of 2026-10-18 on proofs for engineers,
@@ -135,7 +187,7 @@ The forms of 0.5's proofs are refused, each with the line to write:
   - A theorem under a condition is a `Theorem` to every consumer, its
     `variables`, `hypotheses`, `term` and `hypothesis_names` the whole
     statement, so a plugin cites it as it cites any other. `Theorem.under`,
-    `conditions`, `bound`, `own_variables`, `own_hypotheses` and
+    `held_under`, `bound`, `own_variables`, `own_hypotheses` and
     `cited_under` (`"under segment"`, for a row that cites it) say what came
     from the block.
   - One hook gives a body the names a `with` statement bound:
