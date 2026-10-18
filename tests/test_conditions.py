@@ -713,6 +713,20 @@ def test_lean_checks_a_written_proof_under_a_condition(tmp_path) -> None:
     assert failure["source"].startswith("yield by(recurrence(a - 2, b), claim[a - 2, b + 3]")
 
 
+def test_lean_proves_claims_under_a_claim_and_under_its_conditions(tmp_path) -> None:
+    """The whole claim's goal is a hypothesis under its name; its conditions are hypotheses."""
+    _lean_or_skip()
+    path = tmp_path / "steps_core.py"
+    path.write_text(STEPS, encoding="utf-8")
+    ledger = check_path(path)
+    checked = {fact.owner: fact for fact in claims(ledger)}
+    for owner in ("moves", "twice", "below"):
+        fact = checked[owner]
+        assert fact.status is Status.PROVED and fact.decided_by == "lean", fact.provenance
+    assert checked["twice"].rests_on[0] == checked["moves"].id
+    assert ledger.support(checked["twice"]).under == ()
+
+
 def test_mathlib_proves_line_taylor_and_reciprocal_taylor_under_segment(
     mathlib_project, monkeypatch, tmp_path
 ) -> None:
