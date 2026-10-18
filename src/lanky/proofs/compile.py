@@ -1726,8 +1726,6 @@ class _Compiler:
         ring of its own terms, and shown from the fact through the cast,
         which is injective (:meth:`_through_the_cast`).
         """
-        from lanky.matching import instantiate
-
         at = {var.name: value for (var, _), value in zip(shape.binders, values, strict=True)}
         sorts = {var.name: sort for var, sort in shape.binders}
         pieces: list[tuple[str, Origin | None]] = [(lean, None)]
