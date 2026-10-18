@@ -510,6 +510,21 @@ def path_ends(R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)) -> all(R[a] == 0 
 
 
 @claim
+def breaks(R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)) -> all(R[a] == 0 for a in Nat):
+    for a in breaks.conclusion.domain:
+        yield by(h)
+        break
+
+
+@claim
+def breaks_early(R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)) -> all(R[a] == 0 for a in Nat):
+    for a in breaks_early.conclusion.domain:
+        if a < 2:
+            break
+        yield by(h)
+
+
+@claim
 def bare_yield(R: Fn[Nat, Int], h: all(R[a] == 0 for a in Nat)) -> all(R[a] == 0 for a in Nat):
     for a in bare_yield.conclusion.domain:
         yield
@@ -846,6 +861,7 @@ def test_every_case_ends_with_a_closing_line(refused) -> None:
         "bare_return": ("a bare return at line", "return by()", "return"),
         "falls_off": ("the case ends at line", "return by()", 'assert m == n + 1, by(h)'),
         "continues": ("continue at line", "yield by()", "continue"),
+        "breaks_early": ("break at line", "yield by()", "break"),
         "path_ends": ("the case ends at line", "yield by()", "assert R[a] == 0, by(h)"),
         "bare_yield": ("a bare yield closes the case", "yield by()", "yield"),
     }
@@ -864,6 +880,10 @@ def test_every_case_ends_with_a_closing_line(refused) -> None:
     with pytest.raises(ProofError, match="one proof does not mix the two") as raised:
         trace_proof(refused.mixes)
     assert raised.value.kind == "return"
+    # a closed case, and then break: the loop stops at its first point
+    with pytest.raises(ProofError, match="ends the loop over breaks.conclusion.domain") as raised:
+        trace_proof(refused.breaks)
+    assert raised.value.line == _line(refused, "        break")
 
 
 def test_an_assert_gives_its_reason_as_by(refused) -> None:

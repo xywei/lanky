@@ -1612,8 +1612,8 @@ class _Tracer:
         )
         if case:
             case = case[0].lower() + case[1:] + ", "
-        if kind == "continue":
-            said = f"{case}continue at line {end} ends the case with no closing line"
+        if kind in ("continue", "break"):
+            said = f"{case}{kind} at line {end} ends the case with no closing line"
         elif kind == "return":
             said = f"{case}a bare return at line {end} ends the case with no closing line"
         elif end is not None:
@@ -1805,11 +1805,14 @@ class _Tracer:
             if value is None and path.closed is None:
                 raise self._unclosed(path, line)
             if value is None:
+                kind, at = _case_end(self.fn, path.questions, path.open_loops[-1].line)
+                word = "break" if kind == "break" else "a bare return"
+                at = at if kind == "break" else line
                 raise ProofError(
                     "close",
-                    f"a bare return at line {line} ends the loop over {name}.conclusion.domain "
-                    "at its first point; drop it, and the loop goes on to its next point",
-                    line,
+                    f"{word} at line {at} ends the loop over {name}.conclusion.domain at its "
+                    "first point; drop it, and the loop goes on to its next point",
+                    at,
                 )
             raise ProofError(
                 "return",
@@ -2254,6 +2257,8 @@ def _case_end(
             last = (statement.end_lineno or statement.lineno) + offset
             if isinstance(statement, ast.Continue):
                 return "continue", statement.lineno + offset
+            if isinstance(statement, ast.Break):
+                return "break", statement.lineno + offset
             if isinstance(statement, ast.Return) and statement.value is None:
                 return "return", statement.lineno + offset
             if isinstance(statement, ast.If):
