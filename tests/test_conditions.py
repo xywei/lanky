@@ -799,9 +799,14 @@ def test_a_claims_conditions_are_one_object(steps, segment) -> None:
     assert conditions.label == "moves.conditions (small)"
     assert conditions.signature == "moves.conditions(x: Int, small: x <= 3)"
     assert render(conditions.small) == "x <= 3"
-    # the conditions of what the claim holds under are among them
-    assert render(conditions.positive) == "h > 0"
     assert conditions(x=2) is True and conditions(x=4) is False
+    # the conditions of what the claim holds under are that one's
+    with pytest.raises(AttributeError) as refused:
+        _ = conditions.positive
+    assert str(refused.value) == (
+        "positive is a condition of forward, which moves holds under; the conditions of "
+        "moves itself are small"
+    )
     with pytest.raises(AttributeError, match="x is a variable of moves, not one of its"):
         _ = conditions.x
     with pytest.raises(AttributeError, match="moves has no condition big: its conditions are"):

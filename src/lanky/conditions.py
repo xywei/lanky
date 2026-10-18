@@ -767,20 +767,31 @@ class Conditions(Assuming):
         return _conjunction([prop for _, prop in self.assumed_hypotheses])
 
     def __getattr__(self, name: str) -> Any:
-        """``line_taylor.conditions.ode``: one condition, the proposition as the claim states it."""
+        """``line_taylor.conditions.ode``: one condition, the proposition as the claim states it.
+
+        Only the claim's own: a condition of what the claim holds under is
+        that one's, and is named as such.
+        """
         if name.startswith("_"):
             raise AttributeError(name)
-        props = dict(self.claim.hypotheses)
-        if name in props:
-            return props[name]
-        listing = ", ".join(n for n, _ in self.claim.hypotheses) or "none"
-        if name in dict(self.claim.variables):
+        claim = self.claim
+        own = dict(self.assumed_hypotheses)
+        if name in own:
+            return own[name]
+        listing = ", ".join(own) or "none"
+        if name in dict(self.assumed_variables):
             raise AttributeError(
-                f"{name} is a variable of {self.claim.__name__}, not one of its conditions, "
+                f"{name} is a variable of {claim.__name__}, not one of its conditions, "
                 f"which are {listing}"
             )
+        held = next((entry.condition for entry in claim.under if name in entry.parts), None)
+        if held is not None:
+            raise AttributeError(
+                f"{name} is a condition of {held.__name__}, which {claim.__name__} holds "
+                f"under; the conditions of {claim.__name__} itself are {listing}"
+            )
         raise AttributeError(
-            f"{self.claim.__name__} has no condition {name}: its conditions are {listing}"
+            f"{claim.__name__} has no condition {name}: its conditions are {listing}"
         )
 
     def __setattr__(self, name: str, value: Any) -> None:

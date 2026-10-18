@@ -650,8 +650,8 @@ def _examine_condition(fact: Fact, verbose: bool = False) -> Fact:
             continue
         if result.status is Status.TESTED:
             return result.with_status(result.status, trust_class=oracle.trust_class())
+        # a later test oracle may draw what this one could not; what it said is kept
         fact = result
-        break
     return _examine_vacuity(fact, verbose=verbose)
 
 
