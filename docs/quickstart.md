@@ -607,7 +607,7 @@ NOT PROVED upwind_bounded at upwind_step.py:14: under cfl (stable): forall u0 in
   A proof cites them by name: from lanky.known import abs_of_negative, abs_of_positive, triangle_inequality
 ```
 
-That is where a written proof starts ([Write a proof](#write-a-proof)).
+A written proof starts from there ([Write a proof](#write-a-proof)).
 
 That is the whole loop. A claim that fails at its draws is a red test, with
 the values that fail it, and lanky names any condition in the file that rules
@@ -705,7 +705,9 @@ tested  python         between.py:30  bounded       the term computes what the a
   own `rising`, and `cfl`, which `between` holds under. Its `with` names
   `cfl` too, because `between`'s conditions only make sense where `cfl` is
   in force. Leave `cfl` out and lanky refuses the block, with the line to
-  write.
+  write: *"with between.conditions as (u0, u1, rising): assumes between,
+  which holds under cfl, and cfl is not in force here; write with cfl as
+  (nu, stable), between.conditions as (u0, u1, rising):"*.
 - `bounded` assumes `between` whole, its goal included, so a proof of
   `bounded` can cite `between` by name. A claim built on another rests on
   it: its row reads `under ... between`, and it is worth no more than
@@ -758,8 +760,9 @@ Read aloud: *"Assume alpha is not zero. line_taylor: for each n, in order.
 At n = 1, by the first term. Otherwise the ODE at n − 1 gives a[n] from
 a[n − 1], and it holds by line_taylor at n − 1."* `coefficient(r, n)` is a
 helper in the file, `-(r ** n) / n`. The bodies are proofs, which
-[Write a proof](#write-a-proof) explains. Checked with Mathlib, each row
-names the condition first, and its last line says how the proof went:
+[Write a proof](#write-a-proof) explains. Put in a file of their own,
+`taylor.py`, with the imports and the helper, and checked with Mathlib, each
+row names the condition first, and its last line says how the proof went:
 
 ```text
 proved  tested     lean           taylor.py:19  line_taylor        under away_from_zero (nonzero): a : Fn[Nat, Complex]
@@ -827,9 +830,9 @@ one of its conditions fails, the question does not apply, and the call says
 so instead of answering: `courant(c=3, dt=dt, h=h)` raises
 `lanky.ConditionNotMet`, *"courant does not apply at these values: its
 condition stable of cfl, c*dt <= h, fails there"*. Calling a claim never
-runs its proof. In an annotation, a condition called at
-symbolic values is the proposition, as `ok: cfl(c, dt, h)` is in
-`courant_number`, where it also gives `c`, `dt` and `h` their sorts.
+runs its proof. In an annotation, a condition called at symbolic values is
+the proposition, as `ok: cfl(c, dt, h)` is in `courant_number`, where it
+also gives `c`, `dt` and `h` their sorts.
 
 ```console
 $ uv run python examples/upwind.py

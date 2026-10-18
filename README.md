@@ -38,8 +38,8 @@ builds a proposition instead of answering a bool.
 Three commands:
 
 ```console
-$ python examples/gauss.py           # theorems run as property tests
-$ pytest examples/gauss.py           # the same theorems, collected as test items
+$ python examples/gauss.py           # claims run as property tests
+$ pytest examples/gauss.py           # the same claims, collected as test items
 $ lanky check examples/gauss.py      # the ledger: every claim and who decided it
 STATUS  EFFECTIVE  BY             WHERE        OWNER          STATEMENT
 ------  ---------  -------------  -----------  -------------  -------------------------------------------------------------------------
@@ -80,58 +80,101 @@ installs it.
 worth no more than they are. `scan_monotone`'s proof rests on its reading,
 and is worth `tested`. In `examples/sumpy_recurrence.py`, sumpy's compressed
 Taylor recurrence for the 2-D Laplace kernel is proved by Lean for every
-order. The kernel's harmonicity is a theorem the file proves, but the step to
+order. The kernel's harmonicity is a claim the file proves, but the step to
 its derivatives at every order is taken on a citation (#174). So the claim
 reads `proved under harmonic at every order`, and is worth `assumed` until
-someone proves that step. And a plugin's facts rest on lanky's: in loopty's flagship, the row
-that applies the same theorem to a kernel rests on the theorem's proof and on
+someone proves that step. And a plugin's facts rest on lanky's: in loopty's
+flagship, the row that applies the same claim to a kernel rests on the
+claim's proof and on
 the kernel's postcondition, which isl decided from what the kernel stores and
 Lean proved again (two rows of its ledger, with Lean and Mathlib):
 
 ```text
 $ lanky check examples/l2p.py
 ...
-proved   proved     lean         l2p.py:246  reconstruct        (forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10. R[i, a, b] == C[i, a, b])
+proved   proved     lean         l2p.py:263  reconstruct        (forall i in Fin(nb), a in Nat, b in Nat where a < 2 and a + b <= 10. R[i, a, b] == C[i, a, b])
                                                                   and (forall i in Fin(nb), a in Nat, b in Nat where a + b + 2 <= 10.
                                                                     R[i, a + 2, b] == -R[i, a, b + 2])
-proved   tested     lean         l2p.py:246  reconstruct        by on_every_triangle, for every D with pde and stored:
+proved   tested     lean         l2p.py:263  reconstruct        by on_every_triangle, for every D with pde and stored:
                                                                   forall i in Fin(nb), a in Nat, b in Nat where a + b <= 10. R[i, a, b] == D[i, a, b]
 ...
 ```
 
 The first row is `reconstruct`'s postcondition, the copies and the
-recurrence, two of the theorem's hypotheses. The second is the theorem's
+recurrence, two of the claim's hypotheses. The second is the claim's
 conclusion about the kernel's array, for every table `D` the other two hold
-of, and is worth `tested` because the theorem is.
+of, and is worth `tested` because the claim is.
+
+**A proof reads as an engineer writes checks.** A claim lanky cannot prove
+alone gets a body, and the body is its proof: `assert` for a step, with its
+reason after it, `if` for cases, and a loop over the points of the
+conclusion, each case closed with `yield by(...)`:
+
+```python
+@claim
+def compressed_taylor(
+    D: Fn[Nat, Nat, Int],
+    R: Fn[Nat, Nat, Int],
+    pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
+    stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
+    recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
+) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
+    """What sumpy stores of a harmonic table, reconstructed, is the table."""
+    for a, b in compressed_taylor.conclusion.domain:
+        if a < 2:
+            yield by(stored)
+        else:
+            yield by(recurrence, compressed_taylor.conclusion[a - 2, b + 2], pde)
+```
+
+Read it aloud: *"For each point (a, b) of the conclusion, in order. If a <
+2, by what is stored. Otherwise by the recurrence, the conclusion at (a − 2,
+b + 2), and the PDE."* The claim is a table of true and false, and the proof
+is a loop that fills it in; each entry may use entries already filled, which
+is induction, with no function standing for a proof. Lean checks each step,
+and the row says how: `by its proof, table.py:16-20: induction on a, 2
+cases, 2 steps`. Before Lean is asked, the body also runs as plain Python at
+drawn values, so a step written wrong is caught at its line, with its
+numbers: `At a = 2, b = 0: the left side is 5, the right side -5.` The
+quickstart's [Write a proof](docs/quickstart.md#write-a-proof) has the whole
+language on one card.
 
 **Conditions have names.** Results often share their conditions, and
-engineers name them: the CFL condition, a segment that does not pass through
-zero. `@condition` states one once, with no conclusion and no body, and the
-theorems in a `with` block hold under it:
+engineers name them: the CFL condition, an expansion point that is not zero.
+`@condition` states one once, with no goal and no body, and the claims in a
+`with` block hold under it. A claim that fails at its draws is a red test,
+and lanky names any condition in the file that rules out the values that
+fail it:
+
+```text
+REFUTED upwind_bounded at upwind_step.py:12: forall nu in Real, u0 in Real, u1 in Real. abs(u0 - nu*(u0 - u1)) <= max(abs(u0), abs(u1))
+  counterexample: {'nu': Fraction(-7, 3), 'u0': Fraction(2, 1), 'u1': Fraction(1, 4)}
+  the goal is false at this assignment
+  The condition cfl in this file excludes every failing draw: put the claim under with cfl as (nu, stable).
+```
+
+Put the claim under it, and it is green:
 
 ```python
 @condition
-def segment(alpha: Complex, beta: Complex, nonzero: alpha != 0):
-    """A source segment alpha + tau * beta that does not pass through zero."""
+def cfl(nu: Real, stable: (0 <= nu) & (nu <= 1)):
+    """The CFL condition: the Courant number is between 0 and 1."""
 
 
-with segment as (alpha, beta, nonzero):
+with cfl as (nu, stable):
 
     @claim
-    def line_taylor(
-        a: Fn[Nat, Complex],
-        first_term: alpha * a[1] == beta,
-        ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
-    ) -> all(a[n] == coefficient(-beta / alpha, n) for n in Nat if n >= 1):
-        """The line-Taylor coefficients of log(alpha + tau * beta)."""
+    def upwind_bounded() -> all(
+        abs(u0 - nu * (u0 - u1)) <= max(abs(u0), abs(u1)) for u0 in Real for u1 in Real
+    ):
+        """One upwind step does not grow the solution."""
 ```
 
-Each theorem in the block is the condition's variables and conditions, then
-its own, and its row reads `under segment (nonzero): a : Fn[Nat, Complex] |
-...`. Called at numbers, a condition says whether it holds, `segment(alpha=2,
-beta=1)`, and in an annotation it is a hypothesis like any other, `ok:
-cfl(c, dt, h)`. The quickstart's [Name a condition](docs/quickstart.md#name-a-condition)
-has the CFL condition of an upwind scheme, and its ledger.
+Its row reads `under cfl (stable): ...`. `with` also assumes another
+claim's conditions, `with some_claim.conditions as (...)`, or a whole claim,
+its goal included, `with some_claim as (...)`. The quickstart's
+[Name a condition](docs/quickstart.md#name-a-condition) tells the story with
+its ledgers.
 
 ## Kernels: loopty
 
@@ -140,11 +183,11 @@ plugs in a theory of loop kernels, an isl oracle, a loopy executor and a
 `run` verb, so that a kernel written as a typed Python function, and every
 transform of it, becomes facts in the same ledger: isl decides each one,
 Lean proves it again from loopty's own description of the kernel, and a
-kernel cites the theorem it computes. Its five demonstrations, each written
+kernel cites the claim it computes. Its five demonstrations, each written
 after a kernel of a scientific code, and what lanky proves in each with
 Mathlib:
 
-| loopty demo | written after | the theorem, proved for every order or size |
+| loopty demo | written after | what lanky proves, for every order or size |
 |---|---|---|
 | `examples/l2p.py` | sumpy's L2P for the 2-D Laplace kernel | the compressed Taylor recurrence rebuilds every derivative, applied to the kernel that rebuilds each box's triangle |
 | `examples/hexahedra.py` | grudge PR #418's weak gradient and divergence | the Kronecker operator is three one-axis passes, cited by the programs, whose postconditions Lean proves from it |
@@ -157,15 +200,22 @@ with the code it was written after.
 
 ## Run it
 
-lanky's own examples and loopty's demonstrations run on the 0.5.0 release
+lanky's own examples and loopty's demonstrations run on the 0.6.0 release
 on PyPI. The examples are in the repository and not in the package, so clone
-the release's tag for them. On Python 3.12 or later:
+the release's tag for them. On Python 3.12 or later, in a virtual
+environment of its own:
 
 ```sh
+python3 -m venv .venv && . .venv/bin/activate
 pip install "lanky[lean,cas]"
-git clone --branch v0.5.0 https://github.com/xywei/lanky.git && cd lanky
+git clone --branch v0.6.0 https://github.com/xywei/lanky.git && cd lanky
 lanky check examples/gauss.py
 ```
+
+The first line matters on Debian, Ubuntu and Homebrew, whose Python refuses
+a `pip install` outside a virtual environment. `examples/line_taylor.py` and
+`examples/sumpy_recurrence.py` check sumpy's own code, so they need
+`pip install sumpy` as well; without it, `lanky check` says so.
 
 That much runs without Lean, and the ledger says what is missing, with the
 command for each piece. Lean comes from
@@ -206,11 +256,13 @@ starts no Lean, also for a question the first check ran out of time on.
   decider, a provenance and a source location. Property-testing tools give you
   the first, SMT wrappers the second, proof assistants the third, and none of
   them will tell you, for one file, which is which. A fact can rest on others,
-  and is worth no more than they are: a proof from a cited axiom reads
-  `proved under` that axiom, and is worth what the axiom is.
-- **Statements are the signature.** A theorem is a typed Python function. It
-  imports, it is callable, it is collected by pytest, and it is readable by
-  someone who has never seen a proof assistant.
+  and is worth no more than they are: a proof from a cited claim reads
+  `proved under` that claim, and is worth what the claim is.
+- **Statements are the signature, and proofs are checks.** A claim is a
+  typed Python function. It imports, it answers `True` or `False` when
+  called at values, it is collected by pytest, and it is readable by someone
+  who has never seen a proof assistant. Its proof, where it needs one, is
+  `assert`, `if` and `for`, with the reason for each step after it.
 - **A refutation is a witness, not a verdict.** `REFUTED` carries the
   counterexample, the offending point, or the pair of statement instances that
   makes an ordering wrong. So does the exception a caller sees.
@@ -218,7 +270,7 @@ starts no Lean, also for a question the first check ran out of time on.
   and never imports [loopty](https://github.com/xywei/loopty) (above): it
   finds it through entry points and asks it what it can do.
   `examples/pytential_skie.py` is a second consumer in miniature: a
-  rule engine decides, under eight cited axioms, which of five integral
+  rule engine decides, under eight cited claims, which of five integral
   representations give a boundary equation of the second kind. And
   `examples/sumpy_recurrence.py` is a third: sumpy's compressed Taylor
   wrangler for the 2-D Laplace kernel claims that its recurrence reconstructs
@@ -235,11 +287,19 @@ starts no Lean, also for a question the first check ran out of time on.
 
 ## Status
 
-This is 0.5.0. The core works; the edges are sharp. New in 0.5.0, a
-theorem's body can be its proof, written in Python and checked by Lean: facts
-cited by name, case splits, induction, and calculations a link to a line,
-citing facts lanky knows (`lanky.known`); and every Lean command ends with an
-axiom audit read positively. Since 0.4.0, the ledger
+This is 0.6.0. The core works; the edges are sharp. 0.6.0 is a breaking
+release, in which proofs read as engineers write checks. A claim is
+`@claim`, a claim taken on a source `@claim(cite=...)`, and a named set of
+assumptions `@condition`, under which the claims of a `with` block hold. A
+proof's step is an `assert` with its reason after it, `by(...)`; a claim
+over a domain is proved by a loop over its points, `for n in
+name.conclusion.domain:`, each case closed with `yield by(...)`; and under
+`lanky check` the body also runs as plain Python at drawn values, so a
+false step is caught at its line, with its numbers, before Lean is asked.
+Every form of 0.5 is refused with the line to write, and the CHANGELOG has
+the table from 0.5 to 0.6. Since 0.5.0, a claim's body can be its proof,
+checked by Lean, citing facts lanky knows (`lanky.known`), and every Lean
+command ends with an axiom audit read positively. Since 0.4.0, the ledger
 says what happened where it said nothing: an oracle that raised, in a
 `RAISED` line, a claim Lean was not asked about and why, under `--verbose`,
 and a Mathlib project Lean cannot import, in the `WITHOUT LEAN` line; and a
@@ -267,8 +327,8 @@ raises its floor to match.
   refutation or vacuous claim. Each refuted fact is repeated under the table
   with its counterexample, its witness and its reason, the three standard
   provenance keys, read the same way whichever oracle or plugin refuted it; or
-  with `no witness recorded` when it carries none of them. Each axiom is named
-  under the table in a `CITED` line with its citation, and a fact left
+  with `no witness recorded` when it carries none of them. Each cited claim
+  is named under the table in a `CITED` line with its citation, and a fact left
   `assumed` that an oracle looked at and declined, saying why, in a
   `DECLINED` line with the reason it gave as `declined`, a standard provenance
   key too. An oracle that raised over a fact is named in a `RAISED` line with
@@ -286,47 +346,73 @@ raises its floor to match.
   root, so two directories that each hold a `helpers.py` are each checked
   against their own.
 - `@claim`: statement from the signature, `.statement`, `.term`, `.fact()`,
-  `.test()`, `.report()`, `.lean()`; callable on concrete values.
+  `.test()`, `.report()`, `.lean()`, and the claim's tree, `.conditions` and
+  `.conclusion`. Called at values, by position or by name, a claim answers
+  `True` or `False`; where one of its conditions fails there, the question
+  does not apply, and `lanky.ConditionNotMet` names the condition. Calling a
+  claim never runs its proof.
 - Written proofs. A claim whose body holds more than a docstring, `...` or
   `pass` is proved by that body, in the Python an engineer already writes:
   `assert x == y, by(f, g)` for a step, `if` for cases, and `for i, a, b in
   every_box.conclusion.domain:` for each point of the conclusion, each case
   closed with `yield by(...)`, or `return by(...)` for a claim proved without
-  a loop. The claim's name is spelled out and its parts addressed through
-  its tree: `every_box.conclusion[i, a - 2, b + 2]` is the conclusion at a
-  point the loop has filled in, the induction, checked to come earlier in
-  the loop; brackets give a point of a domain (`pde[i, a - 2, b]`), and
-  parentheses give another claim its inputs (`gauss(n - 1)`). `lanky check`
-  traces the body after every run and draw, on symbolic values (`python
-  file.py` never calls it), runs it as plain Python at the check's draws, so
-  a false step is caught at its line with its numbers, compiles it to one
-  Lean command, with each hypothesis under its Python name and the
-  conclusion over its points a theorem of its own with the measure lanky
-  finds, and adds a line to the claim's row: `by its proof,
+  a loop; `by()` when the case follows directly. The claim's name is spelled
+  out and its parts addressed through its tree:
+  `every_box.conclusion[i, a - 2, b + 2]` is the conclusion at a point the
+  loop has filled in, the induction, checked to come earlier in the loop,
+  and `every_box.conclusion[i].domain` a nested domain; brackets give a point
+  of a domain (`pde[i, a - 2, b]`), and parentheses give another claim its
+  inputs (`gauss(n - 1)`). `lanky check` runs the body two ways after every
+  run and draw (`python file.py` never calls it). Natively, as plain Python
+  at the check's draws, with exact numbers and families over the naturals
+  filled in from the hypotheses that define them, so a false step is caught
+  at its line, with its numbers, without Lean. Traced, on symbolic values,
+  to one Lean command, with each hypothesis under its Python name and the
+  conclusion over its points a Lean theorem of its own, with the measure
+  lanky finds; the claim's row gets a line of its own: `by its proof,
   every_box.py:113-119: induction on a, 3 cases, 3 steps`. A calculation is
   Python's own chained comparison in one `assert`, and a step left open,
   `by(...)`, is named in the row. A proof that fails is reported at the
   Python line, with what is left over and the fix where lanky can name one,
   and fails the check, also for a claim lanky proves alone, whose row still
-  reads `proved`. A claim the proof cites from another module is a row of the
-  ledger, marked with its module. `examples/every_box.py`, lanky #140's
-  claim, which lanky's search does not prove, and
-  `examples/log_of_the_modulus.py`, which cites two facts of `lanky.known`,
-  are the worked cases; the quickstart's *Write a proof* says what each form
-  means.
+  reads `proved`. A case with no closing line, a claim that calls itself, a
+  point the loop has not reached, a part not addressed through the tree and
+  every proof form of lanky 0.5 are refused at their line, with the line to
+  write, and `lanky check` refuses to run under `python -O`, which removes
+  every `assert`. A claim the proof cites from another module is a row of
+  the ledger, marked with its module. `examples/every_box.py`, lanky #140's
+  claim, which lanky's search does not prove, `examples/nicomachus.py` and
+  `examples/log_of_the_modulus.py`, which cite facts of `lanky.known`, are
+  the worked cases; the quickstart's *Write a proof* has the whole language
+  on one card.
+- Named conditions. `@condition` states a set of assumptions once, typed
+  variables and named conditions with no goal and no body, and `with cfl as
+  (nu, stable):` puts the claims of its block under it: each claim's
+  statement is the condition's variables and conditions, then its own, and
+  its row reads `under cfl (stable): ...`. `with` also assumes another
+  claim's conditions, `with some_claim.conditions as (...)`, or a whole
+  claim, its goal included, `with some_claim as (...)`, and what is built on
+  a claim rests on it. A condition has a row of its own, the check by draws that it
+  can hold at all, and is never `proved`. Called at numbers, a condition
+  says whether it holds; in an annotation, `ok: cfl(c, dt, h)`, it is a
+  hypothesis that also gives its variables their sorts. A refuted claim names
+  any condition in its file that is false at every failing draw: "The
+  condition cfl in this file excludes every failing draw: put the claim
+  under with cfl as (nu, stable)." `examples/upwind.py` and the quickstart's
+  *Name a condition* are the worked cases.
 - `lanky.known`: twenty facts under plain names (`log_of_a_power`,
   `modulus_squared`, `one_more_term`, ...), each proved once with Mathlib by
   a Lean proof kept in a table, and cited by a written proof like any
-  theorem. Where Lean does not prove a claim alone, `lanky check` names the
+  claim. Where Lean does not prove a claim alone, `lanky check` names the
   known facts that fit it.
-- `@claim(cite=...)`: a statement written like a theorem and taken on a
-  citation. Its fact is `assumed (cited)`, with the citation in its
-  provenance; no oracle is asked to establish it, and the property tester
-  still looks for a counterexample, so an axiom copied down wrong is refuted
-  (and one whose hypotheses nothing satisfies is caught as vacuous).
+- `@claim(cite=...)`: a claim taken on a source. Its fact is `assumed
+  (cited)`, with the citation in its provenance; no oracle is asked to
+  establish it, and the property tester still looks for a counterexample, so
+  a citation copied down wrong is refuted (and one whose hypotheses nothing
+  satisfies is caught as vacuous).
 - The reading of every claim is checked (#91). lanky reads an annotation by
   running its Python on symbolic terms, and the oracles are handed the term
-  that run builds. Each theorem and axiom gets a second fact, of kind
+  that run builds. Each claim, cited or not, gets a second fact, of kind
   `faithful` and statement `the term computes what the annotations compute`:
   the annotations are run again as plain Python at drawn values, six draws of
   small values and domain ends, one at each integer written in the claim or
@@ -346,9 +432,9 @@ raises its floor to match.
   claim rests on its reading, so a proof is worth `tested` in the `EFFECTIVE`
   column, and `proved under faithful:name` where the reading could not be run
   at a point, with the reason in a `DECLINED` line. The pytest plugin fails a
-  theorem whose reading is refuted.
-- Facts rest on facts. `@claim(uses=[...])` names the theorems, axioms or
-  fact ids a theorem rests on, and a plugin sets `Fact.rests_on` on the facts
+  claim whose reading is refuted.
+- Facts rest on facts. `@claim(uses=[...])` names the claims, cited claims or
+  fact ids a claim rests on, and a plugin sets `Fact.rests_on` on the facts
   it builds. The ledger reads the graph: a row says what it is established
   under (`tested under nicomachus`), and an `EFFECTIVE` column gives the
   weakest status over everything a fact rests on whenever that is weaker than
@@ -357,7 +443,7 @@ raises its floor to match.
   `lanky check` names it under the table. An id names a definition by the
   module its file's path gives it under its source root,
   `claim:helpers.lemma@12`, and not by the name the module was imported
-  under, so a theorem has the same id in its own file's ledger and in the
+  under, so a claim has the same id in its own file's ledger and in the
   `rests_on` of a file that imports it. A plugin keys its facts the same way,
   with `lanky.ledger.fact_id` and `lanky.check.module_name`.
   `examples/citation.py` is the worked case.
@@ -397,7 +483,7 @@ raises its floor to match.
   `Fn[A, B]` and `Fn[A, B, C]`, a family with two indices (a matrix,
   `Fn[Fin[n], Fin[m], Real]`, which is `Fn[Fin[n], Fn[Fin[m], Real]]`),
   applied as `F[i, j]`, `F(i, j)` or `F(i)(j)`, one entry to every reading
-  and to Lean, and given to a theorem called as a function as nested lists,
+  and to Lean, and given to a claim called as a function as nested lists,
   an array or a function, refinement by `T & prop`, the sum
   `Fin[n] + Fin[m]` of index types (carried for plugins, not yet a binder
   domain), exactness classes;
@@ -408,7 +494,7 @@ raises its floor to match.
   a function an annotation calls. Python's `abs` of a term is lanky's `Abs`,
   so a comparison of it is a proposition.
 - Property testing, including satisfying a definitional hypothesis by
-  construction rather than rejection sampling, so a theorem about a scan is
+  construction rather than rejection sampling, so a claim about a scan is
   genuinely tested and not vacuously passed. A synthesized value has to land
   inside the family's codomain, so an unsatisfiable definition drops the draw
   rather than putting a point outside its sort into it. A pass over zero valid
@@ -436,7 +522,7 @@ raises its floor to match.
   which used to be recorded as the quantifier's guard, and a symbolic domain
   `zip` or `enumerate` walks. `max` and `min` of terms are lanky's own, the
   larger and the smaller of their arguments: `abs(u0 - nu * (u0 - u1)) <=
-  max(abs(u0), abs(u1))` reads as written, and Lean's is `max a b`. A theorem refuses a parameter
+  max(abs(u0), abs(u1))` reads as written, and Lean's is `max a b`. A claim refuses a parameter
   annotated with a builtin type, `x: int`, or naming one anywhere in its
   annotation, `f: Fn[Fin[n], float]`, and names the sort meant. A term is no
   key of a dict and no member of a set in an annotation: `{0: 1}.get(i, 0)`
@@ -472,8 +558,8 @@ raises its floor to match.
 - The Lean oracle over core Lean 4, with a tactic ladder and an induction
   strategy read off the term. No Mathlib is fetched or needed. CI runs the
   suite against Lean v4.29.1 as well as without Lean. A name Python accepts
-  and Lean reserves, a variable `fun` or a theorem `scoped`, is printed
-  quoted (`«fun»`). A theorem is declared as `Lanky.<name>`, so a claim
+  and Lean reserves, a variable `fun` or a claim `scoped`, is printed
+  quoted (`«fun»`). A claim is declared in Lean as `Lanky.<name>`, so a claim
   named like a core declaration (`and_comm`, `id`, `trivial`) is not refused
   as already declared; a variable named like a root name the printer writes
   (`Int`, `Nat`, `Bool`, `Finset`) has those printed `_root_.Int` in its
@@ -564,16 +650,16 @@ raises its floor to match.
   numbers (`Part(..., mathlib=True)`) is stated with `ℝ` and checked where
   Mathlib is, closed by `linarith`; without Mathlib the claim is left to
   the oracles after Lean with that reason. A hypothesis that is itself a
-  theorem is applied as one (`Hints.applications`): Lean is asked for
+  claim is applied as one (`Hints.applications`): Lean is asked for
   `apply h (p := ...) (c := ...)` with the values the plugin matched, and
-  checks that the theorem's conclusion is the claim. Where unknowns
+  checks that the cited claim's conclusion is the claim. Where unknowns
   multiply, a layout's address `i + n * j` at every `n`, the plugin gives
   the steps `omega` cannot take: products not negative (`Hints.products`,
   `0 ≤ n * (m - 1 - j)` by `Int.mul_nonneg`), what Lean knows of `c // n`
   and `c % n` (`Hints.quotients`), and the arithmetic multiplied out
   (`Hints.ring`), so `omega` reads each product of unknowns as one atom;
-  all in core Lean. loopty states its isl facts this way, and they read `proved lean`; it states a kernel that
-  cites a theorem the same way:
+  all in core Lean. loopty states its isl facts this way, and they read
+  `proved lean`; it states a kernel that cites a claim the same way:
 
   ```python
   # claim: Forall(..., conclusion, guard=theorem & postcondition)
@@ -587,9 +673,9 @@ raises its floor to match.
   under a name of its own in the ledger: the facts of one owner whose parts
   have one name, a kernel's accesses, are told apart as
   `Lanky.jacobi_in_bounds`, `Lanky.jacobi_in_bounds_2` and on.
-- `--proofs` prints the proof lanky found for each proved theorem, in Python
+- `--proofs` prints the proof lanky found for each proved claim, in Python
   where Python can say it: for an induction over families, the body a written
-  proof would have, in the theorem's own names and at the points the search
+  proof would have, in the claim's own names and at the points the search
   found, ready to paste under the docstring (`for a, b in
   ct.conclusion.domain:`, `yield by(recurrence[a - 2, b], ct.conclusion[a -
   2, b + 2], pde[a - 2, b])`), printed only where the loop's order fits the
@@ -597,7 +683,7 @@ raises its floor to match.
   sums in the order found; for any other rung of the ladder, the rung, in
   words. `--steps` prints its outline in lanky's notation, each case a chain
   of equations whose links name the fact, the point and the multiplier; for
-  a theorem with a written proof, that proof's outline, a row per step at
+  a claim with a written proof, that proof's outline, a row per step at
   its Python line. Both take a text as `--show-lean` does.
 - Plugin discovery by entry point, and `lanky <verb>` from the registry.
 - The pytest plugin.
@@ -619,8 +705,18 @@ raises its floor to match.
   draw, such as a family over `Nat`, gets no warning, because no draw reached
   its hypotheses. A goal's guard is read the same way, and only the goal's
   outermost quantifier is: a guard nested deeper in the goal is not examined.
-  That holds for a theorem with no parameters as well, whose goal is a goal
+  That holds for a claim with no parameters as well, whose goal is a goal
   and has no hypotheses to be mistaken for.
+- The native run of a written proof compares exact numbers, so a step whose
+  sides are not rational at the draws, one about a logarithm say, is left to
+  Lean. A family over the naturals is filled in over the first 14 of them,
+  so the points of a hypothesis past those are left out of the run.
+- A proof over nested domains cites the conclusion at the levels it loops
+  over: a citation deeper than those is refused, and loops that walk their
+  levels in different directions find no measure for Lean. `--proofs` prints
+  nested loops only for a proof as written, not for one lanky finds.
+- A claim whose conditions quantify over `Nat` cannot yet be called at
+  values: the call raises where it should answer.
 - Python's `and` between two propositions in a generator's `if` clause happens
   to produce the conjunction that was written, because of how CPython compiles
   a comprehension filter, so it is not refused. It cannot be told apart from
@@ -714,9 +810,12 @@ raises its floor to match.
   replays them under a checker yet.
 - Real analysis beyond what the ladder finds: Mathlib mode states it, and the
   ladder is a fixed set of tactics, not proof search, so a statement that needs
-  a lemma by name falls through to the tester (`use_tactic` pins a script).
-- A proof scripting surface: today a proof is a tactic ladder lanky drives, not a
-  Python program over a live goal.
+  a lemma by name falls through to the tester, until a written proof cites
+  the lemma from `lanky.known` (`use_tactic` pins a Lean script by hand).
+- An interactive proof. A written proof is checked as a whole when `lanky
+  check` runs, and nothing shows the goal left after each step as you write
+  it. `--steps` prints the outline afterwards, and a step that fails says
+  what is left over.
 
 ## Known limits
 
@@ -746,7 +845,7 @@ copy cannot hold as it was, such as an instance of a class of yours.
 
 The open issues you are most likely to meet:
 
-- **Calling a theorem does not check its reading**
+- **Calling a claim does not check its reading**
   ([#96](https://github.com/xywei/lanky/issues/96)). `gauss(n=4)`,
   `gauss.report()` and `gauss.test()`, and so `python examples/gauss.py`,
   evaluate the term, even where the reading is refuted. Use `lanky check` or
@@ -796,7 +895,7 @@ The open issues you are most likely to meet:
 pip install lanky
 ```
 
-That is the 0.5.0 release, which loopty's demonstrations need
+That is the 0.6.0 release, which loopty's demonstrations need
 ([Run it](#run-it)). lanky needs Python 3.12 or later. In a uv project, `uv add lanky`, and the
 same for the extras below. The examples and the quickstart are in the
 repository and not in the package; clone it to follow them.
@@ -983,11 +1082,13 @@ changes what the code means.
 ## Documentation
 
 - [docs/quickstart.md](https://github.com/xywei/lanky/blob/main/docs/quickstart.md):
-  the worked file, end to end, with the output the commands actually print,
-  a second one with an axiom, the pytential demonstration, where a rule engine
-  checks a derivation under the axioms it rests on, and the sumpy
-  demonstration, where a recurrence is tested by mpmath and decided by sympy
-  through an order, and proved by Lean with Mathlib for every order.
+  the worked file, end to end, with the output the commands actually print;
+  named conditions and the CFL story, red then green; a claim taken on a
+  citation; the pytential demonstration, where a rule engine checks a
+  derivation under the cited claims it rests on; the sumpy demonstration,
+  where a recurrence is tested by mpmath and decided by sympy through an
+  order, and proved by Lean with Mathlib for every order; and proofs written
+  in Python, with the whole language on one card.
 - [CHANGELOG.md](https://github.com/xywei/lanky/blob/main/CHANGELOG.md).
 - [loopty](https://github.com/xywei/loopty): the sister project and lanky's
   first plugin: a typed polyhedral layer over loopy, where the facts are about

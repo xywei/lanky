@@ -22,7 +22,9 @@ assumes another claim's conditions, or a whole claim.
 
 ### Breaking
 
-The forms of 0.5 are refused, each with the line to write:
+The forms of 0.5 are refused, each with the line to write. The quickstart's
+*Write a proof* has the 0.6 language on one card, and its *Name a condition*
+the CFL story, red then green.
 
 | 0.5 | 0.6 |
 |---|---|
@@ -146,7 +148,7 @@ The forms of 0.5 are refused, each with the line to write:
   that differ ("At n = 3, alpha = 2, beta = 1: the left side is -1/24, the
   right side 1/24."), and so is a point where the conclusion is false; the
   proof fails without Lean. The run only tests: it never proves a step.
-  `Theorem.run_proof(**values)` runs a proof the same way by hand, in a REPL
+  `Claim.run_proof(**values)` runs a proof the same way by hand, in a REPL
   or under pdb.
 - `lanky check --proofs` prints the proofs lanky finds in the new surface,
   `for a, b in name.conclusion.domain:` with `yield by(...)` in each case,
@@ -159,17 +161,17 @@ The forms of 0.5 are refused, each with the line to write:
 - **Named conditions: `@condition`, and the claims of a `with` block
   holding under one** (the decision of 2026-10-18 on proofs for engineers,
   section 6). Results share conditions, and engineers name them: the CFL
-  condition, a segment that does not pass through zero. A condition is
+  condition, an expansion point that is not zero. A condition is
   written like a claim with no goal and no body, and the claims that hold
   under it go in a `with` block:
 
   ```python
   @condition
-  def segment(alpha: Complex, beta: Complex, nonzero: alpha != 0):
-      """A source segment alpha + tau * beta that does not pass through zero."""
+  def away_from_zero(alpha: Complex, beta: Complex, nonzero: alpha != 0):
+      """The expansion point alpha is not zero."""
 
 
-  with segment as (alpha, beta, nonzero):
+  with away_from_zero as (alpha, beta, nonzero):
 
       @claim
       def line_taylor(a: Fn[Nat, Complex], first_term: alpha * a[1] == beta, ...) -> ...:
@@ -179,14 +181,14 @@ The forms of 0.5 are refused, each with the line to write:
   - Called at numbers a condition says whether it holds, `cfl(c=1, dt=0.1,
     h=0.2)`, and in an annotation it is the proposition, so `ok: cfl(c, dt,
     h)` is a hypothesis of any claim.
-  - `with segment as (alpha, beta, nonzero):` binds the condition's
+  - `with away_from_zero as (alpha, beta, nonzero):` binds the condition's
     variables and named conditions, in its signature's order and under its
     names; another count or another name is refused with the signature
     shown. Every claim defined in the block holds under the condition: its
     statement is the condition's variables and conditions, then its own, and
     natively it takes the condition's variables like its own,
     `line_taylor(alpha=2, beta=1, a=...)`.
-  - The ledger's row reads `under segment (nonzero): a : Fn[Nat, Complex] |
+  - The ledger's row reads `under away_from_zero (nonzero): a : Fn[Nat, Complex] |
     ...`, the condition first and then the claim's own parts, as the file
     has them. The property tester and the faithfulness check draw the
     condition's variables with the claim's, satisfying its conditions, and
@@ -196,17 +198,17 @@ The forms of 0.5 are refused, each with the line to write:
   - A written proof reads the bound names, `alpha` and `nonzero`, as it reads
     its own parameters; Lean states the theorem with the condition's
     variables and hypotheses first, under their names.
-  - Several conditions compose, `with segment as (...), cfl as (...):`, in
+  - Several conditions compose, `with away_from_zero as (...), cfl as (...):`, in
     Python's parenthesized form, or nested; a variable two conditions declare
     with one sort is one variable. A claim in a block that declares one of
     its names is refused, and so is a claim after the block that still
-    uses one: `alpha belongs to segment; use it inside with segment as
+    uses one: `alpha belongs to away_from_zero; use it inside with away_from_zero as
     (alpha, beta, nonzero):`.
   - A claim under a condition is a `Claim` to every consumer, its
     `variables`, `hypotheses`, `term` and `hypothesis_names` the whole
     statement, so a plugin cites it as it cites any other. `Claim.under`,
     `held_under`, `bound`, `own_variables`, `own_hypotheses` and
-    `cited_under` (`"under segment"`, for a row that cites it) say what came
+    `cited_under` (`"under away_from_zero"`, for a row that cites it) say what came
     from the block.
   - **`with` in three forms.** `with cfl as (nu, stable):` assumes a
     condition; `with line_taylor.conditions as (a, first_term, ode):`
@@ -301,9 +303,29 @@ The forms of 0.5 are refused, each with the line to write:
   proposition, and inside the claim's own proof it is the fact `ode` names
   there, which `by(...)` cites. A condition of what the claim holds under is
   that one's, and is refused with whose it is.
+- The README and the quickstart are written in 0.6's words: claims, cited
+  claims and conditions where they said theorems and axioms, and calling a
+  claim answers `True` or `False`. The quickstart's *Write a proof* is the
+  design's card, with a proof over tables of integers a reader writes
+  (`table.py`), which core Lean proves by its proof, the two runs of one
+  body, a step written wrong with its numbers, a point one cell off with its
+  checked fix, and each refusal at its line. Its *Name a condition* tells
+  the CFL story red then green (`upwind_step.py`), shows the three things a
+  `with` assumes (`between.py`), and has the design's two Taylor claims under
+  `with away_from_zero`. `tests/test_docs.py` writes each of those files from
+  the quickstart's snippets and holds every block shown under it to what
+  `lanky check` prints, with core Lean and without.
+- The README's *Run it* starts with a virtual environment, which Debian's,
+  Ubuntu's and Homebrew's Pythons need before `pip install`, and says that
+  `examples/line_taylor.py` and `examples/sumpy_recurrence.py` need `pip
+  install sumpy`; the quickstart says so where it uses them, and how to
+  check `lanky.known` beside an install from PyPI, where a clone's
+  `src/lanky/known.py` is refused (#184).
 
 ### Fixed
 
+- The README's excerpt of loopty's `l2p.py` ledger named `reconstruct` at
+  line 246; loopty 0.5.0 has it at line 263 (#184).
 - `for k in reversed(name.conclusion.domain):` over a domain longer than one
   native walk takes (200 points) started below the top: the walk took the
   domain's first 200 points and reversed them, so a proof about `Fin[500]`
