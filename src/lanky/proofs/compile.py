@@ -275,7 +275,7 @@ class Command:
         as_cited: The text a proof that cites this theorem restates, which the
             command proves as ``Lanky.<name>.as_cited``; ``None`` for none.
         audited: The theorems the command's axiom audit asks about.
-        holes: The Python lines of the steps left open, ``by=...``.
+        holes: The Python lines of the steps left open, ``by(...)``.
         outline: The proof's steps as ``lanky check --steps`` prints them:
             ``(line, case, left, relation, term, reason)``.
     """

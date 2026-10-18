@@ -15,11 +15,8 @@ fact by its Python name, as it cites a hypothesis or a theorem of its own::
         log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
     ):
         \"\"\"log|alpha| with no square root: half the log of alpha times its conjugate.\"\"\"
-        return (
-            log(abs(alpha))
-            .equals(log(abs(alpha) ** 2) / 2, by=log_of_a_power)
-            .equals(log(real(alpha * conj(alpha))) / 2, by=modulus_squared)
-        )
+        assert log(abs(alpha)) == log(abs(alpha) ** 2) / 2, by(log_of_a_power)
+        return by(modulus_squared)
 
 Each fact's Lean proof is written once, against the statement as lanky
 prints it (the integer reading of :mod:`lanky.lean`: a natural is an ``Int``
@@ -43,8 +40,13 @@ fact at that point is stated over the integers, as the step reads it, and
 Lean shows it from the fact over the reals through the cast, which is
 injective. So ``examples/nicomachus.py``'s proof cites it as it stands::
 
-    sum(i**3 for i in Fin[n + 1])
-    .equals(sum(i**3 for i in Fin[n]) + n**3, by=one_more_term)
+    assert (
+        sum(i**3 for i in Fin[n + 1])
+        == sum(i**3 for i in Fin[n]) + n**3
+        == sum(i for i in Fin[n]) ** 2 + n**3
+        == (sum(i for i in Fin[n]) + n) ** 2
+        == sum(i for i in Fin[n + 1]) ** 2
+    ), by(one_more_term, claim(n - 1), gauss(n - 1))
 
 A fact here has no hypothesis it does not need. ``log_of_a_power`` holds for
 every real ``x``, ``0`` and the negative numbers included, because Lean's

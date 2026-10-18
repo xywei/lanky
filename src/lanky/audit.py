@@ -124,7 +124,7 @@ def audit_failure(
     ``messages`` are the texts of every message Lean gave the command. Each
     name needs exactly one answer about exactly that theorem (see the module
     docstring), resting on nothing beyond :data:`TRUSTED_AXIOMS`, or beyond
-    ``allowed``: a written proof with steps left open, ``by=...``, which
+    ``allowed``: a written proof with steps left open, ``by(...)``, which
     closes "with holes", may rest on ``sorryAx`` as well, and reads assumed
     (:mod:`lanky.proofs`).
     """

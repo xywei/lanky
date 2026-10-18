@@ -756,7 +756,7 @@ def _printer_line(fact: Fact) -> str | None:
 def _proof_line(fact: Fact) -> str | None:
     """``by its proof, file.py:41-48: ...``, for a claim its written proof proved.
 
-    A proof Lean accepted with steps left open, ``by=...``, names them:
+    A proof Lean accepted with steps left open, ``by(...)``, names them:
     ``its proof, file.py:41-48, ...; left open at file.py:44, assumed there``.
     """
     provenance = fact.provenance if isinstance(fact.provenance, dict) else {}

@@ -770,7 +770,7 @@ def _closed(fact: Fact, where: str, proof: Proof, command: Command, oracle: Any)
 
 
 def _holes(fact: Fact, where: str, proof: Proof, command: Command) -> Fact:
-    """``fact`` as it was, with a proof Lean accepted but for the steps it left open, ``by=...``.
+    """``fact`` as it was, with a proof Lean accepted but for the steps it left open, ``by(...)``.
 
     The claim is not proved by it: it reads as the other oracles left it,
     assumed where none settled it, and its row names the lines left open.

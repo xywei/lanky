@@ -1,6 +1,6 @@
 """The multipliers a step was closed with, kept so that a warm check runs no sympy.
 
-The design idea. A step of a written proof, ``return f, g``, is closed by
+The design idea. A step of a written proof, ``yield by(f, g)``, is closed by
 ``linear_combination`` with multipliers that Python finds: sympy's linear
 algebra over the step's terms (:func:`lanky.proofs.report.combination`). The
 search is the slow part of compiling a proof, and the multipliers are part of

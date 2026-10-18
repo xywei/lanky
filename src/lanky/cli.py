@@ -1016,12 +1016,12 @@ def report_written(ledger: Ledger) -> bool:
 
         UNPROVED every_box at every_box.py:30: a step of its proof does not follow.
 
-          every_box.py:52    return recurrence(i, a - 2, b), claim(i, a - 2, b + 3), ...
+          every_box.py:52    yield by(recurrence, claim[i, a - 2, b + 3], pde)
 
           When a + b != 0 and a >= 2 (every_box.py:48, 50), the step needs
           R[i, a, b] == D[i, a, b]
           ...
-          Fix: claim(i, a - 2, b + 2) makes the step follow (checked).
+          Fix: claim[i, a - 2, b + 2] makes the step follow (checked).
 
     A claim lanky proved alone keeps its row, proved by lanky's own proof,
     and the block says so instead: ``WARNING every_box at every_box.py:30:
@@ -1029,7 +1029,7 @@ def report_written(ledger: Ledger) -> bool:
     Either fails the check, since a broken proof is a failing test. A proof
     not checked, on a machine without Lean, or without Mathlib for a claim
     only Mathlib states, gets a ``NOT CHECKED`` line, which does not, and so
-    does a proof Lean accepted with steps left open, ``by=...``, whose
+    does a proof Lean accepted with steps left open, ``by(...)``, whose
     ``LEFT OPEN`` line names them.
     """
     broken = False
@@ -1052,7 +1052,7 @@ def report_written(ledger: Ledger) -> bool:
             print()
             print(
                 f"LEFT OPEN {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
-                f"holds but for the steps left open at {holes} (by=...); until they are "
+                f"holds but for the steps left open at {holes} (by(...)); until they are "
                 "written, the claim reads as the other oracles leave it"
             )
             continue
@@ -1223,7 +1223,7 @@ def report_proofs(ledger: Ledger, text: str = "") -> None:
 
     The body is in the surface a written proof uses, in the theorem's own
     names, and pastes under the theorem's docstring: for an induction over
-    families, ``def claim(a, b):`` with a case per base and the facts each
+    families, ``for a, b in claim.dom:`` with a case per base and the facts each
     case rests on, at the points the search found, written as the user
     writes them; for an exchange of sums, the chain through the left side
     with its sums put in order. For a proof by any other rung of the
