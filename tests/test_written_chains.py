@@ -379,11 +379,24 @@ def test_without_lean_a_false_step_fails_at_its_line(cases, monkeypatch) -> None
 
 
 def test_without_lean_a_link_over_a_family_that_cannot_be_drawn_says_so(cases, monkeypatch) -> None:
+    """A link over a table over ``Nat`` is not drawn alone; the native run fills the table in.
+
+    So the line says the proof was run at that many draws; with no native
+    run to say so, it says the links could not be drawn.
+    """
     import lanky.proofs as proofs
+    import lanky.proofs.native as native
+    from lanky.proofs.filled import FILLED_DRAWS
 
     monkeypatch.setattr(proofs, "_lean_oracle", lambda: None)
     account = prove(cases.ct_chain, cases.ct_chain.fact()).provenance["proof"]
     assert account["closed"] is None
+    assert account["said"] == (
+        f"without Lean, its proof was not checked by Lean; it was run at {FILLED_DRAWS} drawn "
+        "values instead, and every step held"
+    )
+    monkeypatch.setattr(native, "native_run", lambda theorem, *args, **kwargs: (None, 0))
+    account = prove(cases.ct_chain, cases.ct_chain.fact()).provenance["proof"]
     assert "could not be drawn" in account["reason"]
 
 
@@ -565,7 +578,37 @@ def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
 '''
 
 
-def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> None:
+def _lean_side_only(monkeypatch) -> None:
+    """Set the native run aside, so that what is tested is Lean's side of the defense.
+
+    The claims of these cases are about a table over ``Nat`` that nothing
+    constrains, and the native run fills one in and finds each false at its
+    first point, before Lean is asked (see
+    :func:`test_t4_claims_are_refuted_natively_too`). What these tests show
+    is that Lean's side refuses the proofs on its own.
+    """
+    import lanky.proofs.native as native
+
+    monkeypatch.setattr(native, "native_run", lambda theorem, *args, **kwargs: (None, 0))
+
+
+def test_t4_claims_are_refuted_natively_too(tmp_path) -> None:
+    """Defense in depth: the native run, at a table it fills in, finds each claim false at 0."""
+    from lanky.proofs.native import native_failure
+
+    for name, source in (("t4_native", T4_INDUCTION), ("t4_unsampled_native", T4_UNSAMPLED)):
+        path = tmp_path / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        module = import_path(path)
+        for owner in ("every_cell_is_seven", "threes_are_sevens"):
+            if hasattr(module, owner):
+                failure = native_failure(getattr(module, owner))
+                assert failure is not None, owner
+                assert failure.headline == "its conclusion is false at a point its proof reaches"
+                assert failure.lines[0].startswith("At n = 0: ")
+
+
+def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path, monkeypatch) -> None:
     """``grows`` is cited at ``(f, n)`` in the case ``n < 1``, where its statement proves False.
 
     The claim is false, and about a table over ``Nat``, which no draw tests;
@@ -576,6 +619,7 @@ def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> No
     False: the proof is refused, at the line of the case.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_induction_cases.py"
     path.write_text(T4_INDUCTION, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
@@ -599,7 +643,7 @@ def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> No
 T4_BY_NAME = T4_INDUCTION.replace("yield by(grows(f, n))", "yield by(grows)")
 
 
-def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> None:
+def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path, monkeypatch) -> None:
     """``by(grows)`` is taken at ``(f, n)``, matched against ``f[n] == 7`` (Codex, #177).
 
     The point is written nowhere, so the case's question had no point to
@@ -608,6 +652,7 @@ def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> 
     1`` is refused as when the point is written.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_by_name_cases.py"
     path.write_text(T4_BY_NAME, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
@@ -625,7 +670,7 @@ T4_AT_A_FUNCTION = T4_INDUCTION.replace(
 )
 
 
-def test_t4_at_a_function_is_asked_at_that_function(tmp_path) -> None:
+def test_t4_at_a_function_is_asked_at_that_function(tmp_path, monkeypatch) -> None:
     """A point that binds a family to a function is asked about too (Codex, #182).
 
     ``grows`` taken at ``(k ↦ f[k] + 1, n)`` in the case ``n < 1`` says
@@ -634,6 +679,7 @@ def test_t4_at_a_function_is_asked_at_that_function(tmp_path) -> None:
     Lean. The function is now written in the question, as a ``fun``.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_function_cases.py"
     path.write_text(T4_AT_A_FUNCTION, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
@@ -689,11 +735,13 @@ def past_a_hundred(
 
 @pytest.fixture(scope="module")
 def unsampled(tmp_path_factory) -> dict:
-    """:data:`T4_UNSAMPLED` checked with core Lean, by owner."""
+    """:data:`T4_UNSAMPLED` checked with core Lean, by owner, the native run set aside."""
     _lean_or_skip()
     path = tmp_path_factory.mktemp("t4_unsampled") / "t4_unsampled_cases.py"
     path.write_text(T4_UNSAMPLED, encoding="utf-8")
-    return {fact.owner: fact for fact in claims(check_path(path))}
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _lean_side_only(monkeypatch)
+        return {fact.owner: fact for fact in claims(check_path(path))}
 
 
 @pytest.mark.parametrize("owner", ["cell_one_hundred", "threes_are_sevens"])

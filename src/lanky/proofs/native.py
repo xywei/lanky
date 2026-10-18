@@ -46,7 +46,14 @@ from lanky.proofs.trace import (
     running,
 )
 
-__all__ = ["NATIVE_DRAWS", "ExactInt", "PointFalse", "native_failure", "run_by_hand"]
+__all__ = [
+    "NATIVE_DRAWS",
+    "ExactInt",
+    "PointFalse",
+    "native_failure",
+    "native_run",
+    "run_by_hand",
+]
 
 #: How many of the check's draws the body is run at.
 NATIVE_DRAWS = 50
@@ -399,6 +406,15 @@ def native_failure(theorem: Any, samples: int = NATIVE_DRAWS, seed: int = 0) -> 
     :class:`lanky.proofs.report.Failure` of kind ``false``, at the line of
     the step, with the values there.
     """
+    return native_run(theorem, samples, seed)[0]
+
+
+def native_run(theorem: Any, samples: int = NATIVE_DRAWS, seed: int = 0) -> tuple[Any, int]:
+    """:func:`native_failure`, and how many draws the body ran to its end at, every step holding.
+
+    A count of ``0`` with no failure is a proof the run could not draw or
+    run at all, which it tested nothing of.
+    """
     from lanky.proofs.filled import FILLED_DRAWS, filled_draws, over_the_naturals
     from lanky.terms import exact_reading
     from lanky.testing import MAX_NAT, valid_draws
@@ -413,20 +429,23 @@ def native_failure(theorem: Any, samples: int = NATIVE_DRAWS, seed: int = 0) -> 
             with exact_reading():
                 draws = list(valid_draws(theorem.variables, hypotheses, samples, seed))
         except Exception:  # noqa: BLE001 - a statement the tester cannot draw runs no proof
-            return None
+            return None, 0
+    ran = 0
     for context in draws:
         run = _Run(theorem, context, MAX_NAT)
         try:
             _run(theorem, context, run)
         except PointFalse:
-            return _point_failure(theorem, run)
+            return _point_failure(theorem, run), ran
         except AssertionError as exc:
             found = _step_failure(theorem, run, exc, codes)
             if found is not None:
-                return found
+                return found, ran
+            continue
         except Exception:  # noqa: BLE001 - a draw the body cannot run at says nothing
             continue
-    return None
+        ran += 1
+    return None, ran
 
 
 def run_by_hand(theorem: Any, **values: Any) -> None:

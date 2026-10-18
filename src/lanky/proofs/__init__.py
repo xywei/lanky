@@ -340,17 +340,19 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
         proof = traced if traced is not None else trace_proof(theorem)
     except ProofError as exc:
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
-    from lanky.proofs.native import native_failure
+    from lanky.proofs.native import native_run
 
-    refuted = native_failure(theorem)
+    refuted, ran = native_run(theorem)
     if refuted is not None:
         return _failed(fact, where, None, [refuted], theorem.path)
     oracle = _lean_oracle()
     if oracle is None:
-        return _without_lean(fact, where, proof, "Lean", "no Lean oracle is registered")
+        return _without_lean(fact, where, proof, "Lean", "no Lean oracle is registered", ran)
     available, reason = oracle.availability()
     if not available:
-        return _without_lean(fact, where, proof, "Lean", f"Lean is not available here ({reason})")
+        return _without_lean(
+            fact, where, proof, "Lean", f"Lean is not available here ({reason})", ran
+        )
     mathlib = oracle.session.mathlib is not None
     from lanky.lean import UnsupportedTerm
     from lanky.oracles.lean import claim_statement
@@ -369,6 +371,7 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
                 proof,
                 "Mathlib",
                 "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
+                ran,
             )
         return _not_checked(fact, where, f"Lean cannot state it: {exc}")
     except ProofError as exc:
@@ -381,6 +384,7 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
                 proof,
                 "Mathlib",
                 "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
+                ran,
             )
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
     texts = getattr(oracle, "proved_texts", None)
@@ -792,7 +796,9 @@ def _holes(fact: Fact, where: str, proof: Proof, command: Command) -> Fact:
     return fact.with_status(fact.status, proof=account)
 
 
-def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: str) -> Fact:
+def _without_lean(
+    fact: Fact, where: str, proof: Proof, missing: str, reason: str, ran: int = 0
+) -> Fact:
     """``fact``, its written proof not checked by Lean: each link of its chains drawn instead.
 
     Where the values can be drawn, each link's two sides are compared at
@@ -809,9 +815,19 @@ def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: st
         of its proof was tested at drawn points instead (lines 161 and 162).
 
     ``reason`` is the long form, kept for ``--verbose`` and ``--json``.
+    ``ran`` is how many draws the native run ran the whole body at, every
+    step and point holding (:func:`lanky.proofs.native.native_run`): where
+    the links cannot be drawn alone, a family over ``Nat`` among them, that
+    run, which fills the family in, is what was tested, and the line says so.
     """
     draws = _draw_links(proof)
+    natively = (
+        f"without {missing}, its proof was not checked by Lean; it was run at {ran} drawn "
+        f"value{'' if ran == 1 else 's'} instead, and every step held"
+    )
     if not draws:
+        if ran:
+            return _not_checked(fact, where, f"{reason}; {natively}", natively)
         return _not_checked(fact, where, reason, f"without {missing}, its proof was not checked")
     for line, statement, outcome, detail in draws:
         if outcome == "refuted":
@@ -824,6 +840,8 @@ def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: st
             )
             return _failed(fact, where, None, [failure], proof.path)
     undrawn = [detail for _line, _statement, outcome, detail in draws if outcome == "undrawn"]
+    if undrawn and ran:
+        return _not_checked(fact, where, f"{reason}; {natively}", natively)
     if undrawn:
         return _not_checked(
             fact,

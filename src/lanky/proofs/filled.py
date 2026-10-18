@@ -37,6 +37,7 @@ import heapq
 import random
 from collections import defaultdict, deque
 from collections.abc import Iterator, Mapping
+from fractions import Fraction
 from typing import Any
 
 import pymbolic.primitives as prim
@@ -366,6 +367,7 @@ class _Filling:
 
     def _solve(self, k: int, cell: tuple[Grid, tuple[int, ...]]) -> Any:
         """The value of ``cell`` that makes the equation at point ``k`` hold, where linear in it."""
+        from lanky.proofs.native import ExactInt
         from lanky.terms import evaluate
 
         prop, scope = self.instances[k]
@@ -386,6 +388,9 @@ class _Filling:
             if (f3 - f2 == slope) is not True or (slope == 0) is not False:
                 return None
             value = 1 - f1 / slope
+            if isinstance(value, Fraction) and value.denominator == 1:
+                # an integer, as a family of integers holds one
+                value = ExactInt(value.numerator)
             holds = at(value, prop)
         except Exception:  # noqa: BLE001 - an equation that cannot be solved here is checked later
             return None

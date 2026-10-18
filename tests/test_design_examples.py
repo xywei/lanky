@@ -538,6 +538,49 @@ def test_tables_over_two_naturals_are_filled_along_their_recurrence(examples) ->
             assert R[a, b] == D[a, b]
 
 
+def test_tables_of_integers_under_a_condition_are_filled_with_integers(tmp_path) -> None:
+    """``D`` bound by ``with harmonic_table``, ``R`` the claim's own, both of integers."""
+    from lanky.proofs.filled import filled_draws
+    from lanky.proofs.native import native_failure
+
+    source = HEAD + '''
+
+@condition
+def harmonic_table(
+    D: Fn[Nat, Nat, Int],
+    pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
+):
+    """The derivatives of a harmonic function, as a table."""
+
+
+with harmonic_table as (D, pde):
+
+    @claim
+    def calculation(
+        R: Fn[Nat, Nat, Int],
+        stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
+        recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
+    ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
+        """A calculation with a sign written wrong."""
+        for a, b in calculation.conclusion.domain:
+            if a < 2:
+                yield by(stored)
+            else:
+                assert R[a, b] == -R[a - 2, b + 2] == D[a - 2, b + 2] == D[a, b], by(
+                    recurrence[a - 2, b], calculation.conclusion[a - 2, b + 2], pde[a - 2, b]
+                )
+                yield by()
+'''
+    module = _module_at(tmp_path, source, "integer_tables")
+    (draw, *_) = filled_draws(module.calculation)
+    assert all(isinstance(draw["R"][a, b], int) for a in range(6) for b in range(6))
+    failure = native_failure(module.calculation)
+    assert failure is not None and failure.line == _line(source, "D[a - 2, b + 2] == D[a, b], by(")
+    (said,) = failure.lines
+    numbers = r"At a = \d+, b = \d+: the left side is -?\d+, the right side -?\d+\."
+    assert re.fullmatch(numbers, said), said
+
+
 def test_a_family_its_hypotheses_do_not_reach_is_not_filled(tmp_path) -> None:
     """A quantifier over the reals, or hypotheses that contradict: the run tests nothing."""
     from lanky.proofs.filled import filled_draws
