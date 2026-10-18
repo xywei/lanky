@@ -55,17 +55,18 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from lanky.citations import Citation
 from lanky.ledger import Fact, Ledger, Status
 from lanky.proofs.compile import Command, compile_proof
 from lanky.proofs.report import CLOSED_WITH_HOLES, Failure, failure_of, fix_for, read, verdict
 from lanky.proofs.trace import (
-    Citation,
     Proof,
     ProofError,
     _tree,
     trace_proof,
     written_lines,
 )
+from lanky.terms import Var
 
 __all__ = [
     "Proof",
@@ -325,10 +326,10 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
     oracle = _lean_oracle()
     if oracle is None:
-        return _without_lean(fact, where, proof, "no Lean oracle is registered")
+        return _without_lean(fact, where, proof, "Lean", "no Lean oracle is registered")
     available, reason = oracle.availability()
     if not available:
-        return _without_lean(fact, where, proof, f"Lean is not available here ({reason})")
+        return _without_lean(fact, where, proof, "Lean", f"Lean is not available here ({reason})")
     mathlib = oracle.session.mathlib is not None
     from lanky.lean import UnsupportedTerm
     from lanky.oracles.lean import claim_statement
@@ -342,7 +343,11 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
     except UnsupportedTerm as exc:
         if not mathlib:
             return _without_lean(
-                fact, where, proof, "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)"
+                fact,
+                where,
+                proof,
+                "Mathlib",
+                "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
             )
         return _not_checked(fact, where, f"Lean cannot state it: {exc}")
     except ProofError as exc:
@@ -350,9 +355,26 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
             # a theorem it cites, a step's term or a point is about the reals,
             # which core Lean has no words for: not a fault of the proof
             return _without_lean(
-                fact, where, proof, "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)"
+                fact,
+                where,
+                proof,
+                "Mathlib",
+                "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
             )
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
+    texts = getattr(oracle, "proved_texts", None)
+    mismatch = texts.mismatch(command.restated) if texts is not None else ""
+    if mismatch:
+        # compared before Lean is asked, and before the proof cache is read:
+        # a warm check too restates only what the cited theorem's command proved
+        failure = Failure(
+            "cite",
+            None,
+            "a theorem its proof cites is restated other than as Lean proved it",
+            (f"{mismatch[0].upper()}{mismatch[1:]}.",),
+            "check the file again, so that the cited theorem's text is proved anew",
+        )
+        return _failed(fact, where, command, [failure], theorem.path)
     record, said, _cached = oracle.written(command.source, fact)
     if record is None:
         if said.startswith("TimeoutError") or "budget" in said:
@@ -367,7 +389,7 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
         return _not_checked(fact, where, said or "Lean did not answer")
     said_verdict, failures = verdict(proof, command, record)
     if said_verdict in ("closed", CLOSED_WITH_HOLES):
-        inconsistent = _inconsistent_citations(fact, proof, mathlib)
+        inconsistent = _inconsistent_citations(fact, proof, mathlib, command)
         if inconsistent is not None:
             return _failed(fact, where, command, [inconsistent], theorem.path)
     if said_verdict == "closed":
@@ -378,7 +400,9 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
     return _failed(fact, where, command, failures, theorem.path)
 
 
-def _inconsistent_citations(fact: Fact, proof: Proof, mathlib: bool) -> Failure | None:
+def _inconsistent_citations(
+    fact: Fact, proof: Proof, mathlib: bool, command: Command | None = None
+) -> Failure | None:
     """Whether the theorems the proof cites without a proved text prove ``False`` together.
 
     A citation of a theorem whose own command proved no text (an axiom, a
@@ -386,65 +410,220 @@ def _inconsistent_citations(fact: Fact, proof: Proof, mathlib: bool) -> Failure 
     the printer gives, and a printer that dropped a condition would let the
     proof prove anything: the design's T4, ``log_of_a_power`` without ``n >=
     0``, proves ``1 = 0``. So the oracles stronger than a heuristic are asked
-    whether those statements alone prove ``False``, as a claim's hypotheses
-    are (:func:`lanky.citations.vacuity_question`), and where one shows they
-    do, the proof fails, naming them. ``None`` where every citation is by a
-    proved text, or none of them is shown inconsistent.
+    whether those statements prove ``False``, as a claim's hypotheses are
+    (:func:`lanky.citations.vacuity_question`), taken where the proof takes
+    them: once at the points that are numbers, and once for each case of the
+    proof that takes them at points with variables, the claim's ``(a - 2,
+    b)`` inside an induction, those variables bound and the case's
+    conditions assumed, unless the conditions alone are shown to rule the
+    case out. A point is where the proof takes a theorem, written or, for a
+    theorem cited by name alone, ``return grows``, the one ``command`` found
+    by matching. Where one shows they do, the proof fails, naming them.
+    ``None`` where every citation is by a proved text, or none of them is
+    shown inconsistent.
     """
     from lanky.check import _stronger_than_a_heuristic
-    from lanky.citations import citation_of, vacuity_question
-    from lanky.lean import UnsupportedTerm
+    from lanky.citations import proved_text
 
-    citations = []
-    for theorem in proof.cited:
-        try:
-            citations.append(citation_of(theorem, mathlib=mathlib))
-        except (TypeError, UnsupportedTerm):
-            continue
-    points = [
-        (citation.source.fact_id, citation.values)
-        for leaf in proof.leaves
-        for citation in leaf.citations
-        if getattr(citation.source, "fact_id", None) is not None
-        and citation.values is not None
-        and all(_a_number(value) for value in citation.values)
+    theorems = list(proof.cited)
+    printed = [
+        theorem
+        for theorem in theorems
+        if getattr(theorem, "term", None) is not None
+        and proved_text(getattr(theorem, "fact_id", None), theorem.term) is None
     ]
-    question = vacuity_question(fact.owner, citations, fact.where, points, mathlib)
-    if question is None:
+    if not printed:
         return None
-    found = _stronger_than_a_heuristic(question)
+    found = None
+    line: int | None = None
+    for question, where in _vacuity_questions(fact, proof, theorems, mathlib, command):
+        found = _stronger_than_a_heuristic(question)
+        if found is not None:
+            line = where
+            break
     if found is None:
         return None
     oracle, result = found
-    printed = [
-        citation.name
-        for citation in citations
-        if citation.kind == "theorem" and not citation.proved_text
-    ]
-    names = printed[0] if len(printed) == 1 else f"{', '.join(printed[:-1])} and {printed[-1]}"
-    one = len(printed) == 1
-    line = next(
-        (
-            citation.line
-            for leaf in proof.leaves
-            for citation in leaf.citations
-            if citation.name in printed and citation.line is not None
-        ),
-        None,
-    )
+    names = [theorem.__name__ for theorem in printed]
+    said = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    one = len(names) == 1
+    if line is None:
+        line = next(
+            (
+                citation.line
+                for leaf in proof.leaves
+                for citation in leaf.citations
+                if citation.name in names and citation.line is not None
+            ),
+            None,
+        )
     return Failure(
         "cite",
         line,
         f"the {'theorem' if one else 'theorems'} its proof cites without a proved text "
         f"{'proves' if one else 'prove'} False",
         (
-            f"{names}, as lanky states {'it' if one else 'them'} for Lean, "
+            f"{said}, as lanky states {'it' if one else 'them'} for Lean, "
             f"{'proves' if one else 'prove'} False ({result.status.value} by {oracle}): "
             f"a proof that cites {'it' if one else 'them'} could prove anything.",
         ),
-        f"prove {names} first, so that a citation restates what Lean proved, or correct "
+        f"prove {said} first, so that a citation restates what Lean proved, or correct "
         f"{'its statement' if one else 'their statements'}",
     )
+
+
+def _vacuity_questions(
+    fact: Fact, proof: Proof, theorems: list[Any], mathlib: bool, command: Command | None = None
+) -> list[tuple[Fact, int | None]]:
+    """The vacuity questions of a proof's printed citations, each with the line it is about.
+
+    The first takes the theorems at the points that are numbers, or at none.
+    Then one for each case whose citations are at points with variables, as
+    :func:`_inconsistent_citations` says: the variables the points and the
+    case's conditions mention are bound, with the sorts the proof gives them,
+    and the conditions are its hypotheses after the texts. The points are
+    the written ones and, for a theorem cited by name alone, the ones
+    ``command`` took it at (:func:`_taken_at`). A case whose points or
+    conditions cannot be stated is not asked. Nor is one whose conditions
+    alone a stronger oracle than a heuristic shows to prove ``False``, where
+    no values satisfying them are found among small numbers: a case none can
+    reach takes nothing, while a search that found no values shows nothing
+    (``n == 100``, or a condition no number can be put into).
+    """
+    import os
+
+    from lanky.citations import satisfiable, vacuity_question
+    from lanky.matching import FamilyValue
+    from lanky.terms import Forall, conjuncts, free_variables
+
+    taken = _taken_at(proof, command)
+    numbers = [
+        (fact_id, values)
+        for leaf in proof.leaves
+        for fact_id, values in taken.get(id(leaf), ())
+        if all(_a_number(value) for value in values)
+    ]
+    out: list[tuple[Fact, int | None]] = []
+    first = vacuity_question(fact.owner, theorems, fact.where, numbers, mathlib)
+    if first is not None:
+        out.append((first, None))
+    theorem = proof.theorem
+    sorts: dict[str, Any] = dict(theorem.variables)
+    goal = theorem.goal
+    guards: list[Any] = []
+    if isinstance(goal, Forall):
+        guards = list(conjuncts(goal.guard))
+        for var, domain in goal.binders:
+            sorts.setdefault(var.name, domain)
+    if proof.claim is not None:
+        sorts.update(zip(proof.claim.params, proof.claim.domains, strict=True))
+    base = os.path.basename(proof.path)
+    seen: set[int] = set()
+    for leaf in proof.leaves:
+        points = [
+            (fact_id, values)
+            for fact_id, values in taken.get(id(leaf), ())
+            if not all(_a_number(value) for value in values)
+        ]
+        if not points or id(leaf) in seen:
+            continue
+        seen.add(id(leaf))
+        conditions = [*guards, *(condition for condition, _line in leaf.conditions)]
+        try:
+            needed: set[str] = set()
+            for _fact_id, values in points:
+                for value in values:
+                    if isinstance(value, FamilyValue):
+                        # a function's value, ``k ↦ f[k] + 1``: the names
+                        # its body reads, past its own parameters
+                        own = {var.name for var in value.parameters}
+                        needed |= set(free_variables(value.body)) - own
+                    elif hasattr(value, "mapper_method"):
+                        needed |= set(free_variables(value))
+            for condition in conditions:
+                needed |= set(free_variables(condition))
+        except Exception:  # noqa: BLE001 - what cannot be read is not asked
+            continue
+        names = _closed_under_sorts(needed, sorts)
+        if names is None:
+            continue
+        variables = [(Var(name), sorts[name]) for name in sorts if name in names]
+        case = f"in the case at {base}:{leaf.line}" if leaf.line is not None else "in a case"
+        if not satisfiable(variables, conditions) and _ruled_out(
+            fact, variables, conditions, case
+        ):
+            continue
+        question = vacuity_question(
+            fact.owner,
+            theorems,
+            fact.where,
+            points,
+            mathlib,
+            variables=variables,
+            conditions=conditions,
+            case=case,
+        )
+        if question is not None:
+            out.append((question, leaf.line))
+    return out
+
+
+def _taken_at(proof: Proof, command: Command | None) -> dict[int, list[tuple[str, tuple]]]:
+    """Where the proof takes each theorem it cites, ``(fact id, values)``, by leaf.
+
+    A point written in the proof, ``grows(f, n)``, is the citation's own. A
+    theorem cited by name alone, ``return grows``, has none written, and is
+    taken where the compiler matched it against the step it supports: the
+    instances of ``command``'s steps. Without the command only the written
+    points are known.
+    """
+    taken: dict[int, list[tuple[str, tuple]]] = {}
+    for leaf in proof.leaves:
+        for citation in leaf.citations:
+            fact_id = getattr(citation.source, "fact_id", None)
+            if fact_id is not None and citation.values is not None:
+                taken.setdefault(id(leaf), []).append((fact_id, tuple(citation.values)))
+    for step in command.steps if command is not None else ():
+        for instance in step.instances:
+            citation = instance.citation
+            fact_id = getattr(citation.source, "fact_id", None)
+            if fact_id is None or citation.values is not None:
+                continue
+            taken.setdefault(id(step.leaf), []).append((fact_id, tuple(instance.values)))
+    return taken
+
+
+def _ruled_out(fact: Fact, variables: list[Any], conditions: list[Any], case: str) -> bool:
+    """Whether a stronger oracle than a heuristic shows that no values satisfy ``conditions``.
+
+    The question is the case's own, without the theorems: its variables
+    bound with their sorts, its conditions the hypotheses, and ``False`` the
+    goal, as a claim's hypotheses are asked about
+    (:func:`lanky.check.hypotheses_fact`). Shown, the case takes nothing,
+    and its citations are not asked about; not shown, they are, since a
+    case no small number reaches may still be reached.
+    """
+    import re
+
+    from lanky.check import _stronger_than_a_heuristic
+    from lanky.terms import Forall, LogicalAnd
+
+    if not conditions:
+        return False
+    guard = conditions[0] if len(conditions) == 1 else LogicalAnd(tuple(conditions))
+    suffix = re.sub(r"[^0-9A-Za-z]+", "-", case).strip("-")
+    question = Fact(
+        id=f"{fact.owner}:case@{suffix}",
+        kind="hypotheses",
+        statement=f"the conditions of {fact.owner}'s proof {case} are inconsistent",
+        term=Forall(tuple(variables), False, guard),
+        where=fact.where,
+        owner=fact.owner,
+    )
+    try:
+        return _stronger_than_a_heuristic(question) is not None
+    except Exception:  # noqa: BLE001 - a question no oracle can take shows nothing
+        return False
 
 
 def _a_number(value: Any) -> bool:
@@ -452,6 +631,38 @@ def _a_number(value: Any) -> bool:
     import numbers
 
     return isinstance(value, numbers.Number) and not isinstance(value, bool)
+
+
+def _closed_under_sorts(needed: set[str], sorts: dict[str, Any]) -> set[str] | None:
+    """``needed`` with every name a sort of one of them mentions, ``Fin[n]``'s ``n``; or ``None``.
+
+    ``None`` where a name has no sort the proof gives it, so the question
+    cannot bind it.
+    """
+    from lanky.prelude import FinType, FnType, Refined
+    from lanky.terms import free_variables
+
+    names: set[str] = set()
+    stack = list(needed)
+    while stack:
+        name = stack.pop()
+        if name in names:
+            continue
+        if name not in sorts:
+            return None
+        names.add(name)
+        pending = [sorts[name]]
+        while pending:
+            sort = pending.pop()
+            if isinstance(sort, Refined):
+                pending.append(sort.base)
+            elif isinstance(sort, FinType):
+                bound = sort.bound
+                if hasattr(bound, "mapper_method"):
+                    stack.extend(free_variables(bound))
+            elif isinstance(sort, FnType):
+                pending.extend((sort.domain, sort.codomain))
+    return names
 
 
 def _where(theorem: Any) -> str:
@@ -495,10 +706,19 @@ def _closed(fact: Fact, where: str, proof: Proof, command: Command, oracle: Any)
     if command.as_cited is not None and fact.term is not None:
         from lanky.citations import Proved
 
-        oracle.proved_texts.record(
-            Proved(fact.id, command.declared, command.as_cited, command.mathlib, fact.term, cited)
+        kept = oracle.proved_texts.record(
+            Proved(
+                fact.id,
+                command.declared,
+                command.as_cited,
+                command.mathlib,
+                fact.term,
+                cited,
+                source=command.source,
+            )
         )
-        extra["lean_as_cited"] = command.as_cited
+        if kept:
+            extra["lean_as_cited"] = command.as_cited
     if fact.status in (Status.PROVED, Status.CERTIFIED):
         return replace(fact.with_status(fact.status, proof=account, **extra), rests_on=rests_on)
     session = oracle.session
@@ -537,7 +757,7 @@ def _holes(fact: Fact, where: str, proof: Proof, command: Command) -> Fact:
     return fact.with_status(fact.status, proof=account)
 
 
-def _without_lean(fact: Fact, where: str, proof: Proof, reason: str) -> Fact:
+def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: str) -> Fact:
     """``fact``, its written proof not checked by Lean: each link of its chains drawn instead.
 
     Where the values can be drawn, each link's two sides are compared at
@@ -545,14 +765,19 @@ def _without_lean(fact: Fact, where: str, proof: Proof, reason: str) -> Fact:
     so that a wrong step is caught at its own line with no Lean at all, and
     fails the check. A link over a family that cannot be drawn, a table over
     ``Nat``, leaves the proof unchecked, and says why.
-    """
-    import os
 
+    ``missing`` is what the machine lacks, ``Lean`` or ``Mathlib``, and the
+    ``NOT CHECKED`` line says it in a clause, since the ``WITHOUT LEAN`` and
+    ``WITHOUT MATHLIB`` lines above it say why and how to get it::
+
+        NOT CHECKED harmonic at sumpy_recurrence.py:151: without Lean, each step
+        of its proof was tested at drawn points instead (lines 161 and 162).
+
+    ``reason`` is the long form, kept for ``--verbose`` and ``--json``.
+    """
     draws = _draw_links(proof)
     if not draws:
-        return _not_checked(fact, where, reason)
-    name = proof.theorem.__name__
-    base = os.path.basename(proof.path)
+        return _not_checked(fact, where, reason, f"without {missing}, its proof was not checked")
     for line, statement, outcome, detail in draws:
         if outcome == "refuted":
             failure = Failure(
@@ -565,22 +790,42 @@ def _without_lean(fact: Fact, where: str, proof: Proof, reason: str) -> Fact:
             return _failed(fact, where, None, [failure], proof.path)
     undrawn = [detail for _line, _statement, outcome, detail in draws if outcome == "undrawn"]
     if undrawn:
-        return _not_checked(fact, where, f"{reason}; its steps could not be drawn: {undrawn[0]}")
+        return _not_checked(
+            fact,
+            where,
+            f"{reason}; its steps could not be drawn: {undrawn[0]}",
+            f"without {missing}, its proof was not checked, and its steps cannot be drawn "
+            f"({_short(undrawn[0])})",
+        )
     lines = sorted({line for line, *_ in draws if line is not None})
-    shown = ", ".join(str(line) for line in lines)
     return _not_checked(
         fact,
         where,
-        f"{reason}; the proof of {name} was tested step by step at drawn points "
-        f"({base}:{shown}), not checked by Lean",
+        f"{reason}; the proof of {proof.theorem.__name__} was tested step by step at drawn "
+        f"points ({', '.join(str(line) for line in lines)}), not checked by Lean",
+        f"without {missing}, each step of its proof was tested at drawn points instead"
+        + (f" ({_lines(lines)})" if lines else ""),
     )
+
+
+def _lines(lines: list[int]) -> str:
+    """``line 161``, ``lines 161 and 162``, ``lines 161, 162 and 165``."""
+    shown = [str(line) for line in lines]
+    if len(shown) == 1:
+        return f"line {shown[0]}"
+    return f"lines {', '.join(shown[:-1])} and {shown[-1]}"
+
+
+def _short(detail: str) -> str:
+    """Why a draw could not be made, in its last clause: ``cannot tabulate a family over Nat``."""
+    return detail.rsplit(": ", 1)[-1].rstrip(".")
 
 
 def _draw_links(proof: Proof, samples: int = 50) -> list[tuple[int | None, str, str, str]]:
     """Each link of the proof's chains, drawn: ``(line, statement, outcome, detail)``.
 
-    As :func:`lanky.oracles.steps.draw_links` draws a chain: the link as a
-    claim over the theorem's variables and the claim's, under the theorem's
+    Each link is a claim over the theorem's variables and the claim's, drawn
+    as a claim is (:func:`lanky.testing.check`), under the theorem's
     hypotheses, the goal's guard and the case's conditions.
     """
     from lanky.terms import Comparison, Forall, conjuncts, render
@@ -645,9 +890,17 @@ def _failed(
     return fact.with_status(fact.status, proof=account)
 
 
-def _not_checked(fact: Fact, where: str, reason: str) -> Fact:
-    """``fact`` as it was, with why its written proof was not checked."""
-    return fact.with_status(fact.status, proof={"where": where, "closed": None, "reason": reason})
+def _not_checked(fact: Fact, where: str, reason: str, said: str | None = None) -> Fact:
+    """``fact`` as it was, with why its written proof was not checked.
+
+    ``said`` is the clause the ``NOT CHECKED`` line prints in place of ``its
+    proof, file.py:41-48, was not checked: <reason>``, where a shorter one
+    says it (:func:`_without_lean`).
+    """
+    account: dict[str, Any] = {"where": where, "closed": None, "reason": reason}
+    if said is not None:
+        account["said"] = said
+    return fact.with_status(fact.status, proof=account)
 
 
 def _checked_fix(
@@ -656,19 +909,28 @@ def _checked_fix(
     """A step's fix, confirmed by Lean where it can be: ``(checked)`` after the fix when it is.
 
     The fix is the step's fact at another point (:func:`lanky.proofs.report.fix_for`),
-    and the proof with it is compiled and asked of Lean, as the proof was.
+    or one more fact cited (:func:`lanky.proofs.report.also_needs`), and the
+    proof with it is compiled and asked of Lean, as the proof was.
     """
     if failure.kind != "step" or failure.fix is None:
         return failure
     step = next((step for step in command.steps if step.where == failure.line), None)
     if step is None:
         return failure
-    found = fix_for(step, proof, command.measure)
-    if found is None:
-        return failure
-    index, citation = found
-    old = step.instances[index].citation
-    fixed = _with_citation(proof, step.leaf, old, citation)
+    repair = failure.repair
+    if repair is None:
+        found = fix_for(step, proof, command.measure)
+        if found is None:
+            return failure
+        repair = ("point", *found)
+    if repair[0] == "add":
+        fixed = _with_added(proof, step, repair[1])
+        if fixed is None:
+            return failure
+    else:
+        _kind, index, citation = repair
+        old = step.instances[index].citation
+        fixed = _with_citation(proof, step.leaf, old, citation)
     try:
         again = compile_proof(fixed, command.mathlib)
     except Exception:  # noqa: BLE001 - a fix that does not compile is not checked
@@ -680,6 +942,37 @@ def _checked_fix(
     if closed or all(other.line != failure.line for other in failures):
         return replace(failure, fix=f"{failure.fix} (checked)")
     return failure
+
+
+def _with_added(proof: Proof, step: Any, new: Citation) -> Proof | None:
+    """``proof`` with one more fact cited at one step: in its link of a chain, or in its return.
+
+    ``None`` for a link of a fact on the way, whose chain the citations of it
+    name, and which is kept as it is.
+    """
+    leaf = step.leaf
+    if step.line is not None and any(
+        link.line == step.line for chain in leaf.named for link in chain.links
+    ):
+        return None
+    in_the_chain = (
+        step.line is not None
+        and leaf.chain is not None
+        and any(link.line == step.line for link in leaf.chain.links)
+    )
+    leaves = []
+    for each in proof.leaves:
+        if each is leaf:
+            if in_the_chain:
+                links = tuple(
+                    replace(link, facts=(*link.facts, new)) if link.line == step.line else link
+                    for link in each.chain.links
+                )
+                each = replace(each, chain=replace(each.chain, links=links))
+            else:
+                each = replace(each, facts=(*(each.facts or ()), new))
+        leaves.append(each)
+    return replace(proof, leaves=tuple(leaves), root=_tree(leaves))
 
 
 def _with_citation(proof: Proof, leaf: Any, old: Citation, new: Citation) -> Proof:

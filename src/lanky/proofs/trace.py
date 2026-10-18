@@ -53,7 +53,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from lanky.proofs.match import decide, negated, shape_of
+from lanky.citations import Citation
+from lanky.proofs.cases import decide, negated, shape_of
 from lanky.terms import (
     BUILTIN_OVERRIDES,
     Forall,
@@ -62,13 +63,13 @@ from lanky.terms import (
     asking_proof_questions,
     code_reads,
     conjuncts,
+    lift,
     render,
 )
 
 __all__ = [
     "MAX_PATHS",
     "MAX_QUESTIONS",
-    "Citation",
     "ClaimDef",
     "Given",
     "Leaf",
@@ -235,50 +236,45 @@ class ClaimDef:
     line: int
 
 
-@dataclass(frozen=True, eq=False)
-class Citation:
-    """A fact the proof cites: a hypothesis, a theorem, or the claim, maybe at a point.
-
-    Attributes:
-        source: A :class:`Given`, a :class:`~lanky.theory.Theorem`, or the
-            :class:`ClaimDef` for the claim at smaller values.
-        values: The point, a value per variable of the fact, outermost first;
-            ``None`` for a fact cited by its name alone.
-        line: The line of the body it was written on.
-    """
-
-    source: Any
-    values: tuple[Any, ...] | None
-    line: int | None
-
-    @property
-    def name(self) -> str:
-        """The name the fact is cited by."""
-        return _source_name(self.source)
-
-    @property
-    def is_claim(self) -> bool:
-        """Whether this is the claim at a point, which is the induction."""
-        return isinstance(self.source, ClaimDef)
-
-    def text(self, values: tuple[Any, ...] | None = None) -> str:
-        """How the citation is written: ``pde(i, a - 2, b)``, or ``stored`` alone."""
-        values = self.values if values is None else values
-        if values is None:
-            return self.name
-        return f"{self.name}({', '.join(shown(value) for value in values)})"
-
-
-def _source_name(source: Any) -> str:
-    """The name a fact is cited by."""
-    if isinstance(source, Given | ClaimDef | Named):
-        return source.name
-    return getattr(source, "__name__", None) or getattr(source, "qualname", None) or repr(source)
-
-
 def shown(value: Any) -> str:
-    """A value as lanky writes it in a citation or a report."""
+    """A value as lanky writes it in a citation or a report.
+
+    A family's value is the ``lambda`` a proof writes for it, ``lambda i:
+    i**3``, so that a point lanky found reads as the citation that would
+    give it.
+    """
+    from lanky.matching import FamilyValue
+
+    if isinstance(value, FamilyValue):
+        return value.shown()
     return render(value) if hasattr(value, "mapper_method") else repr(value)
+
+
+def family_value(value: Any) -> Any:
+    """A function written at a family's place in a citation, as the family's value it gives.
+
+    ``one_more_term(lambda i: i**3, n)`` cites the fact with its family
+    ``f`` at ``i ↦ i**3``: the function is called once, at a variable per
+    parameter named as it names them, and what it returns is the body of
+    the value (:class:`lanky.matching.FamilyValue`). Anything else is
+    returned as it is.
+    """
+    from lanky.matching import FamilyValue
+
+    if not isinstance(value, pytypes.FunctionType):
+        return value
+    try:
+        signature = inspect.signature(value)
+    except (TypeError, ValueError):
+        return value
+    parameters = list(signature.parameters.values())
+    if not parameters or any(
+        parameter.kind not in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+        for parameter in parameters
+    ):
+        return value
+    variables = tuple(Var(parameter.name) for parameter in parameters)
+    return FamilyValue(variables, lift(value(*variables)))
 
 
 @dataclass(frozen=True, eq=False)
@@ -737,21 +733,22 @@ class _Tracer:
         """A citation of ``source`` at ``values``, written at the body's line ``frame`` runs."""
         line = self._line(frame)
         names = self._binder_names(source)
+        called = Citation(source).name
         if named:
             unknown = [name for name in named if name not in names]
             if unknown:
                 raise ProofError(
                     "cite",
-                    f"{_source_name(source)} has no variable {unknown[0]}: its variables "
+                    f"{called} has no variable {unknown[0]}: its variables "
                     f"are {', '.join(names) or 'none'}",
                     line,
                 )
             if len(values) > len(names):
                 raise ProofError(
                     "cite",
-                    _takes(_source_name(source), names, len(values) + len(named)),
+                    _takes(called, names, len(values) + len(named)),
                     line,
-                    fix=f"{_source_name(source)}({', '.join(names)})" if names else None,
+                    fix=f"{called}({', '.join(names)})" if names else None,
                 )
             given = dict(zip(names, values, strict=False))
             twice = [name for name in named if name in given]
@@ -759,7 +756,7 @@ class _Tracer:
                 # each value is written once, as Python itself asks of a call
                 raise ProofError(
                     "cite",
-                    f"{_source_name(source)} is given {twice[0]} twice, by its place and "
+                    f"{called} is given {twice[0]} twice, by its place and "
                     "by its name",
                     line,
                 )
@@ -768,18 +765,18 @@ class _Tracer:
                 missing = [name for name in names if name not in given]
                 raise ProofError(
                     "cite",
-                    f"{_source_name(source)} needs a value for {', '.join(missing)}",
+                    f"{called} needs a value for {', '.join(missing)}",
                     line,
                 )
             values = tuple(given[name] for name in names)
         elif len(values) != len(names):
             raise ProofError(
                 "cite",
-                _takes(_source_name(source), names, len(values)),
+                _takes(called, names, len(values)),
                 line,
-                fix=f"{_source_name(source)}({', '.join(names)})" if names else None,
+                fix=f"{called}({', '.join(names)})" if names else None,
             )
-        citation = Citation(source, tuple(values), line)
+        citation = Citation(source, tuple(family_value(value) for value in values), line)
         if self.path is not None:
             self.path.events.append(("cite", citation.text()))
         return citation

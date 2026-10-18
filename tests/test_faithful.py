@@ -450,7 +450,7 @@ def test_every_example_reads_its_annotations_faithfully(capsys) -> None:
     from pathlib import Path
 
     examples = Path(__file__).resolve().parent.parent / "examples"
-    for name in ("gauss.py", "nicomachus.py"):
+    for name in ("gauss.py", "nicomachus.py", "citation.py"):
         ledger = check_path(examples / name)
         readings = [fact for fact in ledger if fact.is_reading]
         assert len(readings) == len(claims(ledger))

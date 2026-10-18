@@ -324,7 +324,7 @@ raises its floor to match.
   under, so a theorem has the same id in its own file's ledger and in the
   `rests_on` of a file that imports it. A plugin keys its facts the same way,
   with `lanky.ledger.fact_id` and `lanky.check.module_name`.
-  `examples/nicomachus.py` is the worked case.
+  `examples/citation.py` is the worked case.
 - `@rewrite`: a transformation as a claim. A function of no arguments returns
   `(source, target)`, `obligation=` names what has to hold between them, and
   the fact reads `source ~> target (obligation)`, with a `RewriteTerm` for an
@@ -588,7 +588,9 @@ raises its floor to match.
   two `if` clauses in the bytecode. Write `&`.
 - The Lean induction strategy is a shape matcher, not proof search. A statement
   needing a different induction or a lemma falls through to the tester;
-  `lanky.oracles.lean.use_tactic` pins a script by hand. The induction over
+  `lanky.oracles.lean.use_tactic` pins a script by hand (one the screen
+  refuses is not sent, and `lanky check` names it in a `REFUSED` line with
+  the fix, and fails). The induction over
   families searches, but only for a linear combination: a step that needs a
   hypothesis used other than as an equation to combine, an inequality, or an
   instance whose guards are not linear arithmetic over the integers is not

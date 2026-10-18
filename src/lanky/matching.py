@@ -31,15 +31,28 @@ for a product (:func:`higher_order_value`).
 
 Which point. A fact is lined up with every subterm of the step at every
 place it could fit: the subterms of its own that apply a family, and each of
-its two sides. That gives candidate points (:func:`candidate_points`). A
+its two sides. That gives candidate points (:func:`candidate_points`). Of
+those, the point is the one at which the fact is about the step and nothing
+else: every application of a family in the fact, at that point, is one the
+step has, or one side of the fact is a subterm of the step (:func:`fits`).
+Two sums are the same up to the names of their binders (:func:`same`):
+``one_more_term``'s ``sum(f[k] for k in Fin[n])`` at ``f = i ↦ i ** 3`` is
+the step's ``sum(i ** 3 for i in Fin[n])``. Where several points fit, a
 candidate whose integer conditions do not follow from what the case knows is
 dropped (``x >= 0`` where ``x = a - 4`` and the case knows only ``a >= 2``;
-:func:`implied`), and of the rest the point is the one at which the fact is
-about the step and nothing else: every application of a family in the fact,
-at that point, is one the step has, or one side of the fact is a subterm of
-the step (:func:`fits`). Exactly one such point is the answer
-(:func:`single_point`); none, or more than one, asks the proof to write the
-point, naming them.
+:func:`implied`), and of those left, the ones at which both sides of the fact
+are the step's are preferred, so that the link from ``sum(i ** 3 for i in
+Fin[n + 1])`` to ``sum(i ** 3 for i in Fin[n]) + n ** 3`` takes
+``one_more_term`` at ``n``, not at ``n - 1``, where only its left side is.
+Where no point fits, the point is the one at which one of the fact's
+applications is one of the step's (:func:`touches`): a case's claim ``R[i, a,
+b] == D[i, a, b]`` given by ``return copies, stored``, where ``copies`` says
+``R[i, a, b] == C[i, a, b]`` and lines up with the claim's left side alone.
+Exactly one point is the answer (:func:`single_point`); none, or more than
+one, asks the proof to write the point, naming them. This is the one matcher
+of the facts a proof cites: a written proof's uncalled facts, its links and
+its returns, and the fixes its report offers (:func:`candidate_points`) all
+line facts up by these rules.
 
 Nothing here is trusted. A point is printed into the Lean the step compiles
 to, and Lean checks the fact there, its conditions and all; a wrong point
@@ -74,6 +87,7 @@ __all__ = [
     "FamilyValue",
     "NoSinglePoint",
     "candidate_points",
+    "family_scope",
     "fits",
     "higher_order_value",
     "implied",
@@ -81,8 +95,10 @@ __all__ = [
     "kind_fits",
     "match",
     "same",
+    "same_function",
     "single_point",
     "solve_index",
+    "touches",
 ]
 
 #: The key an affine form keeps its constant under; no variable is named "".
@@ -98,11 +114,15 @@ class NoSinglePoint(LookupError):
     Attributes:
         candidates: The points that fit, or that were tried; each a tuple of
             values, one per binder of the fact.
+        several: Whether several points fit, rather than none.
     """
 
-    def __init__(self, message: str, candidates: Sequence[tuple[Any, ...]] = ()) -> None:
+    def __init__(
+        self, message: str, candidates: Sequence[tuple[Any, ...]] = (), several: bool = False
+    ) -> None:
         super().__init__(message)
         self.candidates = tuple(candidates)
+        self.several = several
 
 
 # {{{ a family's value, bound by the higher-order rule
@@ -326,12 +346,97 @@ def same(left: Any, right: Any) -> bool:
             and len(arguments) == len(values)
             and all(same(a, b) for a, b in zip(arguments, values, strict=True))
         )
+    if isinstance(left, Forall | Exists | Sum) or isinstance(right, Forall | Exists | Sum):
+        return type(left) is type(right) and _same_binding(left, right)
     if isinstance(left, prim.ExpressionNode) and isinstance(right, prim.ExpressionNode):
-        if left.mapper_method != right.mapper_method or isinstance(left, Forall | Exists | Sum):
+        if left.mapper_method != right.mapper_method:
             return False
         first_args, second_args = init_args(left), init_args(right)
         return _same_parts(first_args, second_args)
     return False
+
+
+def _same_binding(left: Forall | Exists | Sum, right: Forall | Exists | Sum) -> bool:
+    """Whether two sums, or two quantifiers, are the same up to the names of their binders.
+
+    ``sum(k**3 for k in Fin(n + 1))`` is ``sum(i**3 for i in Fin(n + 1))``: a
+    binder's name is the reader's choice, and a fact stated with ``k`` is
+    about the step's sum written with ``i``. Binder by binder, the domains
+    have to be the same, a ``Fin``'s bound as the integer it is; then the
+    bodies and the guards, each binder of the two read as one fresh name
+    that neither term mentions, so that no name is captured. A domain
+    refined by its own binder, ``Nat & (k > 0)``, reads it as that name too,
+    and is the same as ``Nat & (i > 0)``.
+    """
+    if len(left.binders) != len(right.binders):
+        return False
+    if (left.guard is None) != (right.guard is None):
+        return False
+    taken = _names(left) | _names(right)
+    mine: dict[str, Any] = {}
+    theirs: dict[str, Any] = {}
+    for (var, domain), (other, other_domain) in zip(left.binders, right.binders, strict=True):
+        fresh = _fresh(var.name, taken)
+        taken.add(fresh)
+        mine[var.name] = Var(fresh)
+        theirs[other.name] = Var(fresh)
+        if not _same_domain(
+            substitute_domain(domain, mine), substitute_domain(other_domain, theirs)
+        ):
+            return False
+    if not same(substitute(left.body, mine), substitute(right.body, theirs)):
+        return False
+    if left.guard is None:
+        return True
+    return same(substitute(left.guard, mine), substitute(right.guard, theirs))
+
+
+def _same_domain(left: Any, right: Any) -> bool:
+    """Whether two binders' domains are the same: a ``Fin``'s bound as the integer it is."""
+    if isinstance(left, FinType) or isinstance(right, FinType):
+        return (
+            isinstance(left, FinType)
+            and isinstance(right, FinType)
+            and same(left.bound, right.bound)
+        )
+    if isinstance(left, Refined) or isinstance(right, Refined):
+        return (
+            isinstance(left, Refined)
+            and isinstance(right, Refined)
+            and _same_domain(left.base, right.base)
+            and len(left.props) == len(right.props)
+            and all(same(a, b) for a, b in zip(left.props, right.props, strict=True))
+        )
+    return str(left) == str(right)
+
+
+def _fresh(stem: str, taken: set[str]) -> str:
+    """A name like ``stem`` that is not in ``taken``."""
+    index = 0
+    while True:
+        name = f"_{stem}_{index}"
+        if name not in taken:
+            return name
+        index += 1
+
+
+def same_function(left: FamilyValue, right: FamilyValue) -> bool:
+    """Whether two values of a family are the same function: ``k ↦ k**3`` is ``i ↦ i**3``.
+
+    Their parameters are names the matcher took from the terms it lined up,
+    so two matches of one fact can name them differently; each is applied
+    to the same fresh variables, and the bodies compared.
+    """
+    if len(left.parameters) != len(right.parameters):
+        return False
+    taken = _names(left.body) | _names(right.body)
+    taken |= {var.name for var in (*left.parameters, *right.parameters)}
+    arguments = []
+    for var in left.parameters:
+        fresh = _fresh(var.name, taken)
+        taken.add(fresh)
+        arguments.append(Var(fresh))
+    return same(left.apply(arguments), right.apply(arguments))
 
 
 def _same_parts(left: Any, right: Any) -> bool:
@@ -406,13 +511,20 @@ def kind_fits(sort: Any, term: Any, types: Mapping[str, Any]) -> bool:
 
     An integer variable takes an integer, a real one a real number or an
     integer, a complex one any number. A family takes a family of the scope,
-    by its name. A sort this cannot read takes anything, and Lean judges.
+    by its name, or a function the higher-order rule bound, whose values
+    have to fit the family's as a number does: a family of reals takes
+    ``i ↦ i**3`` over the integers, which Lean reads through the cast into
+    the reals, and not ``k ↦ z**k`` over the complex numbers. A sort this
+    cannot read takes anything, and Lean judges.
     """
     from lanky.lean import number_type
 
     base = _base_sort(sort)
     if isinstance(base, FnType):
-        return isinstance(term, prim.Variable | FamilyValue)
+        if isinstance(term, FamilyValue):
+            inner, codomain = family_scope(base, term, types)
+            return kind_fits(codomain, term.body, inner)
+        return isinstance(term, prim.Variable)
     if isinstance(term, FamilyValue) or isinstance(term, bool):
         return False
     try:
@@ -424,6 +536,25 @@ def kind_fits(sort: Any, term: Any, types: Mapping[str, Any]) -> bool:
     if isinstance(base, Sort) and base.name == "Real":
         return kind != "ℂ"
     return True
+
+
+def family_scope(
+    sort: Any, value: FamilyValue, types: Mapping[str, Any]
+) -> tuple[dict[str, Any], Any]:
+    """The scope a family's value is read in, and the sort of what it gives.
+
+    Each parameter of the value has the type of the family's argument in its
+    place, so that ``i ↦ i**3`` for an ``f: Fn[Nat, Real]`` reads ``i`` as a
+    natural; the second is the family's codomain, ``Real`` there.
+    """
+    inner = dict(types)
+    current = _base_sort(sort)
+    for var in value.parameters:
+        if not isinstance(current, FnType):
+            break
+        inner[var.name] = current.domain
+        current = _base_sort(current.codomain)
+    return inner, current
 
 
 def match(
@@ -642,11 +773,12 @@ def _same_sigma(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     for key, value in left.items():
         other = right[key]
         if isinstance(value, FamilyValue) or isinstance(other, FamilyValue):
+            # a value's parameters are lanky variables, whose == builds a
+            # proposition: two functions are compared as functions
             if not (
                 isinstance(value, FamilyValue)
                 and isinstance(other, FamilyValue)
-                and value.parameters == other.parameters
-                and same(value.body, other.body)
+                and same_function(value, other)
             ):
                 return False
         elif not same(value, other):
@@ -879,7 +1011,7 @@ def _patterns(lemma: Lemma, types: Mapping[str, Any]) -> list[Any]:
     for application in _applications(lemma.equation, families):
         if _names(application) & unknowns:
             out.append(application)
-    for side in (lemma.equation.left, lemma.equation.right):
+    for side in _sides(lemma.equation):
         if isinstance(side, prim.ExpressionNode) and _names(side) & unknowns:
             if not isinstance(side, prim.Variable):
                 out.append(side)
@@ -969,8 +1101,52 @@ def fits(
         return all(any(same(found, other) for other in present) for found in applications)
     return any(
         any(same(side, other) for other in present)
-        for side in (instance.left, instance.right)
+        for side in _sides(instance)
         if isinstance(side, prim.ExpressionNode)
+    )
+
+
+def touches(
+    lemma: Lemma, point: tuple[Any, ...], terms: Sequence[Any], types: Mapping[str, Any]
+) -> bool:
+    """Whether one application of a family of the scope in the fact, at ``point``, is the step's.
+
+    The second rule of :func:`single_point`, for a fact that gives one side of
+    the step: ``copies``, ``R[i, a, b] == C[i, a, b]``, against the claim
+    ``R[i, a, b] == D[i, a, b]``, touches it at ``(i, a, b)``.
+    """
+    values = dict(zip((var.name for var, _ in lemma.binders), point, strict=True))
+    instance = instantiate(lemma.equation, values)
+    present = [subterm for subterm, _ in _subterms_of(terms)]
+    return any(
+        any(same(found, other) for other in present)
+        for found in _applications(instance, _families(types))
+    )
+
+
+def _sides(comparison: Any) -> tuple[Any, ...]:
+    """The two sides of a comparison; none for a fact that is no comparison."""
+    if isinstance(comparison, prim.Comparison):
+        return (comparison.left, comparison.right)
+    return ()
+
+
+def _both_sides(
+    lemma: Lemma, point: tuple[Any, ...], terms: Sequence[Any]
+) -> bool:
+    """Whether both sides of the fact at ``point`` are terms of the step.
+
+    A side that is a number, the ``0`` of ``D[a + 2, b] + D[a, b + 2] == 0``,
+    is no term of the step to look for, and counts as one.
+    """
+    values = dict(zip((var.name for var, _ in lemma.binders), point, strict=True))
+    instance = instantiate(lemma.equation, values)
+    if not isinstance(instance, prim.Comparison):
+        return False
+    present = [subterm for subterm, _ in _subterms_of(terms)]
+    return all(
+        not isinstance(side, prim.ExpressionNode) or any(same(side, other) for other in present)
+        for side in (instance.left, instance.right)
     )
 
 
@@ -983,9 +1159,13 @@ def single_point(
 ) -> tuple[Any, ...]:
     """The one point at which a fact left uncalled supports a step (see the module docstring).
 
-    ``facts`` are what the case knows, propositions over the scope's names,
-    which with the bounds the types give are what a candidate's integer
-    conditions have to follow from (:func:`implied`).
+    ``terms`` are what the step is about: a link's two sides, or a case's
+    claim. The point is one at which the fact is about the step alone
+    (:func:`fits`), or, where there is none, one at which it gives one of
+    the step's terms (:func:`touches`). ``facts`` are what the case knows,
+    propositions over the scope's names, which with the bounds the types
+    give are what a candidate's integer conditions have to follow from
+    where several fit (:func:`implied`).
 
     Raises:
         NoSinglePoint: If no candidate fits, or several do, naming the fix:
@@ -999,8 +1179,25 @@ def single_point(
             point for point in fitting if _conditions(lemma, point, facts, types) is not False
         ]
         fitting = shown_ones or fitting
+    if len(fitting) > 1:
+        # still several: the step is the fact itself at the point where both
+        # of its sides are the step's, as one_more_term at n is for the link
+        # from sum(i**3 for i in Fin(n + 1)) to sum(i**3 for i in Fin(n)) + n**3,
+        # where at n - 1 only its left side is
+        whole = [point for point in fitting if _both_sides(lemma, point, terms)]
+        fitting = whole or fitting
+    if not fitting:
+        fitting = [point for point in candidates if touches(lemma, point, terms, types)]
+        if len(fitting) > 1:
+            # several give one of its terms: the ones the case rules out go, and
+            # a point the case merely does not show stays a choice to write
+            fitting = [
+                point for point in fitting if not _refuted(lemma, point, facts, types)
+            ] or fitting
     if len(fitting) == 1:
         return fitting[0]
+    # the points whose conditions the case shows come first, the fix a message names
+    fitting.sort(key=lambda point: _conditions(lemma, point, facts, types) is not True)
     shown = [f"({', '.join(_key(value) for value in point)})" for point in fitting or candidates]
     arguments = ", ".join(var.name for var, _ in lemma.binders)
     if not fitting:
@@ -1014,7 +1211,22 @@ def single_point(
         f"{name} fits this step at {len(fitting)} points, {', '.join(shown)}; write the "
         f"one meant, as by={name}{shown[0]}",
         fitting,
+        several=True,
     )
+
+
+def _refuted(
+    lemma: Lemma, point: tuple[Any, ...], facts: Sequence[Any], types: Mapping[str, Any]
+) -> bool:
+    """Whether the case rules out a condition of the fact at ``point``: its negation follows."""
+    values = dict(zip((var.name for var, _ in lemma.binders), point, strict=True))
+    for guard in lemma.guards:
+        here = instantiate(guard, values)
+        if isinstance(here, prim.Comparison) and here.operator in _NEGATED:
+            negation = Comparison(here.left, _NEGATED[here.operator], here.right)
+            if implied(negation, facts, types) is True:
+                return True
+    return False
 
 
 def _conditions(

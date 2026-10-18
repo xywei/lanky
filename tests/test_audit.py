@@ -11,7 +11,8 @@ installed:
   design's V3 (a tactic ending in ``#exit``, which skips the audit, and
   ``native_decide``, whose axiom the audit shows) and V4 (a decoy theorem in
   another namespace) fail closed;
-- *the screen*: ``use_tactic`` refuses a script with a command in it;
+- *the screen*: a script ``use_tactic`` gives with a command in it is not
+  sent to Lean;
 - *citations*: a part that cites a claim restates the text the claim's own
   command proved (``as_cited``). The design's T4, a citation restated
   without its condition, which proves ``1 = 0``, is refused before Lean is
@@ -31,10 +32,10 @@ import pytest
 
 from lanky import theorem
 from lanky.audit import TRUSTED_AXIOMS, audit_failure, audit_lines, audited, screen
-from lanky.citations import Proved, ProvedTexts, restatements
+from lanky.citations import Citation, Proved, ProvedTexts, restatements
 from lanky.lean import LeanStatement, statement_of
 from lanky.ledger import Fact, Status
-from lanky.obligations import Citation, Hints, Instance, Obligation, Part, part_statement
+from lanky.obligations import Hints, Instance, Obligation, Part, part_statement
 from lanky.oracles.lean import (
     UNAUDITED,
     LeanOracle,
@@ -370,10 +371,14 @@ def test_a_library_proof_may_give_a_step_its_heartbeats() -> None:
     assert "set_option" in screen("set_option maxRecDepth 4000 in simp", library=True)
 
 
-def test_use_tactic_refuses_a_script_where_it_is_written() -> None:
-    with pytest.raises(ValueError, match=r"use_tactic\(nonneg, \.\.\.\): .* it has #exit"):
-        use_tactic(nonneg, "native_decide\n#exit")
-    assert all(nonneg.fact_id not in oracle.tactics for oracle in _oracles())
+def test_use_tactic_keeps_a_refused_script_from_lean_without_a_traceback() -> None:
+    """Importing the file still works; lanky check names the script (test_messages.py)."""
+    use_tactic(nonneg, "native_decide\n#exit")
+    try:
+        assert all(nonneg.fact_id in oracle.tactics for oracle in _oracles())
+    finally:
+        for oracle in _oracles():
+            oracle.tactics.pop(nonneg.fact_id, None)
 
 
 def test_a_script_set_by_hand_is_screened_before_lean(monkeypatch, tmp_path) -> None:
@@ -383,7 +388,7 @@ def test_a_script_set_by_hand_is_screened_before_lean(monkeypatch, tmp_path) -> 
     result = oracle.establish(fact)
     assert result.status is Status.ASSUMED
     assert result.provenance["lean_declined"].startswith(
-        "the tactic script given for it is not sent to Lean: it has #exit"
+        "the script use_tactic gives it is not sent to Lean, since it has #exit"
     )
 
 
@@ -471,7 +476,7 @@ def _cited(term: Any, hints: Hints | None = None) -> Part:
         "nonneg applied",
         term,
         hints or Hints(),
-        citations=(Citation(0, nonneg.fact_id, "nonneg"),),
+        citations=(Citation(nonneg, hypothesis=0),),
     )
 
 
@@ -582,7 +587,7 @@ def test_restatements_are_refused_for_a_hypothesis_the_part_does_not_have() -> N
         Proved(nonneg.fact_id, "Lanky.nonneg", "∀ n : Int, 0 ≤ n → n ≥ 0", False, nonneg.term)
     )
     part = Part(
-        "p", "p", Forall(((m, Nat),), m >= 0), citations=(Citation(3, nonneg.fact_id, "nonneg"),)
+        "p", "p", Forall(((m, Nat),), m >= 0), citations=(Citation(nonneg, hypothesis=3),)
     )
     assert restatements(part, texts).refused.startswith("the part cites nonneg at hypothesis 3")
     stated = part_statement(

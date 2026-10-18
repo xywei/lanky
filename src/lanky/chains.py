@@ -44,10 +44,10 @@ name for a term, ``ratio = -beta / alpha``, is nothing new: it is the term.
 Nothing here proves anything. A chain is a record of what the proof says,
 built when a proof body is traced (under ``lanky check``, never on import and
 never under ``python file.py``), with the line each link was written on. The
-Lean oracle compiles it to a ``calc`` (:mod:`lanky.oracles.steps`), and
-without Lean each link's two sides are drawn at points
-(:func:`lanky.oracles.steps.draw_links`). A chain is not a proposition, and asking
-one for its truth value, as an ``if`` does, is refused.
+proof's compile makes it a ``calc`` (:mod:`lanky.proofs.compile`), and without
+Lean each link's two sides are drawn at points (:mod:`lanky.proofs`). A chain
+is not a proposition, and asking one for its truth value, as an ``if`` does,
+is refused.
 """
 
 from __future__ import annotations
@@ -371,18 +371,13 @@ def _reasons(by: Any, word: str, where: str) -> tuple[tuple[Any, ...], bool]:
                 "hypothesis, a theorem, a fact on the way or the claim at a point, or "
                 "a tuple of them, as in by=(recurrence, pde)"
             )
-        if isinstance(reason, prim.ExpressionNode) and not _citable(reason):
+        if isinstance(reason, prim.ExpressionNode):
             raise ChainError(
                 f"{where}: .{word}(..., by={_shown(reason)}) is a term, which is no "
                 "reason; by= takes a fact: a hypothesis, a theorem, a fact on the way "
                 "or the claim at a point"
             )
     return reasons, False
-
-
-def _citable(reason: Any) -> bool:
-    """Whether a term given as a reason says it is a fact (a plugin's handle may be a term)."""
-    return callable(getattr(reason, "__lanky_citation__", None))
 
 
 # {{{ the name a chain is assigned to

@@ -1239,8 +1239,36 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
 
     registry.load_entry_points()
     path = Path(path).resolve()
+    from lanky.oracles.lean import forget_scripts, refused_scripts
+
     with registry.collecting() as decorated:
-        module = import_path(path)
+        try:
+            module = import_path(path)
+        except BaseException:
+            # a file that raises after a use_tactic the screen refuses leaves
+            # the script behind no more than one that imports does
+            forget_scripts(refused_scripts())
+            raise
+    # the scripts use_tactic gave that are not sent to Lean, by fact id: each
+    # is said in its claim's row, Lean or no Lean, and forgotten after this
+    # check, so that a script taken out of the file is not refused again
+    refused = refused_scripts()
+    try:
+        ledger, claimed = _check_imported(path, module, decorated, refused, verbose)
+    finally:
+        forget_scripts(refused)
+    # last, after every run and draw of the check, so that nothing a proof's
+    # body does can change what they read
+    from lanky.proofs import check_written_proofs
+
+    check_written_proofs(ledger, claimed, verbose=verbose)
+    return ledger
+
+
+def _check_imported(
+    path: Path, module: Any, decorated: list[Any], refused: dict[str, Any], verbose: bool
+) -> tuple[Ledger, list[Any]]:
+    """The ledger of what importing ``path`` decorated, and the objects it claimed (see above)."""
     ledger = Ledger()
     collected: set[int] = set()
     claimed: list[Any] = []
@@ -1269,13 +1297,12 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
                     continue
                 if verbose:
                     print(f"{fact.where} {fact.owner}: {fact.statement}")
-                ledger.add(establish(fact, verbose=verbose))
-    # last, after every run and draw of the check, so that nothing a proof's
-    # body does can change what they read
-    from lanky.proofs import check_written_proofs
-
-    check_written_proofs(ledger, claimed, verbose=verbose)
-    return ledger
+                established = establish(fact, verbose=verbose)
+                said = refused.get(fact.id)
+                if said is not None and "tactic_refused" not in established.provenance:
+                    established = established.with_status(established.status, tactic_refused=said)
+                ledger.add(established)
+    return ledger, claimed
 
 
 def _with_duplicate(kept: Fact, claim: Fact) -> Fact:

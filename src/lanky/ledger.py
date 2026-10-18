@@ -709,11 +709,17 @@ def statement_lines(fact: Fact, width: int = 100) -> list[str]:
     more line, where the proof is and what it is::
 
         by its proof, l2p.py:143-152: induction on a, 2 cases, 2 steps
+
+    And a fact whose Lean cites a theorem that no command of the check
+    proved, restating it as lanky prints it rather than as Lean proved it
+    (:mod:`lanky.citations`), says what it trusts for that::
+
+        trusts how lanky prints line_taylor, which Lean did not prove in this check
     """
     text = _one_line(fact.statement)
-    by_proof = _proof_line(fact)
+    more = [line for line in (_proof_line(fact), _printer_line(fact)) if line]
     if len(text) <= width:
-        return [text, *wrap(by_proof, width)] if by_proof else [text]
+        return [text, *(line for extra in more for line in wrap(extra, width))]
     parts = _sequent_parts(fact)
     if parts is None:
         lines = wrap(text, width)
@@ -721,9 +727,30 @@ def statement_lines(fact: Fact, width: int = 100) -> list[str]:
         lines = []
         for part, indent in parts:
             lines += wrap(part, width, indent=indent)
-    if by_proof:
-        lines += wrap(by_proof, width)
+    for extra in more:
+        lines += wrap(extra, width)
     return lines
+
+
+def _printer_line(fact: Fact) -> str | None:
+    """``trusts how lanky prints line_taylor, ...``: what a fact's citations trust; or ``None``.
+
+    The provenance's ``lean_restated_by_printer`` names the theorems a part
+    of the fact's Lean cited with no text their own command proved (one only
+    tested, an axiom, one whose proof failed, or one not checked here), so
+    that the part restated each as the printer prints it.
+    """
+    provenance = fact.provenance if isinstance(fact.provenance, dict) else {}
+    printed = provenance.get("lean_restated_by_printer")
+    if isinstance(printed, str):
+        printed = [printed]
+    if not isinstance(printed, list | tuple):
+        return None
+    names = [str(name) for name in dict.fromkeys(printed) if str(name).strip()]
+    if not names:
+        return None
+    said = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    return f"trusts how lanky prints {said}, which Lean did not prove in this check"
 
 
 def _proof_line(fact: Fact) -> str | None:

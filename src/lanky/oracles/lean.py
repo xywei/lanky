@@ -87,7 +87,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Collection, Iterator
+from collections.abc import Iterator
 from dataclasses import replace
 from importlib.util import find_spec
 from typing import Any
@@ -95,7 +95,7 @@ from typing import Any
 import pymbolic.primitives as prim
 
 from lanky import mathlib as mathlib_mode
-from lanky.audit import audit_failure, audited, declares, screen
+from lanky.audit import audit_failure, audited, declares, refusal
 from lanky.citations import Proved, ProvedTexts, restatements
 from lanky.deadline import Expired, deadline
 from lanky.induction import (
@@ -145,7 +145,6 @@ from lanky.terms import (
 )
 
 __all__ = [
-    "CLOSED_WITH_HOLES",
     "COMBINATION_NORM",
     "LeanOracle",
     "LeanSession",
@@ -157,7 +156,6 @@ __all__ = [
     "default_cache_dir",
     "default_proof_cache_dir",
     "family_induction_scripts",
-    "holes_verdict",
     "hypothesis_names",
     "induction_over_families",
     "induction_scripts",
@@ -242,11 +240,19 @@ _ELEMENTARY_LEMMAS = (
 def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[str, ...]:
     """The whole-goal attempts of Mathlib mode, with ``lemmas`` for the elementary functions.
 
+    ``field_simp`` clears the denominators it knows are not zero, from the
+    hypotheses, and closes what is left only where that is trivial; followed
+    by ``ring``, it closes an identity of rational functions, which is what
+    is left of most (#173): sympy's Laplacian of ``log r``, ``(1 - 2*x**2 /
+    (x**2 + y**2)) / (x**2 + y**2) + ...`` under ``x**2 + y**2 > 0``, is one.
+    It comes after the attempts that close a claim without it, so that a
+    claim one of them proves is proved as it was.
+
     ``refuting`` is for a goal that is ``False`` under binders, the question
-    whether a fact is vacuous: ``positivity``, ``ring``, ``field_simp`` and
-    ``ring`` after ``push_cast`` close an order, an equation or what
-    ``field_simp`` simplifies to one, and none of them can show ``False``
-    from the hypotheses, so they are left out (#83).
+    whether a fact is vacuous: ``positivity``, ``ring``, ``field_simp``,
+    ``field_simp`` with ``ring``, and ``ring`` after ``push_cast`` close an
+    order, an equation or what ``field_simp`` simplifies to one, and none of
+    them can show ``False`` from the hypotheses, so they are left out (#83).
     """
     tactics = (
         "norm_num",
@@ -256,6 +262,7 @@ def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[s
         "linarith",
         "nlinarith",
         "(push_cast; ring)",
+        "(field_simp; ring)",
         f"simp [{', '.join(lemmas)}]",
         f"simp_all [{', '.join(lemmas)}] <;> linarith",
     )
@@ -266,7 +273,9 @@ def _mathlib_tactics(lemmas: tuple[str, ...], refuting: bool = False) -> tuple[s
 
 #: The whole-goal attempts of Mathlib mode that cannot close ``False`` (see
 #: :func:`_mathlib_tactics`).
-_CANNOT_REFUTE = frozenset({"positivity", "ring", "field_simp", "(push_cast; ring)"})
+_CANNOT_REFUTE = frozenset(
+    {"positivity", "ring", "field_simp", "(field_simp; ring)", "(push_cast; ring)"}
+)
 
 
 #: The whole-goal attempts Mathlib mode adds after :data:`BASE_TACTICS`. An
@@ -1002,85 +1011,6 @@ class LeanSession:
                 for item in getattr(response, "sorries", ())
             ],
         }, ""
-
-    def answer_with_holes(
-        self, source: str, holes: Collection[int] = (), until: float | None = None
-    ) -> tuple[str, list[tuple[int | None, str]], bool]:
-        """Elaborate a written proof; ``(verdict, messages, answered)``.
-
-        ``holes`` are the lines of ``source``, counted from ``1``, at which
-        lanky wrote ``sorry`` for a step the proof left open (``by=...``).
-        The verdict is :func:`holes_verdict`'s: ``"closed"``, ``"closed with
-        holes"`` when every ``sorry`` Lean found is at one of them, or
-        ``"failed"``. The messages are every error Lean reported, each with
-        its line, which is how a report puts each back at its Python line
-        (:attr:`lanky.oracles.steps.Script.lines`); a command Lean did not
-        answer has one message, the reason, with no line. ``answered`` is
-        :meth:`answer`'s third value.
-        """
-        from lean_interact import Command
-
-        if not self.start() or not self._revive():
-            return "failed", [(None, self.error or "no Lean session")], False
-        timeout = self.timeout
-        if until is not None:
-            left = until - time.monotonic()
-            if left <= 0:
-                return "failed", [(None, BUDGET_SPENT)], False
-            timeout = min(timeout, left)
-        if self.mathlib is not None:
-            command = Command(cmd=source, env=self.environment)
-        else:
-            command = Command(cmd=source)
-        try:
-            response = self.server.run(command, timeout=timeout)
-        except Exception as exc:  # noqa: BLE001 - a timeout is an answer of no one's
-            return "failed", [(None, f"{type(exc).__name__}: {exc}")], False
-        except BaseException:
-            self._interrupted()
-            raise
-        message = getattr(response, "message", None)
-        if message is not None:
-            return "failed", [(None, str(message))], False
-        verdict, messages = holes_verdict(response, holes)
-        return verdict, messages, True
-
-
-#: The verdict of a written proof that Lean accepted with ``sorry`` at the
-#: steps the proof left open, and nowhere else (:func:`holes_verdict`).
-CLOSED_WITH_HOLES = "closed with holes"
-
-
-def holes_verdict(
-    response: Any, holes: Collection[int] = ()
-) -> tuple[str, list[tuple[int | None, str]]]:
-    """What a REPL response says of a written proof: closed, closed with holes, or failed.
-
-    A proof is ``"closed"`` with no error and no ``sorry``, and ``"closed with
-    holes"`` with no error and a ``sorry`` only at lines in ``holes``, which
-    are where lanky wrote one for a step written ``by=...``: the claim then
-    reads assumed, and its row names those lines (:data:`CLOSED_WITH_HOLES`).
-    A ``sorry`` anywhere else, one a tactic left or one that came in some
-    other way, fails it, as an error does. The messages are the errors, each
-    with its line, and the stray ``sorry`` lines, in the order Lean gave them.
-    """
-    allowed = set(holes)
-    messages: list[tuple[int | None, str]] = []
-    for item in getattr(response, "messages", ()):
-        if str(getattr(item, "severity", "")).endswith("error"):
-            position = getattr(item, "start_pos", None)
-            messages.append((getattr(position, "line", None), str(item.data)))
-    stray: list[tuple[int | None, str]] = []
-    for item in getattr(response, "sorries", ()):
-        position = getattr(item, "start_pos", None)
-        line = getattr(position, "line", None)
-        if line is None or line not in allowed:
-            stray.append((line, "a sorry lanky did not write for a step left open"))
-    if messages or stray:
-        return "failed", messages + stray
-    if getattr(response, "sorries", ()):
-        return CLOSED_WITH_HOLES, []
-    return "closed", []
 
 
 #: Every session that opened, for :func:`kill_servers`.
@@ -2800,8 +2730,10 @@ def part_scripts(statement: LeanStatement) -> list[str]:
                             )
                     except UnsupportedTerm:
                         pass
+    # drawn fresh, so that a hypothesis named hz0 is not hidden by the fact named for it
+    used = {name for name, _ in statement.binders} | {name for name, _ in statement.hypotheses}
     lines = [
-        f"try have hz{k} : (({norm_sq} ({z}) : ℝ) : ℂ) ≠ 0 := "
+        f"try have {_fresh(f'hz{k}', used)} : (({norm_sq} ({z}) : ℝ) : ℂ) ≠ 0 := "
         f"by exact_mod_cast ({positive}.mpr (by assumption)).ne'"
         for k, z in enumerate(dict.fromkeys(nonzero))
     ]
@@ -3626,12 +3558,22 @@ class LeanOracle:
                 )
             library = override is not None
         if override is not None:
-            refused = screen(override, library=library)
+            refused = refusal(override, library=library)
             if refused is not None:
-                # set on the oracle by hand, past use_tactic's screen
-                reason = f"the tactic script given for it is not sent to Lean: {refused}"
+                why, fix = refused
+                if library:
+                    reason = f"the proof lanky.known keeps for it is not sent to Lean: {why}"
+                    return fact.with_status(
+                        fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+                    )
+                # a script use_tactic gave: lanky check names it, with the fix (report_refused)
+                said = refused_account(override)
+                assert said is not None
                 return fact.with_status(
-                    fact.status, lean_declined=reason, declined=f"{self.name}: {reason}"
+                    fact.status,
+                    lean_declined=said["reason"],
+                    declined=f"{self.name}: {said['reason']}",
+                    tactic_refused=said,
                 )
             ladder = [override]
         else:
@@ -3810,16 +3752,20 @@ class LeanOracle:
         """
         extra: dict[str, Any] = {}
         if statement.citable and fact.term is not None:
-            self.proved_texts.record(
+            # kept only as the text the command that closed states, which on a
+            # warm check is the command the proof cache kept the answer for
+            kept = self.proved_texts.record(
                 Proved(
                     fact.id,
                     statement.declared_name,
                     statement.as_cited,
                     statement.mathlib,
                     fact.term,
+                    source=source,
                 )
             )
-            extra["lean_as_cited"] = statement.as_cited
+            if kept:
+                extra["lean_as_cited"] = statement.as_cited
         if conditions:
             source = "\n".join((*conditions, source))
             extra["lean_side_conditions"] = [
@@ -4696,23 +4642,71 @@ def use_tactic(claim: Any, script: str) -> None:
     command around it, the axiom audit that ends it among them
     (:mod:`lanky.audit`). So a script with anything a proof never needs, a
     ``#`` command such as ``#exit``, ``native_decide``, ``set_option``, a
-    ``namespace`` or a declaration, is refused here, where it is written.
+    ``namespace`` or a declaration, is never sent to Lean. Importing the file
+    still works, as ``python file.py`` must: ``lanky check`` reads the claim
+    as the other oracles leave it, names the script under the table with
+    what to write instead, and fails, as a broken written proof does::
 
-    Raises:
-        ValueError: If the script is one the screen refuses
-            (:func:`lanky.audit.screen`), with what it found.
+        REFUSED scan_monotone at gauss.py:39: the script use_tactic gives it is not
+        sent to Lean, since it has #exit, a Lean command.
+          Fix: take #exit out; lanky writes every command around the script, and
+          lanky check --show-lean prints them.
     """
     fact_id = _claim_id(claim)
-    refused = screen(script)
-    if refused is not None:
-        name = getattr(claim, "__name__", None) or fact_id
-        raise ValueError(
-            f"use_tactic({name}, ...): the script is not sent to Lean, because {refused}. "
-            "A script is the proof that follows `:= by`, and lanky writes the "
-            "commands around it."
-        )
     for oracle in _lean_oracles():
+        # screened where it is used: lanky check says why in the ledger, and
+        # forgets a refused script after the check (refused_scripts)
         oracle.tactics[fact_id] = script
+
+
+def refused_account(script: str) -> dict[str, str] | None:
+    """Why the screen keeps a script ``use_tactic`` gave from Lean, and the fix; ``None`` if not.
+
+    ``{"reason": "the script use_tactic gives it is not sent to Lean, since it
+    has #exit, a Lean command", "fix": "take #exit out; ..."}``, as the
+    provenance keeps it (``tactic_refused``) and ``lanky check`` prints it
+    (:func:`lanky.cli.report_refused`).
+    """
+    refused = refusal(script)
+    if refused is None:
+        return None
+    why, fix = refused
+    reason = f"the script use_tactic gives it is not sent to Lean, since {why}"
+    return {"reason": reason, "fix": fix}
+
+
+def refused_scripts() -> dict[str, dict[str, str]]:
+    """Each script ``use_tactic`` gave the registered Lean oracles that the screen refuses.
+
+    By fact id, as :func:`refused_account` says it. :func:`lanky.check.check_path`
+    reads them once the file is imported, records each in its claim's row
+    whether or not Lean is here to be asked, and then forgets them
+    (:func:`forget_scripts`), so that a script taken out of the file, or
+    corrected, is not still refused when the file is checked again in the
+    same process.
+    """
+    import lanky.oracles  # noqa: F401 - importing registers the built-in oracles
+    from lanky.plugins import registry
+
+    found: dict[str, dict[str, str]] = {}
+    for oracle in registry.oracles:
+        if not isinstance(oracle, LeanOracle):
+            continue
+        for fact_id, script in oracle.tactics.items():
+            said = refused_account(script)
+            if said is not None:
+                found.setdefault(fact_id, said)
+    return found
+
+
+def forget_scripts(fact_ids: Any) -> None:
+    """Take the scripts pinned for ``fact_ids`` off every registered Lean oracle."""
+    from lanky.plugins import registry
+
+    for oracle in registry.oracles:
+        if isinstance(oracle, LeanOracle):
+            for fact_id in fact_ids:
+                oracle.tactics.pop(fact_id, None)
 
 
 def use_certificate(claim: Any, finder: Finder) -> None:

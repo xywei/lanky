@@ -24,10 +24,9 @@ import pytest
 
 from conftest import claims
 from lanky.check import check_path, import_path
-from lanky.citations import CitedText, proved_texts
+from lanky.citations import CitedText, Premise, proved_texts
 from lanky.ledger import Status
 from lanky.proofs import ProofError, compile_proof, prove, trace_proof
-from lanky.proofs.compile import Premise
 from lanky.proofs.report import CLOSED_WITH_HOLES, verdict
 from lanky.proofs.trace import Named
 
@@ -523,6 +522,234 @@ def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path) -> None:
     )
     assert fact.status is not Status.PROVED
     assert fact.provenance.get("tactic") != "its written proof"
+
+
+#: The design's T4 inside an induction: the citation is at the claim's own ``n``.
+T4_INDUCTION = '''\
+"""A proof that takes its citation at a point with a variable, inside an induction."""
+
+from __future__ import annotations
+
+from lanky import axiom, theorem
+from lanky.prelude import Fn, Int, Nat
+
+
+@axiom(cite="a table that does not change from one cell to the next")
+def steady(g: Fn[Nat, Int], m: Nat) -> g[m + 1] == g[m]:
+    """Each cell is the one before it."""
+
+
+@axiom(cite="a printer that dropped a condition, inside an induction")
+def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
+    """What a statement about the cells past the first would say with m >= 1 dropped."""
+
+
+@theorem
+def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
+    def claim(n):
+        if n >= 1:
+            return steady(f, n - 1), claim(n - 1)
+        return grows(f, n)
+
+    return claim
+'''
+
+
+def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> None:
+    """``grows`` is cited at ``(f, n)`` in the case ``n < 1``, where its statement proves False.
+
+    The claim is false, and about a table over ``Nat``, which no draw tests;
+    no point of the proof is a number, so the question at numbers alone has
+    no instance to take, and the proof read proved by Lean. In the case,
+    with ``f`` and ``n`` bound and ``n >= 1`` false, ``grows`` at ``(f, n)``
+    says ``f[n] < f[n] + n`` where ``n`` is ``0``, and ``omega`` finds
+    False: the proof is refused, at the line of the case.
+    """
+    _lean_or_skip()
+    path = tmp_path / "t4_induction_cases.py"
+    path.write_text(T4_INDUCTION, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["headline"] == (
+        "the theorems its proof cites without a proved text prove False"
+    )
+    assert failure["lines"][0].startswith("steady and grows, as lanky states them for Lean")
+    assert failure["line"] == 1 + next(
+        index
+        for index, text in enumerate(T4_INDUCTION.splitlines())
+        if "return grows(f, n)" in text
+    )
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
+#: T4 inside an induction, with the citation by name alone: the compiler finds its point.
+T4_BY_NAME = T4_INDUCTION.replace("return grows(f, n)", "return grows")
+
+
+def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> None:
+    """``return grows`` is taken at ``(f, n)``, matched against ``f[n] == 7`` (Codex, #177).
+
+    The point is written nowhere, so the case's question had no point to
+    take ``grows`` at, and was not asked: the false claim read proved by
+    Lean. The compiler's instance is the point now, and the case at ``n <
+    1`` is refused as when the point is written.
+    """
+    _lean_or_skip()
+    path = tmp_path / "t4_by_name_cases.py"
+    path.write_text(T4_BY_NAME, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["lines"][0].startswith("steady and grows, as lanky states them for Lean")
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
+#: T4 inside an induction, the citation at a function: ``grows`` at ``(k ↦ f[k] + 1, n)``.
+T4_AT_A_FUNCTION = T4_INDUCTION.replace(
+    "return grows(f, n)", "return grows(lambda k: f[k] + 1, n)"
+)
+
+
+def test_t4_at_a_function_is_asked_at_that_function(tmp_path) -> None:
+    """A point that binds a family to a function is asked about too (Codex, #182).
+
+    ``grows`` taken at ``(k ↦ f[k] + 1, n)`` in the case ``n < 1`` says
+    ``f[0] + 1 < f[0] + 1``, which proves anything; the case's question left
+    out points with a function in them, and the false claim read proved by
+    Lean. The function is now written in the question, as a ``fun``.
+    """
+    _lean_or_skip()
+    path = tmp_path / "t4_function_cases.py"
+    path.write_text(T4_AT_A_FUNCTION, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite", failure
+    assert failure["lines"][0].startswith("steady and grows, as lanky states them for Lean")
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
+#: T4 in a case no small number reaches, and in one whose condition reads a table.
+T4_UNSAMPLED = '''\
+"""Proofs that take a citation in a case the search for values does not reach."""
+
+from __future__ import annotations
+
+from lanky import axiom, theorem
+from lanky.prelude import Fn, Int, Nat
+
+
+@axiom(cite="a printer that dropped a condition")
+def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
+    """What a statement about the cells past the first would say with m >= 1 dropped."""
+
+
+@theorem
+def cell_one_hundred(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat if n == 100):
+    def claim(n):
+        return grows(f, n - 100)
+
+    return claim
+
+
+@theorem
+def threes_are_sevens(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
+    def claim(n):
+        if f[n] == 3:
+            return grows(f, 0)
+        return grows(f, 0)
+
+    return claim
+
+
+@theorem
+def past_a_hundred(
+    f: Fn[Nat, Int], seven: all(f[m] == 7 for m in Nat if m >= 100)
+) -> all(f[n] == 7 for n in Nat if n >= 100):
+    def claim(n):
+        if n < 50:
+            return grows(f, n)
+        return seven(n)
+
+    return claim
+'''
+
+
+@pytest.fixture(scope="module")
+def unsampled(tmp_path_factory) -> dict:
+    """:data:`T4_UNSAMPLED` checked with core Lean, by owner."""
+    _lean_or_skip()
+    path = tmp_path_factory.mktemp("t4_unsampled") / "t4_unsampled_cases.py"
+    path.write_text(T4_UNSAMPLED, encoding="utf-8")
+    return {fact.owner: fact for fact in claims(check_path(path))}
+
+
+@pytest.mark.parametrize("owner", ["cell_one_hundred", "threes_are_sevens"])
+def test_t4_in_a_case_no_small_number_reaches_is_asked(unsampled, owner) -> None:
+    """A search that finds no values shows nothing about the case (Codex, #177 and #182).
+
+    ``n == 100`` is met by no small number, and ``f[n] == 3`` cannot be
+    evaluated at numbers, so neither case had its question asked, and both
+    false claims read proved by Lean from ``grows`` at a point where its
+    statement is ``f[0] < f[0]``. The case is asked now unless its
+    conditions alone prove False, which these do not.
+    """
+    fact = unsampled[owner]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["headline"] == (
+        "the theorem its proof cites without a proved text proves False"
+    )
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
+def test_a_case_its_conditions_rule_out_is_not_asked(unsampled) -> None:
+    """``n < 50`` under the guard ``n >= 100`` is a case nothing reaches; its citation is idle.
+
+    Asked, the question would prove False from the case's conditions alone
+    and refuse a sound proof; the conditions are shown inconsistent first,
+    and the case is passed over.
+    """
+    account = unsampled["past_a_hundred"].provenance["proof"]
+    assert account["closed"] is True, account
+
+
+def test_a_restated_text_other_than_the_kept_one_is_refused_before_lean(cases) -> None:
+    """The design's 3.5: a citation is compared with the text the cited command closed with.
+
+    The oracle keeps one text for ``ct_chain``, and the proof of ``at_two``
+    is compiled against another: the check refuses it before Lean is asked,
+    and before the proof cache is read, warm or not.
+    """
+    _lean_or_skip()
+    from lanky.citations import Proved
+    from lanky.proofs import _lean_oracle
+
+    oracle = _lean_oracle()
+    texts = oracle.proved_texts
+    kept = Proved(cases.ct_chain.fact_id, "Lanky.ct_chain", "KEPT", False, cases.ct_chain.term)
+    texts.record(kept)
+    try:
+        with proved_texts({cases.ct_chain.fact_id: "RESTATED"}):
+            checked = prove(cases.at_two, cases.at_two.fact())
+    finally:
+        texts.forget(cases.ct_chain.fact_id)
+    account = checked.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["headline"] == (
+        "a theorem its proof cites is restated other than as Lean proved it"
+    )
+    assert "(ct_chain : RESTATED)" in account["lean_source"]
 
 
 def test_lean_accepts_a_proof_with_a_step_left_open_and_names_it(checked) -> None:

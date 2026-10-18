@@ -126,7 +126,7 @@ All notable changes to lanky are recorded here. The format follows
   (`exact`), a rewrite by it under a function of the step (`rw`, `simp
   only`), a `linear_combination` with the multipliers lanky's search finds
   among the facts cited, then `linarith`; in core Lean `omega` and `grind`.
-  The compiler adds what a reader never writes (`lanky.oracles.steps`): that
+  The compiler adds what a reader never writes (`lanky.proofs.compile`): that
   an integer denominator the case shows is not zero is not zero in the
   field, the shift `n.toNat = (n - 1).toNat + 1` where a fact has the power
   one order down, and each fact with its casts pushed in. Where the chain's
@@ -223,7 +223,118 @@ All notable changes to lanky are recorded here. The format follows
   math steps (`Schedule.rewrite`) need under the sum over the sources of a
   layer potential. A part with no such condition keeps its script.
 
+- **The vacuity question is asked inside an induction.** A proof that cites
+  a theorem with no proved text (an axiom, a claim only tested) restates the
+  statement the printer gives, and lanky asks whether those statements prove
+  `False` where the proof takes them. That question took only points that
+  are numbers; a citation at the claim's own point went unasked, and a
+  proof that took a statement missing its condition there read proved:
+
+  ```python
+  @theorem
+  def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
+      def claim(n):
+          if n >= 1:
+              return steady(f, n - 1), claim(n - 1)
+          return grows(f, n)  # grows: g[m] < g[m] + m, its m >= 1 dropped
+
+      return claim
+  ```
+
+  Now each case of the proof whose citations have variables is asked too:
+  the variables bound, with the sorts the proof gives them, and the case's
+  conditions assumed (here `n >= 1` false), where some small values satisfy
+  them, so that the question cannot hold of a case that never happens
+  (`lanky.citations.satisfiable`). Where one shows the statements prove
+  `False`, the proof fails at the line of that case: `UNPROVED
+  every_cell_is_seven ...: the theorems its proof cites without a proved
+  text prove False`, at `return grows(f, n)`.
+
+- **A cited text is compared with the cited theorem's cache entry** (the
+  design's 3.5). A theorem's `as_cited` text is kept only from the command
+  that closed with it: the source Lean answered, or on a warm check the
+  source the proof cache kept the answer for, has to state the text as its
+  `Lanky.<name>.as_cited`, byte for byte (`lanky.citations.closed_with`). A
+  written proof's restated texts are compared with the kept ones before
+  Lean is asked and before the proof cache is read, and a proof that
+  restates another text is refused, naming the theorem.
+
+- **A step of a written proof that does not follow says what it also needs.**
+  Where no fact the step cites works at another point, the report tries
+  each fact the proof could cite and did not (the theorem's hypotheses, the
+  claim at a smaller point, the theorems the proof cites elsewhere) at the
+  points the step's terms give, and names the first with which the
+  multiplier search finds the step, with the step as it would be written,
+  confirmed by Lean where Lean is (`lanky.proofs.report.also_needs`):
+
+  ```text
+    It also needs pde(a - 2, b), which says D[a, b] + D[a - 2, b + 2] == 0.
+    Fix: return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b) (checked).
+  ```
+
+  Where nothing the proof has gets there, the report names the facts of
+  `lanky.known` whose shape the step has, as a claim with no proof gets
+  them, and says to cite one or to split the step in two; a case left to
+  lanky, a bare `return`, gets them too:
+
+  ```text
+    No fact the proof cites gets there. What lanky knows of its shape:
+      log_of_a_power rewrites log(x**n); here log(abs(alpha)**2), at x = abs(alpha), n = 2
+    Fix: cite one of them, after from lanky.known import log_of_a_power, modulus_squared; or split the step in two.
+  ```
+
+- **The multipliers a step is closed with are kept** (`lanky.proofs.hints`),
+  by the step's claim, its facts at their points and the sorts of its
+  names, in `hints` beside the proof cache (off with it,
+  `LANKY_LEAN_PROOF_CACHE=off`). A check of a proof that has not changed
+  runs no sympy and sends Lean the same text, which the proof cache then
+  answers. A hint is untrusted: Lean checks the combination, so a wrong or
+  stale one costs a failed step and never a wrong proof, and one the cache
+  cannot read is a miss.
+
 ### Changed
+
+- **One of each: one matcher, one step compiler, one citation.**
+  - `lanky.matching.single_point` lines up every fact a written proof leaves
+    uncalled, in a link or in a `return`, and the fixes a failing step's
+    report offers come from its `candidate_points`. Where no point makes the
+    fact about the step alone, it takes the one point at which an
+    application of the fact is one of the step's (`return copies, stored`,
+    where `copies` gives one side of the claim), the rule
+    `lanky.proofs.match.unify` had; of several such points, those the case
+    rules out go, and the message names the one whose conditions the case
+    shows first.
+  - `lanky.proofs.compile` is the step compiler: the nonzero facts and the
+    power shifts it adds are its own (`nonzero_lines`, `shift_lines`), and a
+    family's value the higher-order rule binds is applied as a `fun`.
+    `lanky.oracles.steps`, `LeanSession.answer_with_holes` and
+    `holes_verdict` are gone; a written proof's verdict, holes included, is
+    `lanky.proofs.report.verdict`.
+  - `lanky.citations.Citation` is the one record of a fact cited: by a step
+    of a written proof, `Citation(source, values, line)`, the source a
+    hypothesis, a theorem, the claim or a fact on the way, and by a
+    plugin's part, `Citation(theorem, hypothesis=position)`. The trace's and
+    `lanky.obligations`' classes are gone, and so are
+    `lanky.citations.Hypothesis`, `Cited`, `citation_of` and the
+    `__lanky_citation__` protocol, which no proof read. `premises_of` gives
+    `lanky.citations.Premise`s, theorems known by their proved texts, and
+    `vacuity_question` takes the theorems cited.
+  - What was left of `lanky.proofs.match`, the algebra of a proof's cases
+    (`decide`, `pins`, `shape_of`), is `lanky.proofs.cases`.
+
+- **The outline names each case as the body reads.** `lanky check --steps`
+  lists a written proof's cases in the body's order, so a case says only
+  what the ones before it did not: `every_box`'s three cases read `if a + b
+  == 0:`, `if a < 2:` and `otherwise:`, where the second read `when a + b !=
+  0 and a < 2:`. A split under one that held says its condition the other
+  way round, `if a < 2 and b >= 2:`.
+
+- **A proof not checked for want of Lean says so in a clause.** The
+  `WITHOUT LEAN` and `WITHOUT MATHLIB` lines say what is missing and how to
+  get it, so the `NOT CHECKED` line under them is short: `NOT CHECKED
+  harmonic at sumpy_recurrence.py:151: without Lean, each step of its proof
+  was tested at drawn points instead (lines 161 and 162).` The long reason
+  stays in the provenance (`proof.reason`), and the clause is `proof.said`.
 
 - **A theorem's hypotheses have their Python names in Lean.** The printed
   theorem calls them what the file does, `(pde : ∀ a : Int, ...)`,
@@ -265,17 +376,113 @@ All notable changes to lanky are recorded here. The format follows
     tested`).
   - `examples/sumpy_recurrence.py`'s `harmonic` is a theorem, proved by its
     body, a calculation of two steps: "Let r2 be x**2 + y**2. The Laplacian
-    equals 2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0."
+    equals 2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0." lanky
+    finds a proof alone too (#173), so the body is for the reader.
   - The step from the harmonicity to the derivatives at every order is a
     fact of the claim's own, `@reconstructs(..., cite=KRESS)`. It is an
     axiom with no term, which the rows for every order rest on and name:
     `proved under harmonic at every order` (`7 facts: 1 assumed, 1 decided,
     3 proved, 2 tested`).
-  - `examples/nicomachus.py` stays an axiom, and says why (#172), and
-    `examples/pytential_skie.py`'s eight axioms are potential theory (#174).
+  - `examples/nicomachus.py` proves Nicomachus's theorem by its body, a
+    chain through `one_more_term` (#172): "the cubes to n + 1 sum to the
+    cubes to n plus n cubed, by one more term; that is the square of the sum
+    to n, plus n cubed, by the claim at n - 1; that is the square of the sum
+    to n plus n, by Gauss at n - 1; and that is the square of the sum to n +
+    1, by one more term." With Mathlib its three theorems read `proved` (`8
+    facts: 4 proved, 4 tested`, `one_more_term` among them).
+    `examples/citation.py` keeps the theorem as an axiom, with the same
+    `gauss` and `cubes`, for the quickstart's section on taking a result on a
+    citation.
+  - `examples/pytential_skie.py`'s eight axioms are potential theory (#174).
   - #174 lists what the examples still take on citations.
 
+- **A known fact over a family is cited by its name alone, at a function of
+  the step's terms** (#172). `one_more_term`, cited at the link from
+  `sum(i**3 for i in Fin[n + 1])` to `sum(i**3 for i in Fin[n]) + n**3`, is
+  the fact with its family `f` at `i ↦ i**3` and at the point `n`, and
+  `--steps` says so: `by one_more_term, at (lambda i: i**3, n)`. A proof that
+  writes the point writes the family as a `lambda`:
+  `by=one_more_term(lambda i: i**3, n)`. `return one_more_term, claim(n - 1)`
+  proves the design's `geometric_sum`.
+
+- **The sums of `lanky.known` apply to sums of `Nat`s and `Int`s as well as
+  of `Real`s** (#172). They are stated over the reals. Cited at a sum of
+  integers, the fact is stated at its point over the integers, as the step
+  reads it, and shown from the fact over the reals through the cast, which
+  is injective (`Int.cast_injective` and `push_cast`; `Complex.ofReal_injective`
+  for a real sum cited by a fact over the complex numbers). A family of
+  reals takes a function whose values are integers or reals, and not one
+  whose values are complex.
+
+- **The ladder tries `field_simp` followed by `ring`** (#173). `field_simp`
+  alone closes only what clearing the denominators leaves trivial. The new
+  attempt comes after `linarith`, `nlinarith` and `ring` after `push_cast`,
+  so a claim one of them proved is proved as it was; a bare `return` in a
+  written proof tries it too. sympy's
+  Laplacian of `log r`, `(1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 -
+  2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0` under `x**2 + y**2 > 0` or
+  `!= 0`, is proved with no body. Its rung reads `by algebra, clearing its
+  denominators`. A claim the ladder reaches past `field_simp` asks Lean
+  one script more, once, and a written proof with a bare `return` has a new
+  command, so its proof-cache entry goes cold once.
+
 ### Fixed
+
+- **A written proof that cites a theorem without a proved text is asked
+  about every case it takes the theorem in** (the design's T4, Codex on #177
+  and #182). Three cases went unasked, and in each a false claim read proved by
+  Lean from a statement that, as lanky prints it, proves `False`:
+  - a theorem cited by name alone, `return grows`, which has no point
+    written: it is now taken at the point the compiler matched it at, as a
+    written point is;
+  - a theorem taken at a function, `grows(lambda k: f[k] + 1, n)`: the
+    question now takes it there, the function written as a `fun`;
+  - a case no small number reaches (`n == 100`), or whose condition reads a
+    table (`if f[n] == 3:`): a search that finds no values showed nothing,
+    and the case is now asked unless its conditions alone are shown to prove
+    `False`, so a case nothing reaches still takes nothing. The search also
+    tries the integers a case's conditions name, and their neighbours.
+
+- A sum a step's multiplier mentions is put back through a marker named
+  apart from the case's names, so a parameter called `_sum0` stays the
+  parameter; it read as the sum, and the certificate was wrong (Codex on
+  #176).
+
+- Two sums or quantifiers whose binders' domains are refined by the binders
+  themselves, `k in Nat & (k > 0)` and `i in Nat & (i > 0)`, are the same up
+  to the names: the refinements were compared before the binders were
+  renamed (Codex on #176).
+
+- A refused `use_tactic` script does not outlast a check whose import of the
+  file raises after it; checked again once corrected, the file's claim was
+  still refused (Codex on #179).
+
+- The script that takes a complex number apart (`part_scripts`) names the
+  facts it adds apart from the theorem's hypotheses, so a hypothesis named
+  `hz0` is not hidden by one. The other scripts already drew their names
+  (`ih`, `hk`, `hstep`, `case_1`, `pin_1`) fresh from the statement's,
+  which a test now holds for written proofs.
+
+- **The matcher of uncalled facts** (#172):
+  - two values of a family are compared as functions, `k ↦ k**3` the same
+    as `i ↦ i**3`; it compared their parameters with `==`, which builds a
+    proposition, and a fact with a family two partial matches bound read
+    "no point fits" whatever the step;
+  - two sums are the same up to the names of their binders, and their bounds
+    as the integers they are: `sum(k**3 for k in Fin(n - 1 + 1))` is
+    `sum(i**3 for i in Fin(n))`;
+  - where several points fit, the one at which both sides of the fact are
+    the step's is taken: `one_more_term` at `n`, not at `n - 1`, for the
+    link from the sum to `n + 1` to the sum to `n` plus `n**3`;
+  - a family's value is printed in Lean, as `(fun i => (i ^ 3 : ℝ))`, where
+    it raised `cannot print FamilyValue in Lean`;
+  - a fix that names a point writes the family's value as a `lambda`.
+
+- **A step's multipliers see its sums.** The search for a step's
+  multipliers reads a finite sum as an atom, one per sum up to its binders'
+  names, so `gauss(n - 1)` cited at a step about `sum(i for i in Fin(n))`
+  gets its multiplier; a step that is one of its facts up to algebra, with
+  an atom squared on both sides, is closed by that fact alone.
 
 - **A claim reads proved only on a positive axiom audit.** Every command
   ends with `#print axioms _root_.Lanky.<name>` of each theorem it declares,
@@ -288,23 +495,39 @@ All notable changes to lanky are recorded here. The format follows
   `native_decide`'s axiom (`lanky.audit`).
 
 - **`use_tactic` screens the script it is given.** A script is the proof
-  after `:= by`, and lanky writes every command around it, so a `#`
-  command, `set_option`, `native_decide`, `decide +native`, a `namespace`,
-  `end`, a declaration, a definition of syntax and a block comment left
-  open are refused where `use_tactic` is called, with what was found.
+  after `:= by`, and lanky writes every command around it, so a script with
+  a `#` command, `set_option`, `native_decide`, `decide +native`, a
+  `namespace`, `end`, a declaration, a definition of syntax or a block
+  comment left open is never sent to Lean. Importing the file still works,
+  with no traceback, as `python file.py` needs it to; the claim reads as
+  the other oracles leave it, and `lanky check` names the script under the
+  table with what was found and what to write instead, and fails, on a
+  machine without Lean too (`lanky.cli.report_refused`; the fix is
+  `lanky.audit.refusal`'s, the reason `screen`'s, and the provenance keeps
+  both as `tactic_refused`). The check forgets a refused script once it has
+  said so (`lanky.oracles.lean.refused_scripts`, `forget_scripts`), so a
+  script taken out of the file is not refused when the file is checked again
+  in the same process:
+
+  ```text
+  REFUSED scan_monotone at gauss.py:39: the script use_tactic gives it is not sent to Lean, since it has #exit, a Lean command.
+    Fix: take #exit out; lanky writes every command around the script, and lanky check --show-lean prints them.
+  ```
 
 - **A cited theorem is restated only from the text its own command proved.**
   A claim's command now proves one more theorem after its own,
   `Lanky.<name>.as_cited`, the claim as one proposition, from the claim's
   theorem; the oracle keeps that text (`lean_as_cited` in the provenance). A
-  plugin's part that cites the claim (`lanky.obligations.Citation`, which
+  plugin's part that cites the claim (`Citation(theorem, hypothesis=0)`, which
   loopty's applications, series and unfolded postconditions name) restates
   exactly that text, before any variable of its own, and a part whose
   citation is not the claim's statement is refused before Lean is asked. A
   citation restated without a condition proves `1 = 0` with no error and no
   axiom beyond Lean's own (`lanky.citations`). A citation whose claim has
   no proved text, an axiom or a claim only tested, is restated by the
-  printer as before, and the fact says so (`lean_restated_by_printer`).
+  printer as before, and the fact says so (`lean_restated_by_printer`), in
+  words under its statement in the table: `trusts how lanky prints
+  line_taylor, which Lean did not prove in this check`.
 
 - **`python -m lanky.mathlib DIR` starts without a warning** (#162). The
   command the `WITHOUT MATHLIB` line and the README give printed a

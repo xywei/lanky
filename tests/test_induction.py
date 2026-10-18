@@ -353,6 +353,34 @@ def test_a_lemmas_binder_is_never_taken_for_a_name_of_the_case(searching) -> Non
     assert render(use.arguments[0]) == "n__0"
 
 
+def test_a_sums_marker_is_never_taken_for_a_name_of_the_case(searching) -> None:
+    """A parameter called ``_sum0`` stays the parameter when a sum's atom is put back.
+
+    The atom of ``sum(i for i in Fin(n))`` was written back through a symbol
+    named ``_sum0``, which took the place of the case's own ``_sum0``, so a
+    multiplier with that parameter read as the sum (Codex, #176).
+    """
+    from lanky.induction import _Algebra
+    from lanky.terms import Sum, free_variables
+
+    sympy = searching
+    i, n = Var("i"), Var("n")
+    case = Case(
+        name="step",
+        goal=Comparison(n, "==", n),
+        lemmas=(),
+        variables={"n": Nat, "_sum0": Nat},
+        bounds={},
+        families=frozenset(),
+    )
+    algebra = _Algebra(sympy, case, sums=True)
+    total = Sum(((i, Fin[n]),), i)
+    atom = algebra._sum_atom(total)
+    term = algebra.back(atom * algebra.symbol("_sum0"))
+    assert "_sum0" in free_variables(term), render(term)
+    assert render(term).count("sum(") == 1, render(term)
+
+
 def test_what_a_claim_for_every_order_lacks_is_said_piece_by_piece(monkeypatch) -> None:
     """``missing`` names what this machine lacks for Lean to prove ``laplace``, in install order.
 
