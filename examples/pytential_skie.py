@@ -10,14 +10,14 @@ Run it three ways, as ``gauss.py`` is run.
     checked as well.
 
 ``uv run lanky check examples/pytential_skie.py``
-    The ledger. The eight facts the argument rests on are axioms, taken on a
-    citation that is printed under the table. Each representation claims
-    three things: a rewrite, from its trace to the boundary operator it is
-    said to give, which the jump relations have to justify; for a
-    second-kind claim, that the operator's identity coefficient is not zero,
-    which is arithmetic and the one part Lean touches; and a verdict about
-    the operator, decided by the rule engine in ``layer_potentials.py``
-    under the axioms it applied.
+    The ledger. The eight facts the argument rests on are axioms of
+    potential theory, which neither lanky nor Mathlib states (#174), taken
+    on a citation printed under the table. Each representation claims three
+    things: a rewrite, from its trace to the boundary operator it is said to
+    give, which the jump relations justify; for a second-kind claim, that
+    the operator's identity coefficient is not zero, which is arithmetic and
+    the one part Lean touches; and a verdict about the operator, decided by
+    the rule engine in ``layer_potentials.py`` under the axioms it applied.
 
 ``uv run pytest examples/pytential_skie.py``
     The axioms are collected and skipped: they quantify over boundaries,

@@ -12,12 +12,12 @@ Check it and test it as ``gauss.py`` is checked and tested.
     All three statements are collected and sampled, the axiom included.
 
 ``nicomachus`` is Nicomachus's theorem: the sum of the first cubes is the square
-of the sum of the first numbers. lanky has no proof of it. A sum needs Mathlib's
-``Finset`` in Lean, and the property tester's word is evidence rather than
-proof, so the statement enters the ledger on the word of a reference, through
-``@axiom(cite=...)``. It is not handed to a prover. It is still sampled for a
-counterexample, because a citation copied down wrong says something the
-reference does not.
+of the sum of the first numbers. lanky does not prove it yet: the proof takes
+the last term off each sum by ``one_more_term``, which a proof cannot cite at
+an integer sum yet (#172). So the statement enters the ledger on the word of a
+reference, through ``@axiom(cite=...)``. It is not handed to a prover. It is
+still sampled for a counterexample, because a citation copied down wrong says
+something the reference does not.
 
 ``cubes`` is the closed form of the sum of cubes. It follows from
 ``nicomachus`` and ``gauss``, and says so with ``uses=``, which becomes the

@@ -10,14 +10,14 @@ Run it as ``gauss.py`` and ``sumpy_recurrence.py`` are run, where sumpy imports.
 
 ``uv run lanky check examples/line_taylor.py``
     The ledger. ``line_ode``, the differential equation the kernel solves
-    along the line, is ``assumed`` on its citation. ``line_taylor``, the
-    closed form of the coefficients for every order, is ``proved under
-    line_ode`` by Lean where Mathlib is installed (see :mod:`lanky.mathlib`);
-    without it, it reads ``assumed``, since the property tester draws no
-    family over ``Nat`` (#98). And sumpy's own coefficients through
-    ``ORDER`` are ``decided (heuristic)`` against the closed form by the CAS
-    oracle (the ``cas`` extra), or ``tested`` by the property tester, which
-    evaluates the same equations exactly, without it.
+    along the line, and ``line_taylor``, the closed form of the coefficients
+    for every order, are ``proved`` by Lean where Mathlib is installed (see
+    :mod:`lanky.mathlib`). Without it, ``line_taylor`` reads ``assumed``,
+    since the property tester draws no family over ``Nat`` (#98). Without
+    Mathlib, ``line_ode`` and sumpy's own coefficients through ``ORDER`` are
+    ``decided (heuristic)`` by the CAS oracle (the ``cas`` extra), or
+    ``tested`` by the property tester, which evaluates the same equations
+    exactly, without it.
 
 The mathematics. QBX evaluates a layer potential at a target ``t`` on the
 surface through an expansion about a center ``c`` off it. For the 2-D Laplace
@@ -33,14 +33,21 @@ along the line is the real part of ``log(alpha + tau * beta)``.
 
 Its coefficients in ``tau`` are ``log(alpha)`` and, for ``n >= 1``, ``a[n] ==
 -(-beta / alpha) ** n / n``. The function ``f(tau) = log(alpha + tau * beta)``
-solves ``(alpha + tau * beta) * f'(tau) == beta`` (``line_ode``). Write ``f``
-as the sum of ``a[n] * tau ** n`` and compare the powers of ``tau`` on the two
-sides: ``alpha * a[1] == beta`` at ``tau ** 0``, and ``(n + 1) * alpha * a[n +
-1] + n * beta * a[n] == 0`` at ``tau ** n`` for ``n >= 1``. ``line_taylor``
-takes these two as hypotheses about any table ``a`` of complex numbers, and
-concludes the closed form for every ``n``. Comparing the coefficients of the
-series is the step taken on the citation, as differentiating the PDE is in
-``sumpy_recurrence.py``, and it is what the proof rests on ``line_ode`` for.
+solves ``(alpha + tau * beta) * f'(tau) == beta`` (``line_ode``): sympy
+differentiates ``f``, which gives ``beta / (alpha + tau * beta)``, and Lean
+proves the rest, algebra once ``alpha + tau * beta`` is not zero, which is
+``off``. Write ``f`` as the sum of ``a[n] * tau ** n`` and compare the powers
+of ``tau`` on the two sides: ``alpha * a[1] == beta`` at ``tau ** 0``, and
+``(n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0`` at ``tau ** n`` for ``n
+>= 1``. ``line_taylor`` takes these two as hypotheses about any table ``a`` of
+complex numbers, and concludes the closed form for every ``n``.
+
+Comparing the coefficients of the series is the one step no row states, so it
+is taken on Ahlfors' word, as differentiating the PDE at every order is in
+``sumpy_recurrence.py``: lanky has no power series to state it with (#174).
+No row claims more than it proves for that. ``line_taylor``'s statement is
+about any table that satisfies the two hypotheses, and the third row checks
+sumpy's own coefficients against the closed form, order by order.
 
 The theorem's body is its proof, read aloud: "Let ratio be -beta / alpha.
 The claim at n: if n is 1, it is the first term. Otherwise, the recurrence:
@@ -70,7 +77,7 @@ import math
 import os
 from typing import Any
 
-from lanky import axiom, log, theorem
+from lanky import log, theorem
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, fact_id
@@ -82,9 +89,9 @@ from lanky.terms import Comparison, Forall, LogicalAnd, Var
 #: The order through which sumpy's coefficients are checked.
 ORDER = 6
 
-#: Where the differential equation is taken from: the principal logarithm's
-#: derivative, and the power series of a function analytic at a point, whose
-#: coefficients a linear differential equation relates.
+#: Where comparing the coefficients is taken from: the power series of a
+#: function analytic at a point, whose coefficients a linear differential
+#: equation relates.
 AHLFORS = "L. V. Ahlfors, Complex Analysis, 3rd ed., McGraw-Hill, 1979, chs. 2 and 5"
 
 
@@ -106,21 +113,23 @@ def tau_derivative(kernel: Any, alpha: Any, beta: Any, tau: Any) -> Any:
     return from_sympy(derivative, {"alpha": alpha, "beta": beta, "tau": tau})
 
 
-@axiom(cite=AHLFORS)
+@theorem
 def line_ode(
     alpha: Complex, beta: Complex, tau: Real, off: alpha + tau * beta != 0
 ) -> (alpha + tau * beta) * tau_derivative(log_line, alpha, beta, tau) == beta:
     """``f(tau) = log(alpha + tau * beta)`` solves ``(alpha + tau * beta) * f'(tau) == beta``.
 
     Wherever ``alpha + tau * beta`` is not zero, and off the logarithm's
-    branch cut, where it is analytic. Its series in ``tau`` about ``0``,
-    for ``alpha`` not zero, has coefficients that the equation relates by
-    comparing powers of ``tau``: that is what :func:`line_taylor` takes as
+    branch cut, where it is analytic. sympy takes the derivative, ``beta /
+    (alpha + tau * beta)``, and what is left is algebra, which lanky proves
+    alone. Its series in ``tau`` about ``0``, for ``alpha`` not zero, has
+    coefficients that the equation relates by comparing powers of ``tau``
+    (Ahlfors, :data:`AHLFORS`): that is what :func:`line_taylor` takes as
     its hypotheses.
     """
 
 
-@theorem(uses=[line_ode])
+@theorem
 def line_taylor(
     alpha: Complex,
     beta: Complex,
@@ -346,7 +355,7 @@ def main() -> int:
     print(
         "`lanky check examples/line_taylor.py` puts it in the ledger: decided through the\n"
         "order by the CAS oracle, and the closed form proved for every order by Lean where\n"
-        "Mathlib is installed, under the differential equation the kernel solves."
+        "Mathlib is installed, as is the differential equation the kernel solves."
     )
     return 0 if agree else 1
 

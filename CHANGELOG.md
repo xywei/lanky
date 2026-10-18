@@ -257,6 +257,24 @@ All notable changes to lanky are recorded here. The format follows
   than stopping with `the following arguments are required: FILE`, and
   `lanky check` with no file says to name one (exit code 2, as before).
 
+- **The examples prove what they took on citations, where lanky can.**
+  - `examples/line_taylor.py`'s `line_ode` is a theorem, no longer an axiom.
+    sympy differentiates the logarithm, and lanky proves the rest alone, by
+    algebra. `line_taylor` drops its `uses=[line_ode]`: its proof never cited
+    it. With Mathlib both read `proved` (`5 facts: 1 decided, 2 proved, 2
+    tested`).
+  - `examples/sumpy_recurrence.py`'s `harmonic` is a theorem, proved by its
+    body, a calculation of two steps: "Let r2 be x**2 + y**2. The Laplacian
+    equals 2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0."
+  - The step from the harmonicity to the derivatives at every order is a
+    fact of the claim's own, `@reconstructs(..., cite=KRESS)`. It is an
+    axiom with no term, which the rows for every order rest on and name:
+    `proved under harmonic at every order` (`7 facts: 1 assumed, 1 decided,
+    3 proved, 2 tested`).
+  - `examples/nicomachus.py` stays an axiom, and says why (#172), and
+    `examples/pytential_skie.py`'s eight axioms are potential theory (#174).
+  - #174 lists what the examples still take on citations.
+
 ### Fixed
 
 - **A claim reads proved only on a positive axiom audit.** Every command
