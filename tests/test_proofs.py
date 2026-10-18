@@ -1373,6 +1373,18 @@ def from_the_guard_top(
 
 
 @claim
+def two_tops(
+    n: Nat, f: Fn[Nat, Int], top: f[10] == 0, step: all(f[k] == f[k + 1] for k in Nat)
+) -> all(f[k] == 0 for k in Nat if k <= n + 100000 if k <= 10):
+    for k in reversed(two_tops.conclusion.domain):
+        if k == 10:
+            yield by(top)
+        else:
+            assert f[k] == f[k + 1], by(step[k])
+            yield by(two_tops.conclusion[k + 1])
+
+
+@claim
 def sparse(n: Nat) -> all(k + n >= n for k in Fin[n] if k + 1 >= n):
     for k in sparse.conclusion.domain:
         yield by()
@@ -1458,6 +1470,24 @@ def test_a_reversed_loop_over_the_naturals_starts_at_the_top_its_guard_gives(nat
     native.from_the_guard_top.run_proof(n=0, f=[0] * 111)
     with pytest.raises(PointFalse):
         native.from_the_guard_top.run_proof(n=0, f=[0] * 100 + [1] + [0] * 10)
+
+
+def test_a_reversed_loop_starts_at_the_tightest_top_its_guard_gives(native) -> None:
+    """``k <= n + 100000`` and ``k <= 10``: the walk starts at 10 (Codex)."""
+    from lanky.proofs.native import PointFalse
+
+    native.two_tops.run_proof(n=0, f=[0] * 12)
+    with pytest.raises(PointFalse):
+        native.two_tops.run_proof(n=0, f=[0] * 10 + [1, 0])
+
+
+def test_a_draw_whose_walk_runs_out_of_candidates_is_not_counted(native) -> None:
+    """The native run says how many draws it tested; one that tested less is not one (Codex)."""
+    import lanky.proofs.native as native_module
+
+    run = native_module._Run(native.sparse, {"n": native_module.ExactInt(10**9)}, 5)
+    assert list(run.loop(native.sparse.conclusion, False, None)) == []
+    assert run.spent is True
 
 
 def test_a_sparse_guard_over_a_large_domain_is_not_scanned_in_full(native) -> None:

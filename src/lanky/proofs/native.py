@@ -207,6 +207,9 @@ class _Run:
         self.levels = levels(theorem.goal)
         self.point = _Point()
         self.loop_line: int | None = None
+        #: Whether a walk ran out of candidates (:data:`CANDIDATE_LIMIT`), so
+        #: that the draw tested less than its loops say and is not counted.
+        self.spent = False
 
     @property
     def name(self) -> str:
@@ -241,7 +244,9 @@ class _Run:
         names = [var.name for var, _ in binders]
         # reversed, the top of the domain first: each level walked from its top
         # down, so a large bounded domain is never walked in full to reach it
-        points = _points(list(binders), guard, {**self.context, **outer}, self.bound, reverse)
+        budget = [CANDIDATE_LIMIT]
+        scope = {**self.context, **outer}
+        points = _points(list(binders), guard, scope, self.bound, reverse, budget)
         for count, values in enumerate(points):
             if count >= POINT_LIMIT:
                 break
@@ -251,6 +256,8 @@ class _Run:
             self.point.line = None
             self.point.checked = False
             yield values[0] if len(values) == 1 else tuple(values)
+        if budget[0] < 0:
+            self.spent = True
         self.check_point()
 
     def check_point(self) -> None:
@@ -331,17 +338,21 @@ def _points(
     context: Mapping[str, Any],
     bound: int,
     reverse: bool = False,
+    budget: list[int] | None = None,
 ) -> Iterator[tuple[Any, ...]]:
     """The points of the conclusion's domain, in the loop's order, its guard holding at each.
 
     Reversed, each binder's values are walked from the top down, which is the
     loop's order reversed: the points of a lexicographic order, reversed, are
     every level's values reversed. A natural or an integer starts at the top
-    the guard gives it (``k <= n + 100``), where it gives one.
+    the guard gives it (``k <= n + 100``), where it gives one. The candidates
+    looked at are counted against ``budget``, which goes below zero where
+    the walk ran out.
     """
     from lanky.terms import conjuncts, evaluate
 
-    budget = [CANDIDATE_LIMIT]
+    if budget is None:
+        budget = [CANDIDATE_LIMIT]
     bounds = conjuncts(guard) if guard is not None else ()
 
     def walk(index: int, scope: dict[str, Any]) -> Iterator[tuple[Any, ...]]:
@@ -380,9 +391,11 @@ def _spend(budget: list[int]) -> None:
 def _guard_top(var: Any, domain: Any, bounds: tuple[Any, ...], scope: Mapping[str, Any]) -> Any:
     """The top a guard gives a natural or an integer at this point (``k <= n + 100``), or ``None``.
 
-    Read as the trace reads it when it allows ``reversed(...)``
-    (:func:`lanky.proofs.compile._upper_bound`), and evaluated at the values
-    the walk has: ``None`` where it reads a variable not bound yet.
+    Each bound is read as the trace reads one when it allows ``reversed(...)``
+    (:func:`lanky.proofs.compile._upper_bound`) and evaluated at the values
+    the walk has, and the tightest is the top: ``k <= n + 100000`` and
+    ``k <= 10`` start at 10. A bound that reads a variable not bound yet is
+    passed over; ``None`` where none is left.
     """
     from lanky.prelude import Refined, Sort
     from lanky.proofs.compile import _upper_bound
@@ -393,16 +406,18 @@ def _guard_top(var: Any, domain: Any, bounds: tuple[Any, ...], scope: Mapping[st
         base = base.base
     if not (isinstance(base, Sort) and base.name in ("Nat", "Int")):
         return None
-    top = _upper_bound(var.name, domain, bounds)
-    if top is None:
-        return None
-    try:
-        value = evaluate(top, dict(scope))
-    except Exception:  # noqa: BLE001 - a top that reads an inner variable is no top here
-        return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return int(value)
+    tops: list[int] = []
+    for condition in bounds:
+        top = _upper_bound(var.name, base, (condition,))
+        if top is None:
+            continue
+        try:
+            value = evaluate(top, dict(scope))
+        except Exception:  # noqa: BLE001 - a top that reads an inner variable is no top here
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            tops.append(int(value))
+    return min(tops) if tops else None
 
 
 def _domain_values(
@@ -569,6 +584,8 @@ def native_run(theorem: Any, samples: int = NATIVE_DRAWS, seed: int = 0) -> tupl
             continue
         except Exception:  # noqa: BLE001 - a draw the body cannot run at says nothing
             continue
+        if run.spent:
+            continue  # a walk ran out of candidates: the draw tested less than it says
         ran += 1
     return None, ran
 
