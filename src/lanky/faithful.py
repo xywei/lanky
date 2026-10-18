@@ -2018,13 +2018,16 @@ def _annotation_codes(fn: Any) -> tuple[Any, ...]:
     return tuple(codes)
 
 
-def capture(fn: Any) -> Snapshot:
+def capture(fn: Any, bound: Iterable[str] = ()) -> Snapshot:
     """The :class:`Snapshot` of what ``fn``'s annotations reach, as it is now.
 
     :class:`lanky.theory.Theorem` takes it before it reads the claim. The
     copy is of the claim's module and of the user's modules beside it
     (:func:`_users`), and what cannot be copied is listed with the reason.
-    Nothing here raises: a snapshot that could not be taken lists why.
+    ``bound`` names what a ``with`` block of a condition bound
+    (:mod:`lanky.conditions`): like a parameter, each is the drawn value at
+    a draw, and nothing of the module's to copy. Nothing here raises: a
+    snapshot that could not be taken lists why.
     """
     live = getattr(fn, "__globals__", None)
     if not isinstance(live, dict):
@@ -2036,7 +2039,7 @@ def capture(fn: Any) -> Snapshot:
         world = copier.world(live, "")
         assert world is not None
         codes = _annotation_codes(fn)
-        skip = frozenset(inspect.signature(fn).parameters)
+        skip = frozenset(inspect.signature(fn).parameters).union(bound)
         for annotation in codes:
             copier.reach(annotation, world, skip)
     except Exception as exc:  # noqa: BLE001 - a snapshot that could not be taken says why
@@ -2862,15 +2865,22 @@ class _Annotation:
     source: str
     code: Any = None
     given: Any = None
+    #: Where the annotation is run again: ``0`` for the claim's own module,
+    #: and ``k`` for the ``k``-th condition the claim holds under, whose
+    #: annotations run in the condition's module (:mod:`lanky.conditions`).
+    world: int = 0
+    #: The condition the annotation is written in, for a reason to name.
+    condition: str | None = None
 
     @property
     def what(self) -> str:
         """The annotation as a reason names it."""
         if self.role == "goal":
             return "the goal"
+        own = f" of {self.condition}" if self.condition else ""
         if self.role == "sort":
-            return f"the sort of {self.name}"
-        return f"the hypothesis {self.name}"
+            return f"the sort of {self.name}{own}"
+        return f"the hypothesis {self.name}{own}"
 
 
 def _nan(value: Any) -> bool:
@@ -3115,6 +3125,7 @@ def _compare(
     draw: _Draw,
     total: bool = False,
     deadline: float | None = None,
+    worlds: Sequence[tuple[dict[str, Any], Sequence[str]]] = (),
 ) -> Iterator[tuple[_Annotation, str, _Outcome, _Outcome]]:
     """Each annotation, how its two readings compare at ``draw``, and the two outcomes.
 
@@ -3133,15 +3144,24 @@ def _compare(
     already (:func:`_run`). Where they run longer, or walk more than
     :data:`WALK_POINTS` points, the draw is given up: the annotation is
     yielded with the verdict ``slow`` or ``unwalked``, and none after it.
+
+    ``worlds`` are the modules of the conditions the claim holds under, each
+    with its parameters, copied for this draw: an annotation of the ``k``-th
+    condition (:attr:`_Annotation.world`) runs in the ``k``-th, at the same
+    drawn values.
     """
-    scope = _scope(namespace)
-    for name in parameters:
-        scope[name] = draw.context[name] if name in draw.context else Var(name)
-    scope["__lanky_walrus__"] = functools.partial(_bind, scope)
+    scopes = []
+    for globals_, names in ((namespace, parameters), *worlds):
+        scope = _scope(globals_)
+        for name in names:
+            scope[name] = draw.context[name] if name in draw.context else Var(name)
+        scope["__lanky_walrus__"] = functools.partial(_bind, scope)
+        scopes.append(scope)
     if deadline is None:
         deadline = time.monotonic() + DRAW_SECONDS
     for annotation in annotations:
         unsummed: list[list[tuple[str, Any]]] = []
+        scope = scopes[annotation.world]
         scope["__lanky_sum__"] = functools.partial(_add, unsummed)
         reading = _Reading(dict(draw.context), draw.samples)
         try:
@@ -3304,32 +3324,64 @@ class _Tally:
 
 
 def _annotations(theorem: Any) -> list[_Annotation] | str:
-    """The claim's annotations, in the order lanky read them; or why they cannot be run again."""
-    fn = theorem.fn
-    raw = inspect.get_annotations(fn, eval_str=False)
+    """The claim's annotations, in the order lanky read them; or why they cannot be run again.
+
+    A claim under a condition (:mod:`lanky.conditions`) has the condition's
+    annotations first, each to run in the condition's own module
+    (:attr:`_Annotation.world`), and a variable two conditions share once.
+    """
     terms: dict[str, tuple[str, Any]] = {name: ("sort", sort) for name, sort in theorem.variables}
     terms.update((name, ("hypothesis", prop)) for name, prop in theorem.hypotheses)
     terms["return"] = ("goal", theorem.goal)
-    names = _reduction_names(theorem.namespace, inspect.signature(fn).parameters)
     out: list[_Annotation] = []
-    for name, annotation in raw.items():
-        if name not in terms:
-            continue
-        role, term = terms[name]
-        if isinstance(annotation, str):
-            code = _compiled(annotation, names)
-            out.append(_Annotation(name, role, term, annotation.strip(), code=code))
-            continue
-        if _holds_term(annotation):
-            what = "the goal" if role == "goal" else f"the annotation of {name}"
-            return (
-                f"{what} was evaluated by Python when the function was defined, "
-                "without `from __future__ import annotations`, and it holds a term, "
-                "so there is no source to run again at a point"
-            )
-        # Python computed it once, and the reading took that value as it is.
-        out.append(_Annotation(name, role, term, repr(annotation), given=annotation))
+    seen: set[str] = set()
+    sources = [
+        (index, condition.fn, condition.snapshot.namespace, condition.__name__)
+        for index, condition in enumerate(getattr(theorem, "conditions", ()), start=1)
+    ]
+    sources.append((0, theorem.fn, theorem.namespace, None))
+    for world, fn, namespace, owner in sources:
+        raw = inspect.get_annotations(fn, eval_str=False)
+        parameters = [*inspect.signature(fn).parameters, *getattr(theorem, "bound", ())]
+        names = _reduction_names(namespace, parameters)
+        for name, annotation in raw.items():
+            if name not in terms or name in seen:
+                continue
+            if name != "return":
+                seen.add(name)
+            refused = _annotation(name, annotation, terms[name], names, world, owner)
+            if isinstance(refused, str):
+                return refused
+            out.append(refused)
     return out
+
+
+def _annotation(
+    name: str,
+    annotation: Any,
+    reading: tuple[str, Any],
+    names: dict[str, str],
+    world: int,
+    owner: str | None,
+) -> _Annotation | str:
+    """One annotation as the rerun runs it; or why it cannot be run again."""
+    role, term = reading
+    if isinstance(annotation, str):
+        code = _compiled(annotation, names)
+        return _Annotation(
+            name, role, term, annotation.strip(), code=code, world=world, condition=owner
+        )
+    if _holds_term(annotation):
+        what = "the goal" if role == "goal" else f"the annotation of {name}"
+        return (
+            f"{what} was evaluated by Python when the function was defined, "
+            "without `from __future__ import annotations`, and it holds a term, "
+            "so there is no source to run again at a point"
+        )
+    # Python computed it once, and the reading took that value as it is.
+    return _Annotation(
+        name, role, term, repr(annotation), given=annotation, world=world, condition=owner
+    )
 
 
 def faithful_fact(theorem: Any) -> Fact:
@@ -3372,11 +3424,15 @@ def faithful_fact(theorem: Any) -> Fact:
         annotations = _annotations(theorem)
         if isinstance(annotations, str):
             return declined(annotations)
-        parameters = list(inspect.signature(theorem.fn).parameters)
+        parameters = [*inspect.signature(theorem.fn).parameters, *getattr(theorem, "bound", ())]
         snapshot = theorem.snapshot
+        conditions = tuple(getattr(theorem, "conditions", ()))
         codes = [annotation.code for annotation in annotations if annotation.code is not None]
         extent = _extent(theorem, codes, snapshot.namespace)
-        with _watching((*codes, *snapshot.watched), snapshot.roots, snapshot.namespace):
+        watched = [*snapshot.watched]
+        for condition in conditions:
+            watched.extend(condition.snapshot.watched)
+        with _watching((*codes, *watched), snapshot.roots, snapshot.namespace):
             refuted = _run(fact, tally, snapshot, parameters, annotations, theorem, extent)
         if refuted is not None:
             return refuted
@@ -3396,8 +3452,11 @@ def faithful_fact(theorem: Any) -> Fact:
                 f"draws, so its reading was not compared "
                 f"({tally.unanswered.get(annotation.name, 'no draw compared it')})"
             )
-    if snapshot.shared or tally.shared:
-        return declined(_not_copied((*snapshot.shared, *tally.shared)))
+    shared = [*snapshot.shared]
+    for condition in conditions:
+        shared.extend(condition.snapshot.shared)
+    if shared or tally.shared:
+        return declined(_not_copied((*shared, *tally.shared)))
     return fact(
         Status.TESTED,
         draws=tally.draws,
@@ -3456,7 +3515,12 @@ def _run(
         namespace, shared = snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
         for annotation, verdict, python, term in _compare(
-            namespace, parameters, annotations, draw, deadline=deadline
+            namespace,
+            parameters,
+            annotations,
+            draw,
+            deadline=deadline,
+            worlds=_condition_worlds(theorem, tally),
         ):
             if verdict == "differed":
                 return _refuted(fact, annotation, draw, python, term)
@@ -3480,7 +3544,13 @@ def _run(
         namespace, shared = snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
         for annotation, verdict, python, term in _compare(
-            namespace, parameters, annotations, draw, total=True, deadline=deadline
+            namespace,
+            parameters,
+            annotations,
+            draw,
+            total=True,
+            deadline=deadline,
+            worlds=_condition_worlds(theorem, tally),
         ):
             if verdict in ("unwalked", "slow"):
                 # what follows where Python stopped was not compared
@@ -3500,6 +3570,53 @@ def _run(
             for comparison in done + pending:
                 tally.record(*comparison)
     return None
+
+
+def _condition_worlds(theorem: Any, tally: _Tally) -> list[tuple[dict[str, Any], list[str]]]:
+    """The modules of the conditions ``theorem`` holds under, copied for a draw, and parameters.
+
+    What a copy could not make again is counted in ``tally``, as the
+    claim's own module's is.
+    """
+    worlds = []
+    for condition in getattr(theorem, "conditions", ()):
+        namespace, shared = condition.snapshot.fresh_copy()
+        tally.shared.update(dict.fromkeys(shared))
+        worlds.append((namespace, list(inspect.signature(condition.fn).parameters)))
+    return worlds
+
+
+def rerun_condition(condition: Any, values: dict[str, Any]) -> bool:
+    """A condition called at concrete values inside a rerun: its annotations run again as Python.
+
+    A theorem's hypothesis ``stable: cfl(c, dt, h)`` is run again at each
+    draw of its faithfulness check, and there ``cfl`` is called at the drawn
+    values. Answered from its term, the call would agree with the term
+    whatever the condition's annotations say, so the condition's own
+    annotations are run as Python instead, in its module as lanky found it
+    when it read the condition (:attr:`lanky.conditions.Condition.snapshot`),
+    and their conjunction is read three-valued as the term's is
+    (:func:`_kleene`): a condition that fails settles it, whatever another
+    raised.
+    """
+    namespace = condition.snapshot.fresh()
+    parameters = list(inspect.signature(condition.fn).parameters)
+    scope = _scope(namespace)
+    for name in parameters:
+        scope[name] = values[name] if name in values else Var(name)
+    scope["__lanky_walrus__"] = functools.partial(_bind, scope)
+    scope["__lanky_sum__"] = functools.partial(_add, [])
+    raw = inspect.get_annotations(condition.fn, eval_str=False)
+    names = _reduction_names(condition.snapshot.namespace, parameters)
+    operands: list[Callable[[], Any]] = []
+    for name, _prop in condition.hypotheses:
+        annotation = raw.get(name)
+        if isinstance(annotation, str):
+            code = _compiled(annotation, names)
+            operands.append(functools.partial(eval, code, scope, None))
+        else:
+            operands.append(lambda annotation=annotation: annotation)
+    return _kleene(False, operands)
 
 
 def _too_slow(tally: _Tally) -> str:

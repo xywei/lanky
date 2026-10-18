@@ -618,6 +618,18 @@ def _takes(name: str, names: list[str], given: int) -> str:
     return f"{name} takes {len(names)} value{plural}, {variables}, and is given {given}"
 
 
+def _split(theorem: Any, values: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``values`` split into the body's arguments and its namespace's names.
+
+    See :meth:`lanky.theory.Theorem.split_arguments`; a theorem of a plugin's
+    without it takes every value as an argument.
+    """
+    split = getattr(theorem, "split_arguments", None)
+    if split is None:
+        return values, {}
+    return split(values)
+
+
 def _positional_first(fn: Any, arguments: dict[str, Any]) -> tuple[tuple, dict[str, Any]]:
     """``arguments`` as a call of ``fn`` takes them: its positional-only parameters by position.
 
@@ -859,12 +871,16 @@ class _Tracer:
         path = _Path(list(schedule))
         path.facts = self._base_facts()
         fn = self.fn
-        body = pytypes.FunctionType(
-            fn.__code__, self.namespace, fn.__name__, fn.__defaults__, fn.__closure__
-        )
-        body.__kwdefaults__ = fn.__kwdefaults__
         arguments: dict[str, Any] = {name: Var(name) for name in self.variables}
         arguments.update({name: Given(name, prop, self) for name, prop in self.hypotheses.items()})
+        # a theorem in a with block reads its condition's names from its
+        # namespace, and takes only its own as parameters
+        arguments, bound = _split(self.theorem, arguments)
+        globals_ = {**self.namespace, **bound} if bound else self.namespace
+        body = pytypes.FunctionType(
+            fn.__code__, globals_, fn.__name__, fn.__defaults__, fn.__closure__
+        )
+        body.__kwdefaults__ = fn.__kwdefaults__
         values, named = _positional_first(fn, arguments)
         with self._tracing(path):
             result = self._call(body, values, named)

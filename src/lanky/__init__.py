@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import lanky.oracles  # noqa: F401 - importing lanky registers the built-in oracles
 from lanky.check import check_path
+from lanky.conditions import Condition, condition
 from lanky.ledger import Fact, Ledger, Status, Support, fact_id
 from lanky.plugins import Executor, Oracle, Registry, Theory, Verb, registry
 from lanky.prelude import Bool, Complex, Fin, Fn, Int, Nat, Prop, Real, Sort
@@ -66,6 +67,7 @@ __all__ = [
     "Axiom",
     "Bool",
     "Complex",
+    "Condition",
     "Elementary",
     "Executor",
     "Exists",
@@ -96,6 +98,7 @@ __all__ = [
     "abs_",
     "axiom",
     "check_path",
+    "condition",
     "conj",
     "evaluate",
     "exists",
