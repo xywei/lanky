@@ -609,6 +609,26 @@ def test_lean_names_the_false_step_and_not_the_measure(tmp_path, monkeypatch) ->
     assert failures[0]["line"] == CALCULATION_LINE
 
 
+def test_lean_proves_the_calculation_form_of_a_recurrence_step(tmp_path) -> None:
+    """The design's 2.2 calculation, with every fact at its point (#191, #192).
+
+    Each link of the calculation cites the conclusion at (a - 2, b + 2), so
+    Lean has a measure goal for each, and all of them are shown, not the first.
+    """
+    _lean_or_skip()
+    right = INTEGER_TABLES.replace(
+        "-R[a - 2, b + 2] == D[a - 2, b + 2] == D[a, b]",
+        "-R[a - 2, b + 2] == -D[a - 2, b + 2] == D[a, b]",
+    )
+    assert right != INTEGER_TABLES
+    path = tmp_path / "integer_calculation.py"
+    path.write_text(right, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["calculation"]
+    account = fact.provenance["proof"]
+    assert fact.status is Status.PROVED and fact.decided_by == "lean", account
+    assert account["closed"] is True and account["summary"].startswith("induction on a"), account
+
+
 def _lean_or_skip() -> None:
     """Skip a test that needs Lean, or fail it where Lean was promised."""
     from lanky.oracles.lean import LeanOracle

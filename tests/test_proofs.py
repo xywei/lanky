@@ -831,7 +831,7 @@ def test_an_argument_from_above_walks_a_bounded_domain_reversed(cases, refused) 
         "climb.conclusion[k + 1]",
     ]
     source = compile_proof(proof, mathlib=False).source
-    assert "termination_by (p - k).toNat\ndecreasing_by omega" in source
+    assert "termination_by (p - k).toNat\ndecreasing_by all_goals omega" in source
     assert "have pin_1 : k = p := by omega\n" in source
     with pytest.raises(ProofError) as raised:
         trace_proof(refused.climbs_forward)
@@ -1045,7 +1045,7 @@ def test_the_claim_is_a_recursive_theorem_with_the_python_names(cases) -> None:
     assert source.startswith("set_option autoImplicit false in\ntheorem Lanky.ct.claim (D : ")
     assert "(pde : ∀ a : Int, 0 ≤ a → ∀ b : Int, 0 ≤ b → D (a + 2) b + D a (b + 2) = 0)" in source
     assert "  by_cases case_1 : a < 2\n" in source
-    assert "termination_by a.toNat\ndecreasing_by omega\n" in source
+    assert "termination_by a.toNat\ndecreasing_by all_goals omega\n" in source
     assert (
         "have f_3 := Lanky.ct.claim D R (a - 2) (by omega) (b + 2) (by omega) pde stored" in source
     )

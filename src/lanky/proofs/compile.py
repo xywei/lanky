@@ -1241,18 +1241,23 @@ class _Compiler:
         return [_Line(f"{head} : {statement.goal} := by", origin)]
 
     def _termination(self, measured: Measure, origin: Origin) -> list[_Line]:
-        """``termination_by`` with the measure, and ``decreasing_by`` where it needs one."""
+        """``termination_by`` with the measure, and ``decreasing_by`` where it needs one.
+
+        ``decreasing_by`` gets one goal per citation of the conclusion, all at
+        once: a calculation cites it in each link (#191), and a proof may cite
+        two earlier points. So ``omega`` runs on every goal, not the first.
+        """
         names = [lean_identifier(name) for name in measured.names]
         if measured.kind == "down":
             return [
                 _Line(f"termination_by {names[0]}.toNat", origin),
-                _Line("decreasing_by omega", origin),
+                _Line("decreasing_by all_goals omega", origin),
             ]
         if measured.kind == "up":
             bound = render_term(measured.bound, self.types, self.mathlib, self.shadowed)
             return [
                 _Line(f"termination_by ({bound} - {names[0]}).toNat", origin),
-                _Line("decreasing_by omega", origin),
+                _Line("decreasing_by all_goals omega", origin),
             ]
         return [_Line(f"termination_by ({names[0]}.toNat, {names[1]}.toNat)", origin)]
 
