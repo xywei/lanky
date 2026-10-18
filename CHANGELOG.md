@@ -377,7 +377,12 @@ the CFL story, red then green.
   through a later binder, `a <= b` with `b <= 10`, at that binder's top),
   not at the top of the tester's window, and a walk examines at most 20,000
   candidates, so a sparse guard over a large domain is not scanned in full;
-  a draw whose walk runs out is not counted among those the run tested.
+  a draw whose walk runs out is not counted among those the run tested. The
+  filling of a family over the naturals looks at most 50,000 candidate
+  points of its hypotheses too: one over a large domain (`all(f[k] == 0 for
+  k in Fin[n])` at `n = 10**9`) was listed point by point, in memory, before
+  the run began, and a draw whose filling runs out is left unfilled and not
+  counted.
 
 ## [0.5.0] - 2026-10-18
 

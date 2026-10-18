@@ -1400,6 +1400,14 @@ def table(n: Nat, f: Fn[Fin[n], Fin[n], Int]) -> all(
 
 
 @claim
+def wide(n: Nat, f: Fn[Nat, Int], h: all(f[k] == 0 for k in Fin[n])) -> all(
+    f[k] == 0 for k in Nat if k < n
+):
+    for k in wide.conclusion.domain:
+        yield by(h)
+
+
+@claim
 def halves(n: Nat, k: Nat, h: k >= 1) -> (n + k) / k == n / k + 1:
     assert (n + k) / k == n / k + k / k == n / k + 1
     return by()
@@ -1522,6 +1530,24 @@ def test_a_sparse_guard_over_a_large_domain_is_not_scanned_in_full(native) -> No
     start = time.monotonic()
     native.sparse.run_proof(n=10**9)
     assert time.monotonic() - start < 30
+
+
+def test_a_hypothesis_over_a_large_domain_is_not_filled_point_by_point(native, monkeypatch) -> None:
+    """A filling looks at a bounded number of points; a draw that runs out is not run (Codex)."""
+    import time
+
+    import lanky.testing
+    from lanky.proofs.native import ExactInt, native_run
+
+    # at the sizes the tester draws, f is filled from h and every draw is run
+    assert native_run(native.wide) == (None, 8)
+    # n at 10**9: h has more points than a filling looks at, so the draw is not counted
+    monkeypatch.setattr(
+        lanky.testing, "valid_draws", lambda *args, **kwargs: iter([{"n": ExactInt(10**9)}])
+    )
+    start = time.monotonic()
+    assert native_run(native.wide) == (None, 0)
+    assert time.monotonic() - start < 1
 
 
 def test_the_native_run_hands_profile_events_on(native) -> None:

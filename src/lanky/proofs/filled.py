@@ -26,7 +26,11 @@ domain, well inside the extent, so the points it reaches rest on points
 that are inside too. A filling that contradicts a hypothesis at a point,
 leaves a point of one with no answer in Python (Lean's reading may give it
 one: a division by zero is zero there), or puts a value outside the
-family's sort, is dropped; and a family the
+family's sort, is dropped. So is the filling of a draw whose hypotheses
+have more candidate points than :data:`FILLED_CANDIDATES`
+(``all(f[k] == 0 for k in Fin[n])`` at ``n = 10**9``): the points are
+looked at one by one, and where they run out the draw is left unfilled,
+and so untested, rather than filled from some of its points. A family the
 hypotheses do not reach this way (a quantifier over the reals, a hypothesis
 whose guard reads the family) is not filled at all, so the run tests
 nothing there, as before, rather than report a step false at values its
@@ -44,7 +48,14 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
-__all__ = ["EXTENT", "FILLED_DRAWS", "Grid", "filled_draws", "over_the_naturals"]
+__all__ = [
+    "EXTENT",
+    "FILLED_CANDIDATES",
+    "FILLED_DRAWS",
+    "Grid",
+    "filled_draws",
+    "over_the_naturals",
+]
 
 #: How many naturals each ``Nat`` index of a filled family runs over (and how
 #: far each way an ``Int`` index does): twice the native run's walk and a
@@ -54,6 +65,14 @@ EXTENT = 14
 #: How many draws a native run makes when it fills families: filling is
 #: slower than drawing a table, and a step false at all is false at most.
 FILLED_DRAWS = 8
+
+#: How many candidate points of its hypotheses one filling looks at, those a
+#: guard or a refinement rejects among them, as a native walk looks at
+#: :data:`lanky.proofs.native.CANDIDATE_LIMIT`: a hypothesis over a large
+#: domain (``Fin[10**9]``) is not taken point by point in full. The whole
+#: extent of three binders over ``Int`` (28**3 points) or four over ``Nat``
+#: (14**4) fits. A filling that runs out is dropped, so the draw is not run.
+FILLED_CANDIDATES = 50_000
 
 
 class _Unknown(BaseException):  # noqa: N818 - a signal, not an error a user sees
@@ -71,6 +90,27 @@ class _Unknown(BaseException):  # noqa: N818 - a signal, not an error a user see
 
 class Unfillable(Exception):  # noqa: N818 - a reason, raised and caught here
     """A family, or a hypothesis about one, that this filling does not reach."""
+
+
+class _Spent(Exception):  # noqa: N818 - a signal inside one filling, never seen outside it
+    """A filling has looked at :data:`FILLED_CANDIDATES` candidate points of its hypotheses."""
+
+
+class _Budget:
+    """How many candidate points one filling may still look at."""
+
+    def __init__(self, left: int = FILLED_CANDIDATES) -> None:
+        self.left = left
+
+    def spend(self) -> None:
+        """Count one candidate.
+
+        Raises:
+            _Spent: When none is left.
+        """
+        self.left -= 1
+        if self.left < 0:
+            raise _Spent
 
 
 class _Row:
@@ -205,8 +245,13 @@ def _axes(sort: Any, context: Mapping[str, Any]) -> tuple[range, ...]:
     return tuple(axes)
 
 
-def _points(binders: tuple[tuple[Any, Any], ...], scope: dict[str, Any]) -> Iterator[dict]:
-    """The points of a hypothesis's binders inside the extent, each binder bound in turn."""
+def _points(
+    binders: tuple[tuple[Any, Any], ...], scope: dict[str, Any], budget: _Budget
+) -> Iterator[dict]:
+    """The points of a hypothesis's binders inside the extent, each binder bound in turn.
+
+    Each value a binder takes is a candidate counted against ``budget``.
+    """
     from lanky.prelude import FinType, Refined, Sort
     from lanky.proofs.native import ExactInt
     from lanky.terms import evaluate
@@ -231,10 +276,11 @@ def _points(binders: tuple[tuple[Any, Any], ...], scope: dict[str, Any]) -> Iter
     else:
         raise Unfillable(f"a hypothesis quantifies over {domain}")
     for value in values:
+        budget.spend()
         point = {**scope, var.name: ExactInt(value)}
         if props and not all(_holds(prop, point) for prop in props):
             continue
-        yield from _points(rest, point)
+        yield from _points(rest, point, budget)
 
 
 def _holds(prop: Any, scope: Mapping[str, Any]) -> bool:
@@ -249,18 +295,24 @@ def _holds(prop: Any, scope: Mapping[str, Any]) -> bool:
         return False
 
 
-def _instances(prop: Any, scope: dict[str, Any]) -> Iterator[tuple[Any, dict[str, Any]]]:
-    """A hypothesis at each point of its domain inside the extent: ``(proposition, scope)``."""
+def _instances(
+    prop: Any, scope: dict[str, Any], budget: _Budget
+) -> Iterator[tuple[Any, dict[str, Any]]]:
+    """A hypothesis at each point of its domain inside the extent: ``(proposition, scope)``.
+
+    Raises:
+        _Spent: Where its points take more candidates than ``budget`` has left.
+    """
     from lanky.terms import Forall
 
     if isinstance(prop, prim.LogicalAnd):
         for child in prop.children:
-            yield from _instances(child, scope)
+            yield from _instances(child, scope, budget)
     elif isinstance(prop, Forall):
-        for point in _points(prop.binders, scope):
+        for point in _points(prop.binders, scope, budget):
             if prop.guard is not None and not _holds(prop.guard, point):
                 continue
-            yield from _instances(prop.body, point)
+            yield from _instances(prop.body, point, budget)
     else:
         yield prop, scope
 
@@ -418,13 +470,22 @@ def _fill(
     context: dict[str, Any],
     rng: random.Random,
 ) -> dict[str, Grid] | None:
-    """The families of one draw, filled in, or ``None`` where a hypothesis contradicts them."""
+    """The families of one draw, filled in, or ``None`` where they are not.
+
+    ``None`` where a hypothesis contradicts them, and where its points take
+    more than :data:`FILLED_CANDIDATES` candidates to list: a filling made from
+    some of them could break the rest at a point the run reaches.
+    """
     grids = {
         name: Grid(name, _axes(sort, context), sort.entries, rng, context)
         for name, sort in families
     }
     scope = {**context, **grids}
-    instances = [found for prop in defining for found in _instances(prop, scope)]
+    budget = _Budget()
+    try:
+        instances = [found for prop in defining for found in _instances(prop, scope, budget)]
+    except _Spent:
+        return None
     filling = _Filling(instances, {grid: index for index, grid in enumerate(grids.values())})
     if not filling.run():
         return None
