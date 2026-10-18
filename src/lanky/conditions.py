@@ -55,7 +55,15 @@ import pymbolic.primitives as prim
 
 from lanky.terms import LogicalAnd, Var, evaluate, evaluate_annotations, render, truth_value
 
-__all__ = ["Condition", "Under", "bound_by", "condition", "in_force", "under_label"]
+__all__ = [
+    "Condition",
+    "Under",
+    "anything_bound",
+    "bound_by",
+    "condition",
+    "in_force",
+    "under_label",
+]
 
 
 @dataclass(frozen=True)
@@ -89,6 +97,11 @@ _BOUND: dict[int, tuple[Any, Condition, str]] = {}
 def in_force() -> tuple[Under, ...]:
     """The conditions whose ``with`` blocks are running here, outermost first."""
     return _IN_FORCE.get()
+
+
+def anything_bound() -> bool:
+    """Whether any ``with`` statement of a condition has bound a name in this process."""
+    return bool(_BOUND)
 
 
 def bound_by(value: Any) -> tuple[Condition, str] | None:

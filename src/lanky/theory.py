@@ -812,9 +812,11 @@ def _refuse_a_name_bound_elsewhere(fn: Any, bound: Mapping[str, Any]) -> None:
     annotation or in its body, would be about segment's ``alpha`` without
     holding under segment, so it is refused, with the block to put it in.
     """
-    from lanky.conditions import bound_by
+    from lanky.conditions import anything_bound, bound_by
     from lanky.terms import code_reads
 
+    if not anything_bound():
+        return
     namespace = getattr(fn, "__globals__", {})
     parameters = set(inspect.signature(fn).parameters)
     reads: list[str] = []
