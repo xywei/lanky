@@ -493,8 +493,10 @@ theorem with the same draw.
 Some results lanky cannot establish. A sum needs Mathlib in Lean, and a theorem
 from a textbook may need a great deal more. Such a result enters the ledger on
 the word of a reference, as an axiom, and what is derived from it says so.
-`examples/nicomachus.py` holds Gauss's sum again, Nicomachus's theorem as an
-axiom, and the closed form of the sum of cubes, which follows from the two:
+`examples/citation.py` holds Gauss's sum again, Nicomachus's theorem as an
+axiom, and the closed form of the sum of cubes, which follows from the two.
+(`examples/nicomachus.py` proves Nicomachus's theorem, by a chain through a
+fact lanky knows; see [A fact over a family](#a-fact-over-a-family).)
 
 ```python
 @axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
@@ -513,21 +515,21 @@ it is what an `assumed` theorem already is. `uses=` takes theorems, axioms,
 facts or fact ids, and becomes the `rests_on` of the theorem's fact.
 
 ```console
-$ uv run lanky check examples/nicomachus.py
-STATUS                   EFFECTIVE  BY             WHERE             OWNER       STATEMENT
------------------------  ---------  -------------  ----------------  ----------  -------------------------------------------------------------------------
-tested                   tested     property-test  nicomachus.py:33  gauss       n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
-tested                   tested     python         nicomachus.py:33  gauss       the term computes what the annotations compute
-assumed (axiom)          assumed    -              nicomachus.py:38  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
-tested                   tested     python         nicomachus.py:38  nicomachus  the term computes what the annotations compute
-tested under nicomachus  assumed    property-test  nicomachus.py:43  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
-tested                   tested     python         nicomachus.py:43  cubes       the term computes what the annotations compute
+$ uv run lanky check examples/citation.py
+STATUS                   EFFECTIVE  BY             WHERE           OWNER       STATEMENT
+-----------------------  ---------  -------------  --------------  ----------  -------------------------------------------------------------------------
+tested                   tested     property-test  citation.py:34  gauss       n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested                   tested     python         citation.py:34  gauss       the term computes what the annotations compute
+assumed (axiom)          assumed    -              citation.py:39  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
+tested                   tested     python         citation.py:39  nicomachus  the term computes what the annotations compute
+tested under nicomachus  assumed    property-test  citation.py:44  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
+tested                   tested     python         citation.py:44  cubes       the term computes what the annotations compute
 
 6 facts: 1 assumed, 5 tested
 
 WITHOUT MATHLIB: gauss and cubes are not proved, since only Lean with Mathlib can state them. To have Lean prove them: python -m lanky.mathlib ~/mathlib (about 7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.
 
-CITED nicomachus at nicomachus.py:38: Nicomachus of Gerasa, Introduction to Arithmetic
+CITED nicomachus at citation.py:39: Nicomachus of Gerasa, Introduction to Arithmetic
 ```
 
 The same with Lean and without it, since every statement has a sum in it
@@ -576,14 +578,14 @@ in the `EFFECTIVE` column, the counterexample is printed under the table, and
 `lanky check` exits 1. So does an axiom whose hypotheses were copied down so
 that nothing satisfies them, once Lean shows them inconsistent: it reads
 `assumed (axiom) (vacuous)`, as a theorem would read `proved (vacuous)`.
-`pytest examples/nicomachus.py` samples the axiom as a test item too.
+`pytest examples/citation.py` samples the axiom as a test item too.
 
 A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
 it builds, naming other facts by id.
 
-An id names a definition: `theorem:nicomachus.gauss@33` is the kind, the
+An id names a definition: `theorem:citation.gauss@34` is the kind, the
 module, the qualified name and the line. The module is the name the file's
-path gives it under its source root, `nicomachus` for `examples/nicomachus.py`
+path gives it under its source root, `citation` for `examples/citation.py`
 and `pkg.helpers` for `root/pkg/helpers.py`, and not the name it was imported
 under. So a theorem that `main.py` imports with `from helpers import lemma`
 and names in `uses=` has the id there that it has in `helpers.py`'s own
@@ -888,7 +890,9 @@ NOT CHECKED harmonic at sumpy_recurrence.py:151: its proof, sumpy_recurrence.py:
   the origin, with the second derivatives sympy's. It is the PDE the
   wrangler's recurrence comes from. Its body is its proof, a calculation of
   two steps, read aloud: "Let r2 be x**2 + y**2. The Laplacian equals 2 / r2
-  minus 2 (x**2 + y**2) / r2**2, which equals 0."
+  minus 2 (x**2 + y**2) / r2**2, which equals 0." lanky's search finds a
+  proof alone too, clearing the denominators and then by algebra, so the
+  body is for the reader.
 
   ```python
   @theorem
@@ -1031,8 +1035,8 @@ truncates. Every Mathlib statement is declared in the `Lanky` namespace,
 because Mathlib declares lemmas such as `mul_comm` at the root and a claim of
 that name would otherwise be refused as already declared. The core attempts
 fail, and so do Mathlib's whole-goal ones (`norm_num`, `positivity`, `ring`,
-`field_simp`, `linarith`, `nlinarith`, and three that combine them with
-`push_cast` and `simp`), and the last script is an induction on `n`, which the
+`field_simp`, `field_simp` then `ring`, `linarith`, `nlinarith`, and three
+that combine them with `push_cast` and `simp`), and the last script is an induction on `n`, which the
 ladder chose because `n` is a natural parameter that the bound of a sum
 mentions: trade `n` for the natural it is, and in each case take the last term
 off the sum, which leaves the induction hypothesis and a polynomial identity
@@ -1040,9 +1044,11 @@ for `linarith`. The provenance records the script, the Mathlib revision as
 `lean_mathlib`, and the source as a file that replays it, starting with
 `import Mathlib`. `--verbose` prints the project on the Lean oracle's line.
 
-The same variable makes `examples/nicomachus.py` read `proved` for `gauss` and
+The same variable makes `examples/citation.py` read `proved` for `gauss` and
 `proved under nicomachus` for `cubes`, which the induction proves on its own.
-It is still worth `assumed`, because `uses=` says what it rests on.
+It is still worth `assumed`, because `uses=` says what it rests on. In
+`examples/nicomachus.py`, whose `nicomachus` is a theorem with a proof (see
+[A fact over a family](#a-fact-over-a-family)), all three read `proved`.
 
 What the Mathlib dialect adds, in brief (`src/lanky/lean.py` has the whole
 account):
@@ -1703,6 +1709,97 @@ NOT PROVED log_of_the_modulus at log_of_the_modulus.py:42: alpha : Complex | alp
   A proof cites them by name: from lanky.known import modulus_squared
 ```
 
+### A fact over a family
+
+A fact can be about any terms: `one_more_term` says that a sum to `n + 1` is
+the sum to `n` plus its last term, whatever the terms are, as a fact over a
+family `f`:
+
+```python
+@theorem
+def one_more_term(f: Fn[Nat, Real], n: Nat) -> (
+    sum(f[k] for k in Fin[n + 1]) == sum(f[k] for k in Fin[n]) + f[n]
+):
+    """The sum to n + 1 is the sum to n plus its last term (Mathlib: Finset.sum_range_succ)."""
+```
+
+`examples/nicomachus.py` proves Nicomachus's theorem with it, by the
+induction a textbook writes:
+
+```python
+from lanky.known import one_more_term
+
+
+@theorem
+def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+    """The sum of the first cubes is the square of the sum of the first numbers."""
+
+    def claim(n):
+        if n == 0:
+            return
+        return (
+            sum(i**3 for i in Fin[n + 1])
+            .equals(sum(i**3 for i in Fin[n]) + n**3, by=one_more_term)
+            .equals(sum(i for i in Fin[n]) ** 2 + n**3, by=claim(n - 1))
+            .equals((sum(i for i in Fin[n]) + n) ** 2, by=gauss(n - 1))
+            .equals(sum(i for i in Fin[n + 1]) ** 2, by=one_more_term)
+        )
+
+    return claim
+```
+
+Read it aloud: "The claim at n: if n is 0, it is routine. Otherwise, the cubes
+to n + 1 sum to the cubes to n plus n cubed, by one more term; that is the
+square of the sum to n, plus n cubed, by the claim at n − 1; that is the
+square of the sum to n plus n, by Gauss at n − 1; and that is the square of
+the sum to n + 1, by one more term."
+
+`one_more_term` is cited by its name alone, and lanky finds the family and the
+point from the link each citation supports: `f` is `i ↦ i**3` at the first
+link and `i ↦ i` at the last, both at `n`. The links name their sums' index
+`i` and the fact names it `k`, which is the reader's choice and no
+difference. At `n - 1` the fact's left side is a term of the first link too,
+but only at `n` are both of its sides, so `n` is the point. To say the family
+yourself, write it as a `lambda`: `by=one_more_term(lambda i: i**3, n)`.
+`--steps` shows the points lanky found:
+
+```text
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check --steps nicomachus examples/nicomachus.py
+...
+STEPS nicomachus at nicomachus.py:53, as its proof says them:
+  the claim, induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss
+  nicomachus.py:62  otherwise:  sum(i**3 for i in Fin(n + 1)) == sum(i**3 for i in Fin(n)) + n**3  by one_more_term, at (lambda i: i**3, n)
+  nicomachus.py:63                                            == sum(i for i in Fin(n))**2 + n**3  by the claim at (n - 1)
+  nicomachus.py:64                                            == (sum(i for i in Fin(n)) + n)**2   by gauss, at (n - 1)
+  nicomachus.py:65                                            == sum(i for i in Fin(n + 1))**2     by one_more_term, at (lambda i: i, n)
+```
+
+The sums of `lanky.known` are stated over the reals, and these are sums of
+integers. An equation between integers holds where its cast into the reals
+does, so lanky states the fact at its point over the integers, as the step
+reads it, and Lean shows it from the fact over the reals through the cast:
+`one_more_term`, `geometric_sum` and the other sums apply to sums of `Nat`s
+and `Int`s as they are. With Mathlib all three theorems of the file read
+`proved`, `gauss` and `cubes` by lanky's own induction:
+
+```text
+$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/nicomachus.py
+STATUS  EFFECTIVE  BY      WHERE             OWNER          STATEMENT
+------  ---------  ------  ----------------  -------------  -----------------------------------------------------------------------------------------------
+proved  tested     lean    nicomachus.py:48  gauss          n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
+tested  tested     python  nicomachus.py:48  gauss          the term computes what the annotations compute
+proved  tested     lean    nicomachus.py:53  nicomachus     n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
+                                                            by its proof, nicomachus.py:57-68:
+                                                              induction on n, 2 cases, 4 steps, 1 routine, using one_more_term and gauss
+tested  tested     python  nicomachus.py:53  nicomachus     the term computes what the annotations compute
+proved  tested     lean    nicomachus.py:71  cubes          n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
+tested  tested     python  nicomachus.py:71  cubes          the term computes what the annotations compute
+proved  tested     lean    lanky.known       one_more_term  f : Fn[Nat, Real], n : Nat |- sum(f[k] for k in Fin(n + 1)) == sum(f[k] for k in Fin(n)) + f[n]
+tested  tested     python  lanky.known       one_more_term  the term computes what the annotations compute
+
+8 facts: 4 proved, 4 tested
+```
+
 ## What to try next
 
 - Write a false theorem and check it. The status is `refuted`, the
@@ -1894,3 +1991,4 @@ NOT PROVED log_of_the_modulus at log_of_the_modulus.py:42: alpha : Complex | alp
 | the axiom audit, and the screen for Lean text lanky did not write | `src/lanky/audit.py` |
 | the known facts that fit a claim, by shape | `src/lanky/suggest.py` |
 | `log|alpha|` with no square root, by two known facts | `examples/log_of_the_modulus.py` |
+| Nicomachus's theorem, by a known fact over a family, and the same taken on a citation | `examples/nicomachus.py`, `examples/citation.py` |

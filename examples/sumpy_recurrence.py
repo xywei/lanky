@@ -43,9 +43,9 @@ The harmonicity is a theorem here, ``harmonic``. sympy takes the kernel's
 second derivatives, and the proof in its body adds them, read aloud: "Let r2
 be x**2 + y**2. The Laplacian equals 2 / r2 minus 2 (x**2 + y**2) / r2**2,
 which equals 0." Each step is algebra, once ``r2`` is not zero, which
-``away`` says. lanky's search does not find it alone (#173): clearing the
-denominators leaves a polynomial identity, which its ladder does not try
-next, and the two steps say where to go.
+``away`` says. lanky's search finds the proof alone too, clearing the
+denominators and then by algebra, so the body is for the reader: it says
+where the calculation goes.
 
 The first two rows do not rest on it: each checks the reconstruction against
 the derivatives themselves, one order at a time. The third does. For every

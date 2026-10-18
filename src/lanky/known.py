@@ -36,6 +36,16 @@ tactic and reads no proof. The Lean oracle reads the table when it is asked
 about one of these facts, under ``lanky check``, and only then does Lean
 start. ``python file.py`` behaves exactly as it did before the import.
 
+The sums are stated over the reals, and apply to sums of integers as they
+are. ``one_more_term`` cited at ``sum(i**3 for i in Fin[n + 1])``, a sum of
+naturals, has its family at ``i ↦ i**3``, whose values are integers; the
+fact at that point is stated over the integers, as the step reads it, and
+Lean shows it from the fact over the reals through the cast, which is
+injective. So ``examples/nicomachus.py``'s proof cites it as it stands::
+
+    sum(i**3 for i in Fin[n + 1])
+    .equals(sum(i**3 for i in Fin[n]) + n**3, by=one_more_term)
+
 A fact here has no hypothesis it does not need. ``log_of_a_power`` holds for
 every real ``x``, ``0`` and the negative numbers included, because Lean's
 logarithm is total; Python's ``math.log`` has no value there, and where it

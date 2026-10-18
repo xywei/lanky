@@ -1837,7 +1837,13 @@ def test_a_question_whether_a_fact_is_vacuous_gets_the_attempts_that_can_answer_
             ladder = tactic_ladder(statement_of(question.term, question.owner, mathlib=mathlib))
             assert ladder[: len(lean_module.BASE_TACTICS)] == list(lean_module.BASE_TACTICS)
             assert not any("induction" in script for script in ladder), ladder
-            assert not {"positivity", "ring", "field_simp", "(push_cast; ring)"} & set(ladder)
+            assert not {
+                "positivity",
+                "ring",
+                "field_simp",
+                "(field_simp; ring)",
+                "(push_cast; ring)",
+            } & set(ladder)
             if mathlib:
                 assert {"norm_num", "linarith", "nlinarith"} <= set(ladder)
     assert any("induction" in script for script in full)

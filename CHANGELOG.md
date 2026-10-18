@@ -265,17 +265,76 @@ All notable changes to lanky are recorded here. The format follows
     tested`).
   - `examples/sumpy_recurrence.py`'s `harmonic` is a theorem, proved by its
     body, a calculation of two steps: "Let r2 be x**2 + y**2. The Laplacian
-    equals 2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0."
+    equals 2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0." lanky
+    finds a proof alone too (#173), so the body is for the reader.
   - The step from the harmonicity to the derivatives at every order is a
     fact of the claim's own, `@reconstructs(..., cite=KRESS)`. It is an
     axiom with no term, which the rows for every order rest on and name:
     `proved under harmonic at every order` (`7 facts: 1 assumed, 1 decided,
     3 proved, 2 tested`).
-  - `examples/nicomachus.py` stays an axiom, and says why (#172), and
-    `examples/pytential_skie.py`'s eight axioms are potential theory (#174).
+  - `examples/nicomachus.py` proves Nicomachus's theorem by its body, a
+    chain through `one_more_term` (#172): "the cubes to n + 1 sum to the
+    cubes to n plus n cubed, by one more term; that is the square of the sum
+    to n, plus n cubed, by the claim at n - 1; that is the square of the sum
+    to n plus n, by Gauss at n - 1; and that is the square of the sum to n +
+    1, by one more term." With Mathlib its three theorems read `proved` (`8
+    facts: 4 proved, 4 tested`, `one_more_term` among them).
+    `examples/citation.py` keeps the theorem as an axiom, with the same
+    `gauss` and `cubes`, for the quickstart's section on taking a result on a
+    citation.
+  - `examples/pytential_skie.py`'s eight axioms are potential theory (#174).
   - #174 lists what the examples still take on citations.
 
+- **A known fact over a family is cited by its name alone, at a function of
+  the step's terms** (#172). `one_more_term`, cited at the link from
+  `sum(i**3 for i in Fin[n + 1])` to `sum(i**3 for i in Fin[n]) + n**3`, is
+  the fact with its family `f` at `i ↦ i**3` and at the point `n`, and
+  `--steps` says so: `by one_more_term, at (lambda i: i**3, n)`. A proof that
+  writes the point writes the family as a `lambda`:
+  `by=one_more_term(lambda i: i**3, n)`. `return one_more_term, claim(n - 1)`
+  proves the design's `geometric_sum`.
+
+- **The sums of `lanky.known` apply to sums of `Nat`s and `Int`s as well as
+  of `Real`s** (#172). They are stated over the reals. Cited at a sum of
+  integers, the fact is stated at its point over the integers, as the step
+  reads it, and shown from the fact over the reals through the cast, which
+  is injective (`Int.cast_injective` and `push_cast`; `Complex.ofReal_injective`
+  for a real sum cited by a fact over the complex numbers). A family of
+  reals takes a function whose values are integers or reals, and not one
+  whose values are complex.
+
+- **The ladder tries `field_simp` followed by `ring`** (#173), after
+  `field_simp` alone, which closes only what clearing the denominators
+  leaves trivial; a bare `return` in a written proof tries it too. sympy's
+  Laplacian of `log r`, `(1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 -
+  2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0` under `x**2 + y**2 > 0` or
+  `!= 0`, is proved with no body. Its rung reads `by algebra, clearing its
+  denominators`. A claim the ladder reaches past `field_simp` asks Lean
+  one script more, once, and a written proof with a bare `return` has a new
+  command, so its proof-cache entry goes cold once.
+
 ### Fixed
+
+- **The matcher of uncalled facts** (#172):
+  - two values of a family are compared as functions, `k ↦ k**3` the same
+    as `i ↦ i**3`; it compared their parameters with `==`, which builds a
+    proposition, and a fact with a family two partial matches bound read
+    "no point fits" whatever the step;
+  - two sums are the same up to the names of their binders, and their bounds
+    as the integers they are: `sum(k**3 for k in Fin(n - 1 + 1))` is
+    `sum(i**3 for i in Fin(n))`;
+  - where several points fit, the one at which both sides of the fact are
+    the step's is taken: `one_more_term` at `n`, not at `n - 1`, for the
+    link from the sum to `n + 1` to the sum to `n` plus `n**3`;
+  - a family's value is printed in Lean, as `(fun i => (i ^ 3 : ℝ))`, where
+    it raised `cannot print FamilyValue in Lean`;
+  - a fix that names a point writes the family's value as a `lambda`.
+
+- **A step's multipliers see its sums.** The search for a step's
+  multipliers reads a finite sum as an atom, one per sum up to its binders'
+  names, so `gauss(n - 1)` cited at a step about `sum(i for i in Fin(n))`
+  gets its multiplier; a step that is one of its facts up to algebra, with
+  an atom squared on both sides, is closed by that fact alone.
 
 - **A claim reads proved only on a positive axiom audit.** Every command
   ends with `#print axioms _root_.Lanky.<name>` of each theorem it declares,
