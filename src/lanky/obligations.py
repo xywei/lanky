@@ -79,6 +79,11 @@ Each is a step of the argument, not a suggestion: where one of them is given,
 the script is the one the plugin asked for, and a product or a quotient that
 cannot be written fails it rather than being dropped.
 
+A hypothesis that is a cited theorem's statement is named as a
+:class:`Citation`: the Lean oracle restates it from the text the theorem's
+own command proved, never by printing the theorem again, and refuses a part
+whose conjunct is not the theorem's statement (:mod:`lanky.citations`).
+
 A part about real numbers is printed in the Mathlib dialect and checked where
 Mathlib is (:attr:`Part.mathlib`), its cases closed by ``linarith`` where an
 integer part's are by ``omega``. One that reads an absolute value of a real
@@ -106,6 +111,7 @@ from typing import Any
 
 import pymbolic.primitives as prim
 
+from lanky.audit import audit_lines
 from lanky.induction import substitute
 from lanky.lean import (
     LeanStatement,
@@ -123,6 +129,7 @@ from lanky.terms import Exists, Forall, conjuncts, init_args
 
 __all__ = [
     "Application",
+    "Citation",
     "Counterexample",
     "Hints",
     "Instance",
@@ -302,6 +309,26 @@ class Hints:
 
 
 @dataclass(frozen=True)
+class Citation:
+    """A hypothesis of a part that restates a claim proved elsewhere: a cited theorem.
+
+    ``hypothesis`` is its position among the conjuncts of the part's guard,
+    as an :class:`Instance`'s is, and the conjunct is the claim's term as
+    its theory states it (:attr:`lanky.theory.Theorem.term`); ``fact`` is the
+    claim's fact id and ``name`` what a message calls it. The Lean oracle
+    restates the hypothesis from the text the claim's own command proved
+    (:attr:`lanky.lean.LeanStatement.as_cited`), never by printing the term
+    again, so that a printer that dropped a condition of the claim could not
+    hand the part a hypothesis that proves anything. A conjunct that is not
+    the claim's term is refused before Lean is asked.
+    """
+
+    hypothesis: int
+    fact: str
+    name: str = ""
+
+
+@dataclass(frozen=True)
 class Part:
     """One conjunct of a claim, proved by Lean on its own.
 
@@ -322,6 +349,10 @@ class Part:
     Mathlib is imported, its cases closed by ``linarith`` where an integer
     part's are by ``omega``. Without Mathlib the claim is left to the oracles
     after Lean, which says why.
+
+    ``citations`` name the hypotheses that restate a cited claim
+    (:class:`Citation`), which the Lean oracle restates from the text the
+    claim's command proved.
     """
 
     name: str
@@ -330,6 +361,7 @@ class Part:
     hints: Hints = field(default_factory=Hints)
     fallback: Any = field(default=None, compare=False, repr=False)
     mathlib: bool = False
+    citations: tuple[Citation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -387,17 +419,27 @@ def obligation_of(term: Any) -> Obligation | None:
 # {{{ the scripts
 
 
-def part_statement(part: Part, name: str) -> LeanStatement:
+def part_statement(
+    part: Part, name: str, restated: Mapping[int, str] | None = None
+) -> LeanStatement:
     """The part's term as a Lean theorem named ``name``: core Lean, or Mathlib's for reals.
 
     Core Lean whatever the session for a part of integer arithmetic, so that
     the printed source is the one that replays with ``lean`` alone; the
     Mathlib dialect for a part about real numbers (:attr:`Part.mathlib`).
+    ``restated`` gives the hypotheses restated from a cited claim's proved
+    text, by their position among the guard's conjuncts (see
+    :class:`Citation` and :func:`lanky.lean.statement_of`).
 
     Raises:
         UnsupportedTerm: If the part's term leaves the printer's fragment.
     """
-    return statement_of(part.term, name, mathlib=bool(getattr(part, "mathlib", False)))
+    return statement_of(
+        part.term,
+        name,
+        mathlib=bool(getattr(part, "mathlib", False)),
+        restated=restated,
+    )
 
 
 def _hypothesis_names(statement: LeanStatement) -> list[str]:
@@ -704,7 +746,11 @@ def _rewrite_lines(statement: LeanStatement, part: Part, rewrites: Sequence[Rewr
     Rewrites with no arguments that come one after another are one ``simp
     only``, whose discharger shows each premise by ``omega``, from the range
     of a sum the rewrite is under once ``Finset.mem_Ico`` has read its
-    membership; a rewrite with arguments is a ``rw`` of that instance. Each
+    membership; with Mathlib, a premise that is a condition of the part's,
+    a hypothesis that is no equation (``c t - y s ≠ 0`` for every ``s`` a
+    sum ranges over), is shown by that hypothesis at the sum's point, its
+    own premises by ``omega`` (:func:`_condition_dischargers`). A rewrite
+    with arguments is a ``rw`` of that instance. Each
     line is for every goal left, so a rewrite that closes the goal by
     ``rfl`` leaves the lines after it nothing to do. Then a sum over a
     literal range, ``Finset.Ico 0 3``, is written out term by term, and
@@ -722,7 +768,8 @@ def _rewrite_lines(statement: LeanStatement, part: Part, rewrites: Sequence[Rewr
     mathlib = bool(getattr(part, "mathlib", False))
     if mathlib:
         member = statement.qualified("Finset.mem_Ico")
-        discharge = f"(first | omega | (simp only [{member}] at *; omega))"
+        conditions = _condition_dischargers(statement, guards, names, member)
+        discharge = f"(first | omega | (simp only [{member}] at *; omega){conditions})"
     else:
         discharge = "omega"
     lines: list[str] = []
@@ -785,6 +832,49 @@ def _rewrite_lines(statement: LeanStatement, part: Part, rewrites: Sequence[Rewr
         f"| (ring_nf; simp only [{order}]; done) | linarith"
     )
     return lines
+def _condition_dischargers(
+    statement: LeanStatement, guards: Sequence[Any], names: Sequence[str], member: str
+) -> str:
+    """The discharger's alternatives for a premise that is one of the part's conditions.
+
+    A rewrite by a theorem with a condition, ``alpha ≠ 0``, under a sum
+    leaves the condition at the sum's point, ``c t - y s ≠ 0`` with ``s ∈
+    Finset.Ico 0 ns``, and the part states it for every point of the sum's
+    range, ``∀ s, 0 ≤ s → s < ns → c t - y s ≠ 0``. Each such hypothesis, a
+    universal whose body is no equation, is tried at the point by
+    ``refine``, which unifies its conclusion with the premise first, its
+    binders' bounds and its guard then shown by ``omega`` from the
+    membership ``Finset.mem_Ico`` reads; a condition at no sum's point, a
+    ``≠`` of the part's own variables, is ``assumption``. ``""`` for a part
+    with no condition, whose discharger is as it was.
+    """
+    out: list[str] = []
+    stated = False
+    for name, hypothesis in zip(names, guards, strict=False):
+        if not isinstance(hypothesis, Forall):
+            # a condition at no sum's point, c t - y 0 ≠ 0, is a hypothesis as it is
+            stated = stated or (
+                isinstance(hypothesis, prim.Comparison) and hypothesis.operator == "!="
+            )
+            continue
+        body = hypothesis.body
+        if isinstance(body, prim.Comparison) and body.operator == "==":
+            continue
+        scope = dict(statement.types)
+        pieces: list[str] = []
+        for var, domain in hypothesis.binders:
+            pieces.append("_")
+            pieces += ["?_"] * len(domain_guards(var, domain, scope))
+            scope = {**scope, var.name: domain}
+        pieces += ["?_"] * len(conjuncts(hypothesis.guard))
+        out.append(
+            f"((try simp only [{member}] at *); refine {name} {' '.join(pieces)} <;> omega)"
+        )
+    if stated:
+        out.insert(0, "assumption")
+    return "".join(f" | {item}" for item in out)
+
+
 def _value(value: Any, statement: LeanStatement) -> str:
     """A value a script gives a binder, printed in the statement's dialect and names.
 
@@ -1342,6 +1432,7 @@ def negation_source(
         f"{option}set_option autoImplicit false in\n"
         f"theorem {name} : ¬({statement.proposition}) := by\n"
         f"  intro h\n  have hw := h {' '.join(arguments)}\n  {proof}\n"
+        f"\n{audit_lines((name,))}\n"
     )
 
 

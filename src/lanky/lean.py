@@ -84,12 +84,17 @@ name many words Lean reserves, ``fun``, ``at``, ``show``, ``scoped`` and
 ``end`` among them, and Mathlib reserves more, such as ``lemma`` and ``to``;
 Lean cannot parse a statement with one of them where a name should be, so
 such a name is printed quoted, ``«fun»``, which is the same name to Lean
-(:func:`lean_identifier`). The hypotheses of a theorem are named ``h0``,
-``h1``, ..., unless a variable of the statement already has that name: the
-hypothesis would shadow it, and the goal's ``h0`` would be a proof. And a
-variable named ``true`` or ``false`` would be what the bare Boolean literal
-names, which makes ``true == True`` read ``true = true`` and proves it, so
-where one is in scope the literal is ``Bool.true``.
+(:func:`lean_identifier`). A hypothesis of a theorem keeps the name of its
+Python parameter, ``pde`` or ``stored``, and each part of one written ``p &
+q`` the name with ``_1``, ``_2`` after it, so that the printed theorem reads
+as the file does (:func:`statement_of`). The hypotheses lanky adds, a
+binder's bounds, and those of a statement whose hypotheses have no names,
+are named ``h0``, ``h1``, ..., unless a variable of the statement or a
+hypothesis already has that name: the hypothesis would shadow it, and the
+goal's ``h0`` would be a proof. And a variable named ``true`` or ``false``
+would be what the bare Boolean literal names, which makes ``true == True``
+read ``true = true`` and proves it, so where one is in scope the literal is
+``Bool.true``.
 
 The names Lean already gives a meaning to are kept apart from the statement's
 in two more ways. A theorem is declared in the ``Lanky`` namespace,
@@ -101,10 +106,19 @@ like a root name the printer writes, ``Int``, ``Nat``, ``Bool``, ``Real``,
 ``Complex`` or ``Finset``, or ``True`` and ``False``, which only a term built
 by hand can name a variable (:data:`ROOT_NAMES`), would be what that name
 means after its binder: in ``(Int : Int) (b : Int)`` the second ``Int`` is the
-variable, and ``Int.fdiv`` a field of it. In a statement with such a
-variable, and only there, those names are printed from the root,
-``_root_.Int`` (:func:`global_name`), and the tactic scripts name them the same
-way.
+variable, and ``Int.fdiv`` a field of it. A hypothesis named so, ``Real:
+x > 0``, is in scope after it the same way. In a statement with such a
+variable or hypothesis, and only there, those names are printed from the
+root, ``_root_.Int`` (:func:`global_name`), and the tactic scripts name them
+the same way.
+
+*What a command holds besides the theorem.* A claim's command also proves the
+text a proof that cites the claim will restate, ``theorem
+Lanky.name.as_cited``, from the claim's own theorem (:attr:`LeanStatement.citable`),
+and every command ends with an axiom audit of each theorem it declares
+(:mod:`lanky.audit`). A part a plugin states may restate a cited claim; it
+restates the text that claim's command proved, before any variable of its
+own, and never prints the claim again (:attr:`LeanStatement.restated`).
 
 An exponent is the one operand ``Int`` does not take: Lean's ``^`` on ``Int``
 wants a ``Nat``. A literal is printed as it is, a ``Nat`` or ``Fin`` variable as
@@ -225,7 +239,7 @@ logarithm or square root in a binder's domain is declined outright.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -235,6 +249,7 @@ from typing import Any
 import pymbolic.primitives as prim
 from pymbolic import expr_dataclass
 
+from lanky.audit import audit_lines
 from lanky.prelude import FinType, FnType, Refined, Sort
 from lanky.terms import (
     Abs,
@@ -266,6 +281,8 @@ __all__ = [
     "lean_type",
     "number_type",
     "print_lean",
+    "render_prop",
+    "proof_exponents",
     "render_term",
     "statement_of",
 ]
@@ -308,9 +325,21 @@ def _in_mathlib() -> bool:
 #: ``True`` and ``False`` are the propositions a Boolean constant prints as.
 #: A variable named like one of them would be what the name means after its
 #: binder, so a statement that has one prints them from the root
-#: (:func:`global_name`).
+#: (:func:`global_name`). ``Lanky`` is the namespace lanky declares its
+#: theorems in, which a proof names them by.
 ROOT_NAMES = frozenset(
-    {"Bool", "Complex", "False", "Finset", "Int", "Nat", "Real", "True", "starRingEnd"}
+    {
+        "Bool",
+        "Complex",
+        "False",
+        "Finset",
+        "Int",
+        "Lanky",
+        "Nat",
+        "Real",
+        "True",
+        "starRingEnd",
+    }
 )
 
 #: The root names a variable of the statement being printed is named like,
@@ -910,11 +939,42 @@ def _render_exponent(expr: Any, types: _Types) -> str:
         _application_type(expr, types)
     ):
         return _application_text(expr, types)
+    shown_natural = _PROOF_EXPONENTS.get()
+    if shown_natural is not None and shown_natural(expr):
+        # inside a step of a proof, where the case shows the exponent is a
+        # natural (see proof_exponents)
+        return f"({_render(expr, _QUANT, types)}).toNat"
     raise UnsupportedTerm(
         f"the exponent {render(expr)} is not a literal, a natural variable or a "
         "natural value: Lean's ^ on Int takes a Nat, and a negative exponent is "
         "a float in Python"
     )
+
+
+#: Inside a step of a written proof, what says an exponent is a natural; ``None``
+#: in a statement, which declines such an exponent (see proof_exponents).
+_PROOF_EXPONENTS: ContextVar[Any] = ContextVar("lanky_lean_proof_exponents", default=None)
+
+
+@contextmanager
+def proof_exponents(shown_natural: Any) -> Iterator[None]:
+    """Print an exponent ``shown_natural`` says is a natural as ``(e).toNat``, inside a step.
+
+    A statement declines an exponent that is not a literal, a natural
+    variable or a natural value (:func:`_render_exponent`): ``x ** (n - 1)``
+    could be a negative power, where Python's ``**`` answers a float. Inside
+    a step of a proof the case may show ``n - 1 >= 0``, and the step is
+    printed under this, with ``shown_natural`` the case's judgement
+    (:meth:`lanky.oracles.steps.StepScope.natural`). A wrong judgement prints
+    a term Lean reads as another power, which can only make the step fail:
+    the step's goal and its facts are the claim's and the hypotheses',
+    stated by the printer without this.
+    """
+    token = _PROOF_EXPONENTS.set(shown_natural)
+    try:
+        yield
+    finally:
+        _PROOF_EXPONENTS.reset(token)
 
 
 def _render_base(expr: Any, types: _Types) -> str:
@@ -1657,6 +1717,24 @@ def render_term(
         return _render(expr, _ATOM if atomic else _QUANT, dict(types))
 
 
+def render_prop(
+    expr: Any,
+    types: Mapping[str, Any],
+    mathlib: bool | None = None,
+    shadowed: Collection[str] = frozenset(),
+) -> str:
+    """Print one proposition as it stands inside a proof, with the names around it typed.
+
+    :func:`render_term` for a proposition: a case split's condition, or a
+    fact a written proof states on the way (see :mod:`lanky.proofs`).
+
+    Raises:
+        UnsupportedTerm: If the proposition leaves the fragment of the dialect.
+    """
+    with dialect(mathlib), _shadowing(shadowed):
+        return _render_prop(expr, _QUANT, dict(types))
+
+
 def number_type(expr: Any, types: Mapping[str, Any], mathlib: bool | None = None) -> str:
     """The Lean type a term's value is in: ``Int``, ``ℝ`` or ``ℂ``.
 
@@ -2309,6 +2387,16 @@ class LeanStatement:
         codomain_bounds: For each family whose values are a ``Fin``, the
             hypothesis that bounds them (see :func:`codomain_bound`), as
             ``(lanky name, hypothesis name)`` pairs.
+        citable: Whether the command also proves the text a proof that
+            cites this claim restates, ``theorem Lanky.name.as_cited :
+            <text> := Lanky.name`` (:attr:`as_cited`), after the claim's
+            own theorem. Set for a claim, which a proof or a plugin's part
+            may cite; not for a part, a side condition or a question.
+        restated: The hypotheses restated from the text a cited claim's
+            command proved, as ``(position in hypotheses, text)`` pairs: the
+            hypothesis is printed as that text, byte for byte, and before
+            every binder, where no name of this statement can mean anything
+            in it (see :func:`statement_of`).
     """
 
     name: str
@@ -2324,6 +2412,8 @@ class LeanStatement:
     shadowed: frozenset[str] = frozenset()
     side_conditions: tuple[LeanStatement, ...] = field(default_factory=tuple)
     codomain_bounds: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    citable: bool = False
+    restated: tuple[tuple[int, str], ...] = field(default_factory=tuple)
 
     def qualified(self, name: str) -> str:
         """A root declaration as this statement's source names it (see :func:`global_name`).
@@ -2361,18 +2451,50 @@ class LeanStatement:
         the term is rendered again rather than the text reused.
         """
         text = self.goal
+        restated = dict(self.restated)
+        # a family's bound is a universal, printed for a binder, where it needs
+        # no brackets; to the left of an arrow it does
+        bounds = {hypothesis for _, hypothesis in self.codomain_bounds}
         for hypothesis, index in reversed(self._parameters()):
             if not hypothesis:
                 name, sort = self.binders[index]
                 text = f"∀ {name} : {sort}, {text}"
                 continue
-            prop = self.hypotheses[index][1]
+            name, prop = self.hypotheses[index]
             term = self.hypothesis_terms[index] if self.hypothesis_terms else None
-            if term is not None:
+            if index in restated:
+                # a cited claim's text, as its command proved it
+                prop = f"({restated[index]})"
+            elif term is not None:
                 with dialect(self.mathlib), _shadowing(self.shadowed):
                     prop = _render_prop(term, _ARROW + 1, self.types)
+            elif name in bounds:
+                prop = f"({prop})"
             text = f"{prop} → {text}"
         return text
+
+    @property
+    def as_cited(self) -> str:
+        """The text a proof that cites this claim restates: the claim as one proposition.
+
+        It is :attr:`proposition`, which states what the theorem's parameters
+        and goal state, so the claim's own theorem proves it as it stands.
+        A claim's command proves it (:attr:`citable`), so a citation restates
+        only a text Lean has proved of the claim it names.
+        """
+        return self.proposition
+
+    @property
+    def cited_name(self) -> str:
+        """The theorem that proves :attr:`as_cited`: ``Lanky.name.as_cited``."""
+        return f"{self.declared_name}.as_cited"
+
+    @property
+    def audited(self) -> tuple[str, ...]:
+        """The theorems :meth:`source` declares, which its axiom audit asks about, in order."""
+        if self.citable:
+            return (self.declared_name, self.cited_name)
+        return (self.declared_name,)
 
     @property
     def declared_name(self) -> str:
@@ -2394,18 +2516,28 @@ class LeanStatement:
         return f"Lanky.{self.name}"
 
     def source(self, tactic: str) -> str:
-        """The full Lean declaration proved by ``tactic``.
+        """The Lean command that proves the statement by ``tactic``, and audits the proof.
 
         The tactic block is indented as a block, so a multi-line script can be
-        passed in as written. The theorem is declared under
-        :attr:`declared_name`, with auto-bound implicits off
-        (:data:`ELABORATION_OPTIONS`).
+        passed in as written, and none of its lines starts where lanky's own
+        commands do. The theorem is declared under :attr:`declared_name`,
+        with auto-bound implicits off (:data:`ELABORATION_OPTIONS`). A
+        :attr:`citable` claim's command goes on to prove :attr:`as_cited`
+        from it. The command ends with the axiom audit of every theorem it
+        declares (:func:`lanky.audit.audit_lines`), whose positive answer the
+        session asks for before it takes the command as a proof.
         """
         head = f"theorem {self.declared_name}"
         if self.parameters:
             head = f"{head} {self.parameters}"
         body = "\n".join("  " + line if line.strip() else line for line in tactic.splitlines())
-        return f"{ELABORATION_OPTIONS}\n{head} : {self.goal} := by\n{body}\n"
+        text = f"{ELABORATION_OPTIONS}\n{head} : {self.goal} := by\n{body}\n"
+        if self.citable:
+            text += (
+                f"\n{ELABORATION_OPTIONS}\ntheorem {self.cited_name} :\n"
+                f"    {self.as_cited} :=\n  {self.declared_name}\n"
+            )
+        return f"{text}\n{audit_lines(self.audited)}\n"
 
 
 def _lean_name(name: str) -> str:
@@ -2423,7 +2555,13 @@ def _lean_name(name: str) -> str:
 
 
 def statement_of(
-    term: Any, name: str = "lanky_claim", mathlib: bool | None = None
+    term: Any,
+    name: str = "lanky_claim",
+    mathlib: bool | None = None,
+    *,
+    hypotheses: Sequence[str] | None = None,
+    citable: bool = False,
+    restated: Mapping[int, str] | None = None,
 ) -> LeanStatement:
     """Arrange a closed lanky term as a Lean theorem.
 
@@ -2432,6 +2570,22 @@ def statement_of(
     natural variable is an ``Int`` parameter followed by ``0 ≤ n``, as
     :func:`lean_type` and :func:`domain_guards` have it. ``mathlib=True``
     prints it in the Mathlib dialect (see the module docstring).
+
+    ``hypotheses`` names the conjuncts of the guard, in order, as Python
+    names: a theorem's are its parameters' (:attr:`lanky.theory.Theorem.hypothesis_names`),
+    so that ``pde``, ``stored`` and ``recurrence`` are what the printed
+    theorem calls them. A name that is a Lean keyword is quoted, ``«fun»``,
+    and one spelled like a root name (``Real``, ``Finset``, ``Lanky``) has
+    that name printed from the root, as a variable's does. Without them, or
+    with a number of them other than the guard's conjuncts, the hypotheses
+    are ``h0``, ``h1``, ... as they always were.
+
+    ``citable`` makes the command prove :attr:`LeanStatement.as_cited` as
+    well, for a claim a proof or a plugin's part may cite. ``restated`` maps
+    the position of a conjunct of the guard to the text it is restated as:
+    the text a cited claim's own command proved, which is printed as it is,
+    before every binder (:attr:`LeanStatement.restated`). The conjunct's term
+    is kept, for the scripts that read it.
 
     A root name some variable of the statement is named like is printed from
     the root (:func:`global_name`), and the statement records which in
@@ -2455,8 +2609,13 @@ def statement_of(
             applies a family outside the domain it declares
             (:func:`check_applications`), or mentions a free name.
     """
-    with dialect(mathlib), _shadowing(_shadowed_roots(term)):
-        statement = _statement_of(term, name)
+    names = tuple(hypotheses) if hypotheses is not None else None
+    if names is not None and len(names) != len(conjuncts(getattr(term, "guard", None))):
+        names = None
+    roots = _shadowed_roots(term) | (frozenset(names or ()) & ROOT_NAMES)
+    with dialect(mathlib), _shadowing(roots):
+        statement = _statement_of(term, name, names, dict(restated or {}))
+        statement.citable = citable
         if not statement.mathlib:
             return statement
         statement.side_conditions = tuple(
@@ -2484,8 +2643,17 @@ def _refuse_free_names(term: Any) -> None:
     )
 
 
-def _statement_of(term: Any, name: str) -> LeanStatement:
-    """:func:`statement_of`, in the dialect in effect, with no side condition."""
+def _statement_of(
+    term: Any,
+    name: str,
+    names: tuple[str, ...] | None = None,
+    restated: Mapping[int, str] | None = None,
+) -> LeanStatement:
+    """:func:`statement_of`, in the dialect in effect, with no side condition.
+
+    ``names`` name the guard's conjuncts (one each), and ``restated`` gives
+    the conjuncts restated from a cited claim's proved text, by position.
+    """
     lean_name = _lean_name(name)
     mathlib = _in_mathlib()
     shadowed = _SHADOWED.get()
@@ -2501,9 +2669,16 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
     hypothesis_terms: list[Any] = []
     anchors: list[int] = []
     types: dict[str, Any] = _free_scope(term)
-    taken = _mentioned(term)
+    # the names the statement mentions, which a family's bound names its
+    # binders apart from, as it always did, so that the text of the statement
+    # is the same whatever its hypotheses are called
+    mentioned = _mentioned(term)
+    # and the names a hypothesis lanky names (h0, ...) keeps clear of, which
+    # take the hypotheses' Python names too
+    taken = mentioned | set(names or ())
     bounds: list[tuple[str, Any]] = []
     bounded: list[tuple[str, str]] = []
+    kept: list[tuple[int, str]] = []
 
     def bound_families(last: bool) -> None:
         # a family's bound follows it as soon as every name it mentions is a
@@ -2526,14 +2701,27 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
             hypotheses.append((_hypothesis_name(len(hypotheses), taken), guard))
             hypothesis_terms.append(None)
             anchors.append(len(binders))
-        bound = codomain_bound(var, domain, taken)
+        bound = codomain_bound(var, domain, mentioned)
+        taken |= mentioned
         if bound is not None:
             bounds.append((var.name, bound))
         bound_families(last=False)
     bound_families(last=True)
-    for guard in conjuncts(term.guard):
+    restated = dict(restated or {})
+    for position, guard in enumerate(conjuncts(term.guard)):
+        if names is not None:
+            hypothesis = lean_identifier(names[position])
+        else:
+            hypothesis = _hypothesis_name(len(hypotheses), taken)
+        if position in restated:
+            # the text a cited claim's command proved, before every binder
+            kept.append((len(hypotheses), restated[position]))
+            hypotheses.append((hypothesis, restated[position]))
+            hypothesis_terms.append(guard)
+            anchors.append(0)
+            continue
         text = _render_prop(guard, _QUANT, types)
-        hypotheses.append((_hypothesis_name(len(hypotheses), taken), text))
+        hypotheses.append((hypothesis, text))
         hypothesis_terms.append(guard)
         anchors.append(len(binders))
     return LeanStatement(
@@ -2549,6 +2737,7 @@ def _statement_of(term: Any, name: str) -> LeanStatement:
         variables=tuple(var.name for var, _ in term.binders),
         shadowed=shadowed,
         codomain_bounds=tuple(bounded),
+        restated=tuple(kept),
     )
 
 

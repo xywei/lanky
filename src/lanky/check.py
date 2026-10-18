@@ -1215,6 +1215,13 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     the function before it is decorated. A plugin's facts are collected
     here too, so two kernels one factory makes are refused the same way.
 
+    A theorem whose body is a written proof (:mod:`lanky.proofs`) has it
+    checked last, once every fact of the file is established, so that
+    nothing the body does when it is traced can change what a run or a draw
+    of the check read: a proof Lean accepts adds its account to the claim's
+    fact as ``proof``, and proves a claim no oracle did; one Lean does not
+    accept is recorded there with its failures, which fail ``lanky check``.
+
     What it does not keep apart is their imports. The file is imported into
     the calling process, and every check that process runs shares one
     ``sys.modules``: after ``check_path("a/main.py")`` has imported
@@ -1236,6 +1243,7 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
         module = import_path(path)
     ledger = Ledger()
     collected: set[int] = set()
+    claimed: list[Any] = []
     for obj in decorated:
         if id(obj) in collected:
             continue
@@ -1243,6 +1251,7 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
         owned = _owned(obj, path, module)
         if owned is False:
             continue
+        claimed.append(obj)
         for theory in registry.theories:
             for fact in theory.facts(obj):
                 if owned is None and not _recorded_in(fact, path):
@@ -1261,6 +1270,11 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
                 if verbose:
                     print(f"{fact.where} {fact.owner}: {fact.statement}")
                 ledger.add(establish(fact, verbose=verbose))
+    # last, after every run and draw of the check, so that nothing a proof's
+    # body does can change what they read
+    from lanky.proofs import check_written_proofs
+
+    check_written_proofs(ledger, claimed, verbose=verbose)
     return ledger
 
 

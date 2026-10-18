@@ -704,17 +704,47 @@ def statement_lines(fact: Fact, width: int = 100) -> list[str]:
         | pde: forall a in Nat, b in Nat. D[a + 2, b] + D[a, b + 2] == 0
         | stored: forall a in Nat, b in Nat where a < 2. R[a, b] == D[a, b]
         |- forall a in Nat, b in Nat. R[a, b] == D[a, b]
+
+    A claim proved by its written proof (:mod:`lanky.proofs`) says so in one
+    more line, where the proof is and what it is::
+
+        by its proof, l2p.py:143-152: induction on a, 2 cases, 2 steps
     """
     text = _one_line(fact.statement)
+    by_proof = _proof_line(fact)
     if len(text) <= width:
-        return [text]
+        return [text, *wrap(by_proof, width)] if by_proof else [text]
     parts = _sequent_parts(fact)
     if parts is None:
-        return wrap(text, width)
-    lines: list[str] = []
-    for part, indent in parts:
-        lines += wrap(part, width, indent=indent)
+        lines = wrap(text, width)
+    else:
+        lines = []
+        for part, indent in parts:
+            lines += wrap(part, width, indent=indent)
+    if by_proof:
+        lines += wrap(by_proof, width)
     return lines
+
+
+def _proof_line(fact: Fact) -> str | None:
+    """``by its proof, file.py:41-48: ...``, for a claim its written proof proved.
+
+    A proof Lean accepted with steps left open, ``by=...``, names them:
+    ``its proof, file.py:41-48, ...; left open at file.py:44, assumed there``.
+    """
+    provenance = fact.provenance if isinstance(fact.provenance, dict) else {}
+    proof = provenance.get("proof")
+    if not isinstance(proof, dict):
+        return None
+    summary = proof.get("summary")
+    where = proof.get("where") or ""
+    if proof.get("closed") == "holes":
+        holes = ", ".join(str(hole) for hole in proof.get("holes") or ())
+        said = f"its proof, {where}: {summary}" if summary else f"its proof, {where}"
+        return f"{said}; left open at {holes}, assumed there" if holes else said
+    if proof.get("closed") is not True:
+        return None
+    return f"by its proof, {where}: {summary}" if summary else f"by its proof, {where}"
 
 
 def _one_line(text: str) -> str:

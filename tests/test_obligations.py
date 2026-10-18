@@ -676,9 +676,10 @@ def test_the_negation_instantiates_every_binder_at_the_point() -> None:
     proposition = "∀ n : Int, ∀ x : Int, x ≥ 0 → x < n → x + 1 < n"
     assert f"theorem Lanky.kernel_S0_false : ¬({proposition})" in source
     assert "have hw := h 2 1" in source
-    assert source.rstrip().endswith("decide")
+    # the proof, then the axiom audit of the theorem, which ends every command
+    assert source.rstrip().endswith("decide\n\n#print axioms _root_.Lanky.kernel_S0_false")
     assert negation_source(part, statement, {"n": 2, "x": -1}, decide=False).rstrip().endswith(
-        "omega"
+        "omega\n\n#print axioms _root_.Lanky.kernel_S0_false"
     )
 
 
@@ -839,7 +840,7 @@ def test_a_claim_of_lankys_own_is_read_back_without_starting_lean(
     monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
     oracle, started = no_session
     term = claim((n,), [n >= 0], n + 1 > n)
-    statement = statement_of(term, "succ", mathlib=False)
+    statement = statement_of(term, "succ", mathlib=False, citable=True)
     ladder = tactic_ladder(statement)
     oracle.proofs.put("v0.0.0-test", statement.source(ladder[0]), False, "no")
     oracle.proofs.put("v0.0.0-test", statement.source(ladder[1]), True, "")
@@ -859,7 +860,7 @@ def test_a_claim_with_an_attempt_the_cache_does_not_hold_starts_lean(
     monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
     oracle, started = no_session
     term = claim((n,), [n >= 0], n + 1 > n)
-    statement = statement_of(term, "succ", mathlib=False)
+    statement = statement_of(term, "succ", mathlib=False, citable=True)
     oracle.proofs.put("v0.0.0-test", statement.source(tactic_ladder(statement)[0]), False, "")
     fact = oracle.establish(_claim_fact(term))
     assert started
@@ -1050,7 +1051,7 @@ def test_a_mathlib_claim_of_lankys_own_is_read_back_without_starting_mathlib(
     oracle, started = no_session
     u = Var("u")
     term = claim(((u, Real),), [u > 0], u + 1 > u)
-    statement = statement_of(term, "succ", mathlib=True)
+    statement = statement_of(term, "succ", mathlib=True, citable=True)
     ladder = tactic_ladder(statement)
     oracle.proofs.put(fake_mathlib, statement.source(ladder[0]), True, "")
     fact = oracle.establish(_claim_fact(term))
@@ -1184,14 +1185,14 @@ def test_a_claim_proved_after_an_attempt_timed_out_is_proved_without_lean(
     _answering(monkeypatch, [(False, _TIMED_OUT, False), (True, "", True)])
     term = claim((n,), [n >= 0], n + 1 > n)
     cold = oracle.establish(_claim_fact(term))
-    ladder = tactic_ladder(statement_of(term, "succ", mathlib=False))
+    ladder = tactic_ladder(statement_of(term, "succ", mathlib=False, citable=True))
     assert cold.status is Status.PROVED and cold.provenance["tactic"] == ladder[1]
     again = _second_check(monkeypatch, oracle)
     warm = again.establish(_claim_fact(term))
     assert started == []
     assert warm.status is Status.PROVED and warm.provenance["tactic"] == ladder[1]
     # the proof is the kept answer: without it, the record proves nothing
-    statement = statement_of(term, "succ", mathlib=False)
+    statement = statement_of(term, "succ", mathlib=False, citable=True)
     os.remove(again.proofs._path("v0.0.0-test", statement.source(ladder[1])))
     assert again.establish(_claim_fact(term)).status is Status.ASSUMED
     assert started
@@ -2060,3 +2061,55 @@ def test_a_wrong_product_fails_the_part(lean: LeanOracle) -> None:
 
 
 # }}}
+
+
+
+def test_a_condition_of_a_rewrite_under_a_sum_is_shown_at_the_sums_point() -> None:
+    """The discharger takes a condition stated for every point of the sum at its point.
+
+    A rewrite under a sum whose theorem has a condition, ``alpha != 0``,
+    which the part states for every point of the sum, ``c[t] - y[s] != 0``
+    for every ``s``: ``refine`` unifies the condition's conclusion with the
+    premise first, and ``omega`` shows the point is in the sum's range once
+    ``Finset.mem_Ico`` has read the membership. A part with no condition
+    keeps the discharger it had (see the test above).
+    """
+    from lanky.lean import dialect
+    from lanky.prelude import Complex
+    from lanky.terms import conj, real
+
+    alpha, z, c, y, ns, t, s = (
+        Var(name) for name in ("alpha", "z", "c", "y", "ns", "t", "s")
+    )
+    inverse = Forall(
+        ((x, Complex), (alpha, Complex)),
+        x / alpha == x * conj(alpha) * (1 / real(alpha * conj(alpha))),
+        alpha != 0,
+    )
+    apart = Forall(((s, FinType(ns)),), c[t] - y[s] != 0)
+    numbers = Fn[Int, Complex]
+    part = Part(
+        "rewrite_S0",
+        "the conjugate form under the sum over s",
+        claim(
+            (ns, (c, numbers), (y, numbers), (z, numbers), t),
+            [inverse, ns >= 0, apart],
+            Sum(((s, FinType(ns)),), (z[t] - c[t]) / (c[t] - y[s]))
+            == Sum(
+                ((s, FinType(ns)),),
+                (z[t] - c[t])
+                * conj(c[t] - y[s])
+                * (1 / real((c[t] - y[s]) * conj(c[t] - y[s]))),
+            ),
+        ),
+        Hints(rewrites=(Rewrite(0),)),
+        mathlib=True,
+    )
+    with dialect(True):
+        statement = part_statement(part, "rewrite_S0")
+        _how, script = attempts(part, statement)[-1]
+    assert script.splitlines()[0] == (
+        "all_goals simp (disch := (first | omega | (simp only [Finset.mem_Ico] at *; "
+        "omega) | ((try simp only [Finset.mem_Ico] at *); refine h2 _ ?_ ?_ <;> omega)"
+        ")) only [h0]"
+    )
