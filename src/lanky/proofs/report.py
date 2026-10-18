@@ -109,6 +109,8 @@ def failure_of(error: ProofError) -> Failure:
         "form": "the claim's tree is not used as lanky reads it",
         "close": "a case of the proof has no closing line",
         "return": "a return gives something that is no reason",
+        "loop-return": "a return ends the loop at its first point",
+        "mixed": "the proof closes cases with yield and also returns",
         "yield": "a yield is not where a point of the conclusion's domain is",
         "assert": "an assert is not a step lanky reads",
         "false": "a step of its proof is false",

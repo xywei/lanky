@@ -195,8 +195,8 @@ class ProofError(Exception):
     Attributes:
         kind: What went wrong, one word: ``self-reference``, ``removed``,
             ``later``, ``no-point``, ``measure``, ``negative``, ``claim``,
-            ``return``, ``yield``, ``assert``, ``false``, ``question``,
-            ``raised``, ``paths``.
+            ``return``, ``loop-return``, ``mixed``, ``yield``, ``assert``,
+            ``false``, ``question``, ``raised``, ``paths``.
         message: What to say, in lanky's notation.
         line: The line of the body it is about, when there is one.
         fix: What to write instead, when there is a fix to name.
@@ -1360,7 +1360,17 @@ class _Tracer:
             for variable, value in zip(own, values, strict=False)
             if not (isinstance(value, Var) and value.name == variable)
         ]
-        if binders and len(values) == len(binders) and not named:
+        inputs = bool(own) and len(values) == len(own) and not changed and not named
+        if binders and inputs:
+            # its own inputs, which are this proof's already: no point of the domain (#190)
+            earlier = [f"{binders[0]} - 1", *binders[1:]]
+            fix = f"{name}.conclusion[{', '.join(earlier)}]"
+            how = (
+                f"{', '.join(own)} {'are' if len(own) > 1 else 'is'} already this proof's "
+                f"input{'s' if len(own) > 1 else ''}; an earlier case is the conclusion at an "
+                f"earlier point of its domain, in brackets, such as {fix}"
+            )
+        elif binders and len(values) == len(binders) and not named:
             fix = f"{name}.conclusion[{', '.join(given)}]"
             how = (
                 "an earlier case is the conclusion at an earlier point of its domain, "
@@ -1815,7 +1825,7 @@ class _Tracer:
                     at,
                 )
             raise ProofError(
-                "return",
+                "loop-return",
                 f"return by(...) ends the loop over {name}.conclusion.domain at its first "
                 "point; in a proof that loops, each case closes with yield by(...)",
                 line,
@@ -1823,7 +1833,7 @@ class _Tracer:
             )
         if value is not None:
             raise ProofError(
-                "return",
+                "mixed",
                 "this proof closes its cases with yield and ends with return by(...): one "
                 "proof does not mix the two; the cases of a loop close with yield by(...), and "
                 "a proof with no loop closes with return by(...)",
@@ -1929,7 +1939,7 @@ class _Tracer:
             raise self._unclosed(path, line)
         if path.open_loops:
             raise ProofError(
-                "return",
+                "loop-return",
                 f"return by(...) leaves the loop over {name}.conclusion.domain at its first "
                 "point; close each case of the loop with yield by(...)",
                 line,

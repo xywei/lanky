@@ -304,6 +304,16 @@ def smaller_input(n: Nat, S: Fn[Nat, Int], h: all(S[k] == 0 for k in Nat)) -> S[
 
 
 @claim
+def own_inputs(
+    D: Fn[Nat, Nat, Int],
+    R: Fn[Nat, Nat, Int],
+    h: all(R[a, b] == D[a, b] for a in Nat for b in Nat),
+) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
+    for a, b in own_inputs.conclusion.domain:
+        yield by(own_inputs(D, R))
+
+
+@claim
 def ct_nopoint(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -748,6 +758,14 @@ def test_a_claim_that_calls_itself_is_refused_with_its_conclusion_as_the_fix(ref
         "conclusion's for, -> all(... for n in ...), and cite smaller_input.conclusion[n - 1]"
     ) in raised.value.message
     assert raised.value.fix == "smaller_input.conclusion[n - 1]"
+    # called with its own inputs, which are no point of the domain (#190)
+    with pytest.raises(ProofError) as raised:
+        trace_proof(refused.own_inputs)
+    assert raised.value.kind == "self-reference"
+    assert "D, R are already this proof's inputs; an earlier case is the conclusion" in (
+        raised.value.message
+    )
+    assert raised.value.fix == "own_inputs.conclusion[a - 1, b]"
 
 
 def test_a_return_of_something_that_is_no_reason_is_refused(refused) -> None:
@@ -847,6 +865,11 @@ def test_yield_closes_the_point_the_loop_is_at_once(refused) -> None:
     with pytest.raises(ProofError, match=first) as raised:
         trace_proof(refused.return_in_the_loop)
     assert raised.value.fix == "yield by(h)"
+    from lanky.proofs.report import failure_of
+
+    # headed as what it does, not as a return of something that is no reason (#190)
+    assert raised.value.kind == "loop-return"
+    assert failure_of(raised.value).headline == "a return ends the loop at its first point"
     with pytest.raises(ProofError, match="the point was closed already at line"):
         trace_proof(refused.two_yields)
     with pytest.raises(ProofError, match="no_variables's conclusion has no for") as raised:
@@ -878,7 +901,7 @@ def test_every_case_ends_with_a_closing_line(refused) -> None:
     assert raised.value.message.startswith("when a < 2 (refused.py:")
     with pytest.raises(ProofError, match="one proof does not mix the two") as raised:
         trace_proof(refused.mixes)
-    assert raised.value.kind == "return"
+    assert raised.value.kind == "mixed"
     # a closed case, and then break: the loop stops at its first point
     with pytest.raises(ProofError, match="ends the loop over breaks.conclusion.domain") as raised:
         trace_proof(refused.breaks)
