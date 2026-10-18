@@ -1506,6 +1506,13 @@ def test_an_outer_top_read_through_a_later_binder_starts_at_it(native) -> None:
     assert first == [(10, 10), (9, 10), (9, 9)]
     # a bound read through b at its top is exact for a <= b, not for every bound
     assert budget.partial is True
+    # a chain of them, a <= b <= c <= 10, followed to its end (Codex)
+    c = Var("c")
+    chain = prim.LogicalAnd(
+        (prim.Comparison(a, "<=", b), prim.Comparison(b, "<=", c), prim.Comparison(c, "<=", 10))
+    )
+    walk = _points([(a, Nat), (b, Nat), (c, Nat)], chain, {}, 5, True, _Budget())
+    assert next(walk) == (10, 10, 10)
 
 
 def test_a_sparse_guard_over_a_large_domain_is_not_scanned_in_full(native) -> None:

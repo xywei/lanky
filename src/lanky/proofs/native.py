@@ -445,17 +445,10 @@ def _guard_top(
             if budget is not None:
                 budget.partial = True
             for name in unread:
-                if name not in later_domains:
+                found = _later_top(name, later_domains, bounds, values, frozenset({var.name}))
+                if found is None:
                     break
-                own = [
-                    _evaluated(bound, values)
-                    for other in bounds
-                    if (bound := _bound_of(name, later_domains[name], other)) is not None
-                ]
-                own = [value for value in own if value is not None]
-                if not own:
-                    break
-                values[name] = ExactInt(min(own))
+                values[name] = ExactInt(found)
             else:
                 unread = []
             if unread:
@@ -463,6 +456,44 @@ def _guard_top(
         value = _evaluated(top, values)
         if value is not None:
             tops.append(value)
+    return min(tops) if tops else None
+
+
+def _later_top(
+    name: str,
+    later: Mapping[str, Any],
+    bounds: tuple[Any, ...],
+    values: Mapping[str, Any],
+    seen: frozenset[str],
+) -> int | None:
+    """The top a later binder's own bounds give it, at the tightest, or ``None``.
+
+    A bound of it that reads a binder later still (``b <= c`` with ``c <=
+    10``) has that one's top put in first, the same way, so a chain of bounds
+    is followed to its end; a cycle, or a binder with no bound, gives none.
+    """
+    from lanky.terms import free_names
+
+    if name not in later or name in seen:
+        return None
+    seen = seen | {name}
+    tops: list[int] = []
+    for condition in bounds:
+        bound = _bound_of(name, later[name], condition)
+        if bound is None:
+            continue
+        at = dict(values)
+        for inner in free_names(bound):
+            if inner in at:
+                continue
+            found = _later_top(inner, later, bounds, at, seen)
+            if found is None:
+                break
+            at[inner] = ExactInt(found)
+        else:
+            value = _evaluated(bound, at)
+            if value is not None:
+                tops.append(value)
     return min(tops) if tops else None
 
 
