@@ -609,6 +609,32 @@ def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> 
     assert fact.provenance.get("tactic") != "its written proof"
 
 
+#: T4 inside an induction, the citation at a function: ``grows`` at ``(k ↦ f[k] + 1, n)``.
+T4_AT_A_FUNCTION = T4_INDUCTION.replace(
+    "return grows(f, n)", "return grows(lambda k: f[k] + 1, n)"
+)
+
+
+def test_t4_at_a_function_is_asked_at_that_function(tmp_path) -> None:
+    """A point that binds a family to a function is asked about too (Codex, #182).
+
+    ``grows`` taken at ``(k ↦ f[k] + 1, n)`` in the case ``n < 1`` says
+    ``f[0] + 1 < f[0] + 1``, which proves anything; the case's question left
+    out points with a function in them, and the false claim read proved by
+    Lean. The function is now written in the question, as a ``fun``.
+    """
+    _lean_or_skip()
+    path = tmp_path / "t4_function_cases.py"
+    path.write_text(T4_AT_A_FUNCTION, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite", failure
+    assert failure["lines"][0].startswith("steady and grows, as lanky states them for Lean")
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
 #: T4 in a case no small number reaches, and in one whose condition reads a table.
 T4_UNSAMPLED = '''\
 """Proofs that take a citation in a case the search for values does not reach."""

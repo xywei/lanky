@@ -524,7 +524,6 @@ def _vacuity_questions(
             (fact_id, values)
             for fact_id, values in taken.get(id(leaf), ())
             if not all(_a_number(value) for value in values)
-            and not any(isinstance(value, FamilyValue) for value in values)
         ]
         if not points or id(leaf) in seen:
             continue
@@ -534,7 +533,12 @@ def _vacuity_questions(
             needed: set[str] = set()
             for _fact_id, values in points:
                 for value in values:
-                    if hasattr(value, "mapper_method"):
+                    if isinstance(value, FamilyValue):
+                        # a function's value, ``k ↦ f[k] + 1``: the names
+                        # its body reads, past its own parameters
+                        own = {var.name for var in value.parameters}
+                        needed |= set(free_variables(value.body)) - own
+                    elif hasattr(value, "mapper_method"):
                         needed |= set(free_variables(value))
             for condition in conditions:
                 needed |= set(free_variables(condition))

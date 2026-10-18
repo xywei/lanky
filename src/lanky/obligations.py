@@ -473,7 +473,7 @@ def _instance_line(
     for position, ((var, domain), value) in enumerate(
         zip(hypothesis.binders, instance.arguments, strict=True)
     ):
-        pieces.append(render_term(value, types, atomic=True))
+        pieces.append(_argument(value, domain, types))
         conditions = domain_guards(var, domain, scope)
         scope = {**scope, var.name: domain}
         if position == last:
@@ -654,11 +654,39 @@ def _discharged_instance_line(
     scope = dict(statement.types)
     pieces: list[str] = []
     for (var, domain), value in zip(hypothesis.binders, instance.arguments, strict=True):
-        pieces.append(render_term(value, statement.types, atomic=True))
+        pieces.append(_argument(value, domain, statement.types))
         pieces += ["(by omega)"] * len(domain_guards(var, domain, scope))
         scope = {**scope, var.name: domain}
     pieces += ["(by omega)"] * len(conjuncts(hypothesis.guard))
     return f"try have hi{index} := {name} {' '.join(pieces)}"
+
+
+def _argument(value: Any, domain: Any, types: Mapping[str, Any]) -> str:
+    """An instance's argument as Lean source: a term, or a family's value as a ``fun``.
+
+    A family of the hypothesis bound to a function of its arguments
+    (:class:`lanky.matching.FamilyValue`), ``k ↦ f[k] + 1``, is ``(fun k =>
+    f k + 1)``, its parameters typed by the family's domain, so that an
+    instance taken where a written proof took a theorem at a function says
+    what the theorem says there.
+    """
+    from lanky.matching import FamilyValue
+
+    if not isinstance(value, FamilyValue):
+        return render_term(value, types, atomic=True)
+    inner = dict(types)
+    current = domain
+    while isinstance(current, Refined):
+        current = current.base
+    for var in value.parameters:
+        if not isinstance(current, FnType):
+            break
+        inner[var.name] = current.domain
+        current = current.codomain
+        while isinstance(current, Refined):
+            current = current.base
+    names = " ".join(lean_identifier(var.name) for var in value.parameters)
+    return f"(fun {names} => {render_term(value.body, inner)})"
 
 
 def _application_line(statement: LeanStatement, part: Part, application: Application) -> str:
