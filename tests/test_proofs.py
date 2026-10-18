@@ -1490,6 +1490,24 @@ def test_a_draw_whose_walk_runs_out_of_candidates_is_not_counted(native) -> None
     assert run.spent is True
 
 
+def test_an_outer_top_read_through_a_later_binder_starts_at_it(native) -> None:
+    """``a <= b`` and ``b <= 10``: ``a`` starts at 10, and the walk is marked partial (Codex)."""
+    import itertools
+
+    import pymbolic.primitives as prim
+
+    from lanky.prelude import Nat
+    from lanky.proofs.native import _Budget, _points
+
+    a, b = Var("a"), Var("b")
+    guard = prim.LogicalAnd((prim.Comparison(a, "<=", b), prim.Comparison(b, "<=", 10)))
+    budget = _Budget()
+    first = list(itertools.islice(_points([(a, Nat), (b, Nat)], guard, {}, 5, True, budget), 3))
+    assert first == [(10, 10), (9, 10), (9, 9)]
+    # a bound read through b at its top is exact for a <= b, not for every bound
+    assert budget.partial is True
+
+
 def test_a_sparse_guard_over_a_large_domain_is_not_scanned_in_full(native) -> None:
     """The walk examines a bounded number of candidates, its guard rejecting them (Codex)."""
     import time

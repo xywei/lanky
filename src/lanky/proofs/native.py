@@ -33,7 +33,7 @@ import builtins
 import itertools
 import sys
 import types as pytypes
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import ExitStack
 from fractions import Fraction
 from typing import Any
@@ -71,6 +71,21 @@ CANDIDATE_LIMIT = 20_000
 
 class _Spent(Exception):  # noqa: N818 - a signal inside the walk, never seen outside it
     """A walk has examined :data:`CANDIDATE_LIMIT` candidates."""
+
+
+class _Budget:
+    """What one walk may still examine, and whether it walked less than its domain.
+
+    Attributes:
+        left: How many candidates it may still look at.
+        partial: Whether it ran out, or started a reversed binder below a top
+            it could not read exactly, so the draw tested less than its loop
+            says.
+    """
+
+    def __init__(self, left: int = CANDIDATE_LIMIT) -> None:
+        self.left = left
+        self.partial = False
 
 
 class PointFalse(AssertionError):
@@ -244,7 +259,7 @@ class _Run:
         names = [var.name for var, _ in binders]
         # reversed, the top of the domain first: each level walked from its top
         # down, so a large bounded domain is never walked in full to reach it
-        budget = [CANDIDATE_LIMIT]
+        budget = _Budget()
         scope = {**self.context, **outer}
         points = _points(list(binders), guard, scope, self.bound, reverse, budget)
         for count, values in enumerate(points):
@@ -256,7 +271,7 @@ class _Run:
             self.point.line = None
             self.point.checked = False
             yield values[0] if len(values) == 1 else tuple(values)
-        if budget[0] < 0:
+        if budget.partial:
             self.spent = True
         self.check_point()
 
@@ -338,7 +353,7 @@ def _points(
     context: Mapping[str, Any],
     bound: int,
     reverse: bool = False,
-    budget: list[int] | None = None,
+    budget: _Budget | None = None,
 ) -> Iterator[tuple[Any, ...]]:
     """The points of the conclusion's domain, in the loop's order, its guard holding at each.
 
@@ -346,13 +361,13 @@ def _points(
     loop's order reversed: the points of a lexicographic order, reversed, are
     every level's values reversed. A natural or an integer starts at the top
     the guard gives it (``k <= n + 100``), where it gives one. The candidates
-    looked at are counted against ``budget``, which goes below zero where
+    looked at are counted against ``budget``, which is marked partial where
     the walk ran out.
     """
     from lanky.terms import conjuncts, evaluate
 
     if budget is None:
-        budget = [CANDIDATE_LIMIT]
+        budget = _Budget()
     bounds = conjuncts(guard) if guard is not None else ()
 
     def walk(index: int, scope: dict[str, Any]) -> Iterator[tuple[Any, ...]]:
@@ -367,7 +382,9 @@ def _points(
             yield tuple(scope[var.name] for var, _ in binders)
             return
         var, domain = binders[index]
-        top = _guard_top(var, domain, bounds, scope) if reverse else None
+        top = None
+        if reverse:
+            top = _guard_top(var, domain, bounds, scope, binders[index + 1 :], budget)
         for value in _domain_values(domain, var, scope, bound, reverse, top, budget):
             yield from walk(index + 1, {**scope, var.name: value})
 
@@ -377,47 +394,100 @@ def _points(
         return
 
 
-def _spend(budget: list[int]) -> None:
+def _spend(budget: _Budget) -> None:
     """Count one candidate against a walk's budget.
 
     Raises:
-        _Spent: When the budget is used up.
+        _Spent: When the budget is used up, which marks it partial.
     """
-    budget[0] -= 1
-    if budget[0] < 0:
+    budget.left -= 1
+    if budget.left < 0:
+        budget.partial = True
         raise _Spent
 
 
-def _guard_top(var: Any, domain: Any, bounds: tuple[Any, ...], scope: Mapping[str, Any]) -> Any:
+def _guard_top(
+    var: Any,
+    domain: Any,
+    bounds: tuple[Any, ...],
+    scope: Mapping[str, Any],
+    later: Sequence[tuple[Any, Any]] = (),
+    budget: _Budget | None = None,
+) -> Any:
     """The top a guard gives a natural or an integer at this point (``k <= n + 100``), or ``None``.
 
     Each bound is read as the trace reads one when it allows ``reversed(...)``
     (:func:`lanky.proofs.compile._upper_bound`) and evaluated at the values
     the walk has, and the tightest is the top: ``k <= n + 100000`` and
-    ``k <= 10`` start at 10. A bound that reads a variable not bound yet is
-    passed over; ``None`` where none is left.
+    ``k <= 10`` start at 10. A bound that reads a later binder (``a <= b``
+    with ``b <= 10``) is evaluated with that binder at its own top, which is
+    exact for ``a <= b`` and not for every bound (``a <= 10 - b``), so the
+    walk is marked partial in ``budget`` and its draw is not counted.
+    ``None`` where no bound is left.
     """
     from lanky.prelude import Refined, Sort
-    from lanky.proofs.compile import _upper_bound
-    from lanky.terms import evaluate
+    from lanky.terms import free_names
 
     base = domain
     while isinstance(base, Refined):
         base = base.base
     if not (isinstance(base, Sort) and base.name in ("Nat", "Int")):
         return None
+    later_domains = {other.name: other_domain for other, other_domain in later}
     tops: list[int] = []
     for condition in bounds:
-        top = _upper_bound(var.name, base, (condition,))
+        top = _bound_of(var.name, base, condition)
         if top is None:
             continue
-        try:
-            value = evaluate(top, dict(scope))
-        except Exception:  # noqa: BLE001 - a top that reads an inner variable is no top here
-            continue
-        if isinstance(value, int) and not isinstance(value, bool):
-            tops.append(int(value))
+        values = dict(scope)
+        unread = [name for name in free_names(top) if name not in values]
+        if unread:
+            if budget is not None:
+                budget.partial = True
+            for name in unread:
+                if name not in later_domains:
+                    break
+                own = [
+                    _evaluated(bound, values)
+                    for other in bounds
+                    if (bound := _bound_of(name, later_domains[name], other)) is not None
+                ]
+                own = [value for value in own if value is not None]
+                if not own:
+                    break
+                values[name] = ExactInt(min(own))
+            else:
+                unread = []
+            if unread:
+                continue
+        value = _evaluated(top, values)
+        if value is not None:
+            tops.append(value)
     return min(tops) if tops else None
+
+
+def _bound_of(name: str, domain: Any, condition: Any) -> Any:
+    """What one condition says ``name`` is at most, as a term, or ``None``."""
+    from lanky.prelude import Refined
+    from lanky.proofs.compile import _upper_bound
+
+    base = domain
+    while isinstance(base, Refined):
+        base = base.base
+    return _upper_bound(name, base, (condition,))
+
+
+def _evaluated(term: Any, values: Mapping[str, Any]) -> int | None:
+    """An integer term at ``values``, or ``None`` where it has no integer value there."""
+    from lanky.terms import evaluate
+
+    try:
+        value = evaluate(term, dict(values))
+    except Exception:  # noqa: BLE001 - a bound with no value here is no bound
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return int(value)
+    return None
 
 
 def _domain_values(
@@ -427,7 +497,7 @@ def _domain_values(
     bound: int,
     reverse: bool = False,
     top: int | None = None,
-    budget: list[int] | None = None,
+    budget: _Budget | None = None,
 ) -> Iterator[Any]:
     """The first values of a binder's domain: a ``Fin``'s points, the naturals to the bound.
 
