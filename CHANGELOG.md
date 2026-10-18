@@ -6,6 +6,64 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Named conditions: `@condition`, and the theorems of a `with` block
+  holding under one** (the decision of 2026-10-18 on proofs for engineers,
+  section 6). Results share conditions, and engineers name them: the CFL
+  condition, a segment that does not pass through zero. A condition is
+  written like a theorem with no conclusion and no body, and the theorems
+  that hold under it go in a `with` block:
+
+  ```python
+  @condition
+  def segment(alpha: Complex, beta: Complex, nonzero: alpha != 0):
+      """A source segment alpha + tau * beta that does not pass through zero."""
+
+
+  with segment as (alpha, beta, nonzero):
+
+      @theorem
+      def line_taylor(a: Fn[Nat, Complex], first_term: alpha * a[1] == beta, ...) -> ...:
+          ...
+  ```
+
+  - Called at numbers a condition says whether it holds, `cfl(c=1, dt=0.1,
+    h=0.2)`, and in an annotation it is the proposition, so `ok: cfl(c, dt,
+    h)` is a hypothesis of any theorem.
+  - `with segment as (alpha, beta, nonzero):` binds the condition's
+    variables and named conditions, in its signature's order and under its
+    names; another count or another name is refused with the signature
+    shown. Every theorem defined in the block holds under the condition: its
+    statement is the condition's variables and conditions, then its own, and
+    natively it takes the condition's variables like its own,
+    `line_taylor(alpha=2, beta=1, a=...)`.
+  - The ledger's row reads `under segment (nonzero): a : Fn[Nat, Complex] |
+    ...`, the condition first and then the theorem's own parts, as the file
+    has them. The property tester and the faithfulness check draw the
+    condition's variables with the theorem's, satisfying its conditions, and
+    the check runs the condition's annotations again in the condition's own
+    module; a condition used as a hypothesis is run again too, so a misread
+    condition is refuted either way.
+  - A written proof reads the bound names, `alpha` and `nonzero`, as it reads
+    its own parameters; Lean states the theorem with the condition's
+    variables and hypotheses first, under their names.
+  - Several conditions compose, `with segment as (...), cfl as (...):`, in
+    Python's parenthesized form, or nested; a variable two conditions declare
+    with one sort is one variable. A theorem in a block that declares one of
+    its names is refused, and so is a theorem after the block that still
+    uses one: `alpha belongs to segment; use it inside with segment as
+    (alpha, beta, nonzero):`.
+  - A theorem under a condition is a `Theorem` to every consumer, its
+    `variables`, `hypotheses`, `term` and `hypothesis_names` the whole
+    statement, so a plugin cites it as it cites any other. `Theorem.under`,
+    `conditions`, `bound`, `own_variables`, `own_hypotheses` and
+    `cited_under` (`"under segment"`, for a row that cites it) say what came
+    from the block, and `Theorem.split_arguments` splits a run's values into
+    the body's arguments and the names its namespace binds.
+  - `examples/upwind.py` and the quickstart's "Name a condition" state the
+    CFL condition of an upwind scheme and what holds under it.
+
 ## [0.5.0] - 2026-10-18
 
 A theorem's body can be its proof, written in Python and checked by Lean. A

@@ -3520,7 +3520,7 @@ def _run(
             annotations,
             draw,
             deadline=deadline,
-            worlds=_condition_worlds(theorem, tally),
+            **_condition_worlds(theorem, tally),
         ):
             if verdict == "differed":
                 return _refuted(fact, annotation, draw, python, term)
@@ -3550,7 +3550,7 @@ def _run(
             draw,
             total=True,
             deadline=deadline,
-            worlds=_condition_worlds(theorem, tally),
+            **_condition_worlds(theorem, tally),
         ):
             if verdict in ("unwalked", "slow"):
                 # what follows where Python stopped was not compared
@@ -3572,18 +3572,19 @@ def _run(
     return None
 
 
-def _condition_worlds(theorem: Any, tally: _Tally) -> list[tuple[dict[str, Any], list[str]]]:
-    """The modules of the conditions ``theorem`` holds under, copied for a draw, and parameters.
+def _condition_worlds(theorem: Any, tally: _Tally) -> dict[str, Any]:
+    """``worlds=`` for :func:`_compare`: the conditions' modules, copied for a draw.
 
-    What a copy could not make again is counted in ``tally``, as the
-    claim's own module's is.
+    Each with its parameters, for a claim that holds under conditions
+    (:mod:`lanky.conditions`), and nothing for any other. What a copy could
+    not make again is counted in ``tally``, as the claim's own module's is.
     """
     worlds = []
     for condition in getattr(theorem, "conditions", ()):
         namespace, shared = condition.snapshot.fresh_copy()
         tally.shared.update(dict.fromkeys(shared))
         worlds.append((namespace, list(inspect.signature(condition.fn).parameters)))
-    return worlds
+    return {"worlds": worlds} if worlds else {}
 
 
 def rerun_condition(condition: Any, values: dict[str, Any]) -> bool:

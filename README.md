@@ -104,6 +104,35 @@ recurrence, two of the theorem's hypotheses. The second is the theorem's
 conclusion about the kernel's array, for every table `D` the other two hold
 of, and is worth `tested` because the theorem is.
 
+**Conditions have names.** Results often share their conditions, and
+engineers name them: the CFL condition, a segment that does not pass through
+zero. `@condition` states one once, with no conclusion and no body, and the
+theorems in a `with` block hold under it:
+
+```python
+@condition
+def segment(alpha: Complex, beta: Complex, nonzero: alpha != 0):
+    """A source segment alpha + tau * beta that does not pass through zero."""
+
+
+with segment as (alpha, beta, nonzero):
+
+    @theorem
+    def line_taylor(
+        a: Fn[Nat, Complex],
+        first_term: alpha * a[1] == beta,
+        ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
+    ) -> all(a[n] == coefficient(-beta / alpha, n) for n in Nat if n >= 1):
+        """The line-Taylor coefficients of log(alpha + tau * beta)."""
+```
+
+Each theorem in the block is the condition's variables and conditions, then
+its own, and its row reads `under segment (nonzero): a : Fn[Nat, Complex] |
+...`. Called at numbers, a condition says whether it holds, `segment(alpha=2,
+beta=1)`, and in an annotation it is a hypothesis like any other, `ok:
+cfl(c, dt, h)`. The quickstart's [Name a condition](docs/quickstart.md#name-a-condition)
+has the CFL condition of an upwind scheme, and its ledger.
+
 ## Kernels: loopty
 
 lanky knows nothing about arrays or loops. [loopty](https://github.com/xywei/loopty)

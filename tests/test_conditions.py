@@ -13,8 +13,11 @@ condition over the integers where Lean is, and the line-Taylor theorems under
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import textwrap
 from fractions import Fraction
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +28,8 @@ from lanky.ledger import Status, statement_lines
 from lanky.prelude import Int, Real
 from lanky.proofs import compile_proof, trace_proof
 from lanky.terms import LogicalAnd, Var, render
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def _module(tmp_path, source: str, name: str = "conditions_case"):
@@ -236,7 +241,9 @@ def test_a_condition_called_at_symbolic_values_is_the_proposition(cfl) -> None:
 def test_a_condition_is_a_hypothesis_of_any_theorem(cfl) -> None:
     courant = cfl.courant
     assert [name for name, _ in courant.hypotheses] == ["ok"]
-    assert courant.statement == "c : Real, dt : Real, h : Real | h > 0 and c*dt <= h |- c*dt / h <= 1"
+    assert courant.statement == (
+        "c : Real, dt : Real, h : Real | h > 0 and c*dt <= h |- c*dt / h <= 1"
+    )
     assert courant.hypothesis_names == ("ok_1", "ok_2")
     assert courant.under == () and courant.cited_under == ""
     assert courant(c=1, dt=Fraction(1, 10), h=Fraction(1, 5)).holds
@@ -345,14 +352,14 @@ def test_the_property_tester_draws_the_conditions_variables_satisfying_its_condi
 
 
 def test_the_faithfulness_check_runs_the_conditions_annotations_too(segment, cfl) -> None:
-    for claim, annotations in (
+    for claim, count in (
         (segment.line_taylor, 7),
         (segment.reciprocal_taylor, 7),
         (cfl.courant_in_block, 8),
     ):
         reading = claim.faithful_fact()
         assert reading.status is Status.TESTED, reading.provenance
-        assert reading.provenance["compared"] == reading.provenance["draws"] * annotations
+        assert reading.provenance["compared"] == reading.provenance["draws"] * count
 
 
 UNFAITHFUL = (
@@ -723,6 +730,45 @@ def test_mathlib_proves_line_taylor_and_reciprocal_taylor_under_segment(
         fact = checked[owner]
         assert fact.status is Status.PROVED and fact.decided_by == "lean", fact.provenance
         assert fact.provenance["proof"]["closed"] is True
+
+
+# }}}
+
+
+# {{{ the quickstart's example
+
+
+def _shown(command: str) -> list[str]:
+    """The lines the quickstart shows under ``$ command``, up to the end of its block."""
+    lines = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8").splitlines()
+    start = lines.index(f"$ {command}")
+    shown = []
+    for line in lines[start + 1 :]:
+        if line.startswith(("$ ", "```")):
+            break
+        shown.append(line.rstrip())
+    return shown
+
+
+def test_the_quickstart_shows_what_the_upwind_example_prints() -> None:
+    printed = subprocess.run(
+        [sys.executable, str(ROOT / "examples" / "upwind.py")],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert _shown("uv run python examples/upwind.py") == printed
+
+
+def test_the_quickstart_shows_the_ledger_of_the_upwind_example(capsys, monkeypatch) -> None:
+    """The table and its summary, which read the same with core Lean and without Lean."""
+    from lanky import cli
+
+    monkeypatch.delenv("LANKY_LEAN_MATHLIB", raising=False)
+    assert cli.main(["check", str(ROOT / "examples" / "upwind.py")]) == 0
+    printed = [line.rstrip() for line in capsys.readouterr().out.splitlines()]
+    shown = _shown("uv run lanky check examples/upwind.py")
+    assert printed[: len(shown)] == shown
 
 
 # }}}
