@@ -169,6 +169,21 @@ def test_a_refused_script_lasts_only_the_check_of_the_file_that_gave_it(
     assert "tactic_refused" not in again.provenance
 
 
+def test_a_refused_script_does_not_outlast_an_import_that_raises(tmp_path, monkeypatch) -> None:
+    """Codex on #179: the file raises after its use_tactic; checked again, it is not refused."""
+    from lanky.oracles.lean import refused_scripts
+
+    monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
+    path = tmp_path / "pinned_then_raises.py"
+    path.write_text(REFUSED_FILE + '\nraise RuntimeError("after use_tactic")\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="after use_tactic"):
+        check_path(path)
+    assert refused_scripts() == {}
+    path.write_text(REFUSED_FILE.split("\n\nuse_tactic(")[0] + "\n", encoding="utf-8")
+    (again,) = claims(check_path(path))
+    assert "tactic_refused" not in again.provenance
+
+
 # }}}
 
 

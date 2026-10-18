@@ -78,6 +78,22 @@ def test_two_sums_are_the_same_up_to_the_names_of_their_binders() -> None:
     assert not same(Sum(((k, Fin[n]),), k + i), Sum(((i, Fin[n]),), i + i))
 
 
+def test_domains_refined_by_their_own_binders_are_compared_renamed() -> None:
+    """``k in Nat & (k > 0)`` is ``i in Nat & (i > 0)`` (Codex, #176).
+
+    The refinements were compared before the binders were renamed, as ``k >
+    0`` against ``i > 0``, and two sums the same up to their binders' names
+    read as different.
+    """
+    from lanky.prelude import Refined
+
+    def positive(var: Var) -> Refined:
+        return Refined(Nat, (Comparison(var, ">", 0),))
+
+    assert same(Sum(((k, positive(k)),), k**3), Sum(((i, positive(i)),), i**3))
+    assert not same(Sum(((k, positive(k)),), k**3), Sum(((i, positive(n)),), i**3))
+
+
 def test_two_values_of_a_family_are_compared_as_functions() -> None:
     """``k ↦ k**3`` is ``i ↦ i**3``; comparing their parameters with ``==`` raised."""
     first, second = FamilyValue((k,), k**3), FamilyValue((i,), i**3)

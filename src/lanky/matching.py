@@ -364,7 +364,9 @@ def _same_binding(left: Forall | Exists | Sum, right: Forall | Exists | Sum) -> 
     about the step's sum written with ``i``. Binder by binder, the domains
     have to be the same, a ``Fin``'s bound as the integer it is; then the
     bodies and the guards, each binder of the two read as one fresh name
-    that neither term mentions, so that no name is captured.
+    that neither term mentions, so that no name is captured. A domain
+    refined by its own binder, ``Nat & (k > 0)``, reads it as that name too,
+    and is the same as ``Nat & (i > 0)``.
     """
     if len(left.binders) != len(right.binders):
         return False
@@ -374,14 +376,14 @@ def _same_binding(left: Forall | Exists | Sum, right: Forall | Exists | Sum) -> 
     mine: dict[str, Any] = {}
     theirs: dict[str, Any] = {}
     for (var, domain), (other, other_domain) in zip(left.binders, right.binders, strict=True):
-        if not _same_domain(
-            substitute_domain(domain, mine), substitute_domain(other_domain, theirs)
-        ):
-            return False
         fresh = _fresh(var.name, taken)
         taken.add(fresh)
         mine[var.name] = Var(fresh)
         theirs[other.name] = Var(fresh)
+        if not _same_domain(
+            substitute_domain(domain, mine), substitute_domain(other_domain, theirs)
+        ):
+            return False
     if not same(substitute(left.body, mine), substitute(right.body, theirs)):
         return False
     if left.guard is None:

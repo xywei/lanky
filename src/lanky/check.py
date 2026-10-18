@@ -1239,10 +1239,16 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
 
     registry.load_entry_points()
     path = Path(path).resolve()
-    with registry.collecting() as decorated:
-        module = import_path(path)
     from lanky.oracles.lean import forget_scripts, refused_scripts
 
+    with registry.collecting() as decorated:
+        try:
+            module = import_path(path)
+        except BaseException:
+            # a file that raises after a use_tactic the screen refuses leaves
+            # the script behind no more than one that imports does
+            forget_scripts(refused_scripts())
+            raise
     # the scripts use_tactic gave that are not sent to Lean, by fact id: each
     # is said in its claim's row, Lean or no Lean, and forgotten after this
     # check, so that a script taken out of the file is not refused again

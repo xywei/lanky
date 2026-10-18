@@ -441,6 +441,20 @@ All notable changes to lanky are recorded here. The format follows
     `False`, so a case nothing reaches still takes nothing. The search also
     tries the integers a case's conditions name, and their neighbours.
 
+- A sum a step's multiplier mentions is put back through a marker named
+  apart from the case's names, so a parameter called `_sum0` stays the
+  parameter; it read as the sum, and the certificate was wrong (Codex on
+  #176).
+
+- Two sums or quantifiers whose binders' domains are refined by the binders
+  themselves, `k in Nat & (k > 0)` and `i in Nat & (i > 0)`, are the same up
+  to the names: the refinements were compared before the binders were
+  renamed (Codex on #176).
+
+- A refused `use_tactic` script does not outlast a check whose import of the
+  file raises after it; checked again once corrected, the file's claim was
+  still refused (Codex on #179).
+
 - The script that takes a complex number apart (`part_scripts`) names the
   facts it adds apart from the theorem's hypotheses, so a hypothesis named
   `hz0` is not hidden by one. The other scripts already drew their names

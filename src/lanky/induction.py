@@ -442,10 +442,17 @@ class _Algebra:
 
         variables: dict[str, Any] = {name: Var(name) for name in self.case.variables}
         if self.atoms:
-            # a sum's atom is put back as the sum it stands for
+            # a sum's atom is put back as the sum it stands for, through a
+            # marker named apart from every name of the case and of expr: a
+            # parameter called _sum0 stays the parameter
+            taken = set(variables) | {str(symbol) for symbol in expr.free_symbols}
             marks = {}
-            for index, (term, atom) in enumerate(self.atoms):
+            index = 0
+            for term, atom in self.atoms:
+                while f"_sum{index}" in taken:
+                    index += 1
                 name = f"_sum{index}"
+                taken.add(name)
                 marks[atom] = self.sympy.Symbol(name)
                 variables[name] = term
             expr = expr.xreplace(marks)
