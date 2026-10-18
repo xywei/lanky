@@ -96,7 +96,7 @@ def test_a_theorem_takes_arrays_for_its_matrices(demo) -> None:
     F, G, H = (rng.integers(-3, 4, size=(2, 2)) for _ in range(3))
     u = rng.integers(-3, 4, size=(2, 2, 2))
     for a, b, c in np.ndindex(2, 2, 2):
-        assert demo.sum_factorization(n=2, F=F, G=G, H=H, u=u, a=a, b=b, c=c).holds
+        assert demo.sum_factorization(n=2, F=F, G=G, H=H, u=u, a=a, b=b, c=c)
 
 
 def test_without_lean_every_claim_is_tested() -> None:

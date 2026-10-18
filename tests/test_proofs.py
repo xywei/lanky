@@ -629,10 +629,9 @@ def test_running_the_file_never_runs_a_proof(tmp_path) -> None:
     assert module.RAN == []
 
 
-def test_outside_a_proof_a_theorem_is_evaluated_at_values_given_by_name(cases) -> None:
+def test_outside_a_proof_a_claim_is_evaluated_at_values_by_position_or_name(cases) -> None:
     assert cases.both_parts(S=[1], T=[2])
-    with pytest.raises(TypeError, match=r"given by name, as both_parts\(S=\.\.\., T=\.\.\.\)"):
-        cases.both_parts([1], [2])
+    assert cases.both_parts([1], [2])
 
 
 # }}}
@@ -1427,8 +1426,8 @@ def test_without_lean_a_false_step_fails_the_proof(native, monkeypatch) -> None:
 
 def _fact(status: Status, proof: dict) -> Fact:
     return Fact(
-        id="theorem:m.t@3",
-        kind="theorem",
+        id="claim:m.t@3",
+        kind="claim",
         statement="n : Nat |- n + 0 == n",
         status=status,
         decided_by="lean" if status is Status.PROVED else None,
@@ -1560,7 +1559,7 @@ def test_a_body_is_traced_after_every_run_and_draw_of_the_check(tmp_path, monkey
     path.write_text(text, encoding="utf-8")
     check_path(path)
     assert order[-1] == "traced first"
-    assert order.count("establish theorem") == 2
+    assert order.count("establish claim") == 2
 
 
 # }}}
@@ -1678,9 +1677,9 @@ def test_lanky_check_exits_nonzero_on_a_broken_proof(tmp_path, capsys) -> None:
     assert lanky_main(["check", str(path)]) == 1
     out = capsys.readouterr().out
     lines = path.read_text(encoding="utf-8").splitlines()
-    claim = next(number for number, line in enumerate(lines, 1) if line == "@claim")
+    stated = next(number for number, line in enumerate(lines, 1) if line == "@claim")
     body = next(number for number, line in enumerate(lines, 1) if "return by(h[0])" in line)
-    assert f"WARNING zero_times at broken.py:{claim}: your proof fails at broken.py:{body};" in out
+    assert f"WARNING zero_times at broken.py:{stated}: your proof fails at broken.py:{body};" in out
     assert "  h[0] needs 0 >= 1, and this case has nothing that shows it." in out
 
 

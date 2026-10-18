@@ -22,8 +22,8 @@ the claim's own name spelled out::
   loop is at, after ``return`` for a claim proved without a loop. ``by()``
   adds nothing: the step follows directly. ``by(...)``, Python's
   ``Ellipsis``, leaves the step open.
-- A claim is addressed through its tree (:class:`Conclusion`,
-  :class:`Conditions`): ``line_taylor.conditions`` and
+- A claim is addressed through its tree (:class:`Conclusion`, and
+  :class:`lanky.conditions.Conditions`): ``line_taylor.conditions`` and
   ``line_taylor.conclusion`` are its two halves, ``line_taylor.conditions.ode``
   one condition, ``line_taylor.conclusion.domain`` the points the conclusion's
   ``for`` ranges over, ``line_taylor.conclusion[n - 1]`` the conclusion at a
@@ -42,6 +42,7 @@ since only a proof has the inputs it is the domain at.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from typing import Any
 
@@ -49,9 +50,7 @@ import pymbolic.primitives as prim
 
 __all__ = [
     "By",
-    "ClaimCondition",
     "Conclusion",
-    "Conditions",
     "Domain",
     "FormError",
     "OutsideAProof",
@@ -467,92 +466,6 @@ class Domain:
         if guard is not None:
             said += f" if {_source(guard)}"
         return f"<{self.conclusion.text()}.domain: {said}>"
-
-
-class Conditions:
-    """``name.conditions``: the half of a claim it assumes, each condition by its name.
-
-    ``line_taylor.conditions.ode`` is the condition ``ode``; inside
-    ``line_taylor``'s own proof it is the fact ``ode`` names there. The
-    conditions of a ``with`` block the claim is defined in are among them,
-    first. Its inputs are no conditions: they are given to the claim, as
-    ``line_taylor(a)``.
-    """
-
-    __slots__ = ("_claim",)
-
-    def __init__(self, claim: Any) -> None:
-        self._claim = claim
-
-    @property
-    def _names(self) -> list[str]:
-        return [name for name, _ in self._claim.hypotheses]
-
-    def __getattr__(self, name: str) -> Any:
-        """One condition, by its name."""
-        if name.startswith("_"):
-            raise AttributeError(name)
-        claim = self._claim
-        title = getattr(claim, "__qualname__", None) or claim.__name__
-        props = dict(claim.hypotheses)
-        if name not in props:
-            inputs = [variable for variable, _ in claim.variables]
-            listed = ", ".join(self._names) or "none"
-            if name in inputs:
-                raise AttributeError(
-                    f"{name} is an input of {title}, not a condition; its conditions are "
-                    f"{listed}"
-                )
-            raise AttributeError(f"{title} has no condition {name}; its conditions are {listed}")
-        run = _active()
-        if run is not None:
-            return run.condition(claim, name, sys._getframe(1))
-        return ClaimCondition(claim, name, props[name])
-
-    def __iter__(self) -> Any:
-        """The conditions, in order, each a :class:`ClaimCondition`."""
-        return iter(
-            ClaimCondition(self._claim, name, prop) for name, prop in self._claim.hypotheses
-        )
-
-    def __len__(self) -> int:
-        """How many conditions the claim has."""
-        return len(self._claim.hypotheses)
-
-    def __dir__(self) -> list[str]:
-        """The conditions' names, for a REPL's completion."""
-        return self._names
-
-    def __repr__(self) -> str:
-        """``<line_taylor.conditions: first_term, ode>``."""
-        title = getattr(self._claim, "__qualname__", None) or self._claim.__name__
-        return f"<{title}.conditions: {', '.join(self._names) or 'none'}>"
-
-
-class ClaimCondition:
-    """One condition of a claim, read outside a proof: its name and what it says.
-
-    Attributes:
-        claim: The claim it is a condition of.
-        name: Its name, the parameter's.
-        prop: What it says, as a term.
-    """
-
-    __slots__ = ("claim", "name", "prop")
-
-    def __init__(self, claim: Any, name: str, prop: Any) -> None:
-        self.claim = claim
-        self.name = name
-        self.prop = prop
-
-    def text(self) -> str:
-        """``line_taylor.conditions.ode``."""
-        title = getattr(self.claim, "__qualname__", None) or self.claim.__name__
-        return f"{title}.conditions.{self.name}"
-
-    def __repr__(self) -> str:
-        """``<line_taylor.conditions.ode: all(...)>``."""
-        return f"<{self.text()}: {_source(self.prop)}>"
 
 
 # }}}

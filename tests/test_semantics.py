@@ -8,7 +8,7 @@ division is total and Python's raises.
 
 from __future__ import annotations
 
-from lanky import semantics, theorem
+from lanky import claim, semantics
 from lanky.lean import print_lean
 from lanky.prelude import Fin, Fn, Int, Nat
 
@@ -21,7 +21,7 @@ def _make_subtracts():
     module-level theorem is collected and run by lanky's own pytest plugin.
     """
 
-    @theorem
+    @claim
     def subtracts(n: Nat) -> n - 1 >= 0:
         """False at n = 0, in Python and in the statement Lean is given."""
 
@@ -31,7 +31,7 @@ def _make_subtracts():
 _subtracts = _make_subtracts()
 
 
-@theorem
+@claim
 def adds(n: Nat) -> n + 1 > n:
     """Index arithmetic: both readings agree."""
 
@@ -39,7 +39,7 @@ def adds(n: Nat) -> n + 1 > n:
 def _make_divides():
     """Build ``(k // 2) * 2 == k`` over ``Int``; false at every odd ``k``."""
 
-    @theorem
+    @claim
     def divides(k: Int) -> (k // 2) * 2 == k:
         """Floor division by a literal: one reading, and it is false."""
 
@@ -49,12 +49,12 @@ def _make_divides():
 _divides = _make_divides()
 
 
-@theorem
+@claim
 def divides_a_natural(n: Nat) -> (n // 2) * 2 <= n:
     """Over Nat the two readings agree, so this is not flagged."""
 
 
-@theorem
+@claim
 def indexes(n: Nat, i: Fin[n]) -> i + 1 <= n:
     """A bounded index is a natural, which is what the note reads."""
 
@@ -89,9 +89,9 @@ def test_the_reading_lean_gets_is_the_one_python_runs() -> None:
     which is false at ``n = 0`` too, so Lean cannot prove what the tester
     refutes.
     """
-    assert not _subtracts(n=0).holds
+    assert not _subtracts(n=0)
     assert print_lean(_subtracts.term) == "∀ n : Int, 0 ≤ n → n - 1 ≥ 0"
-    assert not _divides(k=-1).holds
+    assert not _divides(k=-1)
     assert print_lean(_divides.term) == "∀ k : Int, (k / 2) * 2 = k"
 
 
@@ -104,7 +104,7 @@ def _make_refined():
     plugin to run.
     """
 
-    @theorem
+    @claim
     def refined(n: Nat & (10 // n > 1)) -> n > 0:
         """The refinement divides, and the walker has to see it."""
 
@@ -114,7 +114,7 @@ def _make_refined():
 _refined = _make_refined()
 
 
-@theorem
+@claim
 def _sized_by_a_quotient(n: Nat, k: Nat, i: Fin[n // k]) -> i >= 0:
     """The division is in an index type's bound.
 
@@ -123,7 +123,7 @@ def _sized_by_a_quotient(n: Nat, k: Nat, i: Fin[n // k]) -> i >= 0:
     """
 
 
-@theorem
+@claim
 def _family_over_a_remainder(n: Nat, k: Nat, f: Fn[Fin[n % k], Nat]) -> n >= 0:
     """The division is inside a family's domain."""
 
@@ -159,7 +159,7 @@ def _make_divides_by_zero():
     because there is nothing here for the pytest plugin to run.
     """
 
-    @theorem
+    @claim
     def div_zero(n: Nat) -> n // 0 == 0:
         """Division is total in Lean and undefined in Python."""
 
@@ -172,7 +172,7 @@ _divides_by_zero = _make_divides_by_zero()
 def _make_divides_by_a_variable():
     """``n // k * k <= n``: the divisor is a variable, so zero is one of its values."""
 
-    @theorem
+    @claim
     def div_variable(n: Nat, k: Nat) -> (n // k) * k <= n:
         """Fine at every k but zero, and zero is drawn."""
 
@@ -182,7 +182,7 @@ def _make_divides_by_a_variable():
 _divides_by_a_variable = _make_divides_by_a_variable()
 
 
-@theorem
+@claim
 def divides_by_a_literal(n: Nat, i: Fin[n]) -> (i // 2) * 2 <= i:
     """A nonzero literal divisor is the one divisor that can be ruled out."""
 
@@ -235,7 +235,7 @@ def test_an_integral_fraction_divisor_is_the_literal_it_equals() -> None:
 def test_an_int_divisor_that_may_be_zero_carries_one_note() -> None:
     """Rounding is no longer a gap, so totality is the only thing to note."""
 
-    @theorem
+    @claim
     def both(k: Int, m: Int) -> (k // m) * m <= k:
         """m may be zero; the rounding of a negative operand is Python's in Lean too."""
 

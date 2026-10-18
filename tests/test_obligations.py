@@ -576,7 +576,7 @@ def test_the_lean_line_counts_the_claims_about_reals_apart(capsys) -> None:
         lean_decider="isl",
     )
     post = _declined_for_reals("postcondition:kernel@1", "isl")
-    applied = _declined_for_reals("by-theorem:kernel@1:t", "theorem")
+    applied = _declined_for_reals("by-claim:kernel@1:t", "theorem")
     report_proved(Ledger([proved, post, applied]))
     out = capsys.readouterr().out
     assert (
@@ -821,7 +821,7 @@ def test_a_counterexample_is_read_back_without_starting_lean(no_session) -> None
 
 def _claim_fact(term: Any) -> Fact:
     """A claim of lanky's own, not a plugin's: Lean is asked its ladder."""
-    return Fact(id="succ", kind="theorem", statement="n + 1 > n", term=term, owner="succ")
+    return Fact(id="succ", kind="claim", statement="n + 1 > n", term=term, owner="succ")
 
 
 def test_a_claim_of_lankys_own_is_read_back_without_starting_lean(

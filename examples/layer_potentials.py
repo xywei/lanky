@@ -3,7 +3,7 @@
 This is the rule engine behind ``pytential_skie.py``, kept apart so that the
 demonstration reads as the claims it makes. It is example code and not part of
 lanky. lanky provides the shape of the claims (:mod:`lanky.rewrites`), the
-axioms they rest on (``@axiom``) and the ledger; everything about layer
+axioms they rest on (``@claim(cite=...)``) and the ledger; everything about layer
 potentials is here, as it would be in a plugin.
 
 The algebra. ``S`` and ``D`` are the single- and double-layer potentials of one
@@ -18,7 +18,7 @@ polynomial in named parameters, such as ``eta``, over the Gaussian rationals:
 ``1j * eta / 2`` is one. A float is read as the binary number it is, so
 ``0.5`` is one half and ``0.1`` is not a tenth.
 
-The rules are the axioms. A :class:`RuleSet` is built from ``@axiom`` objects
+The rules are the axioms. A :class:`RuleSet` is built from ``@claim(cite=...)`` objects
 and reads its rules off their statements: ``trace(D, s) == D + s / 2 * I``
 is the rule for the Dirichlet trace of ``D`` from either side,
 ``compact(S)`` says that ``S`` is compact, and ``~scalar_plus_compact(Dp)``
@@ -742,7 +742,7 @@ class JumpRule:
 
 
 class RuleSet:
-    """The rules the engine may apply, each read off an ``@axiom``.
+    """The rules the engine may apply, each read off a ``@claim(cite=...)``.
 
     Three statements are rules:
 
@@ -773,8 +773,10 @@ class RuleSet:
     def _read(self, axiom: Any) -> None:
         name = getattr(axiom, "__name__", repr(axiom))
         goal = getattr(axiom, "goal", None)
-        if getattr(axiom, "noun", None) != "axiom":
-            raise TypeError(f"{name}: a rule is read off an @axiom, and this is not one")
+        if not isinstance(getattr(axiom, "cite", None), str):
+            raise TypeError(
+                f"{name}: a rule is read off a cited claim, @claim(cite=...), and this is not one"
+            )
         if isinstance(goal, Equation):
             self._read_jump(axiom, name, goal)
         elif isinstance(goal, Compact):

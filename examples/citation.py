@@ -3,7 +3,7 @@
 Check it and test it as ``gauss.py`` is checked and tested.
 
 ``uv run lanky check examples/citation.py``
-    The ledger. The axiom is ``assumed (axiom)``, with its citation in the
+    The ledger. The axiom is ``assumed (cited)``, with its citation in the
     provenance, and the theorem that uses it reads ``tested under nicomachus``,
     with ``assumed`` in the ``EFFECTIVE`` column: evidence for a claim that
     rests on an assumption is worth no more than the assumption.

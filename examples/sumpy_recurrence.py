@@ -863,7 +863,7 @@ def reconstructs(
     where it is decorated, and the claim is read off what it returns: the
     coefficients through ``order``, the ones the wrangler stores, and the
     combination of those it reconstructs each of the others by. ``uses``
-    names what the claim for every order rests on, as ``@theorem(uses=...)``
+    names what the claim for every order rests on, as ``@claim(uses=...)``
     does: the kernel's harmonicity. ``cite`` is where the step from it to
     every derivative is taken from, which the claim then rests on instead
     (see :meth:`Reconstruction.facts`).

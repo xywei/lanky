@@ -15,11 +15,11 @@ induction whose steps sympy finds, or by a script over Mathlib's finite sums,
 and has Lean check it. `--show-lean` prints the Lean for whoever asks.
 
 ```python
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
-@theorem
+@claim
 def scan_monotone(
     n: Nat,
     cnt: Fn[Fin[n], Nat],
@@ -117,7 +117,7 @@ def segment(alpha: Complex, beta: Complex, nonzero: alpha != 0):
 
 with segment as (alpha, beta, nonzero):
 
-    @theorem
+    @claim
     def line_taylor(
         a: Fn[Nat, Complex],
         first_term: alpha * a[1] == beta,
@@ -285,7 +285,7 @@ raises its floor to match.
   another. Files from different source roots are checked in a process per
   root, so two directories that each hold a `helpers.py` are each checked
   against their own.
-- `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
+- `@claim`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
 - Written proofs. A claim whose body holds more than a docstring, `...` or
   `pass` is proved by that body, in the Python an engineer already writes:
@@ -319,8 +319,8 @@ raises its floor to match.
   a Lean proof kept in a table, and cited by a written proof like any
   theorem. Where Lean does not prove a claim alone, `lanky check` names the
   known facts that fit it.
-- `@axiom(cite=...)`: a statement written like a theorem and taken on a
-  citation. Its fact is `assumed (axiom)`, with the citation in its
+- `@claim(cite=...)`: a statement written like a theorem and taken on a
+  citation. Its fact is `assumed (cited)`, with the citation in its
   provenance; no oracle is asked to establish it, and the property tester
   still looks for a counterexample, so an axiom copied down wrong is refuted
   (and one whose hypotheses nothing satisfies is caught as vacuous).
@@ -347,7 +347,7 @@ raises its floor to match.
   column, and `proved under faithful:name` where the reading could not be run
   at a point, with the reason in a `DECLINED` line. The pytest plugin fails a
   theorem whose reading is refuted.
-- Facts rest on facts. `@theorem(uses=[...])` names the theorems, axioms or
+- Facts rest on facts. `@claim(uses=[...])` names the theorems, axioms or
   fact ids a theorem rests on, and a plugin sets `Fact.rests_on` on the facts
   it builds. The ledger reads the graph: a row says what it is established
   under (`tested under nicomachus`), and an `EFFECTIVE` column gives the
@@ -356,7 +356,7 @@ raises its floor to match.
   and `under`. An id no fact in the ledger has counts as an assumption, and
   `lanky check` names it under the table. An id names a definition by the
   module its file's path gives it under its source root,
-  `theorem:helpers.lemma@12`, and not by the name the module was imported
+  `claim:helpers.lemma@12`, and not by the name the module was imported
   under, so a theorem has the same id in its own file's ledger and in the
   `rests_on` of a file that imports it. A plugin keys its facts the same way,
   with `lanky.ledger.fact_id` and `lanky.check.module_name`.
@@ -958,7 +958,7 @@ never read as a counterexample. One that took a fact and found it outside what
 it decides returns it unchanged with the reason as `declined`, and `lanky
 check` prints that under the table for a fact that stays `ASSUMED`.
 
-Decorators are inert and registering: `@theorem` returns a callable object that
+Decorators are inert and registering: `@claim` returns a callable object that
 runs natively and puts itself in the registry. `lanky check FILE` imports the
 file and reads the registry, keeping the claims defined in that file and none
 from the modules it imports; `lanky check a.py b.py` checks both, each for its

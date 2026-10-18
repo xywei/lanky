@@ -61,11 +61,11 @@ from fractions import Fraction
 
 import numpy as np
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat, Real
 
 
-@theorem
+@claim
 def exchange(
     n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]
 ) -> sum(sum(f[i, j] for j in Fin[m]) for i in Fin[n]) == sum(
@@ -86,7 +86,7 @@ def kron(H, G, F):
     return entry
 
 
-@theorem
+@claim
 def sum_factorization(
     n: Nat,
     F: Fn[Fin[n], Fin[n], Real],
@@ -110,7 +110,7 @@ def sum_factorization(
     """
 
 
-@theorem
+@claim
 def mixed_product(
     n: Nat,
     A: Fn[Fin[n], Fin[n], Real],
@@ -140,7 +140,7 @@ def dense(H, G, F, n):
     return entry
 
 
-@theorem
+@claim
 def flattening(
     n: Nat,
     F: Fn[Fin[n], Fin[n], Real],
@@ -234,15 +234,15 @@ def main() -> int:
     rows = [(a, b, c) for a in range(n) for b in range(n) for c in range(n)]
     verdicts = {
         "sum_factorization": all(
-            sum_factorization(n=n, F=F, G=G, H=H, u=u, a=a, b=b, c=c).holds for a, b, c in rows
+            sum_factorization(n=n, F=F, G=G, H=H, u=u, a=a, b=b, c=c) for a, b, c in rows
         ),
         "mixed_product": all(
-            mixed_product(n=n, A=F, B=G, C=H, D=other, i=i, k=k, p=p, q=q).holds
+            mixed_product(n=n, A=F, B=G, C=H, D=other, i=i, k=k, p=p, q=q)
             for i, k in pairs
             for p, q in pairs
         ),
         "flattening": all(
-            flattening(n=n, F=F, G=G, H=H, a=a, b=b, c=c, p=p, q=q, r=r).holds
+            flattening(n=n, F=F, G=G, H=H, a=a, b=b, c=c, p=p, q=q, r=r)
             for a, b, c in rows
             for p, q, r in rows
         ),

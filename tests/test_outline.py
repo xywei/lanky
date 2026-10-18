@@ -13,7 +13,7 @@ from fractions import Fraction
 
 import pytest
 
-from lanky import cli, theorem
+from lanky import claim, cli
 from lanky.lean import statement_of
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.lean import tactic_ladder
@@ -33,7 +33,7 @@ from lanky.terms import Elementary, Var
 # {{{ claims
 
 
-@theorem
+@claim
 def compressed_taylor(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -44,7 +44,7 @@ def compressed_taylor(
     """What sumpy stores of a harmonic table, reconstructed, is the table (loopty's l2p.py)."""
 
 
-@theorem
+@claim
 def line_taylor(
     alpha: Complex,
     beta: Complex,
@@ -56,7 +56,7 @@ def line_taylor(
     """The line-Taylor coefficients of ``log(alpha + tau * beta)``, at every order."""
 
 
-@theorem
+@claim
 def telescoping(
     f: Fn[Nat, Real],
     start: f(0) == 0,
@@ -65,7 +65,7 @@ def telescoping(
     """A sum of ``1 / ((n + 1)(n + 2))``, its base taken at ``n == 0``."""
 
 
-@theorem
+@claim
 def shifting(
     f: Fn[Nat, Fn[Nat, Real]],
     start: all(f(a)(0) == a for a in Nat),
@@ -74,7 +74,7 @@ def shifting(
     """Induced on ``n``, the second of the claim's variables."""
 
 
-@theorem
+@claim
 def helmholtz(
     k: Real,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -86,7 +86,7 @@ def helmholtz(
     """Helmholtz's PDE, whose step takes the claim at ``(a - 2, b)`` times ``-k**2``."""
 
 
-@theorem
+@claim
 def on_every_triangle(
     n: Nat,
     p: Nat,
@@ -121,7 +121,7 @@ def on_every_triangle(
     """The reconstruction on every box, through the copies of what is stored (loopty's l2p.py)."""
 
 
-@theorem
+@claim
 def stored_and_followed(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -132,7 +132,7 @@ def stored_and_followed(
     """The reconstruction, with what is stored and the recurrence as one hypothesis."""
 
 
-@theorem
+@claim
 def exchange(
     n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]
 ) -> sum(sum(f[i, j] for j in Fin[m]) for i in Fin[n]) == sum(
@@ -141,14 +141,14 @@ def exchange(
     """Two finite sums exchange."""
 
 
-@theorem
+@claim
 def scaled(n: Nat, s: Real, f: Fn[Fin[n], Real]) -> sum(s * f[i] for i in Fin[n]) == s * sum(
     f[i] for i in Fin[n]
 ):
     """A factor comes out of a sum: no exchange, only the product distributed."""
 
 
-@theorem
+@claim
 def split_hypothesis(
     x: Nat,
     y: Nat,
@@ -446,12 +446,12 @@ def test_python_source_reads_as_ruff_writes_it() -> None:
 # {{{ the command
 
 
-def _ledger(found: dict | None, status: Status = Status.PROVED, kind: str = "theorem") -> Ledger:
+def _ledger(found: dict | None, status: Status = Status.PROVED, kind: str = "claim") -> Ledger:
     ledger = Ledger()
     provenance = {} if found is None else {"found_proof": found}
     ledger.add(
         Fact(
-            id="theorem:claims.gauss@3",
+            id="claim:claims.gauss@3",
             kind=kind,
             statement="n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)",
             status=status,
@@ -506,11 +506,11 @@ def test_proofs_leaves_out_what_was_not_proved_and_what_is_not_a_theorem(capsys)
     cli.report_steps(_ledger({"how": "by algebra"}), "nothing like it")
     assert capsys.readouterr().out.splitlines() == [
         "",
-        "PROOF no theorem was proved",
+        "PROOF no claim was proved",
         "",
-        "PROOF no theorem was proved",
+        "PROOF no claim was proved",
         "",
-        "STEPS no theorem was proved among those matching 'nothing like it'",
+        "STEPS no claim was proved among those matching 'nothing like it'",
     ]
 
 
@@ -519,9 +519,9 @@ def test_a_file_given_to_proofs_is_checked(tmp_path, capsys) -> None:
     path = tmp_path / "claims.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def plus_zero(n: Nat) -> n + 0 == n:\n"
         '    """Adding nothing."""\n',
         encoding="utf-8",
@@ -539,9 +539,9 @@ def test_files_are_checked_in_the_order_the_command_names_them(tmp_path, capsys)
         path = tmp_path / f"{name}.py"
         path.write_text(
             "from __future__ import annotations\n\n"
-            "from lanky import theorem\n"
+            "from lanky import claim\n"
             "from lanky.prelude import Nat\n\n\n"
-            "@theorem\n"
+            "@claim\n"
             f"def {name}_plus_zero(n: Nat) -> n + 0 == n:\n"
             '    """Adding nothing."""\n',
             encoding="utf-8",

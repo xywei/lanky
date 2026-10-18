@@ -1418,7 +1418,7 @@ def _refutation_reason(failing: Any) -> str:
 def _constant_report(goal: Any) -> TestReport:
     """The report for a statement that is already a concrete value.
 
-    ``@theorem def impossible() -> 1 == 2`` has no binders and no hypotheses,
+    ``@claim def impossible() -> 1 == 2`` has no binders and no hypotheses,
     so Python answered the annotation itself and the term is the ``bool``
     ``False``. There is nothing to sample, and declining it would leave a false
     claim in the ledger as ``ASSUMED``, so it is answered here: ``True`` is a

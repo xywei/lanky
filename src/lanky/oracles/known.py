@@ -105,18 +105,18 @@ PROOFS: dict[str, str] = {
 def entry_name(fact: Any) -> str | None:
     """The Python name of the :mod:`lanky.known` fact ``fact`` is the claim of; ``None`` otherwise.
 
-    A theorem's fact id is ``theorem:<module>.<name>@<line>``, with the module
-    its file's path gives it (:func:`lanky.check.module_name`), so a theorem
+    A claim's fact id is ``claim:<module>.<name>@<line>``, with the module
+    its file's path gives it (:func:`lanky.check.module_name`), so a claim
     of a user's own named like an entry, ``log_of_a_power`` in ``mine.py``,
     is not one, and gets the ladder.
     """
-    if getattr(fact, "kind", None) != "theorem":
+    if getattr(fact, "kind", None) != "claim":
         return None
     owner = getattr(fact, "owner", None)
     identifier = getattr(fact, "id", None)
     if not isinstance(owner, str) or not isinstance(identifier, str):
         return None
-    if not identifier.startswith(f"theorem:{MODULE}.{owner}@"):
+    if not identifier.startswith(f"claim:{MODULE}.{owner}@"):
         return None
     return owner if owner in PROOFS else None
 

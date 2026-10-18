@@ -302,14 +302,14 @@ def test_the_command_proves_the_text_a_citation_restates_and_audits_both(cases) 
 def test_a_cited_theorem_is_restated_by_the_text_its_command_proved(cases) -> None:
     """With its premises, the theorems its own proof cited, all the way down."""
     texts = {
-        cases.ct_chain.fact_id: CitedText("ct_chain", "PROVED TEXT", ("theorem:other@1",)),
-        "theorem:other@1": CitedText("other", "OTHER TEXT"),
+        cases.ct_chain.fact_id: CitedText("ct_chain", "PROVED TEXT", ("claim:other@1",)),
+        "claim:other@1": CitedText("other", "OTHER TEXT"),
     }
     with proved_texts(texts):
         command = compile_proof(trace_proof(cases.at_two), mathlib=False)
     assert "(ct_chain : PROVED TEXT)" in command.source
     assert "(other : OTHER TEXT)" in command.source
-    assert command.rests_on == [cases.ct_chain.fact_id, "theorem:other@1"]
+    assert command.rests_on == [cases.ct_chain.fact_id, "claim:other@1"]
     assert isinstance(command.cited[-1], Premise)
     assert command.summary == "1 step, using ct_chain"
 
@@ -324,14 +324,14 @@ def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) 
     from lanky.citations import Proved
     from lanky.proofs.compile import cited_text
 
-    other = {"theorem:other@1": CitedText("other", "OTHER TEXT")}
+    other = {"claim:other@1": CitedText("other", "OTHER TEXT")}
     earlier = Proved(
         cases.ct_chain.fact_id,
         "Lanky.ct_chain",
         "PROVED TEXT",
         False,
         cases.square.term,
-        ("theorem:other@1",),
+        ("claim:other@1",),
     )
     with proved_texts({cases.ct_chain.fact_id: earlier, **other}):
         assert cited_text(cases.ct_chain, False) != "PROVED TEXT"
@@ -345,7 +345,7 @@ def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) 
         "PROVED TEXT",
         False,
         cases.ct_chain.term,
-        ("theorem:other@1",),
+        ("claim:other@1",),
     )
     with proved_texts({cases.ct_chain.fact_id: current, **other}):
         assert cited_text(cases.ct_chain, False) == "PROVED TEXT"
@@ -780,8 +780,8 @@ def test_proofs_names_a_written_proof_where_the_search_found_none() -> None:
     from lanky.outline import proof_lines
 
     fact = Fact(
-        id="theorem:m.t@3",
-        kind="theorem",
+        id="claim:m.t@3",
+        kind="claim",
         statement="t",
         status=Status.PROVED,
         decided_by="lean",

@@ -153,7 +153,7 @@ def test_without_the_cas_oracle_sumpys_coefficients_are_tested_exactly() -> None
     # the closed form is about any table that satisfies the two hypotheses,
     # and its proof cites none of line_ode
     assert by_owner["line_taylor"].rests_on == ()
-    assert by_owner["line_ode"].kind == "theorem"
+    assert by_owner["line_ode"].kind == "claim"
 
 
 def test_a_coefficient_off_by_its_order_is_refuted(cas, demo) -> None:

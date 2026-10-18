@@ -46,7 +46,7 @@ x, y, z, n = Var("x"), Var("y"), Var("z"), Var("n")
 def fact_of(term, owner: str = "claim") -> Fact:
     """A fact with ``term``, as a theory would hand it to the oracles."""
     statement = render(term)
-    return Fact(id=f"theorem:{owner}", kind="theorem", statement=statement, term=term, owner=owner)
+    return Fact(id=f"claim:{owner}", kind="claim", statement=statement, term=term, owner=owner)
 
 
 def write(tmp_path, body: str) -> str:
@@ -54,7 +54,7 @@ def write(tmp_path, body: str) -> str:
     path = tmp_path / "identities.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import abs_, exp, log, sqrt, theorem\n"
+        "from lanky import abs_, exp, log, sqrt, claim\n"
         "from lanky.prelude import Complex, Fin, Fn, Nat, Real\n\n" + body,
         encoding="utf-8",
     )
@@ -121,7 +121,7 @@ def test_the_oracle_says_why_it_is_not_there(monkeypatch) -> None:
 def test_a_check_without_the_oracle_reads_as_it_did(tmp_path, monkeypatch) -> None:
     """With the oracle off, an identity sympy decides is the property tester's, as before."""
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
-    path = write(tmp_path, "@theorem\ndef double(x: Real) -> x + x == 2 * x:\n    pass\n")
+    path = write(tmp_path, "@claim\ndef double(x: Real) -> x + x == 2 * x:\n    pass\n")
     (fact,) = claims(check_path(path))
     assert (fact.status, fact.decided_by) == (Status.TESTED, "property-test")
     assert "declined" not in fact.provenance
@@ -607,10 +607,10 @@ def test_a_check_decides_an_identity_and_says_it_is_a_heuristic(
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     path = write(
         tmp_path,
-        "@theorem\n"
+        "@claim\n"
         "def product(x: Real, y: Real) -> exp(x + y) == exp(x) * exp(y):\n"
         "    pass\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def order(x: Real) -> x <= x + 1:\n"
         "    pass\n",
     )
@@ -634,13 +634,13 @@ def test_a_check_leaves_a_square_root_of_what_may_be_negative_to_the_tester(
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     path = write(
         tmp_path,
-        "@theorem\n"
+        "@claim\n"
         "def real(x: Real) -> sqrt(x) ** 2 == x:\n"
         "    pass\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def nowhere(x: Real) -> x * sqrt(-1 + 0 * x) == x * 1j:\n"
         "    pass\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def natural(n: Nat) -> sqrt(n) ** 2 == n:\n"
         "    pass\n",
     )
@@ -655,7 +655,7 @@ def test_a_check_leaves_a_square_root_of_what_may_be_negative_to_the_tester(
 
 def test_a_check_with_the_oracle_off_says_so(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("LANKY_CAS_DISABLE", "1")
-    path = write(tmp_path, "@theorem\ndef double(x: Real) -> x + x == 2 * x:\n    pass\n")
+    path = write(tmp_path, "@claim\ndef double(x: Real) -> x + x == 2 * x:\n    pass\n")
     assert cli.main(["check", path, "--verbose"]) == 0
     assert "cas (heuristic): unavailable: disabled by LANKY_CAS_DISABLE" in capsys.readouterr().out
 
@@ -664,7 +664,7 @@ def test_a_counterexample_overrules_a_wrong_simplification(cas, tmp_path, monkey
     """A simplifier that took every difference to zero is overruled by the tester's draw."""
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     monkeypatch.setattr(cas, "simplify", lambda expression: 0)
-    path = write(tmp_path, "@theorem\ndef wrong(x: Real) -> x + 1 == x:\n    pass\n")
+    path = write(tmp_path, "@claim\ndef wrong(x: Real) -> x + 1 == x:\n    pass\n")
     (fact,) = claims(check_path(path))
     assert (fact.status, fact.decided_by) == (Status.REFUTED, "property-test")
     assert fact.provenance["overruled"] == "cas, a heuristic, decided it"
@@ -673,7 +673,7 @@ def test_a_counterexample_overrules_a_wrong_simplification(cas, tmp_path, monkey
 def test_a_decline_is_kept_when_the_tester_settles_the_fact(cas, tmp_path, monkeypatch) -> None:
     """``x + 1 == x``: sympy leaves ``1``, and the tester refutes it, with the decline kept."""
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
-    path = write(tmp_path, "@theorem\ndef off_by_one(x: Real) -> x + 1 == x:\n    pass\n")
+    path = write(tmp_path, "@claim\ndef off_by_one(x: Real) -> x + 1 == x:\n    pass\n")
     (fact,) = claims(check_path(path))
     assert (fact.status, fact.decided_by) == (Status.REFUTED, "property-test")
     assert fact.provenance["declined"] == (

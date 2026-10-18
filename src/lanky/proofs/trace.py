@@ -2041,7 +2041,8 @@ class _Tracer:
 
     def _fact(self, item: Any, line: int | None) -> Citation:
         """A fact ``by(...)`` was given, as a citation; anything but a fact is refused."""
-        from lanky.surface import ClaimCondition, Conclusion, Conditions
+        from lanky.conditions import Conditions
+        from lanky.surface import Conclusion
         from lanky.theory import Theorem
 
         if isinstance(item, Citation):
@@ -2061,11 +2062,19 @@ class _Tracer:
                     fix=f"{self.name}.conclusion[{_earlier_text(self._next_names())}]",
                 )
             return Citation(item, None, line)
-        if isinstance(item, Conditions | ClaimCondition):
+        if isinstance(item, Conditions):
+            if item.claim is self.theorem:
+                names = ", ".join(name for name, _ in item.assumed_hypotheses) or "none"
+                raise ProofError(
+                    "cite",
+                    f"{self.name}.conditions are all of {self.name}'s conditions; a step cites "
+                    f"the ones it uses, by name: {names}",
+                    line,
+                )
             raise ProofError(
                 "cite",
-                f"{reason_text(item)} is a condition of another claim, which that claim "
-                "assumes; cite the claim itself",
+                f"{item.__name__} are the conditions of another claim, which that claim's "
+                "proof assumes; cite the claim itself",
                 line,
             )
         raise ProofError(

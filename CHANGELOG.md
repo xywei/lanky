@@ -15,12 +15,14 @@ the conclusion at a point the loop has filled in. The claim's own name is
 spelled out and its parts are addressed through its tree. No function stands
 for a proof, and no claim calls itself. Under `lanky check` the body is also
 run as plain Python at the check's draws, so a false step is caught at its
-line, with its numbers, before Lean is asked. A named condition,
-`@condition`, is stated once, and the claims of a `with` block hold under it.
+line, with its numbers, before Lean is asked. A claim is `@claim` and a claim
+taken on a source `@claim(cite=...)`. A named condition, `@condition`, is
+stated once, and the claims of a `with` block hold under it; `with` also
+assumes another claim's conditions, or a whole claim.
 
 ### Breaking
 
-The forms of 0.5's proofs are refused, each with the line to write:
+The forms of 0.5 are refused, each with the line to write:
 
 | 0.5 | 0.6 |
 |---|---|
@@ -46,9 +48,25 @@ The forms of 0.5's proofs are refused, each with the line to write:
   with the fix: `PYTEST_DONT_REWRITE` in the module's docstring.
 - The multipliers kept in the hint cache are kept in a new format: a cache
   from 0.5 is read as empty, once.
-- `Theorem.conditions` (#185's tuple of the `Condition` objects a theorem
-  holds under) is `Theorem.held_under`; `name.conditions` is the claim's half
-  of its tree now (below).
+- **Calling a claim at values answers `True` or `False`**, `gauss(n=4)` or
+  `gauss(4)`, by position or by name, where 0.5 returned a `Verdict`. Where
+  one of the claim's conditions fails at the values, the question does not
+  apply, and `lanky.ConditionNotMet` names the condition: "bounded does not
+  apply at these values: its condition h, k >= n, fails there". In an
+  annotation, at symbolic values, the call is the claim's statement there.
+  Calling a claim never runs its proof.
+- A claim's fact has the kind `"claim"` and the id `claim:module.name@line`
+  (0.5: `"theorem"`, `theorem:...`); a cited claim's kind is `"cited"`, its
+  id `claim:...` too, and its row reads `assumed (cited)` (0.5: `assumed
+  (axiom)`). `Fact.is_cited` says so, and `Fact.is_axiom` stays as its old
+  name. A plugin's fact of kind `"axiom"` still counts as cited.
+- The classes are `lanky.Claim` and `lanky.CitedClaim`; `Theorem` and
+  `Axiom` stay as their 0.5 names, for a plugin that checks a claim's type.
+  The theory registers as `"claim"` (`ClaimTheory`, `TheoremTheory` its old
+  name). `Theorem.conditions`, the conditions a claim holds under, is
+  `Claim.held_under` now: `name.conditions` is the claim's own half.
+- `@claim` with no goal is refused naming `@condition`: "a claim needs a
+  goal ... A named set of assumptions with no goal is a @condition".
 
 ### Added
 
@@ -138,12 +156,12 @@ The forms of 0.5's proofs are refused, each with the line to write:
   `--steps` prints a row per `assert` and per `yield` at its Python line, a
   chain's links under its first.
 
-- **Named conditions: `@condition`, and the theorems of a `with` block
+- **Named conditions: `@condition`, and the claims of a `with` block
   holding under one** (the decision of 2026-10-18 on proofs for engineers,
   section 6). Results share conditions, and engineers name them: the CFL
   condition, a segment that does not pass through zero. A condition is
-  written like a theorem with no conclusion and no body, and the theorems
-  that hold under it go in a `with` block:
+  written like a claim with no goal and no body, and the claims that hold
+  under it go in a `with` block:
 
   ```python
   @condition
@@ -153,25 +171,25 @@ The forms of 0.5's proofs are refused, each with the line to write:
 
   with segment as (alpha, beta, nonzero):
 
-      @theorem
+      @claim
       def line_taylor(a: Fn[Nat, Complex], first_term: alpha * a[1] == beta, ...) -> ...:
           ...
   ```
 
   - Called at numbers a condition says whether it holds, `cfl(c=1, dt=0.1,
     h=0.2)`, and in an annotation it is the proposition, so `ok: cfl(c, dt,
-    h)` is a hypothesis of any theorem.
+    h)` is a hypothesis of any claim.
   - `with segment as (alpha, beta, nonzero):` binds the condition's
     variables and named conditions, in its signature's order and under its
     names; another count or another name is refused with the signature
-    shown. Every theorem defined in the block holds under the condition: its
+    shown. Every claim defined in the block holds under the condition: its
     statement is the condition's variables and conditions, then its own, and
     natively it takes the condition's variables like its own,
     `line_taylor(alpha=2, beta=1, a=...)`.
   - The ledger's row reads `under segment (nonzero): a : Fn[Nat, Complex] |
-    ...`, the condition first and then the theorem's own parts, as the file
+    ...`, the condition first and then the claim's own parts, as the file
     has them. The property tester and the faithfulness check draw the
-    condition's variables with the theorem's, satisfying its conditions, and
+    condition's variables with the claim's, satisfying its conditions, and
     the check runs the condition's annotations again in the condition's own
     module; a condition used as a hypothesis is run again too, so a misread
     condition is refuted either way.
@@ -180,16 +198,52 @@ The forms of 0.5's proofs are refused, each with the line to write:
     variables and hypotheses first, under their names.
   - Several conditions compose, `with segment as (...), cfl as (...):`, in
     Python's parenthesized form, or nested; a variable two conditions declare
-    with one sort is one variable. A theorem in a block that declares one of
-    its names is refused, and so is a theorem after the block that still
+    with one sort is one variable. A claim in a block that declares one of
+    its names is refused, and so is a claim after the block that still
     uses one: `alpha belongs to segment; use it inside with segment as
     (alpha, beta, nonzero):`.
-  - A theorem under a condition is a `Theorem` to every consumer, its
+  - A claim under a condition is a `Claim` to every consumer, its
     `variables`, `hypotheses`, `term` and `hypothesis_names` the whole
-    statement, so a plugin cites it as it cites any other. `Theorem.under`,
+    statement, so a plugin cites it as it cites any other. `Claim.under`,
     `held_under`, `bound`, `own_variables`, `own_hypotheses` and
     `cited_under` (`"under segment"`, for a row that cites it) say what came
     from the block.
+  - **`with` in three forms.** `with cfl as (nu, stable):` assumes a
+    condition; `with line_taylor.conditions as (a, first_term, ode):`
+    another claim's conditions; `with line_taylor as (a, first_term, ode):`
+    a whole claim, whose goal holds in the block under the claim's name. A
+    claim built on a whole claim rests on it, and its row reads `under
+    line_taylor` until line_taylor is proved, so nothing built on an unproved
+    claim passes for proved. A claim's conditions, or a whole claim, are
+    assumed only where what the claim holds under is in force, or the line
+    to write says so: "with moves as (x, small): assumes moves, which holds
+    under forward, and forward is not in force here; write with forward as
+    (h, positive), moves as (x, small):".
+  - **`name.conditions`**, the claim's half before its goal, is one object:
+    `line_taylor.conditions.ode` is one condition, and
+    `line_taylor.conditions(a=...)` says whether they hold at values.
+  - **A sibling inside the block takes its own inputs**: in the proof of a
+    claim under the same conditions, `line_taylor(c)` is line_taylor at the
+    block's `alpha` and `beta` and at `c`, and giving the block's names too is
+    refused with what to write. Inside a block at module level, a call takes
+    the block's names the same way.
+  - **A condition used as a hypothesis brings its variables' sorts** and
+    reads as written: `def courant_number(ok: cfl(c, dt, h)) -> ...` needs
+    no `c: Real`, and its row reads `c : Real, dt : Real, h : Real | cfl(c,
+    dt, h) |- ...`.
+  - **A condition has a row of its own** in the ledger: `can hold: nu : Real
+    | nu >= 0 and nu <= 1`, the check by draws that its conditions can hold
+    at all. It is `tested` where the draws find values that satisfy them,
+    and a condition that can never hold is `vacuous` and fails the check; it
+    is never `proved`, since a condition is assumed, not claimed.
+  - **A refuted claim names the condition that would make it hold.** Its
+    failing draws are tested against each `@condition` of the file, and one
+    false at every failing draw, and true at a passing one, is named under
+    the refutation: "The condition cfl in this file excludes every failing
+    draw: put the claim under with cfl as (nu, stable)."
+  - `cfl.nu` names nothing, and says so: "cfl.nu names nothing: nu is bound
+    by with cfl as (nu, stable):, and a claim outside the block ranges over
+    nu in its own for, or takes it as a parameter".
   - One hook gives a body the names a `with` statement bound:
     `lanky.proofs.trace.body_arguments(fn, values)` splits the statement's
     values into what the function takes as parameters and the names it does

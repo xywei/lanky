@@ -29,7 +29,7 @@ uv sync --group dev              # add --extra lean for the Lean oracle, --extra
 `examples/gauss.py` holds two theorems. The first is Gauss's schoolboy sum:
 
 ```python
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``."""
 ```
@@ -37,7 +37,7 @@ def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
 The second is the theorem a sparse matrix layout needs:
 
 ```python
-@theorem
+@claim
 def scan_monotone(
     n: Nat,
     cnt: Fn[Fin[n], Nat],
@@ -72,7 +72,7 @@ That is what lets this theorem be the postcondition of a kernel somewhere else.
 ```console
 $ uv run python examples/gauss.py
 gauss at n = 4: True
-scan_monotone at n = 3: True (hypotheses {'h0': True, 'hs': True})
+scan_monotone at n = 3: True
 
 gauss: n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
   ok after 50 valid draws of 50
@@ -344,7 +344,7 @@ appears.
 Put this in `gap.py`, with the same two imports `examples/gauss.py` has:
 
 ```python
-@theorem
+@claim
 def truncated(n: Nat) -> n - 1 >= 0:
     """False at n = 0, and false in Lean too."""
 ```
@@ -407,7 +407,7 @@ def table(i):
     return {0: 1}.get(i, 0)
 
 
-@theorem
+@claim
 def looked_up(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):
     """False at i = 0, where the table gives 1."""
 ```
@@ -519,19 +519,19 @@ def cfl(
 
 with cfl as (c, dt, h, forward, positive, stable):
 
-    @theorem
+    @claim
     def courant() -> c * dt / h <= 1:
         """Under the CFL condition, the Courant number is at most one."""
 
-    @theorem
+    @claim
     def no_new_extremum(u_left: Real, u: Real, rising: u_left <= u) -> (
         (u_left <= u - c * dt / h * (u - u_left)) & (u - c * dt / h * (u - u_left) <= u)
     ):
         """An upwind step keeps each value between its old value and its upwind neighbour."""
 
 
-@theorem
-def courant_number(c: Real, dt: Real, h: Real, ok: cfl(c, dt, h)) -> 0 <= c * dt / h:
+@claim
+def courant_number(ok: cfl(c, dt, h)) -> 0 <= c * dt / h:
     """Wherever the CFL condition holds, the Courant number is not negative either."""
 ```
 
@@ -561,18 +561,25 @@ hypotheses, as the file does:
 ```console
 $ uv run lanky check examples/upwind.py
 STATUS  BY             WHERE         OWNER            STATEMENT
-------  -------------  ------------  ---------------  --------------------------------------------------------------------------------------------
-tested  property-test  upwind.py:46  courant          under cfl (forward, positive, stable): c*dt / h <= 1
-tested  python         upwind.py:46  courant          the term computes what the annotations compute
-tested  property-test  upwind.py:50  no_new_extremum  under cfl (forward, positive, stable): u_left : Real, u : Real
+------  -------------  ------------  ---------------  -----------------------------------------------------------------------------
+tested  property-test  upwind.py:33  cfl              can hold: c : Real, dt : Real, h : Real | c >= 0, dt > 0 and h > 0, c*dt <= h
+tested  property-test  upwind.py:47  courant          under cfl (forward, positive, stable): c*dt / h <= 1
+tested  python         upwind.py:47  courant          the term computes what the annotations compute
+tested  property-test  upwind.py:51  no_new_extremum  under cfl (forward, positive, stable): u_left : Real, u : Real
                                                       | rising: u_left <= u
                                                       |- u_left <= u - c*dt / h*(u - u_left) and u - c*dt / h*(u - u_left) <= u
-tested  python         upwind.py:50  no_new_extremum  the term computes what the annotations compute
-tested  property-test  upwind.py:57  courant_number   c : Real, dt : Real, h : Real | c >= 0 and (dt > 0 and h > 0) and c*dt <= h |- c*dt / h >= 0
-tested  python         upwind.py:57  courant_number   the term computes what the annotations compute
+tested  python         upwind.py:51  no_new_extremum  the term computes what the annotations compute
+tested  property-test  upwind.py:58  courant_number   c : Real, dt : Real, h : Real | cfl(c, dt, h) |- c*dt / h >= 0
+tested  python         upwind.py:58  courant_number   the term computes what the annotations compute
 
-6 facts: 6 tested
+7 facts: 7 tested
 ```
+
+The first row is the condition's own: whether its conditions can hold at all,
+which the draws show by finding values where they do. A condition is assumed,
+not claimed, so its row is never `proved`; one that can never hold is
+`vacuous`, and fails the check. In `courant_number`, `cfl(c, dt, h)` gives `c`,
+`dt` and `h` their sorts, and the ledger prints it as it is written.
 
 The property tester draws the condition's variables with each theorem's own,
 and satisfies the condition's conditions as it does a theorem's hypotheses;
@@ -601,12 +608,12 @@ axiom, and the closed form of the sum of cubes, which follows from the two.
 fact lanky knows; see [A fact over a family](#a-fact-over-a-family).)
 
 ```python
-@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+@claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
 def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """The sum of the first cubes is the square of the sum of the first numbers."""
 
 
-@theorem(uses=[nicomachus, gauss])
+@claim(uses=[nicomachus, gauss])
 def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
     """Four times the sum of the cubes of ``0 .. n`` is ``(n * (n + 1)) ** 2``."""
 ```
@@ -622,7 +629,7 @@ STATUS                   EFFECTIVE  BY             WHERE           OWNER       S
 -----------------------  ---------  -------------  --------------  ----------  -------------------------------------------------------------------------
 tested                   tested     property-test  citation.py:34  gauss       n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)
 tested                   tested     python         citation.py:34  gauss       the term computes what the annotations compute
-assumed (axiom)          assumed    -              citation.py:39  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
+assumed (cited)          assumed    -              citation.py:39  nicomachus  n : Nat |- sum(i**3 for i in Fin(n + 1)) == sum(i for i in Fin(n + 1))**2
 tested                   tested     python         citation.py:39  nicomachus  the term computes what the annotations compute
 tested under nicomachus  assumed    property-test  citation.py:44  cubes       n : Nat |- 4*sum(i**3 for i in Fin(n + 1)) == (n*(n + 1))**2
 tested                   tested     python         citation.py:44  cubes       the term computes what the annotations compute
@@ -639,7 +646,7 @@ The same with Lean and without it, since every statement has a sum in it
 MATHLIB` line, which core Lean prints and a machine without Lean does not.
 Four things in that output are new.
 
-- `assumed (axiom)`. The axiom is taken on its citation, which the `CITED`
+- `assumed (cited)`. The axiom is taken on its citation, which the `CITED`
   line under the table shows and `--json` carries as `cite` in its provenance,
   and no oracle is asked to establish it. It is still sampled for a
   counterexample, because a citation copied down wrong states something the
@@ -679,19 +686,19 @@ tester refutes it. The row reads `refuted (axiom)`, `cubes` is worth `refuted`
 in the `EFFECTIVE` column, the counterexample is printed under the table, and
 `lanky check` exits 1. So does an axiom whose hypotheses were copied down so
 that nothing satisfies them, once Lean shows them inconsistent: it reads
-`assumed (axiom) (vacuous)`, as a theorem would read `proved (vacuous)`.
+`assumed (cited) (vacuous)`, as a theorem would read `proved (vacuous)`.
 `pytest examples/citation.py` samples the axiom as a test item too.
 
 A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
 it builds, naming other facts by id.
 
-An id names a definition: `theorem:citation.gauss@34` is the kind, the
+An id names a definition: `claim:citation.gauss@34` is the kind, the
 module, the qualified name and the line. The module is the name the file's
 path gives it under its source root, `citation` for `examples/citation.py`
 and `pkg.helpers` for `root/pkg/helpers.py`, and not the name it was imported
 under. So a theorem that `main.py` imports with `from helpers import lemma`
 and names in `uses=` has the id there that it has in `helpers.py`'s own
-ledger, `theorem:helpers.lemma@12` in both. `lanky check main.py helpers.py`
+ledger, `claim:helpers.lemma@12` in both. `lanky check main.py helpers.py`
 still gives each file its own ledger, so `main.py`'s names the id in an
 `UNRESOLVED` line, and it is the id of the row in `helpers.py`'s ledger and in
 the `--json` list. A plugin builds its ids with `lanky.ledger.fact_id(kind,
@@ -757,21 +764,21 @@ that the identity is not one of them.
 $ uv run lanky check examples/pytential_skie.py
 STATUS                                                        EFFECTIVE  BY             WHERE                  OWNER                     STATEMENT
 ------------------------------------------------------------  ---------  -------------  ---------------------  ------------------------  -----------------------------------------------------------------------------------------
-assumed (axiom)                                               assumed    -              pytential_skie.py:94   jump_S                    gamma : C2Boundary, s : Side |- trace(S, s) == S
+assumed (cited)                                               assumed    -              pytential_skie.py:94   jump_S                    gamma : C2Boundary, s : Side |- trace(S, s) == S
 assumed                                                       assumed    -              pytential_skie.py:94   jump_S                    the term computes what the annotations compute
-assumed (axiom)                                               assumed    -              pytential_skie.py:99   jump_D                    gamma : C2Boundary, s : Side |- trace(D, s) == 1/2*s*I + D
+assumed (cited)                                               assumed    -              pytential_skie.py:99   jump_D                    gamma : C2Boundary, s : Side |- trace(D, s) == 1/2*s*I + D
 assumed                                                       assumed    -              pytential_skie.py:99   jump_D                    the term computes what the annotations compute
-assumed (axiom)                                               assumed    -              pytential_skie.py:104  jump_Sp                   gamma : C2Boundary, s : Side |- normal_derivative(S, s) == -1/2*s*I + S'
+assumed (cited)                                               assumed    -              pytential_skie.py:104  jump_Sp                   gamma : C2Boundary, s : Side |- normal_derivative(S, s) == -1/2*s*I + S'
 assumed                                                       assumed    -              pytential_skie.py:104  jump_Sp                   the term computes what the annotations compute
-assumed (axiom)                                               assumed    -              pytential_skie.py:109  jump_Dp                   gamma : C2Boundary, s : Side |- normal_derivative(D, s) == D'
+assumed (cited)                                               assumed    -              pytential_skie.py:109  jump_Dp                   gamma : C2Boundary, s : Side |- normal_derivative(D, s) == D'
 assumed                                                       assumed    -              pytential_skie.py:109  jump_Dp                   the term computes what the annotations compute
-assumed (axiom)                                               assumed    -              pytential_skie.py:114  compact_S                 gamma : C2Boundary |- compact(S)
+assumed (cited)                                               assumed    -              pytential_skie.py:114  compact_S                 gamma : C2Boundary |- compact(S)
 assumed                                                       assumed    -              pytential_skie.py:114  compact_S                 the term computes what the annotations compute
-assumed (axiom)                                               assumed    -              pytential_skie.py:119  compact_D                 gamma : C2Boundary |- compact(D)
+assumed (cited)                                               assumed    -              pytential_skie.py:119  compact_D                 gamma : C2Boundary |- compact(D)
 assumed                                                       assumed    -              pytential_skie.py:119  compact_D                 the term computes what the annotations compute
-assumed (axiom)                                               assumed    -              pytential_skie.py:124  compact_Sp                gamma : C2Boundary |- compact(S')
+assumed (cited)                                               assumed    -              pytential_skie.py:124  compact_Sp                gamma : C2Boundary |- compact(S')
 assumed                                                       assumed    -              pytential_skie.py:124  compact_Sp                the term computes what the annotations compute
-assumed (axiom)                                               assumed    -              pytential_skie.py:129  hypersingular_Dp          gamma : C2Boundary |- ~scalar_plus_compact(D')
+assumed (cited)                                               assumed    -              pytential_skie.py:129  hypersingular_Dp          gamma : C2Boundary |- ~scalar_plus_compact(D')
 assumed                                                       assumed    -              pytential_skie.py:129  hypersingular_Dp          the term computes what the annotations compute
 decided under jump_D                                          assumed    layer-rules    pytential_skie.py:151  laplace_dirichlet_dlp     trace(D, INTERIOR) ~> -1/2*I + D (jump relations)
 tested                                                        tested     property-test  pytential_skie.py:151  laplace_dirichlet_dlp     coefficient of I: -1/2 != 0
@@ -807,7 +814,7 @@ nothing rests on it, so no `DECLINED` line says so. With the `lean` extra
 the three coefficient rows read `proved  lean`: `coefficient of I: -1/2 != 0` goes to Lean as
 `(-1 : Int) ≠ 0`, the numerator's being nonzero, since core Lean has no
 rationals, and that arithmetic is the one part of the argument Lean touches.
-Nothing about compactness is claimed proved. Those are the `assumed (axiom)`
+Nothing about compactness is claimed proved. Those are the `assumed (cited)`
 rows, each verdict is `decided under` the ones it used, and in the `EFFECTIVE`
 column it is worth what they are.
 
@@ -970,7 +977,7 @@ tested                                 tested               python  sumpy_recurr
 tested                                 tested               mpmath  sumpy_recurrence.py:893  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
 decided (heuristic)                    decided (heuristic)  cas     sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                                                                   == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-assumed (axiom)                        assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
+assumed (cited)                        assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
                                                                                                                   diff(G, x, a + 2, y, b) + diff(G, x, a, y, b + 2) == 0 for every a, b,
                                                                                                                   with G = log(sqrt(x**2 + y**2)): harmonic differentiated a times in x and b times in y
 assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:893  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
@@ -1016,7 +1023,7 @@ NOT CHECKED harmonic at sumpy_recurrence.py:153: without Lean, each step of its 
   satisfies the PDE too, because `G` is smooth away from the origin and its
   derivatives commute with the Laplacian. lanky has no derivative of an
   order it does not know to state that with (#174), so the claim takes it
-  on Kress's word, as a fact of its own, `assumed (axiom)`, resting on
+  on Kress's word, as a fact of its own, `assumed (cited)`, resting on
   `harmonic`: `@reconstructs(log_r, order=ORDER, uses=harmonic,
   cite=KRESS)`. The rows that rest on it name it, `under harmonic at every
   order`, and its `CITED` line under the table gives the reference.
@@ -1220,7 +1227,7 @@ tested                                tested               python  sumpy_recurre
 tested                                tested               mpmath  sumpy_recurrence.py:893  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
 decided (heuristic)                   decided (heuristic)  cas     sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                                                                  == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-assumed (axiom)                       assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
+assumed (cited)                       assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
                                                                                                                  diff(G, x, a + 2, y, b) + diff(G, x, a, y, b + 2) == 0 for every a, b,
                                                                                                                  with G = log(sqrt(x**2 + y**2)): harmonic differentiated a times in x and b times in y
 proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:893  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
@@ -1317,7 +1324,7 @@ factorization applies it in three one-axis passes rather than as the dense
 `examples/sum_factorization.py` states why that is right, at every size `n`:
 
 ```python
-@theorem
+@claim
 def sum_factorization(
     n: Nat,
     F: Fn[Fin[n], Fin[n], Real],
@@ -1826,12 +1833,12 @@ theorem stated in Python, like any other, with a docstring that cites the
 Mathlib lemma it is:
 
 ```python
-@theorem
+@claim
 def log_of_a_power(x: Real, n: Nat) -> log(x**n) == n * log(x):
     """The log of a power is the exponent times the log (Mathlib: Real.log_pow)."""
 
 
-@theorem
+@claim
 def modulus_squared(z: Complex) -> real(z * conj(z)) == abs(z) ** 2:
     """z times its conjugate is |z| squared, a real number
     (Mathlib: Complex.mul_conj, Complex.normSq_eq_norm_sq)."""
@@ -1903,7 +1910,7 @@ the sum to `n` plus its last term, whatever the terms are, as a fact over a
 family `f`:
 
 ```python
-@theorem
+@claim
 def one_more_term(f: Fn[Nat, Real], n: Nat) -> (
     sum(f[k] for k in Fin[n + 1]) == sum(f[k] for k in Fin[n]) + f[n]
 ):
@@ -2011,7 +2018,7 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
   `False`, and the row still reads `refuted`, with the reason (the statement
   is the constant `False`) printed where a counterexample would be. The JSON
   keeps the empty counterexample.
-- Leave off a theorem's return annotation. `@theorem` raises `TypeError`
+- Leave off a theorem's return annotation. `@claim` raises `TypeError`
   where the function is defined, because a theorem needs a goal, and
   `lanky check` reports the file as one that does not import.
 - Call one of Python's builtins in a claim. At numbers it is Python's:
@@ -2164,7 +2171,7 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
 | sorts, `Fin`, `Fn`, refinement | `src/lanky/prelude.py` |
 | `Status`, `Fact`, `Ledger`, and what a fact rests on | `src/lanky/ledger.py` |
 | the four plugin protocols and the registry | `src/lanky/plugins.py` |
-| `@theorem`, `@axiom`, `Theorem` and `Axiom` | `src/lanky/theory.py` |
+| `@claim`, `@axiom`, `Theorem` and `Axiom` | `src/lanky/theory.py` |
 | `@rewrite`, `Rewrite`, `RewriteTerm` and `rewrite_fact` | `src/lanky/rewrites.py` |
 | samplers and the property tester | `src/lanky/testing.py` |
 | a claim's reading, checked by running its annotations again at drawn values | `src/lanky/faithful.py` |
