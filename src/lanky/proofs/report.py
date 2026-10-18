@@ -629,7 +629,12 @@ def read(proof: Proof, command: Any, record: Mapping[str, Any]) -> tuple[bool, l
     Accepted means no error, no ``sorry``, and a positive audit (:func:`audit`).
     Every error is read back to the piece of the proof it is about, one
     report per line of the body and kind, in the order of the lines. A
-    failure of the measure is reported alone, as it was written.
+    failure of the measure is reported alone, as it was written, where it is
+    the only one. Beside a step Lean could not show it is left out: the
+    trace has already refused a citation at a point that is not earlier,
+    and Lean leaves the measure unproved after a failed step too, where it
+    holds, so the report said "the conclusion is not cited at earlier
+    points" of a proof whose step was false.
     """
     messages = list(record.get("messages") or ())
     errors = [message for message in messages if message.get("severity") == "error"]
@@ -653,8 +658,10 @@ def read(proof: Proof, command: Any, record: Mapping[str, Any]) -> tuple[bool, l
     if negative:
         return False, negative
     measured = [failure for failure in failures if failure.kind == "measure"]
-    if measured:
+    others = [failure for failure in failures if failure.kind != "measure"]
+    if measured and not others:
         return False, measured[:1]
+    failures = others
     if not failures:
         if sorries:
             failures.append(Failure("lean", None, "Lean accepted the proof with a sorry in it"))

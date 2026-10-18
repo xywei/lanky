@@ -274,7 +274,10 @@ The forms of 0.5 are refused, each with the line to write:
   ...". A family the hypotheses do not reach this way (a quantifier over
   the reals, hypotheses that contradict) is not filled, and the run tests
   nothing there rather than report a step false at values its hypotheses
-  exclude.
+  exclude. Where Lean cannot check the proof (no Lean, or no Mathlib for the
+  reals), the `NOT CHECKED` line says what the run did: "its proof was not
+  checked by Lean; it was run at 8 drawn values instead, and every step
+  held". A family of integers is filled with integers.
 - In the native run, a proposition with no variable left in it answers for
   its truth (`lanky.terms.closed_truth`): `harmonic`'s step compares sympy's
   Laplacian, which `from_sympy` hands back as a term of numbers at the drawn
@@ -306,6 +309,12 @@ The forms of 0.5 are refused, each with the line to write:
   domain's first 200 points and reversed them, so a proof about `Fin[500]`
   was never run at its base case, 499. It takes the last 200 now, the top
   first.
+- A false step that Lean could not show was reported as "the conclusion is
+  not cited at earlier points": Lean leaves the recursion's measure unproved
+  after a failed step, and the report gave the measure alone. Beside a
+  failed step the measure is left out now (the trace refuses a citation at a
+  point that is not earlier before Lean is asked), and the report is of the
+  step, at its line.
 
 ## [0.5.0] - 2026-10-18
 

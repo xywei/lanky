@@ -538,12 +538,10 @@ def test_tables_over_two_naturals_are_filled_along_their_recurrence(examples) ->
             assert R[a, b] == D[a, b]
 
 
-def test_tables_of_integers_under_a_condition_are_filled_with_integers(tmp_path) -> None:
-    """``D`` bound by ``with harmonic_table``, ``R`` the claim's own, both of integers."""
-    from lanky.proofs.filled import filled_draws
-    from lanky.proofs.native import native_failure
-
-    source = HEAD + '''
+#: A table of integers under a condition, and a calculation with a sign written wrong.
+INTEGER_TABLES = (
+    HEAD
+    + '''
 
 @condition
 def harmonic_table(
@@ -571,14 +569,62 @@ with harmonic_table as (D, pde):
                 )
                 yield by()
 '''
-    module = _module_at(tmp_path, source, "integer_tables")
+)
+
+#: The line of that calculation's ``assert``.
+CALCULATION_LINE = _line(INTEGER_TABLES, "D[a - 2, b + 2] == D[a, b], by(")
+
+
+def test_tables_of_integers_under_a_condition_are_filled_with_integers(tmp_path) -> None:
+    """``D`` bound by ``with harmonic_table``, ``R`` the claim's own, both of integers."""
+    from lanky.proofs.filled import filled_draws
+    from lanky.proofs.native import native_failure
+
+    module = _module_at(tmp_path, INTEGER_TABLES, "integer_tables")
     (draw, *_) = filled_draws(module.calculation)
     assert all(isinstance(draw["R"][a, b], int) for a in range(6) for b in range(6))
     failure = native_failure(module.calculation)
-    assert failure is not None and failure.line == _line(source, "D[a - 2, b + 2] == D[a, b], by(")
+    assert failure is not None and failure.line == CALCULATION_LINE
     (said,) = failure.lines
     numbers = r"At a = \d+, b = \d+: the left side is -?\d+, the right side -?\d+\."
     assert re.fullmatch(numbers, said), said
+
+
+def test_lean_names_the_false_step_and_not_the_measure(tmp_path, monkeypatch) -> None:
+    """With the native run set aside, Lean's report is of the step, at its line.
+
+    Lean leaves the recursion's measure unproved after a step it could not
+    show, and the report used to say "the conclusion is not cited at earlier
+    points" of this proof, whose citations are all earlier.
+    """
+    _lean_or_skip()
+    import lanky.proofs.native as native
+
+    monkeypatch.setattr(native, "native_run", lambda theorem, *args, **kwargs: (None, 0))
+    path = tmp_path / "integer_tables_lean.py"
+    path.write_text(INTEGER_TABLES, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["calculation"]
+    failures = fact.provenance["proof"]["failures"]
+    assert failures and {failure["kind"] for failure in failures} == {"step"}, failures
+    assert failures[0]["line"] == CALCULATION_LINE
+
+
+def _lean_or_skip() -> None:
+    """Skip a test that needs Lean, or fail it where Lean was promised."""
+    from lanky.oracles.lean import LeanOracle
+
+    reason = None
+    if os.environ.get("LANKY_LEAN_DISABLE"):
+        reason = "the Lean oracle is disabled by LANKY_LEAN_DISABLE"
+    else:
+        available, why = LeanOracle().availability()
+        if not available:
+            reason = f"no Lean oracle here: {why}"
+    if reason is None:
+        return
+    if os.environ.get("LANKY_LEAN_TEST_REQUIRED"):
+        pytest.fail(f"LANKY_LEAN_TEST_REQUIRED is set, but {reason}", pytrace=False)
+    pytest.skip(reason)
 
 
 def test_a_family_its_hypotheses_do_not_reach_is_not_filled(tmp_path) -> None:
