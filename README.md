@@ -431,10 +431,12 @@ raises its floor to match.
   inside a quantifier, where each used to be read as its guard. A builtin of
   Python's in an annotation is Python's at concrete arguments (`round(0.5)`
   is `0`, and `complex(-1, -0.0)` keeps its negative zero) and refused at a
-  variable, naming it (`min(x, y)`), where it used to be a free name; so is
-  a truth value a builtin asks for inside a quantifier (`min(i, j)`, `i in
-  range(3)`), which used to be recorded as the quantifier's guard, and a
-  symbolic domain `zip` or `enumerate` walks. A theorem refuses a parameter
+  variable, naming it (`complex(x, 1)`), where it used to be a free name; so
+  is a truth value a builtin asks for inside a quantifier (`i in range(3)`),
+  which used to be recorded as the quantifier's guard, and a symbolic domain
+  `zip` or `enumerate` walks. `max` and `min` of terms are lanky's own, the
+  larger and the smaller of their arguments: `abs(u0 - nu * (u0 - u1)) <=
+  max(abs(u0), abs(u1))` reads as written, and Lean's is `max a b`. A theorem refuses a parameter
   annotated with a builtin type, `x: int`, or naming one anywhere in its
   annotation, `f: Fn[Fin[n], float]`, and names the sort meant. A term is no
   key of a dict and no member of a set in an annotation: `{0: 1}.get(i, 0)`
@@ -749,15 +751,13 @@ The open issues you are most likely to meet:
   `gauss.report()` and `gauss.test()`, and so `python examples/gauss.py`,
   evaluate the term, even where the reading is refuted. Use `lanky check` or
   `pytest`, which make the check, or call `gauss.faithful_fact()`.
-- **`min` and `max` of a variable are refused**
-  ([#66](https://github.com/xywei/lanky/issues/66)), with a `TypeError` that
-  names the call. State the claim once per case: under a hypothesis `x <= y`,
-  with `x` written for `min(x, y)`, and under `y < x`, with `y`.
 - **A claim about a family over `Nat` is not tested**
   ([#98](https://github.com/xywei/lanky/issues/98)). The property tester
   cannot tabulate `Fn[Nat, Nat]`, so without Lean such a claim reads
   `assumed`, and `pytest` skips it. Give the family a bounded domain with a
-  size parameter, `n: Nat, a: Fn[Fin[n + 1], Nat]`, and it is drawn.
+  size parameter, `n: Nat, a: Fn[Fin[n + 1], Nat]`, and it is drawn. A
+  written proof's native run does fill such a family in, over the first
+  naturals, from the hypotheses that define it, so its steps are tested.
 - **A long step in C, or in a library, holds the check up**
   ([#108](https://github.com/xywei/lanky/issues/108)). Each draw has five
   seconds, and a function of yours is stopped at its next call or turn of a

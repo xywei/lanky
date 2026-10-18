@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import ast
 import builtins
-import itertools
+import collections
 import types as pytypes
 from collections.abc import Iterator, Mapping
 from contextlib import ExitStack
@@ -223,7 +223,8 @@ class _Run:
         names = [var.name for var, _ in binders]
         points: Any = _points(list(binders), guard, {**self.context, **outer}, self.bound)
         if reverse:
-            points = list(itertools.islice(points, POINT_LIMIT))[::-1]
+            # the top of the domain first: its last points, not its first ones reversed
+            points = list(collections.deque(points, maxlen=POINT_LIMIT))[::-1]
         for count, values in enumerate(points):
             if count >= POINT_LIMIT:
                 break
@@ -341,16 +342,16 @@ def _domain_values(domain: Any, var: Any, scope: Mapping[str, Any], bound: int) 
 
 
 def native_namespace(theorem: Any) -> dict[str, Any]:
-    """A native run's globals: the trace's, with Python's ``all``, ``any``, ``sum`` ``abs``."""
+    """A native run's globals: the trace's, with Python's ``all``, ``any``, ``sum``, ``abs``, ..."""
     out = namespace(theorem)
-    for name in ("all", "any", "sum", "abs"):
+    for name in ("all", "any", "sum", "abs", "max", "min"):
         out[name] = getattr(builtins, name)
     return out
 
 
 def _run(theorem: Any, values: Mapping[str, Any], run: _Run) -> None:
     """Run the body as plain Python at ``values``, ``run`` answering the claim's tree."""
-    from lanky.terms import concrete_sorts, exact_reading
+    from lanky.terms import closed_truth, concrete_sorts, exact_reading
 
     fn = theorem.fn
     arguments: dict[str, Any] = {
@@ -376,6 +377,7 @@ def _run(theorem: Any, values: Mapping[str, Any], run: _Run) -> None:
     with ExitStack() as stack:
         stack.enter_context(running(run))
         stack.enter_context(exact_reading())
+        stack.enter_context(closed_truth())
         stack.enter_context(concrete_sorts(points))
         if is_generator(fn):
             generator = body(*positional, **named)
@@ -397,16 +399,21 @@ def native_failure(theorem: Any, samples: int = NATIVE_DRAWS, seed: int = 0) -> 
     :class:`lanky.proofs.report.Failure` of kind ``false``, at the line of
     the step, with the values there.
     """
+    from lanky.proofs.filled import FILLED_DRAWS, filled_draws, over_the_naturals
     from lanky.terms import exact_reading
     from lanky.testing import MAX_NAT, valid_draws
 
     hypotheses = [prop for _name, prop in theorem.hypotheses]
     codes = _own_codes(theorem.fn.__code__)
-    try:
-        with exact_reading():
-            draws = list(valid_draws(theorem.variables, hypotheses, samples, seed))
-    except Exception:  # noqa: BLE001 - a statement the tester cannot draw runs no proof
-        return None
+    if any(over_the_naturals(sort) for _name, sort in theorem.variables):
+        # no table of every natural is drawn: fill one in from the hypotheses
+        draws = filled_draws(theorem, min(samples, FILLED_DRAWS), seed)
+    else:
+        try:
+            with exact_reading():
+                draws = list(valid_draws(theorem.variables, hypotheses, samples, seed))
+        except Exception:  # noqa: BLE001 - a statement the tester cannot draw runs no proof
+            return None
     for context in draws:
         run = _Run(theorem, context, MAX_NAT)
         try:
@@ -545,8 +552,15 @@ def _sides(node: ast.Assert, frame: Any) -> tuple[Any, Any, str] | None:
     path = frame.f_code.co_filename
 
     def value(expression: ast.expr) -> Any:
+        from lanky.terms import evaluate, exact_reading, free_names
+
         code = compile(ast.Expression(expression), path, "eval")
-        return eval(code, scope)  # noqa: S307 - the user's own step, read again where it failed
+        found = eval(code, scope)  # noqa: S307 - the user's own step, read again where it failed
+        if hasattr(found, "mapper_method") and not free_names(found):
+            # a term of numbers alone, as a helper hands one back: its value
+            with exact_reading():
+                found = evaluate(found, {})
+        return found
 
     operators = {
         ast.Eq: ("==", lambda a, b: a == b),

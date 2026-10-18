@@ -60,6 +60,7 @@ from lanky.terms import (
     Comparison,
     Elementary,
     Exists,
+    Extremum,
     Forall,
     Sum,
     Var,
@@ -404,6 +405,9 @@ class _Algebra:
             return function(self.convert(expr.argument, scope))
         if isinstance(expr, Abs):
             return sympy.Abs(self.convert(expr.operand, scope))
+        if isinstance(expr, Extremum):
+            arguments = [self.convert(argument, scope) for argument in expr.arguments]
+            return (sympy.Max if expr.function == "max" else sympy.Min)(*arguments)
         if self.sums and isinstance(expr, Sum):
             return self._sum_atom(expr)
         raise _Unsupported(f"a {type(expr).__name__}")

@@ -73,6 +73,7 @@ __all__ = [
     "EVALUATED_BUILTINS",
     "Elementary",
     "Exists",
+    "Extremum",
     "Forall",
     "LogicalAnd",
     "LogicalNot",
@@ -99,6 +100,7 @@ __all__ = [
     "elementary_value",
     "evaluate",
     "evaluate_annotations",
+    "closed_truth",
     "exact_reading",
     "exists",
     "exp",
@@ -251,6 +253,29 @@ def exact_reading() -> Iterator[None]:
         yield
     finally:
         _EXACT.reset(token)
+
+
+#: Whether a proposition with no variable in it answers for its truth (see
+#: :func:`closed_truth`).
+_CLOSED_TRUTH: ContextVar[bool] = ContextVar("lanky_closed_truth", default=False)
+
+
+@contextmanager
+def closed_truth() -> Iterator[None]:
+    """Answer the truth of a proposition with no variable in it, while the block runs.
+
+    A written proof's native run (:mod:`lanky.proofs.native`) runs its body
+    at numbers, where a helper a step calls can still hand back a term:
+    ``from_sympy`` of sympy's Laplacian at ``x = 1``, ``y = 2`` is a term of
+    numbers alone. An ``assert`` asks for its truth, which a proposition
+    refuses where a variable could still change it; one with none is
+    evaluated instead, in the block's reading.
+    """
+    token = _CLOSED_TRUTH.set(True)
+    try:
+        yield
+    finally:
+        _CLOSED_TRUTH.reset(token)
 
 
 #: Whether what Python has no value for is read as Lean has it (see :func:`totalized`).
@@ -1270,9 +1295,16 @@ def _asked_by_annotation(frame: Any) -> bool:
     A builtin called from Python code has no frame of its own, so what it
     asks for is asked by the frame that called it. One the annotation calls
     by name runs in :meth:`BuiltinName.__call__`, which stands in for the
-    annotation's frame.
+    annotation's frame, and so do :func:`max_` and :func:`min_`, which hand
+    what is no term to it.
     """
-    if frame is not None and frame.f_code is BuiltinName.__call__.__code__:
+    standing_in = (
+        BuiltinName.__call__.__code__,
+        _extremum.__code__,
+        max_.__code__,
+        min_.__code__,
+    )
+    while frame is not None and frame.f_code in standing_in:
         frame = frame.f_back
     code = frame.f_code if frame is not None else None
     return any(id(code) in reading for reading in _ANNOTATION_CODE.get())
@@ -1342,6 +1374,10 @@ class PropositionMixin(SymbolicMixin):
             asker = _PROOF_QUESTIONS.get()
             if asker is not None:
                 return asker.ask(self, sys._getframe(1))
+            if _CLOSED_TRUTH.get() and not free_names(self):
+                answer = evaluate(self, {})
+                if isinstance(answer, bool):
+                    return answer
             raise SymbolicBoolError(
                 f"the truth value of the symbolic proposition {render(self)!r} is "
                 "undefined; evaluate it at concrete values (Theorem.__call__, "
@@ -1475,6 +1511,26 @@ class Abs(SymbolicMixin, prim.ExpressionNode):
     """Absolute value."""
 
     operand: Any
+
+
+@_hashed_unless_annotation
+@expr_dataclass(eq=False)
+class Extremum(SymbolicMixin, prim.ExpressionNode):
+    """The larger or the smaller of its arguments: ``max(a, b)`` or ``min(a, b)``.
+
+    An annotation's ``max`` and ``min`` of terms (:func:`max_`, :func:`min_`),
+    as Python's of numbers: ``abs(u0 - nu * (u0 - u1)) <= max(abs(u0),
+    abs(u1))`` says a step stays within the larger of the two values it
+    mixes. Lean's is ``max a b``, core Lean's for the integers and Mathlib's
+    for the reals; complex numbers have no order, as in Python.
+
+    Attributes:
+        function: ``"max"`` or ``"min"``.
+        arguments: What it is the largest or the smallest of, two or more.
+    """
+
+    function: str
+    arguments: tuple[Any, ...]
 
 
 #: The elementary functions a statement can apply, by the name it spells them:
@@ -1942,6 +1998,30 @@ def abs_(value: Any) -> Any:
     return builtins.abs(value)
 
 
+def _extremum(function: str, values: tuple[Any, ...], given: dict[str, Any]) -> Any:
+    """``max`` or ``min`` of two or more terms as an :class:`Extremum`; else Python's own.
+
+    Python's own is :class:`BuiltinName`'s, which refuses a term it would
+    compute on (inside a list, through a generator, under a ``key``) and a
+    hash or a text of one the builtin asks for (#63, #73).
+    """
+    if len(values) >= 2 and not given and any(
+        isinstance(value, prim.ExpressionNode) for value in values
+    ):
+        return Extremum(function, tuple(values))
+    return BuiltinName(function)(*values, **given)
+
+
+def max_(*values: Any, **given: Any) -> Any:
+    """The larger of its arguments; the replacement for the builtin ``max`` (:class:`Extremum`)."""
+    return _extremum("max", values, given)
+
+
+def min_(*values: Any, **given: Any) -> Any:
+    """The smaller of its arguments; the replacement for the builtin ``min`` (:class:`Extremum`)."""
+    return _extremum("min", values, given)
+
+
 def elementary_value(function: str, value: Any) -> Any:
     """The value of an elementary function at a number, as Python computes it.
 
@@ -2068,6 +2148,8 @@ BUILTIN_OVERRIDES: dict[str, Any] = {
     "any": exists,
     "sum": sum_,
     "abs": abs_,
+    "max": max_,
+    "min": min_,
 }
 
 
@@ -2180,7 +2262,7 @@ class BuiltinName(Var):
             raise TypeError(
                 f"{self.name}({shown}) applies Python's {self.name} to a "
                 "symbolic value, which lanky has no term for: in an annotation "
-                "the builtins all, any, sum and abs build terms, and the others "
+                "the builtins all, any, sum, abs, max and min build terms, and the others "
                 "are Python's at concrete values only. Write what is meant with "
                 "terms (lanky.exp, lanky.log and lanky.sqrt among them), or bind "
                 f"{self.name} as a parameter if a variable of that name is meant"
@@ -2315,6 +2397,8 @@ _OVERRIDE_MEANING = {
     "any": "existential quantifier",
     "sum": "sum",
     "abs": "absolute value",
+    "max": "maximum",
+    "min": "minimum",
 }
 
 
@@ -2968,6 +3052,15 @@ class LankyEvaluationMapper(_PymbolicEvaluationMapper):
         """Absolute value of the operand."""
         return builtins.abs(self.rec(expr.operand))
 
+    def map_extremum(self, expr: Extremum) -> Any:
+        """The larger or the smaller of the arguments' values, as Python's ``max`` or ``min``.
+
+        In the exact reading two enclosures that overlap are not ordered,
+        and the comparison declines (:class:`Undecided`) rather than pick one.
+        """
+        values = [self.rec(argument) for argument in expr.arguments]
+        return getattr(builtins, expr.function)(values)
+
     def map_elementary(self, expr: Elementary) -> Any:
         """The function at the value of its argument, as :func:`elementary_value` has it.
 
@@ -3497,6 +3590,8 @@ def _render(expr: Any, outer: int) -> str:
         return f"sum({_render(expr.body, _OR)} for {_binders_text(expr)}{guard})"
     if isinstance(expr, Abs):
         return f"abs({_render(expr.operand, _OR)})"
+    if isinstance(expr, Extremum):
+        return f"{expr.function}({', '.join(_render(arg, _OR) for arg in expr.arguments)})"
     if isinstance(expr, Elementary):
         return f"{expr.function}({_render(expr.argument, _OR)})"
     if isinstance(expr, prim.Comparison):

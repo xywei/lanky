@@ -810,8 +810,21 @@ class Conditions(Assuming):
             return
         raise AttributeError(f"{self.__name__} are read off the claim's signature")
 
+    @property
+    def fn(self) -> Any:
+        """The claim's function, whose annotations state its conditions."""
+        return self.claim.fn
+
     def __call__(self, *values: Any, **named: Any) -> Any:
-        """Whether the claim's own conditions hold at these values; at symbolic ones, them."""
+        """Whether the claim's own conditions hold at these values; at symbolic ones, them.
+
+        While the faithfulness check runs an annotation that calls them again
+        at drawn values, the claim's own annotations of them are run again
+        too, as a condition's are (:func:`lanky.faithful.rerun_condition`),
+        so that the check reaches what they say; for a claim under a ``with``
+        block, whose annotations read the block's names, they are answered
+        from the term.
+        """
         arguments = _call_arguments(
             self.__name__, self.assumed_variables, self.assumed_hypotheses, values, named
         )
@@ -821,6 +834,12 @@ class Conditions(Assuming):
             return _conjunction(
                 [substitute(prop, arguments) for _, prop in self.assumed_hypotheses]
             )
+        from lanky.terms import rerunning
+
+        if rerunning() and not self.claim.bound:
+            from lanky.faithful import rerun_condition
+
+            return rerun_condition(self, arguments)
         return _holds_everywhere(self.assumed_variables, self.assumed_hypotheses, arguments)
 
     def __repr__(self) -> str:

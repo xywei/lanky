@@ -255,6 +255,7 @@ from lanky.terms import (
     Abs,
     Elementary,
     Exists,
+    Extremum,
     Forall,
     Sum,
     Var,
@@ -1065,6 +1066,8 @@ def _kind(expr: Any, types: _Types) -> str:
         return _widest(["Real", _kind(expr.numerator, types), _kind(expr.denominator, types)])
     if isinstance(expr, Abs):
         return "Int" if _kind(expr.operand, types) == "Int" else "Real"
+    if isinstance(expr, Extremum):
+        return _widest(_kind(argument, types) for argument in expr.arguments)
     if isinstance(expr, Elementary):
         argument = _kind(expr.argument, types)
         if expr.function in _PARTS:
@@ -1149,6 +1152,28 @@ def _render_abs(expr: Abs, types: _Types) -> str:
         # bars nest ambiguously, so an inner absolute value gets brackets
         inner = f"({inner})"
     return f"|{inner}|"
+
+
+def _render_extremum(expr: Extremum, outer: int, types: _Types) -> str:
+    """Print ``max(a, b, c)`` as ``max (max a b) c``, Lean's ``max`` of two, and ``min`` alike.
+
+    Core Lean orders the naturals and the integers, and Mathlib the reals;
+    complex numbers have no order, in Lean as in Python, so ``max`` of one
+    is declined.
+    """
+    if expr.function not in ("max", "min") or len(expr.arguments) < 2:
+        raise UnsupportedTerm(f"{render(expr)} is no max or min of two or more values")
+    if any(_kind(argument, types) == "Complex" for argument in expr.arguments):
+        raise UnsupportedTerm(
+            f"{render(expr)} compares complex numbers, which have no order, as in Python"
+        )
+    first, *rest = expr.arguments
+    text = _render(first, _ATOM, types)
+    for argument in rest:
+        text = f"{expr.function} {text} {_render(argument, _ATOM, types)}"
+        if argument is not rest[-1]:
+            text = f"({text})"
+    return _parens(text, _APP, outer)
 
 
 #: What each elementary function is called in Mathlib, for a real argument and
@@ -1583,6 +1608,8 @@ def _render(expr: Any, outer: int, types: _Types) -> str:
         raise UnsupportedTerm(
             "an absolute value needs the abs of an ordered ring, which is Mathlib"
         )
+    if isinstance(expr, Extremum):
+        return _render_extremum(expr, outer, types)
     if isinstance(expr, Elementary):
         if _in_mathlib():
             return _render_elementary(expr, outer, types)

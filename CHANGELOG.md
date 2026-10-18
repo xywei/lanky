@@ -252,11 +252,60 @@ The forms of 0.5 are refused, each with the line to write:
   - `examples/upwind.py` and the quickstart's "Name a condition" state the
     CFL condition of an upwind scheme and what holds under it.
 
+- **`max` and `min` of terms** are lanky's own, the larger and the smaller of
+  their arguments (`lanky.terms.Extremum`), as Python's are of numbers: the
+  CFL story's `abs(u0 - nu * (u0 - u1)) <= max(abs(u0), abs(u1))` reads as
+  written, is drawn and evaluated exactly, and Lean's is `max a b` (core
+  Lean's for the integers, Mathlib's for the reals). Complex numbers have no
+  order, as in Python. Anything else, `max` of a list, through a generator
+  or with a `key`, is Python's own, refused where it would compute on a term,
+  as before (#63, #73). `max` and `min` of a variable were refused (#66).
+- **The native run fills in a family over the naturals.** No table of every
+  natural can be drawn, so a written proof about `a: Fn[Nat, Complex]`
+  tested nothing natively. The run now fills such a family in, over the
+  first naturals (and integers, for an `Int` index), from the hypotheses
+  that define it: each hypothesis is taken at each point of its domain
+  there, an equation left one cell short and linear in it gives that cell,
+  and where none is, the first unknown cell is drawn and the filling goes
+  on (`lanky.proofs.filled`). So `line_taylor`'s ODE, `compressed_taylor`'s
+  recurrence and `every_box`'s tables are satisfied at the values the body
+  runs at, and a step written wrong is refuted with its numbers: "At n = 2,
+  alpha = 1 - 7/3j, beta = 2 + 4/3j: the left side is ..., the right side
+  ...". A family the hypotheses do not reach this way (a quantifier over
+  the reals, hypotheses that contradict) is not filled, and the run tests
+  nothing there rather than report a step false at values its hypotheses
+  exclude.
+- In the native run, a proposition with no variable left in it answers for
+  its truth (`lanky.terms.closed_truth`): `harmonic`'s step compares sympy's
+  Laplacian, which `from_sympy` hands back as a term of numbers at the drawn
+  `x` and `y`, and a step written wrong there is refuted with its numbers.
+- The design's examples are tests, each run natively and traced
+  (`tests/test_design_examples.py`): `line_taylor` and `reciprocal_taylor`
+  under `with away_from_zero`, `compressed_taylor` and its calculation,
+  `every_box` flat and nested, `nicomachus` citing `gauss(n - 1)` (and the
+  0.5 form, `n` a parameter, refused with `n` moved into the conclusion's
+  `for`), `log_of_the_modulus`, `harmonic`, and the CFL story red with its
+  suggestion and green under `with cfl`.
+
 ### Changed
 
 - The examples `every_box.py`, `nicomachus.py`, `log_of_the_modulus.py`,
   `line_taylor.py` and `sumpy_recurrence.py`'s `harmonic` are proved in the
   new surface, as the decision writes them.
+- `name.conditions` is one view, `lanky.Conditions`, the claim's own
+  conditions: `with name.conditions as (...)` assumes them,
+  `name.conditions(...)` says whether they hold, `name.conditions.ode` is the
+  proposition, and inside the claim's own proof it is the fact `ode` names
+  there, which `by(...)` cites. A condition of what the claim holds under is
+  that one's, and is refused with whose it is.
+
+### Fixed
+
+- `for k in reversed(name.conclusion.domain):` over a domain longer than one
+  native walk takes (200 points) started below the top: the walk took the
+  domain's first 200 points and reversed them, so a proof about `Fin[500]`
+  was never run at its base case, 499. It takes the last 200 now, the top
+  first.
 
 ## [0.5.0] - 2026-10-18
 

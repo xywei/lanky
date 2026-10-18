@@ -2024,11 +2024,11 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
 - Call one of Python's builtins in a claim. At numbers it is Python's:
   `def half() -> round(0.5) == 1` is `0 == 1`, answered while the annotation
   is read, and the row reads `refuted`, as running the file would say. At a
-  variable it is refused where the theorem is defined, naming it:
-  `def smaller(x: Real, y: Real) -> min(x, y) <= x` raises `TypeError`,
-  `min(x, y) applies Python's min to a symbolic value`. lanky has no term for
-  `min` yet, and the free name it used to be was read by Lean as Lean's own
-  `min`. `def wrong(x: int) -> x - 1 >= 0` is refused too, naming `Int` and
+  variable it is refused where the claim is defined, naming it:
+  `def unit(x: Real) -> abs(complex(x, 1)) >= 1` raises `TypeError`,
+  `complex(x, 1) applies Python's complex to a symbolic value`, since lanky
+  has no term for it. (`max` and `min` of terms are lanky's own, and read as
+  written.) `def wrong(x: int) -> x - 1 >= 0` is refused too, naming `Int` and
   `Nat`: `int` is Python's type, and not a sort. So is `f: Fn[Fin[n], float]`,
   naming `Real`.
 - Look a point up in a dict: `def looked_up(n: Nat, f: Fn[Fin[n], Nat]) ->

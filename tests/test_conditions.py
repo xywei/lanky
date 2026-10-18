@@ -381,6 +381,16 @@ with above as (x, ok):
 @claim
 def cites_above(z: Int, h: above(z)) -> z >= 1:
     """With the misread condition as a hypothesis."""
+
+
+@claim
+def base(x: Int, ok: shifted(x) >= 1) -> x + 1 >= 2:
+    """A claim whose condition the helper misreads."""
+
+
+@claim
+def cites_base(z: Int, h: base.conditions(z)) -> z >= 1:
+    """With the misread claim's conditions as a hypothesis."""
 '''
 )
 
@@ -393,6 +403,10 @@ def test_a_misread_condition_is_refuted_under_a_block_and_as_a_hypothesis(tmp_pa
     cited = module.cites_above.faithful_fact()
     assert cited.status is Status.REFUTED, cited.provenance
     assert "the hypothesis h" in cited.provenance["reason"]
+    # a claim's conditions used as a hypothesis are run again as Python too
+    through_a_claim = module.cites_base.faithful_fact()
+    assert through_a_claim.status is Status.REFUTED, through_a_claim.provenance
+    assert "the hypothesis h" in through_a_claim.provenance["reason"]
 
 
 def test_the_lean_statement_has_the_conditions_variables_and_hypotheses(segment, cfl) -> None:
