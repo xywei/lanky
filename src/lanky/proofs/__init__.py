@@ -1,51 +1,54 @@
-"""Written proofs: a theorem's body says why it holds, and Lean checks it.
+"""Written proofs: a claim's body says why it holds, and Lean checks it.
 
 The design idea (the decision of 2026-10-18: proofs in lanky read as
 engineers write checks). Automation stays the default: a claim that lanky
-proves alone needs no body. Where a proof helps, the theorem's body is the
+proves alone needs no body. Where a proof helps, the claim's body is the
 proof, in the Python an engineer already writes, ``assert``, ``if`` and
 ``for``, with the reason for each step after it, so that it reads like a
 textbook proof read aloud::
 
-    from lanky import by, claim, theorem
+    from lanky import by, claim
 
 
-    @theorem
+    @claim
     def every_box(..., pde: ..., centre: ..., stored: ..., centre_copy: ...,
                   copies: ..., recurrence: ...) -> all(R[i, a, b] == D[i, a, b] ...):
-        for i, a, b in claim.dom:
+        for i, a, b in every_box.conclusion.domain:
             if a + b == 0:
                 yield by(centre_copy, centre)
             elif a < 2:
                 yield by(copies, stored)
             else:
-                yield by(recurrence, claim[i, a - 2, b + 2], pde)
+                yield by(recurrence, every_box.conclusion[i, a - 2, b + 2], pde)
 
-"For each point of the claim: at order zero, by the centre's copy and the
-centre. If a < 2, by the copies and what is stored. Otherwise by the
-recurrence, the claim at (i, a - 2, b + 2), which the loop has filled in,
-and the PDE."
+"For each point of the conclusion: at order zero, by the centre's copy and
+the centre. If a < 2, by the copies and what is stored. Otherwise by the
+recurrence, the conclusion at (i, a - 2, b + 2), which the loop has filled
+in, and the PDE."
 
-What each form means (:mod:`lanky.surface` has ``by`` and ``claim``):
+What each form means (:mod:`lanky.surface` has ``by`` and the claim's tree):
 
-- no body, or a bare ``return``: lanky finds the proof, as it always has;
+- no body: lanky finds the proof, as it always has;
 - ``assert x == y, by(f, g)``: a step, ``x == y`` holds by these facts, known
   for the rest of its case; ``assert x == y``, a step by algebra alone;
   ``assert x == y == z, by(f, g)``, Python's chained comparison, a chain;
   ``by(...)``, a step left open;
 - ``if`` / ``elif`` / ``else``: cases;
-- ``for n in claim.dom:``: for each point the conclusion covers, and
-  ``yield by(f, g)`` the claim at that point by these facts; a point that
-  yields nothing is lanky's to finish from the steps asserted for it;
-- ``claim[n - 1]``: the claim at a point the loop filled in earlier, and
-  ``claim(n - 1)`` the theorem at smaller values of its parameters, which is
-  induction;
-- ``return by(f, g)``: a claim with no variables of its own holds by these
-  facts;
-- a fact at a point, ``pde(i, a - 2, b)``, a hypothesis or a theorem, whose
-  conditions are checked; ``stored`` alone, the same fact at the point found
-  by matching it against the step; a hypothesis written ``p & q`` is cited
-  as both parts.
+- ``for n in name.conclusion.domain:``: for each point the conclusion's
+  ``for`` covers, in increasing order (``reversed(...)`` for a bounded
+  domain from the top down), and ``yield by(f, g)`` the conclusion at that
+  point by these facts; a nested ``for`` is a loop over
+  ``name.conclusion[i].domain`` inside it;
+- ``name.conclusion[n - 1]``: the conclusion at a point the loop filled in
+  earlier, which is induction;
+- ``return by(f, g)``: a claim proved without a loop holds by these facts;
+- ``by()``: the case follows directly, by lanky's strategies, after the
+  steps asserted; every case ends with ``yield by(...)`` or ``return
+  by(...)``;
+- a condition at a point, ``pde[i, a - 2, b]``, or another claim for inputs,
+  ``gauss(n - 1)``, whose conditions are checked; ``stored`` alone, the
+  same fact at the point found by matching it against the step; a condition
+  written ``p & q`` is cited as both parts.
 
 ``python file.py`` never calls a body. ``lanky check`` traces it, after
 every run and draw of the check (:mod:`lanky.proofs.trace`), runs it as
@@ -527,7 +530,7 @@ def _vacuity_questions(
         out.append((first, None))
     theorem = proof.theorem
     sorts: dict[str, Any] = dict(theorem.variables)
-    goal = theorem.goal
+    goal = proof.conclusion
     guards: list[Any] = []
     if isinstance(goal, Forall):
         guards = list(conjuncts(goal.guard))
@@ -864,7 +867,7 @@ def _draw_links(proof: Proof, samples: int = 50) -> list[tuple[int | None, str, 
 
     theorem = proof.theorem
     variables = list(theorem.variables)
-    goal = theorem.goal
+    goal = proof.conclusion
     guards: list[Any] = []
     if proof.claim is not None:
         names = {name for name, _ in variables}

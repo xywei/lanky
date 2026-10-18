@@ -59,7 +59,16 @@ from lanky.terms import (
 )
 from lanky.testing import Table, TestReport, apply_at, check
 
-__all__ = ["Axiom", "Theorem", "TheoremTheory", "Verdict", "axiom", "fact_ids", "theorem"]
+__all__ = [
+    "Axiom",
+    "Theorem",
+    "TheoremTheory",
+    "Verdict",
+    "axiom",
+    "claim",
+    "fact_ids",
+    "theorem",
+]
 
 
 @dataclass(frozen=True)
@@ -457,9 +466,71 @@ class Theorem:
         return tuple((name, prop) for name, prop in self.hypotheses if name not in self.bound)
 
     @property
-    def conditions(self) -> tuple[Any, ...]:
+    def held_under(self) -> tuple[Any, ...]:
         """The :class:`~lanky.conditions.Condition` objects it holds under, outermost first."""
         return tuple(entry.condition for entry in self.under)
+
+    # {{{ the tree: name.conditions, name.conclusion
+
+    @property
+    def conditions(self) -> Any:
+        """The half of the claim it assumes: ``line_taylor.conditions.ode`` is one condition.
+
+        See :class:`lanky.surface.Conditions`. Inside the claim's own proof a
+        condition is the fact its name gives there.
+        """
+        from lanky.surface import Conditions
+
+        return Conditions(self)
+
+    @property
+    def conclusion(self) -> Any:
+        """The half of the claim it concludes: ``.domain``, and ``[p]`` at a point of it.
+
+        See :class:`lanky.surface.Conclusion`. Inside the claim's own proof it
+        is the conclusion for that proof's inputs: ``for n in
+        line_taylor.conclusion.domain:`` loops over its points, and
+        ``line_taylor.conclusion[n - 1]`` is the conclusion at an earlier one.
+        """
+        from lanky.surface import Conclusion
+
+        return Conclusion(self)
+
+    @property
+    def domain(self) -> Any:
+        """Refused: a claim has no domain of its own; its conclusion has (the tree's spelling)."""
+        raise self._not_on_the_tree(".domain", "conclusion.domain")
+
+    @property
+    def dom(self) -> Any:
+        """Refused: ``.dom`` is spelled ``.conclusion.domain``."""
+        raise self._not_on_the_tree(".dom", "conclusion.domain")
+
+    def __getitem__(self, point: Any) -> Any:
+        """Refused: a claim has no points of its own; its conclusion has (the tree's spelling)."""
+        from lanky.surface import _shown
+
+        values = point if isinstance(point, tuple) else (point,)
+        shown = ", ".join(_shown(value) for value in values)
+        raise self._not_on_the_tree(f"[{shown}]", f"conclusion[{shown}]")
+
+    #: A claim is not iterated: ``__getitem__`` only refuses, and Python's
+    #: fallback from ``iter`` to it would make every claim look iterable.
+    __iter__ = None
+
+    def _not_on_the_tree(self, written: str, spelled: str) -> Exception:
+        """The refusal of ``name.domain`` or ``name[p]``, with the part of the tree meant."""
+        from lanky.surface import FormError
+
+        name = self.qualname
+        return FormError(
+            f"{name}{written}: a claim has no {'points' if written.startswith('[') else 'domain'} "
+            f"of its own; its conclusion has, addressed through the claim's tree as "
+            f"{name}.{spelled}",
+            f"{name}.{spelled}",
+        )
+
+    # }}}
 
     @property
     def under_label(self) -> str:
@@ -562,12 +633,16 @@ class Theorem:
         one for a family with several indices as nested sequences or an
         array, ``F=[[1, 2], [3, 4]]`` for ``F: Fn[Fin[2], Fin[2], Nat]``.
 
-        Inside the trace of a written proof (:mod:`lanky.proofs`), which only
-        ``lanky check`` runs, calling a theorem is citing it, at the values
-        given, its variables outermost first and then the goal's, positional
-        or by name. What decides is whether a trace is running, not the
-        arguments' types. A theorem that cites itself by name in its own
-        proof is refused, with ``claim(...)`` or ``claim[...]`` as the fix.
+        Inside a written proof (:mod:`lanky.proofs`), which only ``lanky
+        check`` runs, calling a claim is citing it for those inputs, its
+        parameters, positional or by name (``gauss(n - 1)``); its
+        conclusion's point, where it has one, is lanky's to find, or given
+        in brackets, ``other(x).conclusion[p]``. What decides is whether a
+        proof is running, not the arguments' types. Calling a claim never
+        runs its proof. A claim that calls itself in its own proof is
+        refused: to argue from an earlier case, the variable belongs in the
+        conclusion's ``for``, and the earlier case is
+        ``name.conclusion[n - 1]``.
 
         Raises:
             lanky.terms.Undecided: If the statement applies a family outside
@@ -612,9 +687,9 @@ class Theorem:
         """Run the written proof as plain Python at ``values``, as a REPL or pdb would.
 
         The values are given by name, as :meth:`__call__` takes them.
-        ``claim.dom`` gives the conclusion's first points, to the tester's
-        draw bound, a citation is inert, and ``by(...)`` is read only where a
-        step fails. A false step raises Python's own ``AssertionError``, its
+        ``name.conclusion.domain`` gives the conclusion's first points, to
+        the tester's draw bound, a citation is inert, and ``by(...)`` is read
+        only where a step fails. A false step raises Python's own ``AssertionError``, its
         message the step's ``by(...)``; a point where the claim is false
         raises :class:`lanky.proofs.native.PointFalse`. It only tests: Lean
         checks the proof under ``lanky check``. Floats compare exactly here,
@@ -1095,6 +1170,34 @@ def axiom(fn: Any = None, /, *, cite: Any = None, uses: Any = ()) -> Any:
         return registry.register_object(Axiom(fn, cite=cite, uses=rests_on))
 
     return decorate
+
+
+def claim(fn: Any = None, /, *, cite: Any = None, uses: Any = ()) -> Any:
+    """``@claim``: a typed function as a claim, its body (if any) its proof.
+
+    ``@claim(cite="...")`` takes it on a source instead, as :func:`axiom`
+    does, and ``uses=`` works as it does for :func:`theorem`.
+
+    Raises:
+        lanky.surface.FormError: When it is called inside a claim's own
+            proof, where a claim does not call itself: the earlier case is
+            its conclusion at an earlier point.
+    """
+    from lanky.proofs.trace import active
+
+    run = active()
+    if run is not None and not (callable(fn) and hasattr(fn, "__code__")):
+        from lanky.surface import FormError
+
+        own = getattr(getattr(run, "theorem", None), "__qualname__", "name")
+        raise FormError(
+            "claim is the decorator that states a claim; in a proof the claim being proved "
+            f"is spelled by its name, and an earlier case of it is {own}.conclusion[...]",
+            f"{own}.conclusion[n - 1]",
+        )
+    if cite is not None:
+        return axiom(fn, cite=cite, uses=uses)
+    return theorem(fn, uses=uses)
 
 
 def _refuse_a_misplaced_argument(noun: str, fn: Any) -> None:

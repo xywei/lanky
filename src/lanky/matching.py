@@ -1,7 +1,8 @@
 """Matching: the point at which a fact left uncalled supports a step.
 
 The design idea. A proof writes a point only where it carries the argument,
-``claim[a - 2, b + 2]``, and leaves it out where the step already shows it:
+``compressed_taylor.conclusion[a - 2, b + 2]``, and leaves it out where the
+step already shows it:
 ``assert R[a, b] == -R[a - 2, b + 2], by(recurrence)``. lanky finds the point the same
 way a reader does, by lining the fact up with the step. ``recurrence`` says
 ``R[x + 2, y] == -R[x, y + 2]``; the step is about ``R[a, b]`` and ``R[a - 2,

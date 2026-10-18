@@ -287,26 +287,33 @@ raises its floor to match.
   against their own.
 - `@theorem`: statement from the signature, `.statement`, `.term`, `.fact()`,
   `.test()`, `.report()`, `.lean()`; callable on concrete values.
-- Written proofs. A theorem whose body holds more than a docstring, `...` or
-  `pass` is proved by that body: ordinary Python that cites facts and gives
-  a reason for each, `return copies, stored`, with `if` for a case split and
-  a local `def claim(i, a, b)` that calls itself at smaller values for an
-  induction. `lanky check` traces the body after every run and draw, on
-  symbolic values (`python file.py` never calls it), compiles it to one Lean
-  command, with each hypothesis under its Python name and `claim` a theorem
-  of its own with the measure lanky finds, and adds a line to the claim's
-  row: `by its proof, every_box.py:106-113: induction on a, 3 cases, 3
-  steps`. A calculation is a chain, `R[a, b].equals(-R[a - 2, b + 2],
-  by=recurrence)`, each link with its reason; a step can be named and cited
-  later, and one left open, `by=...`, is named in the row. A proof that fails
-  is reported at the Python line, with what is left over and the fix where
-  lanky can name one, and fails the check, also for a claim lanky proves
-  alone, whose row still reads `proved`. A theorem the proof cites from
-  another module is a row of the ledger, marked with its module.
-  `examples/every_box.py`, lanky #140's claim, which lanky's search does not
-  prove, and `examples/log_of_the_modulus.py`, which cites two facts of
-  `lanky.known`, are the worked cases; the quickstart's *Write a proof* says
-  what each form means.
+- Written proofs. A claim whose body holds more than a docstring, `...` or
+  `pass` is proved by that body, in the Python an engineer already writes:
+  `assert x == y, by(f, g)` for a step, `if` for cases, and `for i, a, b in
+  every_box.conclusion.domain:` for each point of the conclusion, each case
+  closed with `yield by(...)`, or `return by(...)` for a claim proved without
+  a loop. The claim's name is spelled out and its parts addressed through
+  its tree: `every_box.conclusion[i, a - 2, b + 2]` is the conclusion at a
+  point the loop has filled in, the induction, checked to come earlier in
+  the loop; brackets give a point of a domain (`pde[i, a - 2, b]`), and
+  parentheses give another claim its inputs (`gauss(n - 1)`). `lanky check`
+  traces the body after every run and draw, on symbolic values (`python
+  file.py` never calls it), runs it as plain Python at the check's draws, so
+  a false step is caught at its line with its numbers, compiles it to one
+  Lean command, with each hypothesis under its Python name and the
+  conclusion over its points a theorem of its own with the measure lanky
+  finds, and adds a line to the claim's row: `by its proof,
+  every_box.py:113-119: induction on a, 3 cases, 3 steps`. A calculation is
+  Python's own chained comparison in one `assert`, and a step left open,
+  `by(...)`, is named in the row. A proof that fails is reported at the
+  Python line, with what is left over and the fix where lanky can name one,
+  and fails the check, also for a claim lanky proves alone, whose row still
+  reads `proved`. A claim the proof cites from another module is a row of the
+  ledger, marked with its module. `examples/every_box.py`, lanky #140's
+  claim, which lanky's search does not prove, and
+  `examples/log_of_the_modulus.py`, which cites two facts of `lanky.known`,
+  are the worked cases; the quickstart's *Write a proof* says what each form
+  means.
 - `lanky.known`: twenty facts under plain names (`log_of_a_power`,
   `modulus_squared`, `one_more_term`, ...), each proved once with Mathlib by
   a Lean proof kept in a table, and cited by a written proof like any
@@ -581,9 +588,10 @@ raises its floor to match.
 - `--proofs` prints the proof lanky found for each proved theorem, in Python
   where Python can say it: for an induction over families, the body a written
   proof would have, in the theorem's own names and at the points the search
-  found, ready to paste under the docstring (`def claim(a, b): ...`, `return
-  recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)`, `return
-  claim`); for an exchange of sums, the chain through the left side with its
+  found, ready to paste under the docstring (`for a, b in
+  ct.conclusion.domain:`, `yield by(recurrence[a - 2, b], ct.conclusion[a -
+  2, b + 2], pde[a - 2, b])`), printed only where the loop's order fits the
+  induction found; for an exchange of sums, the chain through the left side with its
   sums in the order found; for any other rung of the ladder, the rung, in
   words. `--steps` prints its outline in lanky's notation, each case a chain
   of equations whose links name the fact, the point and the multiplier; for

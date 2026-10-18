@@ -145,41 +145,48 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.known import one_more_term
 from lanky.prelude import Fin, Nat, Real
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``."""
 
 
-@theorem
-def written(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
+@claim
+def written() -> all(
+    sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2 for n in Nat
+):
     """Nicomachus's theorem, the family written as a lambda."""
-    if n == 0:
-        return
-    assert (
-        sum(i**3 for i in Fin[n + 1])
-        == sum(i**3 for i in Fin[n]) + n**3
-        == sum(i for i in Fin[n]) ** 2 + n**3
-        == (sum(i for i in Fin[n]) + n) ** 2
-        == sum(i for i in Fin[n + 1]) ** 2
-    ), by(
-        one_more_term(lambda i: i**3, n),
-        claim(n - 1),
-        gauss(n - 1),
-        one_more_term(lambda k: k, n),
-    )
+    for n in written.conclusion.domain:
+        if n == 0:
+            yield by()
+        else:
+            assert (
+                sum(i**3 for i in Fin[n + 1])
+                == sum(i**3 for i in Fin[n]) + n**3
+                == sum(i for i in Fin[n]) ** 2 + n**3
+                == (sum(i for i in Fin[n]) + n) ** 2
+                == sum(i for i in Fin[n + 1]) ** 2
+            ), by(
+                one_more_term(lambda i: i**3, n),
+                written.conclusion[n - 1],
+                gauss(n - 1),
+                one_more_term(lambda k: k, n),
+            )
+            yield by()
 
 
-@theorem
-def geometric(r: Real, n: Nat) -> (r - 1) * sum(r**k for k in Fin[n]) == r**n - 1:
-    """The design's geometric sum: one more term, and the theorem at n - 1."""
-    if n == 0:
-        return
-    return by(one_more_term, claim(r, n - 1))
+@claim
+def geometric(r: Real) -> all((r - 1) * sum(r**k for k in Fin[n]) == r**n - 1 for n in Nat):
+    """The design's geometric sum: one more term, and the conclusion at n - 1."""
+    for n in geometric.conclusion.domain:
+        if n == 0:
+            yield by()
+        else:
+            yield by(one_more_term, geometric.conclusion[n - 1])
 '''
 
 
@@ -285,11 +292,11 @@ HARMONIC = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Real
 
 
-@theorem
+@claim
 def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> (
     (1 - 2 * x**2 / (x**2 + y**2)) / (x**2 + y**2)
     + (1 - 2 * y**2 / (x**2 + y**2)) / (x**2 + y**2)

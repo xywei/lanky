@@ -3,7 +3,7 @@
 PYTEST_DONT_REWRITE: the theorems below are proved by ``assert`` steps, which
 pytest's rewriting would turn into its own reports.
 
-The surface (``assert``, ``by``, ``claim``) and the matcher are Python and
+The surface (``assert``, ``by``, the claim's tree) and the matcher are Python and
 need no Lean: there is one matcher
 (:mod:`lanky.matching`), which lines up a fact a proof leaves uncalled with the
 step it supports, and one :class:`lanky.citations.Citation`, which records
@@ -19,7 +19,7 @@ import os
 
 import pytest
 
-from lanky import by, claim, theorem
+from lanky import by, claim
 from lanky.chains import combined_relation
 from lanky.citations import (
     Citation,
@@ -68,7 +68,7 @@ n, r, k = Var("n"), Var("r"), Var("k")
 alpha, beta, x = Var("alpha"), Var("beta"), Var("x")
 
 
-@theorem
+@claim
 def compressed_taylor(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -77,16 +77,17 @@ def compressed_taylor(
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
     """The design's 2.2, its statement as l2p.py has it, and its proof by a chain."""
-    for a, b in claim.dom:
+    for a, b in compressed_taylor.conclusion.domain:
         if a < 2:
             yield by(stored)
         else:
             assert R[a, b] == -R[a - 2, b + 2] == -D[a - 2, b + 2] == D[a, b], by(
-                recurrence, claim[a - 2, b + 2], pde
+                recurrence, compressed_taylor.conclusion[a - 2, b + 2], pde
             )
+            yield by()
 
 
-@theorem
+@claim
 def line_taylor(
     alpha: Complex,
     beta: Complex,
@@ -96,15 +97,15 @@ def line_taylor(
     ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
 ) -> all(a[n] == -((-beta / alpha) ** n) / n for n in Nat if n >= 1):
     """The design's 2.1, with the coefficient written out: a step by the ODE, then the claim."""
-    for n in claim.dom:
+    for n in line_taylor.conclusion.domain:
         if n == 1:
             yield by(first_term)
         else:
-            assert a[n] == (n - 1) / n * (-beta / alpha) * a[n - 1], by(ode)
-            yield by(claim[n - 1])
+            assert a[n] == (n - 1) / n * (-beta / alpha) * a[n - 1], by(ode[n - 1])
+            yield by(line_taylor.conclusion[n - 1])
 
 
-@theorem
+@claim
 def doubled(f: Fn[Nat, Real], m: Nat) -> f[m] + f[m] == 2 * f[m]:
     """A fact to cite."""
 
@@ -212,7 +213,11 @@ def test_every_fact_a_proof_cites_is_one_citation() -> None:
     (asserted,) = point.steps
     reasons = list(asserted.facts)
     assert [type(reason) for reason in reasons] == [Citation, Citation, Citation]
-    assert [reason.text() for reason in reasons] == ["recurrence", "claim[a - 2, b + 2]", "pde"]
+    assert [reason.text() for reason in reasons] == [
+        "recurrence",
+        "compressed_taylor.conclusion[a - 2, b + 2]",
+        "pde",
+    ]
     assert [reason.is_claim for reason in reasons] == [False, True, False]
     assert isinstance(reasons[1].source, ClaimDef) and reasons[1].bracket
     assert reasons[1].line is not None
@@ -504,7 +509,7 @@ def test_a_theorem_is_cited_by_its_proved_text_or_its_printed_one() -> None:
 def test_a_theorem_cited_restates_the_theorems_its_own_proof_cited() -> None:
     """``B``'s ``as_cited`` takes ``C``: citing ``B`` restates both, and a gap or circle refuses."""
 
-    @theorem
+    @claim
     def premise(f: Fn[Nat, Real], m: Nat) -> f[m] == f[m]:
         """C."""
 

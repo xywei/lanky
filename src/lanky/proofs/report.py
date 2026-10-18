@@ -13,13 +13,13 @@ piece it is about says which report it is:
   follow, when there is one (:func:`fix_for`);
 - a condition that is not met: ``stored needs a < 2, and this case has a >=
   2``;
-- a call of the claim at a negative argument: ``claim[a - 2, b + 2] is at a
-  negative a when a = 1: split off a < 2 first``;
+- the conclusion cited at a negative argument: ``ct.conclusion[a - 2, b + 2]
+  is at a negative a when a = 1: split off a < 2 first``;
 - and what lanky refuses before Lean is asked (:class:`lanky.proofs.trace.ProofError`):
-  the claim cited at a point the loop has not filled in, a theorem that
-  cites itself by name, a form of lanky 0.5's proofs, a fact cited by name
-  that no single point fits; and a step the native run finds false at drawn
-  values (:mod:`lanky.proofs.native`).
+  the conclusion cited at a point the loop has not filled in, a claim that
+  calls itself, a case with no closing line, a form of lanky 0.5's proofs,
+  a fact cited by name that no single point fits; and a step the native run
+  finds false at drawn values (:mod:`lanky.proofs.native`).
 
 The axiom audit is read positively (:func:`audit`): exactly one answer, naming
 exactly the theorem, with no axiom outside Lean's own three.
@@ -100,14 +100,16 @@ class Failure:
 def failure_of(error: ProofError) -> Failure:
     """The report of a proof lanky refused before Lean was asked."""
     headlines = {
-        "self-reference": "the theorem cites itself by name",
+        "self-reference": "the claim calls itself in its own proof",
         "removed": "the proof is written in a form of lanky 0.5",
-        "later": "the claim is cited where the proof has not reached",
+        "later": "the conclusion is cited where the loop has not reached",
         "no-point": "a fact cited by its name fits no single point",
-        "measure": "the claim is not cited at smaller values",
-        "claim": "claim is not used as lanky reads it",
+        "measure": "the conclusion is not cited at earlier points",
+        "claim": "the claim's tree is not used as lanky reads it",
+        "form": "the claim's tree is not used as lanky reads it",
+        "close": "a case of the proof has no closing line",
         "return": "a return gives something that is no reason",
-        "yield": "a yield is not where a point of claim.dom is",
+        "yield": "a yield is not where a point of the conclusion's domain is",
         "assert": "an assert is not a step lanky reads",
         "false": "a step of its proof is false",
         "question": "the proof asks a question lanky does not split on",
@@ -356,7 +358,7 @@ def _label(citation: Citation, values: Sequence[Any]) -> str:
 def _shapes(source: Any, proof: Proof) -> list[Shape]:
     """The shape of each part of a cited fact, for finding it at another point."""
     if isinstance(source, ClaimDef):
-        goal = proof.theorem.goal
+        goal = proof.conclusion
         body = goal.body if isinstance(goal, Forall) else goal
         binders = tuple(
             (Var(name), domain) for name, domain in zip(source.params, source.domains, strict=True)
@@ -408,7 +410,7 @@ def fix_for(step: Any, proof: Proof, measure: Any = None) -> tuple[int, Citation
             key = tuple(_key(value) for value in values)
             if key in tried:
                 continue
-            if citation.is_claim and not _smaller(citation.source, values, measure):
+            if citation.is_claim and not _smaller(citation.source, values):
                 continue
             tried.add(key)
             body = instantiate(shape.body, dict(zip(unknowns, values, strict=True)))
@@ -425,23 +427,11 @@ def _key(value: Any) -> str:
     return render(value) if hasattr(value, "mapper_method") else repr(value)
 
 
-def _smaller(claim: ClaimDef, values: Sequence[Any], measure: Any) -> bool:
-    """Whether the claim at ``values`` is closer to a base case than at its own variables."""
-    from lanky.proofs.compile import _change
+def _smaller(claim: ClaimDef, values: Sequence[Any]) -> bool:
+    """Whether the conclusion at ``values`` comes earlier in the proof's loops (design 3.5)."""
+    from lanky.proofs.trace import earlier_point
 
-    at = dict(zip(claim.params, values, strict=True))
-    if measure is None:
-        changes = [_change(value, name) for name, value in at.items()]
-        return any(change is not None and change <= -1 for change in changes)
-    first = _change(at[measure.names[0]], measure.names[0])
-    if measure.kind == "down":
-        return first is not None and first <= -1
-    if measure.kind == "up":
-        return first is not None and first >= 1
-    second = _change(at[measure.names[1]], measure.names[1])
-    return (first is not None and first <= -1) or (
-        first == 0 and second is not None and second <= -1
-    )
+    return earlier_point(claim, values)
 
 
 def also_needs(step: Any, proof: Proof, measure: Any = None) -> Citation | None:
@@ -507,7 +497,7 @@ def also_needs(step: Any, proof: Proof, measure: Any = None) -> Citation | None:
                 if key in tried:
                     continue
                 tried.add(key)
-                if isinstance(source, ClaimDef) and not _smaller(source, values, measure):
+                if isinstance(source, ClaimDef) and not _smaller(source, values):
                     continue
                 solution = dict(zip(unknowns, values, strict=True))
                 extra = [each.at(solution)[0] for each in shapes]
@@ -516,8 +506,7 @@ def also_needs(step: Any, proof: Proof, measure: Any = None) -> Citation | None:
                         source,
                         tuple(values),
                         step.where,
-                        bracket=isinstance(source, ClaimDef)
-                        and len(source.generalized) < len(source.params),
+                        bracket=True,
                     )
     return None
 
@@ -711,15 +700,17 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
     if origin.kind == "measure":
         claim = proof.claim
         params = ", ".join(claim.params) if claim else ""
+        name = getattr(proof.theorem, "qualname", None) or proof.theorem.__name__
         return Failure(
             "measure",
             origin.line,
-            "the claim is not cited at smaller values",
+            "the conclusion is not cited at earlier points",
             (
-                f"Lean could not show that each citation of the claim is at smaller values "
-                f"than ({params}).",
+                f"Lean could not show that each citation of {name}.conclusion is at an "
+                f"earlier point of the loop than ({params}).",
             ),
-            "cite the claim where one value is smaller and stays a natural number",
+            "cite the conclusion where one value is smaller and stays a natural number, or "
+            "loop over a bounded domain with reversed(...) for a value that climbs",
         )
     if origin.kind in ("cite", "call"):
         citation = detail.get("citation")

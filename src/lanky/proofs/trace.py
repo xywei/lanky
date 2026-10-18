@@ -15,11 +15,11 @@ what the annotations read laid over them, and lanky's ``all``, ``any``,
 While a body is traced:
 
 - Its parameters are symbolic values: a variable is the :class:`~lanky.terms.Var`
-  of its name, and a hypothesis a :class:`Given`, a fact the body cites by
-  name, ``by(stored)``, or at a point, ``by(pde(i, a - 2, b))``. A name of the
-  statement the function does not take as a parameter, one bound outside the
-  theorem, is given its symbolic value in the namespace instead
-  (:func:`body_arguments`).
+  of its name, and a condition a :class:`Given`, a fact the body cites by
+  name, ``by(stored)``, or at a point of its domain, ``by(pde[i, a - 2,
+  b])``. A name of the statement the function does not take as a
+  parameter, one bound outside the claim, is given its symbolic value in
+  the namespace instead (:func:`body_arguments`).
 - An ``if`` in the body's own code is a case split. The truth value of its
   proposition is scheduled (:meth:`_Tracer.ask`): the body runs once per path,
   each branch with its condition as a fact, and a proposition asked twice on
@@ -38,16 +38,21 @@ While a body is traced:
   failing branch is ``LOAD_ASSERTION_ERROR`` (:func:`_assert_answer`). Python's
   chained comparison, ``x == y == z``, asks a question per link, and the
   links are one chain. A step is known for the rest of its case.
-- ``for n in claim.dom:`` gives one symbolic point, the conclusion's
-  variables, with the conclusion's guard known (:class:`_Dom`). A body with
-  ``yield`` is a generator, driven here: ``yield by(...)`` closes the point
-  the loop is at, and a point that yields nothing is lanky's to finish from
-  the steps asserted for it.
-- ``claim[p]`` is the claim at an earlier point of the loop, and
-  ``claim(...)`` the theorem at smaller values of its parameters: each a
-  citation, refused here when it is at a point the loop has not filled in.
-  Calling the theorem being proved by its own name is refused, with
-  ``claim`` as the fix, and so is every form of lanky 0.5's proofs.
+- The claim's own name is the decorated claim, which Python resolves in the
+  module's globals, and its parts are addressed through its tree
+  (:mod:`lanky.surface`). ``for n in name.conclusion.domain:`` gives one
+  symbolic point, the variables of the conclusion's ``for``, with its guard
+  known (:class:`_Dom`), and a nested ``for`` its own loop over
+  ``name.conclusion[i].domain``. A body with ``yield`` is a generator,
+  driven here: ``yield by(...)`` closes the conclusion at the point of the
+  innermost loop over a domain.
+- ``name.conclusion[p]`` is the conclusion at an earlier point of the loops,
+  which is the induction; it is refused here when the loops have not
+  filled it in (:func:`_earlier`). A claim that calls itself is refused,
+  and so is every form of lanky 0.5's proofs.
+- Every case ends with a closing line, ``yield by(...)`` or ``return
+  by(...)``: a bare ``return``, ``continue``, a bare ``yield`` or a path
+  that ends is refused, at its line (:meth:`_Tracer._unclosed`).
 
 The result is a :class:`Proof`: the claim's definition, if the proof uses
 one, and a tree of cases whose leaves are what each path gives, with the
@@ -66,7 +71,7 @@ import os
 import sys
 import textwrap
 import types as pytypes
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
@@ -74,7 +79,7 @@ from typing import Any
 
 from lanky.citations import Citation
 from lanky.proofs.cases import decide, negated, offset_of, shape_of
-from lanky.surface import By, RemovedForm, claiming, reason_text
+from lanky.surface import By, RemovedForm, reason_text
 from lanky.terms import (
     BUILTIN_OVERRIDES,
     Forall,
@@ -208,12 +213,14 @@ class ProofError(Exception):
 
 
 class Given:
-    """A hypothesis of the theorem, as its proof cites it: a fact with a name.
+    """A condition of the claim, as its proof cites it: a fact with a name.
 
     Written alone, ``by(stored)``, it is cited at the point lanky finds by
-    matching it against the step it supports; called, ``pde(i, a - 2, b)``,
-    it is cited at those values of its variables, outermost first. A
-    hypothesis written ``p & q`` is cited as both parts.
+    matching it against the step it supports; at a point of its domain,
+    ``pde[i, a - 2, b]``, it is cited there, its variables outermost first.
+    A condition written ``p & q`` is cited as both parts. Brackets give a
+    point; lanky 0.5's ``pde(i, a - 2, b)`` is refused with the bracket
+    written.
     """
 
     def __init__(self, name: str, prop: Any, tracer: _Tracer | None) -> None:
@@ -223,13 +230,33 @@ class Given:
 
     @property
     def parts(self) -> tuple[Any, ...]:
-        """The parts of a hypothesis written as a conjunction; the hypothesis itself otherwise."""
+        """The parts of a condition written as a conjunction; the condition itself otherwise."""
         return conjuncts(self.prop) or (self.prop,)
 
-    def __call__(self, *values: Any, **named: Any) -> Citation:
-        """The hypothesis at a point: a citation."""
+    def written(self, values: tuple[Any, ...], bracket: bool = True) -> str:
+        """The condition at a point, as a proof writes it: ``pde[i, a - 2, b]``."""
+        del bracket
+        return f"{self.name}[{', '.join(shown(value) for value in values)}]"
+
+    def __getitem__(self, point: Any) -> Citation:
+        """The condition at a point of its domain: a citation."""
         assert self._tracer is not None
-        return self._tracer.cite(self, values, named, sys._getframe(1))
+        values = point if isinstance(point, tuple) else (point,)
+        return self._tracer.cite(self, values, {}, sys._getframe(1))
+
+    def __call__(self, *values: Any, **named: Any) -> Citation:
+        """Refused: a point is given in brackets, ``pde[i, a - 2, b]``."""
+        given = [shown(value) for value in values]
+        given += [f"{key}={shown(value)}" for key, value in named.items()]
+        if named:
+            fix = f"{self.name}[...], its values in the order of its for, outermost first"
+        else:
+            fix = f"{self.name}[{', '.join(given)}]"
+        raise RemovedForm(
+            f"{self.name}({', '.join(given)}) is how lanky 0.5 cited a condition at a point; "
+            "brackets give a point of its domain, and parentheses inputs to a claim",
+            fix,
+        )
 
     def __bool__(self) -> bool:
         """Refused: a fact has no truth value to ask for."""
@@ -245,20 +272,25 @@ class Given:
 
 @dataclass(frozen=True, eq=False)
 class ClaimDef:
-    """The claim a proof cites, ``claim``: the conclusion at a point, the theorem at values.
+    """The claim's conclusion at the points of its domain, which its proof loops over and cites.
 
     Lean has it as a theorem of its own, ``Lanky.<name>.claim``, recursive,
-    with the theorem's variables and the conclusion's as its parameters.
+    with the theorem's variables and the conclusion's as its parameters; a
+    citation of ``name.conclusion[p]`` inside the proof is a recursive call.
 
     Attributes:
-        name: ``claim``.
+        name: How a proof writes it, ``line_taylor.conclusion``.
         params: The parameters a citation of it gives values for: the
-            theorem's parameters that some ``claim(...)`` changes, then the
-            conclusion's variables.
+            variables of the conclusion's ``for``, those of each nested
+            ``for`` the proof loops over after them.
         domains: The sort each parameter ranges over.
-        generalized: The parameters that are the theorem's own.
-        line: The line of the loop over ``claim.dom``, or of the first
-            citation of the claim.
+        generalized: Kept empty: a claim never calls itself for other
+            inputs, so none of its parameters is generalized.
+        line: The line of the loop over the conclusion's domain, or of the
+            first citation of it.
+        levels: How many of ``params`` each nested ``for`` has, outermost first.
+        directions: For each parameter, ``1`` where the loop over its domain
+            walks it in increasing order, ``-1`` where it walks it reversed.
     """
 
     name: str
@@ -266,22 +298,22 @@ class ClaimDef:
     domains: tuple[Any, ...]
     generalized: tuple[str, ...]
     line: int
+    levels: tuple[int, ...] = ()
+    directions: tuple[int, ...] = ()
 
-    def written(self, values: tuple[Any, ...], bracket: bool) -> str:
-        """A citation of the claim, as written: ``claim[a - 2, b + 2]``, ``claim(n - 1)``."""
-        if bracket:
-            shown_values = [
-                value
-                for name, value in zip(self.params, values, strict=True)
-                if name not in self.generalized
-            ]
-            return f"{self.name}[{', '.join(shown(value) for value in shown_values)}]"
-        given = [
-            value
-            for name, value in zip(self.params, values, strict=True)
-            if name in self.generalized or not self.generalized
-        ]
-        return f"{self.name}({', '.join(shown(value) for value in given)})"
+    def written(self, values: tuple[Any, ...], bracket: bool = True) -> str:
+        """A citation of the claim, as written: ``every_box.conclusion[i][a - 2, b + 2]``."""
+        del bracket
+        sizes = self.levels or (len(self.params),)
+        out = self.name
+        start = 0
+        for size in sizes:
+            part = values[start : start + size]
+            start += size
+            if all(value is None for value in part):
+                break
+            out += f"[{', '.join(shown(value) for value in part)}]"
+        return out
 
 
 def shown(value: Any) -> str:
@@ -462,13 +494,13 @@ class Leaf:
     Attributes:
         questions: The case splits on the way, in order, each with its answer.
         facts: The facts the path's ``yield by(...)`` or ``return by(...)``
-            gives; ``None`` for a point or a case that gives none, which
-            lanky finishes from the steps asserted for it.
+            gives; ``None`` for a case closed with ``by()``, which lanky
+            finishes from the steps asserted for it.
         line: The line of that ``yield`` or ``return``.
         order: The questions and the steps (:class:`Asserted`) of the path,
             in the order the body reached them.
         hole: Whether its ``by(...)`` left it open.
-        point: Whether it closes a point of ``claim.dom``.
+        point: Whether it closes a point of the conclusion's domain, with ``yield``.
     """
 
     questions: tuple[Question, ...]
@@ -528,12 +560,17 @@ class Proof:
 
     Attributes:
         theorem: The :class:`~lanky.theory.Theorem` it proves.
-        claim: The claim it cites, ``claim[p]`` or ``claim(...)``, or loops
-            over, ``claim.dom``; ``None`` for a proof that does neither.
+        claim: The claim's conclusion at the points of its domain, which the
+            proof loops over (``for n in name.conclusion.domain:``) and cites
+            (``name.conclusion[n - 1]``); ``None`` for a proof with no loop.
         root: The tree of cases.
         leaves: The paths, in the order they were traced.
         lines: The body's lines, first and last.
         path: The file it is written in.
+        goal: The conclusion as the proof closes it: the theorem's goal, with
+            the nested ``for`` levels the proof loops over taken as one
+            (``all(... for i in A for a in B)`` for a loop over ``i`` and
+            one over ``every_box.conclusion[i].domain``).
     """
 
     theorem: Any
@@ -542,6 +579,12 @@ class Proof:
     leaves: tuple[Leaf, ...]
     lines: tuple[int, int]
     path: str
+    goal: Any = None
+
+    @property
+    def conclusion(self) -> Any:
+        """The conclusion as the proof closes it: :attr:`goal`, or the theorem's own."""
+        return self.goal if self.goal is not None else self.theorem.goal
 
     @property
     def calls(self) -> list[Citation]:
@@ -903,6 +946,26 @@ class _Open:
 
 
 @dataclass(eq=False)
+class _Loop:
+    """A loop over a domain of the conclusion, open on a path.
+
+    Attributes:
+        level: Which nested ``for`` of the conclusion it walks, ``0`` the outermost.
+        names: The variables of its point.
+        reverse: Whether it walks the domain from the top down, ``reversed(...)``.
+        line: The line of the ``for``.
+        inner: Whether a loop over the next level ran at its point, which
+            closes the point.
+    """
+
+    level: int
+    names: tuple[str, ...]
+    reverse: bool
+    line: int | None
+    inner: bool = False
+
+
+@dataclass(eq=False)
 class _Path:
     """One run of the body: the answers it was given, and what it asked, asserted and cited."""
 
@@ -926,6 +989,8 @@ class _Path:
     state: str = "before"
     loops: int = 0
     closed: int | None = None
+    open_loops: list[_Loop] = field(default_factory=list)
+    closings: int = 0
     leaf_facts: tuple[Citation, ...] | None = None
     leaf_line: int | None = None
     leaf_hole: bool = False
@@ -940,29 +1005,53 @@ def _takes(name: str, names: list[str], given: int) -> str:
 
 
 class _ClaimRef:
-    """What a citation of the claim cites while the body is traced, before the claim is defined."""
+    """What a citation of the claim's own conclusion cites while the body is traced.
 
-    __name__ = "claim"
-    name = "claim"
+    The claim's parameters are known only once every path is traced (how
+    many nested ``for`` levels the proof loops over), so a citation of
+    ``name.conclusion[p]`` cites this, and :meth:`_Tracer.define_claim`
+    puts the :class:`ClaimDef` in its place.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.__name__ = name
+        self.name = name
+
+    def written(self, values: tuple[Any, ...], bracket: bool = True) -> str:
+        """``line_taylor.conclusion[n - 1]``, the values as given."""
+        del bracket
+        return f"{self.name}[{', '.join(shown(value) for value in values)}]"
 
 
-@dataclass(frozen=True)
-class _Handle:
-    """A variable of the conclusion, ``claim.n``: ``line_taylor.claim.n`` in a message."""
+@dataclass(frozen=True, eq=False)
+class _Called(Citation):
+    """A claim called for inputs in a proof, ``gauss(n - 1)``: a citation, and a tree to go on in.
 
-    theorem: str
-    name: str
+    ``other(x, y).conclusion[p]`` is the conclusion at ``p`` for those inputs.
 
-    def __repr__(self) -> str:
-        """``line_taylor.claim.n``."""
-        return f"{self.theorem}.claim.{self.name}"
+    Attributes:
+        inputs: How many of :attr:`values` are the claim's inputs; the rest
+            are its conclusion's point, ``None`` until lanky finds it.
+    """
+
+    inputs: int = 0
+
+    @property
+    def conclusion(self) -> Any:
+        """The conclusion for the inputs this call gave."""
+        from lanky.surface import Conclusion
+
+        assert self.values is not None
+        return Conclusion(self.source, (), inputs=tuple(self.values[: self.inputs]))
 
 
 class _Dom:
-    """``claim.dom`` in a trace: one symbolic point, the guard known (see the module)."""
+    """A loop over a domain of the conclusion in a trace: one symbolic point, the guard known."""
 
-    def __init__(self, tracer: _Tracer, line: int | None) -> None:
+    def __init__(self, tracer: _Tracer, level: int, reverse: bool, line: int | None) -> None:
         self.tracer = tracer
+        self.level = level
+        self.reverse = reverse
         self.line = line
         self.started = False
 
@@ -972,100 +1061,51 @@ class _Dom:
 
     def __next__(self) -> Any:
         """The one point, the first time; then the loop is done."""
-        tracer = self.tracer
-        path = tracer.path
-        assert path is not None
         if not self.started:
             self.started = True
-            if path.loops:
-                raise ProofError(
-                    "claim",
-                    "the body loops over claim.dom twice; a proof is one loop over the claim's "
-                    "points, each closed with yield by(...)",
-                    self.line,
-                )
-            tracer._close(path)
-            path.loops += 1
-            path.state = "at"
-            if tracer.loop_line is None:
-                tracer.loop_line = self.line
-            path.facts.extend(tracer.point_facts())
-            path.events.append(("point", ""))
-            variables = [var for var, _ in tracer.binders]
-            return variables[0] if len(variables) == 1 else tuple(variables)
-        tracer._close(path)
-        path.state = "after"
+            return self.tracer.enter(self)
+        self.tracer.leave(self)
         raise StopIteration
 
     def __repr__(self) -> str:
-        """``claim.dom``."""
-        return f"<claim.dom of {self.tracer.theorem.__name__}>"
-
-
-class _Traced:
-    """What ``claim`` stands for while a body is traced (see :mod:`lanky.surface`)."""
-
-    def __init__(self, tracer: _Tracer) -> None:
-        self.tracer = tracer
-
-    def dom(self, frame: Any) -> _Dom:
-        """``claim.dom``: the loop's one symbolic point."""
-        tracer = self.tracer
-        line = tracer._line(frame)
-        if not tracer.binders:
-            name = tracer.theorem.__name__
-            raise ProofError(
-                "claim",
-                f"claim.dom is the domain of the claim's variables, and {name}'s conclusion "
-                "has none; a claim with no variables ends with return by(...)",
-                line,
-                fix="return by(...)",
-            )
-        return _Dom(tracer, line)
-
-    def at(self, point: Any, frame: Any) -> Citation:
-        """``claim[p]``: the conclusion at an earlier point of the loop."""
-        return self.tracer.claim_at(point, frame)
-
-    def call(self, values: tuple, named: Mapping[str, Any], frame: Any) -> Citation:
-        """``claim(...)``: the theorem at smaller values of its parameters."""
-        return self.tracer.claim_call(values, named, frame)
-
-    def handle(self, name: str) -> _Handle:
-        """``claim.n``: a variable of the conclusion, as a handle."""
-        names = [var.name for var, _ in self.tracer.binders]
-        if name not in names:
-            raise AttributeError(
-                f"claim has no variable {name}; its variables are {', '.join(names) or 'none'}"
-            )
-        return _Handle(self.tracer.theorem.__name__, name)
-
-    def __repr__(self) -> str:
-        """``<claim of line_taylor: ...>``."""
-        return f"<claim of {self.tracer.theorem.__name__}: {render(self.tracer.goal)}>"
+        """``<the loop over line_taylor.conclusion.domain>``."""
+        return f"<the loop over {self.tracer.name}.conclusion.domain at level {self.level}>"
 
 
 class _Tracer:
     """The trace of one theorem's body: its runs, one per path and per assert, and their record."""
 
     def __init__(self, theorem: Any) -> None:
+        from lanky.surface import levels
+
         self.theorem = theorem
         self.fn = theorem.fn
+        self.name = getattr(theorem, "qualname", None) or theorem.__name__
         self.codes = _own_codes(self.fn.__code__)
         self.namespace = namespace(theorem)
         self.variables: dict[str, Any] = dict(theorem.variables)
         self.hypotheses: dict[str, Any] = dict(theorem.hypotheses)
         self.goal = theorem.goal
-        self.binders: list[tuple[Var, Any]] = (
-            list(self.goal.binders) if isinstance(self.goal, Forall) else []
-        )
+        #: The nested ``for`` levels of the conclusion, ``(binders, guard)`` each.
+        self.levels = levels(self.goal)
         self.path: _Path | None = None
-        self.claim_ref = _ClaimRef()
+        self.claim_ref = _ClaimRef(f"{self.name}.conclusion")
         self.loop_line: int | None = None
         self.claim_line: int | None = None
-        self.view = _Traced(self)
+        #: How many levels deep a ``yield`` closes the conclusion, the same on every path.
+        self.point_depth: int | None = None
+        #: The line of the first ``yield`` at that depth.
+        self.point_line: int | None = None
+        #: Whether each level's loop runs reversed, the same on every path.
+        self.reversed: dict[int, bool] = {}
+        self.deepest = 0
 
     # {{{ what the body sees
+
+    @property
+    def binders(self) -> list[tuple[Var, Any]]:
+        """The variables of every level of the conclusion, outermost first."""
+        return [binder for binders, _ in self.levels for binder in binders]
 
     def types(self) -> dict[str, Any]:
         """The sort of every name the proof's terms mention: the theorem's and the conclusion's."""
@@ -1077,11 +1117,6 @@ class _Tracer:
     def _base_facts(self) -> list[Any]:
         """What holds on every path before any split: the theorem's hypotheses."""
         return [part for _name, prop in self.hypotheses.items() for part in conjuncts(prop)]
-
-    def point_facts(self) -> list[Any]:
-        """What holds at a point of ``claim.dom``: the conclusion's guard."""
-        goal = self.goal
-        return list(conjuncts(goal.guard)) if isinstance(goal, Forall) else []
 
     def ask(self, prop: Any, frame: Any) -> bool:
         """The truth value of a question the body's own ``if`` or ``assert`` asks (see the module).
@@ -1171,15 +1206,15 @@ class _Tracer:
             if path.state == "after":
                 raise ProofError(
                     "assert",
-                    "this step comes after the loop over claim.dom, and belongs to no point; "
-                    "move it into the loop",
+                    f"this step comes after the loop over {self.name}.conclusion.domain, and "
+                    "belongs to no point; move it into the loop",
                     node.lineno if node is not None else frame.f_lineno,
                 )
             if path.closed is not None:
                 raise ProofError(
                     "assert",
-                    f"the point was closed at line {path.closed} by its yield; a step after "
-                    "it is for nothing: assert it before the yield",
+                    f"the point was closed at line {path.closed}; a step after it is for "
+                    "nothing: assert it before the yield",
                     node.lineno if node is not None else frame.f_lineno,
                 )
             line = node.lineno if node is not None else frame.f_lineno
@@ -1216,48 +1251,26 @@ class _Tracer:
             )
 
     def cite(self, source: Any, values: tuple, named: Mapping[str, Any], frame: Any) -> Citation:
-        """A citation of ``source`` at ``values``, written at the body's line ``frame`` runs."""
+        """A condition at a point, ``pde[i, a - 2, b]``, written at the line ``frame`` runs."""
         line = self._line(frame)
         names = self._binder_names(source)
         called = Citation(source).name
-        if named:
-            unknown = [name for name in named if name not in names]
-            if unknown:
-                raise ProofError(
-                    "cite",
-                    f"{called} has no variable {unknown[0]}: its variables "
-                    f"are {', '.join(names) or 'none'}",
-                    line,
-                )
-            if len(values) > len(names):
-                raise ProofError(
-                    "cite",
-                    _takes(called, names, len(values) + len(named)),
-                    line,
-                    fix=f"{called}({', '.join(names)})" if names else None,
-                )
-            given = dict(zip(names, values, strict=False))
-            twice = [name for name in named if name in given]
-            if twice:
-                # each value is written once, as Python itself asks of a call
-                raise ProofError(
-                    "cite",
-                    f"{called} is given {twice[0]} twice, by its place and by its name",
-                    line,
-                )
-            given.update(named)
-            if len(given) != len(names):
-                missing = [name for name in names if name not in given]
-                raise ProofError("cite", f"{called} needs a value for {', '.join(missing)}", line)
-            values = tuple(given[name] for name in names)
-        elif len(values) != len(names):
+        if len(values) != len(names):
+            example = f"{called}[{', '.join(names)}]" if names else None
             raise ProofError(
                 "cite",
-                _takes(called, names, len(values)),
+                _takes(called, names, len(values))
+                + (
+                    "; it is cited whole, by its name alone"
+                    if not names
+                    else f", one per variable of its for, as {example}"
+                ),
                 line,
-                fix=f"{called}({', '.join(names)})" if names else None,
+                fix=example if names else called,
             )
-        citation = Citation(source, tuple(family_value(value) for value in values), line)
+        citation = Citation(
+            source, tuple(family_value(value) for value in values), line, bracket=True
+        )
         if self.path is not None:
             self.path.events.append(("cite", citation.text()))
         return citation
@@ -1265,36 +1278,127 @@ class _Tracer:
     def cite_theorem(
         self, theorem: Any, values: tuple, named: Mapping[str, Any], frame: Any
     ) -> Citation:
-        """A theorem called inside the trace: a citation, or the self-reference refused."""
+        """Another claim called for inputs, ``gauss(n - 1)``: a citation; the claim itself refused.
+
+        The values are the claim's inputs, its parameters, by position or by
+        name. Inside a ``with`` block the claims share, the block's names
+        fill the condition's inputs, and the call gives the claim's own. The
+        claim's conclusion's point, where it has one, is left for lanky to
+        find, or given after, ``other(x).conclusion[p]``.
+        """
         line = self._line(frame)
         if theorem is self.theorem:
-            raise self._self_reference(line, values, named)
-        return self.cite(theorem, values, named, frame)
+            raise self._self_call(line, values, named)
+        from lanky.surface import levels
 
-    def _self_reference(
+        inputs = [name for name, _ in getattr(theorem, "variables", ())]
+        own = [name for name, _ in getattr(theorem, "own_variables", theorem.variables)]
+        bound = set(getattr(theorem, "bound", ()))
+        names = inputs
+        filled: dict[str, Any] = {}
+        mine = set(getattr(self.theorem, "bound", ()))
+        if bound and bound <= mine and len(values) + len(named) <= len(own):
+            # a sibling in the same block: the block's names are this proof's too
+            names = own
+            filled = {name: Var(name) for name in inputs if name not in own}
+        called = getattr(theorem, "__name__", "the claim")
+        if len(values) > len(names):
+            raise ProofError(
+                "cite",
+                f"{called} takes {len(names)} input{'' if len(names) == 1 else 's'}, "
+                f"{', '.join(names) or 'none'}, and is given {len(values) + len(named)}; a "
+                f"point of its conclusion is given after, as {called}(...).conclusion[...]",
+                line,
+                fix=f"{called}({', '.join(names)})" if names else called,
+            )
+        given = dict(zip(names, values, strict=False))
+        for key, value in named.items():
+            if key not in names:
+                raise ProofError(
+                    "cite",
+                    f"{called} has no input {key}: its inputs are {', '.join(names) or 'none'}",
+                    line,
+                )
+            if key in given:
+                # each value is written once, as Python itself asks of a call
+                raise ProofError(
+                    "cite", f"{called} is given {key} twice, by its place and by its name", line
+                )
+            given[key] = value
+        missing = [name for name in names if name not in given]
+        if missing:
+            raise ProofError(
+                "cite",
+                f"{called} needs a value for {', '.join(missing)}: a claim called for inputs "
+                "is given each of them, or cited by its name alone, where lanky finds them",
+                line,
+                fix=f"{called}({', '.join(names)})",
+            )
+        given.update(filled)
+        point = sum(len(binders) for binders, _ in levels(theorem.goal))
+        full = (
+            *(family_value(given[name]) for name in inputs),
+            *(None for _ in range(point)),
+        )
+        citation = _Called(theorem, full, line, inputs=len(inputs))
+        if self.path is not None:
+            self.path.events.append(("cite", citation.text()))
+        return citation
+
+    def _self_call(
         self, line: int | None, values: tuple = (), named: Mapping[str, Any] | None = None
     ) -> ProofError:
-        """The refusal of a theorem that cites itself by name, with ``claim`` as the fix."""
-        name = self.theorem.__name__
-        where = f"{os.path.basename(self.theorem.path)}:{line}" if line else "its body"
+        """The refusal of a claim that calls itself in its own proof, with the fix (design 3.4)."""
+        name = self.name
         given = [shown(value) for value in values]
         given += [f"{key}={shown(value)}" for key, value in (named or {}).items()]
+        written = f"{name}({', '.join(given)})"
         binders = [var.name for var, _ in self.binders]
-        inside = self.path is not None and self.path.state == "at"
-        if given and len(values) == len(binders) and (inside or len(values) != len(self.variables)):
-            fix = f"claim[{', '.join(given)}]"
-            what = "the claim at an earlier point of the loop over claim.dom"
+        own = [variable for variable, _ in getattr(self.theorem, "own_variables", ())]
+        changed = [
+            (variable, value)
+            for variable, value in zip(own, values, strict=False)
+            if not (isinstance(value, Var) and value.name == variable)
+        ]
+        if binders and len(values) == len(binders) and not named:
+            fix = f"{name}.conclusion[{', '.join(given)}]"
+            how = (
+                "an earlier case is the conclusion at an earlier point of its domain, "
+                "in brackets"
+            )
+        elif changed:
+            variable, value = changed[0]
+            fix = f"{name}.conclusion[{shown(value)}]"
+            how = (
+                f"to argue from an earlier case, put {variable} in the conclusion's for, "
+                f"-> all(... for {variable} in ...), and cite {fix}"
+            )
         else:
-            parameters = list(self.variables)
-            fix = f"claim({', '.join(given) or ', '.join(parameters)})"
-            what = "the theorem at smaller values"
+            fix = f"{name}.conclusion[n - 1]"
+            how = (
+                "to argue from an earlier case, put the variable in the conclusion's for and "
+                f"cite {fix}"
+            )
+        where = f"{os.path.basename(self.theorem.path)}:{line}" if line else "its body"
         return ProofError(
             "self-reference",
-            f"{name} cites itself by name at {where}; in its own proof the theorem is "
-            f"claim, and {what} is {fix}",
+            f"{written} at {where} calls the claim in its own proof, and a claim does not "
+            f"call itself; {how}",
             line,
             fix=fix,
         )
+
+    def condition(self, claim: Any, name: str, frame: Any) -> Any:
+        """``name.conditions.ode``: in the claim's own proof, the fact ``ode`` names there."""
+        if claim is not self.theorem:
+            raise ProofError(
+                "cite",
+                f"{name} is a condition of {claim.__name__}, which {claim.__name__}'s proof "
+                f"assumes; {self.name}'s proof cites {claim.__name__} itself, its conclusion "
+                "for inputs it is given",
+                self._line(frame),
+            )
+        return Given(name, self.hypotheses[name], self)
 
     def _binder_names(self, source: Any) -> list[str]:
         """The variables a fact takes values for, outermost first."""
@@ -1319,150 +1423,308 @@ class _Tracer:
 
     # }}}
 
-    # {{{ the claim
+    # {{{ the conclusion's domain, its points and the claim's own conclusion
+
+    def _current(self) -> tuple[list[str], list[int]]:
+        """The point the loops are at, by name, and each name's direction, ``1`` or ``-1``."""
+        path = self.path
+        assert path is not None
+        names: list[str] = []
+        directions: list[int] = []
+        for loop in path.open_loops:
+            names += loop.names
+            directions += [-1 if loop.reverse else 1] * len(loop.names)
+        return names, directions
 
     def _current_point(self) -> str:
         """The point the loop is at, as a message says it: ``n``, ``(i, a, b)``."""
-        names = [var.name for var, _ in self.binders]
+        names, _ = self._current()
         return names[0] if len(names) == 1 else f"({', '.join(names)})"
 
-    def claim_at(self, point: Any, frame: Any) -> Citation:
-        """``claim[p]``, checked to be at a point the loop has filled in (see the module)."""
+    def loop(self, conclusion: Any, reverse: bool, frame: Any) -> _Dom:
+        """``for n in name.conclusion.domain:``, or ``reversed(...)``: the loop over a level."""
         path = self.path
         assert path is not None
         line = self._line(frame)
-        name = self.theorem.__name__
-        if not self.binders:
+        name = self.name
+        level = len(conclusion.point)
+        if conclusion.inputs is not None:
             raise ProofError(
                 "claim",
-                f"claim[...] is the claim at a point of its domain, and {name}'s conclusion "
-                "has no variables; cite the theorem at smaller values as claim(...)",
+                f"inside {name}'s own proof its conclusion is for this proof's inputs, and "
+                f"{conclusion.text()} gives it others; a claim does not call itself",
                 line,
+                fix=f"for ... in {name}.conclusion.domain:",
             )
-        values = point if isinstance(point, tuple) else (point,)
-        names = [var.name for var, _ in self.binders]
-        if len(values) != len(names):
-            raise ProofError(
-                "cite",
-                f"claim[...] takes a value for each of the claim's variables, "
-                f"{', '.join(names)}, and is given {len(values)}",
-                line,
-                fix=f"claim[{', '.join(names)}]",
-            )
-        written = f"claim[{', '.join(shown(value) for value in values)}]"
-        if path.state != "at":
+        opened = path.open_loops
+        if level > len(opened):
+            outer = conclusion._spelled(len(opened))
             raise ProofError(
                 "claim",
-                f"{written} is the claim at an earlier point of the loop over claim.dom, and "
-                "it is cited outside that loop; cite it inside for "
-                f"{', '.join(names)} in claim.dom:",
+                f"{conclusion.text()}.domain is the domain at a point of {outer}.domain, and "
+                "no loop is at that point here; loop over the outer domain first",
+                line,
+                fix=f"for ... in {outer}.domain:",
+            )
+        if level < len(opened):
+            raise ProofError(
+                "claim",
+                f"the body loops over {conclusion.text()}.domain inside a loop over it; a "
+                "proof is one loop over the conclusion's points, each closed with "
+                "yield by(...)",
                 line,
             )
-        later = _not_earlier(names, values)
-        if later == "later":
+        for index, values in enumerate(conclusion.point):
+            expected = opened[index].names
+            if len(values) != len(expected) or not all(
+                isinstance(value, Var) and value.name == want
+                for value, want in zip(values, expected, strict=False)
+            ):
+                at = ", ".join(expected)
+                spelled = f"{name}.conclusion" + "".join(
+                    f"[{', '.join(loop.names)}]" for loop in opened[: index + 1]
+                )
+                raise ProofError(
+                    "claim",
+                    f"{conclusion.text()}.domain is the domain at another point than the one "
+                    f"the loop is at, ({at}); the inner loop walks the conclusion at the "
+                    "point the outer one is at",
+                    line,
+                    fix=f"for ... in {spelled}.domain:",
+                )
+        if reverse:
+            self._refuse_unbounded(conclusion, level, line)
+        return _Dom(self, level, reverse, line)
+
+    def _bounded(self, level: int) -> bool:
+        """Whether every variable of a level's domain has a top: ``Fin[p]``, or ``k <= p``."""
+        from lanky.proofs.compile import _upper_bound
+
+        binders, guard = self.levels[level]
+        conditions = [*self._base_facts(), *conjuncts(guard)]
+        return all(
+            _upper_bound(var.name, domain, conditions) is not None for var, domain in binders
+        )
+
+    def _refuse_unbounded(self, conclusion: Any, level: int, line: int | None) -> None:
+        """Refuse ``reversed(...)`` over a domain with no top to start from."""
+        from lanky.proofs.compile import _upper_bound
+
+        binders, guard = self.levels[level]
+        conditions = [*self._base_facts(), *conjuncts(guard)]
+        for var, domain in binders:
+            if _upper_bound(var.name, domain, conditions) is None:
+                raise ProofError(
+                    "claim",
+                    f"reversed({conclusion.text()}.domain) walks the domain from the top down, "
+                    f"and {var.name} in {domain} has no top; reversed fits a bounded domain, "
+                    f"as {var.name} in Fin[p] or {var.name} <= p in the conclusion's for",
+                    line,
+                    fix=f"for ... in {conclusion.text()}.domain:",
+                )
+
+    def enter(self, dom: _Dom) -> Any:
+        """The loop's one point: the level's variables, its guard known on the path."""
+        path = self.path
+        assert path is not None
+        level = dom.level
+        if level == 0 and path.loops:
             raise ProofError(
-                "later",
-                f"{written} is not filled in yet when the loop is at {self._current_point()}",
-                line,
-                fix="cite the claim at a point the loop has filled in, as "
-                + _earlier_example(names),
+                "claim",
+                f"the body loops over {self.name}.conclusion.domain twice; a proof is one loop "
+                "over the conclusion's points, each closed with yield by(...)",
+                dom.line,
             )
-        if later == "same":
+        self._close(path)
+        if path.open_loops:
+            outer = path.open_loops[-1]
+            if outer.inner:
+                raise ProofError(
+                    "claim",
+                    "the body loops over the domain at this point twice; a proof is one loop "
+                    "over each domain's points, each closed with yield by(...)",
+                    dom.line,
+                )
+            if path.closed is not None:
+                raise ProofError(
+                    "yield",
+                    f"the point was closed at line {path.closed} by its yield; a loop after it "
+                    "closes nothing it needs",
+                    dom.line,
+                )
+            outer.inner = True
+        else:
+            path.loops += 1
+        previous = self.reversed.setdefault(level, dom.reverse)
+        if previous != dom.reverse:
+            raise ProofError(
+                "paths",
+                "the loop over this domain runs reversed on one path and not on another; a "
+                "proof walks each domain one way",
+                dom.line,
+            )
+        binders, guard = self.levels[level]
+        names = tuple(var.name for var, _ in binders)
+        path.open_loops.append(_Loop(level, names, dom.reverse, dom.line))
+        self.deepest = max(self.deepest, len(path.open_loops))
+        path.state = "at"
+        if self.loop_line is None:
+            self.loop_line = dom.line
+        path.facts.extend(conjuncts(guard))
+        path.events.append(("point", str(level)))
+        variables = [var for var, _ in binders]
+        return variables[0] if len(variables) == 1 else tuple(variables)
+
+    def leave(self, dom: _Dom) -> None:
+        """The loop is done on this path: its point has to be closed (the closing rule)."""
+        path = self.path
+        assert path is not None
+        self._close(path)
+        current = path.open_loops[-1] if path.open_loops else None
+        if current is None or current.level != dom.level:  # pragma: no cover - Python's own loops
+            return
+        if not current.inner and path.closed is None:
+            raise self._unclosed(path, dom.line)
+        path.open_loops.pop()
+        if path.open_loops:
+            # the outer point is closed by the loop over its own domain
+            path.closed = path.closed or dom.line
+        else:
+            path.state = "after"
+
+    def _unclosed(self, path: _Path, line: int | None, word: str = "yield") -> ProofError:
+        """The refusal of a case that ends with no closing line, at the line that ends it.
+
+        ``line`` is where the run noticed, the line of the loop or of the
+        return; the case is found from the source (:func:`_case_end`).
+        """
+        from lanky.proofs.report import case_text
+
+        loop_line = path.open_loops[-1].line if path.open_loops else None
+        kind, end = _case_end(self.fn, path.questions, loop_line)
+        case = case_text(
+            [
+                (question.condition, question.line)
+                for question in path.questions
+                if not question.forced
+            ],
+            self.theorem.path,
+        )
+        if case:
+            case = case[0].lower() + case[1:] + ", "
+        if kind in ("continue", "break"):
+            said = f"{case}{kind} at line {end} ends the case with no closing line"
+        elif kind == "return":
+            said = f"{case}a bare return at line {end} ends the case with no closing line"
+        elif end is not None:
+            said = f"{case}the case ends at line {end} with no closing line"
+        else:
+            said = f"{case}the case ends with no closing line"
+        return ProofError(
+            "close",
+            f"{said}: close it with {word} by() if it follows directly, or give its reasons, "
+            f"{word} by(f, g)",
+            end if end is not None else line,
+            fix=f"{word} by()",
+        )
+
+    def conclusion_fact(self, conclusion: Any, line: int | None) -> Citation:
+        """A conclusion cited in ``by(...)``: the claim's own at an earlier point, or another's."""
+        theorem = conclusion.claim
+        if theorem is not self.theorem:
+            return self._other_conclusion(conclusion, line)
+        path = self.path
+        assert path is not None
+        name = self.name
+        if conclusion.inputs is not None:
+            raise ProofError(
+                "self-reference",
+                f"{conclusion.text()} gives {name} inputs in its own proof, and a claim does "
+                "not call itself; inside its proof the conclusion is for this proof's inputs",
+                line,
+                fix=f"{name}.conclusion[...]",
+            )
+        if not conclusion.point:
+            earlier = f"{name}.conclusion[{_earlier_text(self._next_names())}]"
+            raise ProofError(
+                "claim",
+                f"{name}.conclusion alone is the whole conclusion, the one being proved; cite "
+                f"it at an earlier point, as {earlier}",
+                line,
+                fix=earlier,
+            )
+        values = conclusion.values
+        written = conclusion.text()
+        if not path.open_loops:
+            raise ProofError(
+                "claim",
+                f"{written} is the conclusion at an earlier point of the loop over "
+                f"{name}.conclusion.domain, and it is cited outside that loop; cite it inside "
+                f"for {_point_text(self._next_names())} in {name}.conclusion.domain:",
+                line,
+            )
+        names, directions = self._current()
+        verdict = _earlier(names, values, directions, path.facts, self.types())
+        if verdict == "later":
+            message = f"{written} is not filled in yet when the loop is at {self._current_point()}"
+            fix = (
+                f"cite the conclusion at a point the loop has filled in, as "
+                f"{name}.conclusion{_earlier_example(path.open_loops)}"
+            )
+            loop = path.open_loops[0]
+            if len(path.open_loops) == 1 and not loop.reverse and self._bounded(0):
+                # an argument from the point above: the loop runs from the top down
+                message += (
+                    "; an argument from the point above runs the loop over the bounded "
+                    "domain from the top down"
+                )
+                fix = f"for {', '.join(loop.names)} in reversed({name}.conclusion.domain):"
+            raise ProofError("later", message, line, fix=fix)
+        if verdict == "same":
+            what = (
+                f"the point the loop is at, {self._current_point()}, which this step is "
+                "filling in"
+                if len(values) == len(names)
+                else f"a part of the conclusion that holds the point the loop is at, "
+                f"{self._current_point()}, which this step is filling in"
+            )
             raise ProofError(
                 "later",
-                f"{written} is the point the loop is at, {self._current_point()}, which this "
-                "step is filling in",
+                f"{written} is {what}",
                 line,
-                fix="cite the claim at a point the loop has filled in, as "
-                + _earlier_example(names),
+                fix=f"cite the conclusion at a point the loop has filled in, as "
+                f"{name}.conclusion{_earlier_example(path.open_loops)}",
             )
         if self.claim_line is None:
             self.claim_line = line
-        citation = Citation(self.claim_ref, values, line, bracket=True)
+        citation = Citation(
+            self.claim_ref, tuple(family_value(value) for value in values), line, bracket=True
+        )
         path.events.append(("cite", written))
         return citation
 
-    def claim_call(self, values: tuple, named: Mapping[str, Any], frame: Any) -> Citation:
-        """``claim(...)``, the theorem at other values of its parameters, checked to be smaller."""
-        path = self.path
-        assert path is not None
-        line = self._line(frame)
-        names = list(self.variables)
-        if len(values) > len(names):
-            raise ProofError(
-                "cite",
-                f"claim(...) takes the theorem's parameters, {', '.join(names) or 'none'}, and "
-                f"is given {len(values)} values",
-                line,
-            )
-        given = dict(zip(names, values, strict=False))
-        for key, value in named.items():
-            if key not in names:
-                raise ProofError(
-                    "cite",
-                    f"claim(...) takes the theorem's parameters, and {key} is none of them: "
-                    f"they are {', '.join(names) or 'none'}",
-                    line,
-                )
-            if key in given:
-                raise ProofError(
-                    "cite", f"claim(...) is given {key} twice, by its place and by its name", line
-                )
-            given[key] = value
-        full = tuple(family_value(given[name]) if name in given else Var(name) for name in names)
-        given_text = [shown(value) for value in values]
-        given_text += [f"{key}={shown(value)}" for key, value in named.items()]
-        written = f"claim({', '.join(given_text)})"
-        changed = [
-            name
-            for name, value in zip(names, full, strict=True)
-            if not (isinstance(value, Var) and value.name == name)
-        ]
-        changes = [offset_of(full[names.index(name)], name) for name in changed]
-        from lanky.proofs.cases import integer_sort
+    def _next_names(self) -> list[str]:
+        """The variables of the conclusion's outermost ``for``, as an example names them."""
+        return [var.name for var, _ in self.levels[0][0]] if self.levels else ["n"]
 
-        if changed and not any(integer_sort(self.variables[name]) for name in changed):
-            first = changed[0]
-            value = full[names.index(first)]
-            mentioned = [
-                name
-                for name in names
-                if name != first
-                and integer_sort(self.variables[name])
-                and name in _names_in(value)
-            ]
-            fix = f"claim({mentioned[0]}={shown(value)})" if len(mentioned) == 1 else None
-            raise ProofError(
-                "claim",
-                f"{written} gives {first} the value {shown(value)}: claim(...) takes the "
-                f"theorem's parameters in order, {', '.join(names)}, as calling the theorem "
-                "does, and the theorem at smaller values has one of its integer parameters "
-                "smaller",
-                line,
-                fix=fix,
-            )
-        if not changes:
-            raise ProofError(
-                "later",
-                f"{written} is the theorem at the values the proof is at, which is what it is "
-                "proving",
-                line,
-                fix=f"cite it at smaller values, as {_smaller_example(names, self.variables)}",
-            )
-        if all(change is not None for change in changes) and not any(
-            change < 0 for change in changes
-        ):
-            raise ProofError(
-                "later",
-                f"{written} is at larger values than the proof's {', '.join(changed)}: the "
-                "theorem is cited at smaller values",
-                line,
-                fix=f"cite it at smaller values, as {_smaller_example(names, self.variables)}",
-            )
-        if self.claim_line is None:
-            self.claim_line = line
-        citation = Citation(self.claim_ref, full, line, bracket=False)
-        path.events.append(("cite", written))
+    def _other_conclusion(self, conclusion: Any, line: int | None) -> Citation:
+        """Another claim's conclusion, whole or at a point, for inputs given or found by lanky."""
+        from lanky.surface import levels
+
+        theorem = conclusion.claim
+        inputs = conclusion.inputs
+        if inputs is None and not conclusion.point:
+            return Citation(theorem, None, line)
+        count = len(getattr(theorem, "variables", ()))
+        total = sum(len(binders) for binders, _ in levels(theorem.goal))
+        given = tuple(inputs) if inputs is not None else (None,) * count
+        point = conclusion.values
+        values = (*given, *point, *(None for _ in range(total - len(point))))
+        citation = Citation(
+            theorem, tuple(family_value(value) for value in values), line, bracket=True
+        )
+        if self.path is not None:
+            self.path.events.append(("cite", conclusion.text()))
         return citation
 
     # }}}
@@ -1483,7 +1745,7 @@ class _Tracer:
 
         sys.setprofile(profile)
         try:
-            with running(self), asking_proof_questions(self), claiming(self.view):
+            with running(self), asking_proof_questions(self):
                 yield
         finally:
             sys.setprofile(previous)
@@ -1529,19 +1791,52 @@ class _Tracer:
             try:
                 value = self._call(lambda: generator.send(None), path)
             except StopIteration as stop:
-                if stop.value is not None:
-                    raise ProofError(
-                        "return",
-                        "a proof that closes its points with yield ends with no return value; "
-                        "each point's reason is its yield by(...)",
-                        path.returns.get(self.fn.__code__),
-                    ) from None
+                self._ended(stop.value, path)
                 return
             frame = generator.gi_frame
             self._yielded(value, path, frame.f_lineno if frame is not None else None)
 
+    def _ended(self, value: Any, path: _Path) -> None:
+        """A body that yields has returned: refuse a return that leaves a case open, or mixes."""
+        line = path.returns.get(self.fn.__code__)
+        self._close(path)
+        name = self.name
+        if path.open_loops:
+            if value is None and path.closed is None:
+                raise self._unclosed(path, line)
+            if value is None:
+                kind, at = _case_end(self.fn, path.questions, path.open_loops[-1].line)
+                word = "break" if kind == "break" else "a bare return"
+                at = at if kind == "break" else line
+                raise ProofError(
+                    "close",
+                    f"{word} at line {at} ends the loop over {name}.conclusion.domain at its "
+                    "first point; drop it, and the loop goes on to its next point",
+                    at,
+                )
+            raise ProofError(
+                "return",
+                f"return by(...) ends the loop over {name}.conclusion.domain at its first "
+                "point; in a proof that loops, each case closes with yield by(...)",
+                line,
+                fix=f"yield {_by_text(value)}",
+            )
+        if value is not None:
+            raise ProofError(
+                "return",
+                "this proof closes its cases with yield and ends with return by(...): one "
+                "proof does not mix the two; the cases of a loop close with yield by(...), and "
+                "a proof with no loop closes with return by(...)",
+                line,
+                fix="yield by(...) in the loop, and no return",
+            )
+        if not path.closings:
+            raise self._unclosed(path, line)
+
     def _call(self, thunk: Any, path: _Path) -> Any:
         """Run part of the body, turning what it raises into a refusal at its line."""
+        from lanky.surface import FormError, OutsideAProof
+
         try:
             return thunk()
         except (ProofError, _Stopped, StopIteration):
@@ -1549,25 +1844,27 @@ class _Tracer:
         except AssertionError as exc:
             self._assertion(exc, path)
             raise AssertionError("unreachable") from None  # pragma: no cover
-        except RemovedForm as exc:
-            raise ProofError("removed", exc.message, self._raised_at(exc), exc.fix) from None
+        except FormError as exc:
+            raise ProofError(exc.kind, exc.message, self._raised_at(exc), exc.fix) from None
+        except OutsideAProof as exc:
+            raise ProofError("claim", str(exc), self._raised_at(exc)) from None
         except SymbolicBoolError as exc:
             raise ProofError("question", str(exc), self._raised_at(exc)) from None
         except RecursionError:
             raise ProofError(
                 "raised",
-                "the proof calls itself without end; the claim at an earlier point is "
-                "claim[...], and the theorem at smaller values claim(...)",
+                "the proof calls itself without end; an earlier case of the claim is its "
+                f"conclusion at an earlier point, {self.name}.conclusion[...]",
                 None,
             ) from None
         except NameError as exc:
             missing = getattr(exc, "name", None)
-            if missing in ("by", "claim"):
+            if missing == "by":
                 raise ProofError(
                     "raised",
-                    f"{missing} is one of the words of a proof, and the file does not import it",
+                    "by is one of the words of a proof, and the file does not import it",
                     self._raised_at(exc),
-                    fix="from lanky import by, claim",
+                    fix="from lanky import by",
                 ) from None
             raise ProofError(
                 "raised", f"the proof raised NameError: {exc}", self._raised_at(exc)
@@ -1623,44 +1920,60 @@ class _Tracer:
         return line
 
     def _returned(self, result: Any, path: _Path) -> None:
-        """What a body that does not yield returned: ``by(...)``, nothing, or a refused form."""
+        """What a body that does not yield returned: ``by(...)``, or a refused form or nothing."""
         code = self.fn.__code__
         line = path.returns.get(code)
         self._close(path)
-        if result is None:
-            if path.leaf_line is None:
-                path.leaf_line = line
-            return
-        if path.loops:
+        name = self.name
+        if path.open_loops and result is None:
+            raise self._unclosed(path, line)
+        if path.open_loops:
             raise ProofError(
                 "return",
-                "return by(...) leaves the loop over claim.dom at its first point; close each "
-                "point with yield by(...)",
+                f"return by(...) leaves the loop over {name}.conclusion.domain at its first "
+                "point; close each case of the loop with yield by(...)",
                 line,
                 fix=f"yield {_by_text(result)}",
             )
+        if result is None:
+            raise self._unclosed(path, line, "return")
         if isinstance(result, By):
-            path.leaf_facts = tuple(self._fact(item, line) for item in result.facts)
+            facts = tuple(self._fact(item, line) for item in result.facts)
+            path.leaf_facts = facts if facts or result.hole else None
             path.leaf_hole = result.hole
             path.leaf_line = line
+            path.closings += 1
             return
         raise self._refused_reason(result, line, "return")
 
     def _yielded(self, value: Any, path: _Path, line: int | None) -> None:
-        """What a ``yield`` gives: ``by(...)`` for the point the loop is at, or nothing."""
+        """What a ``yield`` gives: ``by(...)`` for the point of the innermost loop over a domain."""
         self._close(path)
-        if path.state != "at":
+        name = self.name
+        if not path.open_loops:
             where = (
-                "after the loop over claim.dom"
+                f"after the loop over {name}.conclusion.domain"
                 if path.state == "after"
-                else "outside a loop over claim.dom"
+                else f"outside a loop over {name}.conclusion.domain"
             )
+            names = _point_text(self._next_names()) if self.levels else "n"
             raise ProofError(
                 "yield",
-                f"yield by(...) closes the point the loop over claim.dom is at, and this one "
-                f"is {where}; a claim with no variables ends with return by(...)",
+                f"yield by(...) closes the point the loop over {name}.conclusion.domain is at, "
+                f"and this one is {where}; a claim proved without a loop ends with "
+                "return by(...)",
                 line,
-                fix="for n in claim.dom: ... yield by(...)" if not path.loops else None,
+                fix=f"for {names} in {name}.conclusion.domain:"
+                if not path.loops and self.levels
+                else "return by(...)",
+            )
+        current = path.open_loops[-1]
+        if current.inner:
+            raise ProofError(
+                "yield",
+                f"the point ({', '.join(current.names)}) was closed by the loop over the "
+                "conclusion's domain there; a point is closed once",
+                line,
             )
         if path.closed is not None:
             raise ProofError(
@@ -1669,33 +1982,47 @@ class _Tracer:
                 "by one yield: split the cases with if and else",
                 line,
             )
+        depth = len(path.open_loops)
+        if self.point_depth is None:
+            self.point_depth, self.point_line = depth, line
+        elif self.point_depth != depth:
+            raise ProofError(
+                "yield",
+                f"this yield closes the conclusion {depth} for-levels deep, and the one at line "
+                f"{self.point_line} {self.point_depth} deep; every case closes the conclusion at "
+                "points of one loop",
+                line,
+            )
         path.closed = line
+        path.closings += 1
         path.events.append(("yield", str(line)))
         path.leaf_line = line
         if value is None:
-            return
+            raise ProofError(
+                "close",
+                "a bare yield closes the case with nothing said; close it with yield by() if "
+                "it follows directly, or give its reasons, yield by(f, g)",
+                line,
+                fix="yield by()",
+            )
         if isinstance(value, By):
-            path.leaf_facts = tuple(self._fact(item, line) for item in value.facts)
+            # by() adds nothing: the case is lanky's to close, after the steps it asserted
+            facts = tuple(self._fact(item, line) for item in value.facts)
+            path.leaf_facts = facts if facts or value.hole else None
             path.leaf_hole = value.hole
             return
         raise self._refused_reason(value, line, "yield")
 
     def _refused_reason(self, value: Any, line: int | None, word: str) -> ProofError:
         """A ``return`` or ``yield`` of what is no ``by(...)``: 0.5's forms, with the fix."""
-        from lanky.surface import _Claim
+        from lanky.surface import Conclusion
 
-        if isinstance(value, _Claim):
-            return ProofError(
-                "removed",
-                "return claim is how lanky 0.5 ended a proof; in 0.6 the proof loops over the "
-                "claim's points and closes each with yield by(...)",
-                line,
-                fix=f"for {', '.join(var.name for var, _ in self.binders) or 'n'} in claim.dom:",
-            )
         items = value if isinstance(value, tuple | list) else (value,)
         from lanky.theory import Theorem
 
-        if items and all(isinstance(item, Given | Citation | Theorem) for item in items):
+        if items and all(
+            isinstance(item, Given | Citation | Theorem | Conclusion) for item in items
+        ):
             texts = ", ".join(reason_text(item) for item in items)
             written = f"{word} {texts}"
             return ProofError(
@@ -1706,35 +2033,44 @@ class _Tracer:
             )
         return ProofError(
             word,
-            f"a proof's {word} gives by(...), the reasons for its claim, or nothing; this "
-            f"{word} gives {_described(value)}",
+            f"a proof's {word} gives by(...), the reasons for its case; this {word} gives "
+            f"{_described(value)}",
             line,
             fix=f"{word} by(...)",
         )
 
     def _fact(self, item: Any, line: int | None) -> Citation:
         """A fact ``by(...)`` was given, as a citation; anything but a fact is refused."""
-        from lanky.surface import _Claim
+        from lanky.surface import ClaimCondition, Conclusion, Conditions
         from lanky.theory import Theorem
 
         if isinstance(item, Citation):
             return item
         if isinstance(item, Given):
             return Citation(item, None, line)
+        if isinstance(item, Conclusion):
+            return self.conclusion_fact(item, line)
         if isinstance(item, Theorem):
             if item is self.theorem:
-                raise self._self_reference(line)
+                raise ProofError(
+                    "claim",
+                    f"{self.name} alone is the whole claim, the one being proved; cite its "
+                    f"conclusion at an earlier point, as "
+                    f"{self.name}.conclusion[{_earlier_text(self._next_names())}]",
+                    line,
+                    fix=f"{self.name}.conclusion[{_earlier_text(self._next_names())}]",
+                )
             return Citation(item, None, line)
-        if isinstance(item, _Claim):
+        if isinstance(item, Conditions | ClaimCondition):
             raise ProofError(
-                "claim",
-                "claim alone is the whole theorem, the one being proved; cite it at an earlier "
-                "point, as claim[n - 1], or at smaller values, as claim(n - 1)",
+                "cite",
+                f"{reason_text(item)} is a condition of another claim, which that claim "
+                "assumes; cite the claim itself",
                 line,
             )
         raise ProofError(
             "return",
-            f"by(...) takes facts: a hypothesis, a theorem or the claim at a point; it is "
+            f"by(...) takes facts: a condition, a claim or a conclusion at a point; it is "
             f"given {_described(item)}",
             line,
         )
@@ -1744,16 +2080,14 @@ class _Tracer:
     # {{{ the claim, once every path is traced
 
     def define_claim(self, leaves: list[Leaf]) -> tuple[ClaimDef | None, list[Leaf]]:
-        """The claim the proof cites or loops over, and the leaves with its citations made final.
+        """The conclusion's points the proof loops over and cites, and the citations made final.
 
-        A citation of the claim is recorded while the body runs with what it
-        was given: a point of the conclusion, ``claim[p]``, or values of the
-        theorem's parameters, ``claim(...)``. Once every path is traced the
-        claim's parameters are known: the theorem's parameters some
-        ``claim(...)`` changes, then the conclusion's variables. Each
-        citation then gives a value for every parameter: its own, the
-        parameter itself for one it leaves as it is, and ``None`` for a
-        variable of the conclusion a ``claim(...)`` leaves for lanky to find.
+        A citation of the claim's own conclusion is recorded while the body
+        runs with the point it was given. Once every path is traced the
+        claim's parameters are known: the variables of each nested ``for``
+        the proof loops over down to where its ``yield`` closes the
+        conclusion. A point given for fewer levels is completed with
+        ``None``, which lanky finds by matching.
         """
         citations = [
             citation
@@ -1763,41 +2097,50 @@ class _Tracer:
         ]
         if self.loop_line is None and not citations:
             return None, leaves
-        names = list(self.variables)
-        calls = [citation for citation in citations if not citation.bracket]
-        generalized = [
-            name
-            for index, name in enumerate(names)
-            if any(
-                not (isinstance(call.values[index], Var) and call.values[index].name == name)
-                for call in calls
-            )
-        ]
-        binders = [var.name for var, _ in self.binders]
-        shadowing = [name for name in binders if name in self.variables or name in self.hypotheses]
+        depth = self.point_depth or self.deepest or 1
+        looped = self.levels[:depth]
+        binders = [binder for level, _guard in looped for binder in level]
+        names = [var.name for var, _ in binders]
+        shadowing = [name for name in names if name in self.variables or name in self.hypotheses]
         if shadowing:
             raise ProofError(
                 "claim",
-                f"the claim's variable {shadowing[0]} has the name of a parameter of "
-                f"{self.theorem.__name__}, so the two cannot be told apart in the proof; "
-                "rename the claim's",
+                f"the conclusion's variable {shadowing[0]} has the name of a parameter of "
+                f"{self.name}, so the two cannot be told apart in the proof; rename the "
+                "conclusion's",
                 self.loop_line or self.claim_line,
             )
-        params = (*generalized, *binders)
-        domains = (
-            *(self.variables[name] for name in generalized),
-            *(domain for _var, domain in self.binders),
+        sizes = tuple(len(level) for level, _guard in looped)
+        directions = tuple(
+            -1 if self.reversed.get(index) else 1
+            for index, size in enumerate(sizes)
+            for _ in range(size)
         )
         line = self.loop_line or self.claim_line or self.theorem.line
-        claim = ClaimDef("claim", params, domains, tuple(generalized), line)
+        claim = ClaimDef(
+            f"{self.name}.conclusion",
+            tuple(names),
+            tuple(domain for _var, domain in binders),
+            (),
+            line,
+            sizes,
+            directions,
+        )
         made: dict[int, Citation] = {}
         for citation in citations:
-            if citation.bracket:
-                values = (*(Var(name) for name in generalized), *citation.values)
-            else:
-                given = dict(zip(names, citation.values, strict=True))
-                values = (*(given[name] for name in generalized), *(None for _ in binders))
-            made[id(citation)] = replace(citation, source=claim, values=tuple(values))
+            values = tuple(citation.values or ())
+            if len(values) > len(names):
+                outer = claim.written((*values[: len(names)],))
+                raise ProofError(
+                    "claim",
+                    f"{citation.text()} is a point inside {outer}, which this proof closes "
+                    f"whole; cite {outer}, where lanky finds the point, or loop over "
+                    f"{outer}.domain too",
+                    citation.line,
+                    fix=outer,
+                )
+            values = (*values, *(None for _ in range(len(names) - len(values))))
+            made[id(citation)] = replace(citation, source=claim, values=values)
 
         def final(facts: tuple[Citation, ...] | None) -> tuple[Citation, ...] | None:
             if facts is None:
@@ -1823,7 +2166,112 @@ class _Tracer:
             out.append(replace(leaf, facts=final(leaf.facts), order=order))
         return claim, out
 
+    def flat_goal(self) -> Any:
+        """The conclusion with the levels the proof loops over taken as one ``for``."""
+        depth = self.point_depth or self.deepest or 0
+        return flattened(self.goal, depth)
+
     # }}}
+
+
+def flattened(goal: Any, depth: int) -> Any:
+    """``goal`` with its first ``depth`` nested ``for`` levels as one: binders, then guards."""
+    from lanky.surface import levels
+
+    if depth <= 1:
+        return goal
+    found = levels(goal)[:depth]
+    body = goal
+    for _ in found:
+        body = body.body
+    binders = tuple(binder for level, _guard in found for binder in level)
+    guards = [part for _level, guard in found for part in conjuncts(guard)]
+    from lanky.terms import LogicalAnd
+
+    guard: Any = None
+    if len(guards) == 1:
+        guard = guards[0]
+    elif guards:
+        guard = LogicalAnd(tuple(guards))
+    return Forall(binders, body, guard)
+
+
+def _point_text(names: list[str]) -> str:
+    return ", ".join(names) if names else "n"
+
+
+def _earlier_text(names: list[str]) -> str:
+    """``n - 1``, or ``a - 1, b``: the first variable one smaller."""
+    first, *rest = names or ["n"]
+    return ", ".join([f"{first} - 1", *rest])
+
+
+def _case_end(
+    fn: Any, questions: Sequence[Question], loop_line: int | None
+) -> tuple[str, int | None]:
+    """How a case with no closing line ends: ``continue``, a bare ``return`` or its last line.
+
+    The case is found by walking the body's source along the path's ``if``
+    statements, each to the branch its question was answered with: in the
+    loop at ``loop_line``, or in the whole body for a proof with no loop.
+    ``("end", None)`` where the source cannot be read.
+    """
+    try:
+        lines, start = inspect.getsourcelines(fn)
+        tree = ast.parse(textwrap.dedent("".join(lines)))
+    except (OSError, TypeError, SyntaxError):
+        return "end", None
+    offset = start - 1
+    function = next(
+        (node for node in tree.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)),
+        None,
+    )
+    if function is None:
+        return "end", None
+    statements: list[ast.stmt] = list(function.body)
+    if loop_line is not None:
+        loop = next(
+            (
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.For) and node.lineno + offset == loop_line
+            ),
+            None,
+        )
+        if loop is None:
+            return "end", None
+        statements = list(loop.body)
+    asked = [(question.line, question.answer) for question in questions]
+
+    def answer_of(node: ast.If) -> bool | None:
+        first = node.test.lineno + offset
+        last = (node.test.end_lineno or node.test.lineno) + offset
+        for line, answer in asked:
+            if first <= line <= last:
+                return answer
+        return None
+
+    def walk(block: list[ast.stmt]) -> tuple[str, int | None] | None:
+        last: int | None = None
+        for statement in block:
+            last = (statement.end_lineno or statement.lineno) + offset
+            if isinstance(statement, ast.Continue):
+                return "continue", statement.lineno + offset
+            if isinstance(statement, ast.Break):
+                return "break", statement.lineno + offset
+            if isinstance(statement, ast.Return) and statement.value is None:
+                return "return", statement.lineno + offset
+            if isinstance(statement, ast.If):
+                answer = answer_of(statement)
+                if answer is None:
+                    continue
+                inner = walk(statement.body if answer else statement.orelse)
+                if inner is not None and inner[0] != "end":
+                    return inner
+        return ("end", last) if last is not None else None
+
+    found = walk(statements)
+    return found if found is not None else ("end", None)
 
 
 def _parts(holds: list[tuple[Any, int]], reasons: _Reasons, line: int) -> tuple[Any, ...]:
@@ -1875,26 +2323,59 @@ def _parts(holds: list[tuple[Any, int]], reasons: _Reasons, line: int) -> tuple[
     return tuple(parts)
 
 
-def _not_earlier(names: list[str], values: tuple[Any, ...]) -> str | None:
-    """``later`` or ``same`` for a point the loop has not filled in; else ``None``.
+def _earlier(
+    names: Sequence[str],
+    values: Sequence[Any],
+    directions: Sequence[int],
+    facts: Sequence[Any] = (),
+    types: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Whether a point comes earlier in the loops than the one they are at (design 3.5).
 
-    The loop fills the claim in order, so a point is filled in before the one
-    the loop is at when one of its variables is smaller there: ``claim[n -
-    1]``, ``claim[i, a - 2, b + 2]``. One with none smaller and one larger,
-    ``claim[n + 1]``, is not filled in yet, and the point itself is the one
-    being filled. A point that is smaller in one variable and larger in
-    another, ``claim[a + 1, n - 1]``, is left to the measure Lean is given
-    (:func:`lanky.proofs.compile.measure`), as is a value that is no
-    variable plus a whole number.
+    ``names`` is the point the loops are at, ``values`` the point cited,
+    outermost first, and ``directions`` for each variable ``1`` where its
+    loop walks up and ``-1`` where it walks down, ``reversed(...)``. The
+    loops fill the conclusion in their order, which is lexicographic in the
+    binders, outer domains first, and strict: the first variable where the
+    two points differ decides. ``None`` for a point that comes earlier;
+    ``later`` for one that comes after; ``same`` for the point the loop is
+    at, or a part of the conclusion that holds it. A value that is no
+    variable plus a whole number is decided by the path's facts where they
+    decide it, and else left to the measure Lean is given (``None``).
     """
-    changes = [offset_of(value, name) for name, value in zip(names, values, strict=True)]
-    if any(change is None for change in changes):
-        return None
-    if all(change == 0 for change in changes):
-        return "same"
-    if all(change >= 0 for change in changes):
-        return "later"
-    return None
+    from lanky.terms import Comparison
+
+    for name, value, direction in zip(names, values, directions, strict=False):
+        if value is None:
+            return None
+        change = offset_of(value, name)
+        if change is None:
+            if types is None:
+                return None
+            before = "<" if direction > 0 else ">"
+            below = decide(Comparison(value, before, Var(name)), facts, types)
+            if below is True:
+                return None
+            same = decide(Comparison(value, "==", Var(name)), facts, types)
+            if same is True:
+                continue
+            after = ">" if direction > 0 else "<"
+            above = decide(Comparison(value, after, Var(name)), facts, types)
+            return "later" if above is True else None
+        if change * direction < 0:
+            return None
+        if change * direction > 0:
+            return "later"
+    return "same"
+
+
+def earlier_point(claim: ClaimDef, values: Sequence[Any]) -> bool:
+    """Whether the claim's conclusion at ``values`` comes earlier in its proof's loops."""
+    directions = claim.directions or (1,) * len(claim.params)
+    return _earlier(claim.params, values, directions) is None and any(
+        value is not None and offset_of(value, name) not in (None, 0)
+        for name, value in zip(claim.params, values, strict=False)
+    )
 
 
 def _names_in(value: Any) -> frozenset[str]:
@@ -1907,24 +2388,15 @@ def _names_in(value: Any) -> frozenset[str]:
         return frozenset()
 
 
-def _earlier_example(names: list[str]) -> str:
-    """``claim[n - 1]``, or ``claim[a - 1, b]``: a point the loop has filled in."""
-    first, *rest = names
-    return f"claim[{', '.join([f'{first} - 1', *rest])}]"
-
-
-def _smaller_example(names: list[str], variables: Mapping[str, Any]) -> str:
-    """``claim(n - 1)``: the theorem at smaller values of its first integer parameter."""
-    from lanky.proofs.cases import integer_sort
-
-    integer = [name for name in names if integer_sort(variables[name])]
-    if not integer:
-        return "claim(...)"
-    first = integer[0]
-    shown_values = [f"{name} - 1" if name == first else name for name in names]
-    while shown_values and shown_values[-1] in names and shown_values[-1] != first:
-        shown_values.pop()
-    return f"claim({', '.join(shown_values)})"
+def _earlier_example(loops: Sequence[_Loop]) -> str:
+    """``[n - 1]``, or ``[i][a - 1, b]``: the point one before in the innermost loop's order."""
+    out = ""
+    for index, loop in enumerate(loops):
+        names = list(loop.names)
+        if index == len(loops) - 1:
+            names[0] = f"{names[0]} + 1" if loop.reverse else f"{names[0]} - 1"
+        out += f"[{', '.join(names)}]"
+    return out
 
 
 def _by_text(value: Any) -> str:
@@ -1987,8 +2459,11 @@ def _tree(leaves: list[Leaf]) -> Node:
 
 def _refuse_def_claim(theorem: Any) -> None:
     """Refuse 0.5's ``def claim`` inside the body, with the loop to write instead."""
-    goal = theorem.goal
-    binders = [var.name for var, _ in goal.binders] if isinstance(goal, Forall) else []
+    from lanky.surface import levels
+
+    found = levels(theorem.goal)
+    binders = [var.name for var, _ in found[0][0]] if found else []
+    name = getattr(theorem, "qualname", None) or theorem.__name__
     for constant in theorem.fn.__code__.co_consts:
         if not (isinstance(constant, pytypes.CodeType) and constant.co_name == "claim"):
             continue
@@ -1999,18 +2474,20 @@ def _refuse_def_claim(theorem: Any) -> None:
             raise ProofError(
                 "removed",
                 f"{signature} is how lanky 0.5 wrote a proof; in 0.6 the proof is a loop over "
-                f"the claim's points, for {point} in claim.dom:, each closed with "
-                "yield by(...), and claim[...] is the claim at an earlier point",
+                f"the conclusion's points, for {point} in {name}.conclusion.domain:, each case "
+                f"closed with yield by(...), and {name}.conclusion[...] is the conclusion at an "
+                "earlier point",
                 constant.co_firstlineno,
-                fix=f"for {point} in claim.dom:",
+                fix=f"for {point} in {name}.conclusion.domain:",
             )
+        first = params[0] if params else "n"
         raise ProofError(
             "removed",
-            f"{signature} is how lanky 0.5 wrote an induction on the theorem's parameters; "
-            "in 0.6 the body itself is the proof, and claim(...) is the theorem at smaller "
-            "values",
+            f"{signature} is how lanky 0.5 wrote an induction on the claim's parameters; in "
+            f"0.6 a variable one inducts on belongs in the conclusion's for, -> all(... for "
+            f"{first} in ...), and the proof loops over {name}.conclusion.domain",
             constant.co_firstlineno,
-            fix=f"the body itself, citing claim({', '.join(p + ' - 1' for p in params[:1])})",
+            fix=f"for {first} in {name}.conclusion.domain:",
         )
 
 
@@ -2100,4 +2577,5 @@ def trace_proof(theorem: Any) -> Proof:
         leaves=tuple(leaves),
         lines=lines,
         path=theorem.path,
+        goal=tracer.flat_goal() if claim is not None else None,
     )
