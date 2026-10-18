@@ -5,28 +5,35 @@ the annotations by lanky's printer, as it always is, with each hypothesis
 under its Python name, so that a bug here can make a proof fail and never
 prove another claim. One command holds the whole proof:
 
-- ``def claim(a, b)`` is a theorem of its own, ``Lanky.<name>.claim``, with
-  the claim's variables as parameters after the theorem's, the goal's guard
-  among its hypotheses, and the goal's body as its statement. A call of
-  ``claim`` inside it is a recursive call, which ``termination_by`` with the
-  measure lanky finds (:func:`measure`) has Lean check is closer to a base
-  case. The theorem itself is ``Lanky.<name>``, proved by applying the claim.
-  A parameter of ``claim`` that names one of the theorem's generalizes it: the
-  recursive call gives it a value, and the hypotheses that mention it become
-  conditions to show there.
+- The conclusion the proof loops over, ``for a, b in
+  name.conclusion.domain:``, and cites at earlier points,
+  ``name.conclusion[a - 2, b + 2]``, is a theorem of its own,
+  ``Lanky.<name>.claim``, with the theorem's variables and the conclusion's
+  as parameters (the variables of each nested ``for`` the proof loops over,
+  in order), the goal's guards among its hypotheses, and the goal's body as
+  its statement. A citation of the conclusion inside it is a recursive
+  call, which ``termination_by`` with the measure lanky finds
+  (:func:`measure`) has Lean check is closer to a base case. The theorem
+  itself is ``Lanky.<name>``, proved by applying the claim.
 - ``if c:`` is ``by_cases``. A branch whose condition fixes integers, ``n ==
   1`` or ``a + b == 0`` among naturals, substitutes them.
 - A fact at a point is the hypothesis applied to the values, each condition
   closed by ``omega``, or, over the reals, by the first of a few rules. A fact
   cited by its name alone is applied at the point found by matching it
-  against the step it supports, a link or the case's claim
-  (:func:`lanky.matching.single_point`).
-- ``return f, g`` is one step: ``exact``, or ``linear_combination`` with
-  multipliers Python finds (:mod:`lanky.induction`), or ``linarith`` and
-  ``nlinarith`` with the facts, in Mathlib; ``exact``, ``omega`` after the
-  indices are normalized, or ``grind``, in core Lean. A bare ``return`` is
-  lanky's whole-goal closers on the case. A chain is a ``calc``, a link to a
-  step, and a named chain a ``have``; a link written ``by=...`` is ``sorry``.
+  against the step it supports, a link or the case's claim, and the terms
+  of the step's other facts (:func:`lanky.matching.single_point`).
+- ``assert x == y == z, by(f, g)`` is a ``have`` of ``x = z``, proved by a
+  ``calc``, a link to a step, each link closed from the facts of the
+  ``assert`` that fit it; it is known for the rest of its case, and every
+  later step of the case may use it. ``by(...)`` is ``sorry``.
+- ``yield by(f, g)`` and ``return by(f, g)`` are one step: ``exact``, or
+  ``linear_combination`` with multipliers Python finds (:mod:`lanky.induction`),
+  or ``linarith`` and ``nlinarith`` with the facts, in Mathlib; ``exact``,
+  ``omega`` after the indices are normalized, or ``grind``, in core Lean.
+  Where a step the case asserted starts at the claim's left side, the step
+  is the rest of the way, from where that one ended. A case closed with
+  ``by()`` is lanky's whole-goal closers on it, after the steps it
+  asserted.
 - The compiler adds what a reader never writes: that an integer denominator
   the case shows is not zero is not zero in the field (:func:`nonzero_lines`),
   and the shift ``n.toNat = (n - 1).toNat + 1`` where a fact has the power one
@@ -70,21 +77,22 @@ from lanky.matching import FamilyValue, _affine, implied, instantiate, same
 from lanky.prelude import FinType, FnType, Refined
 from lanky.proofs.cases import (
     Shape,
-    affine,
     integer_sort,
     negated,
+    offset_of,
     pins,
     shape_of,
 )
 from lanky.proofs.trace import (
+    Asserted,
     ClaimDef,
     Given,
     Leaf,
     LinkStep,
-    Named,
     Node,
     Proof,
     ProofError,
+    Question,
     TracedChain,
 )
 from lanky.terms import (
@@ -184,20 +192,46 @@ class Instance:
 
 @dataclass(frozen=True, eq=False)
 class Step:
-    """A ``return`` as the report needs it: the case, its claim, and the facts at their points."""
+    """A step as the report needs it: where it is, its claim, and the facts at their points.
 
-    leaf: Leaf
+    Attributes:
+        leaf: The case it closes, for a ``yield`` or a ``return``; ``None``
+            for a step an ``assert`` states.
+        claim: What it shows.
+        instances: The facts at their points: those its ``by(...)`` gives,
+            then the steps the case asserted before it, in Lean's context
+            already (each with an :class:`~lanky.proofs.trace.Asserted` for
+            its citation's source).
+        conditions: The case's conditions, each with the line of its ``if``.
+        types: The sort of every name in scope.
+        multipliers: What Python found to combine the instances into the
+            claim, where it found anything.
+        line: The line of a link of an ``assert``.
+        owner: The :class:`~lanky.proofs.trace.Leaf` or the
+            :class:`~lanky.proofs.trace.Asserted` it belongs to.
+    """
+
+    leaf: Leaf | None
     claim: Any
     instances: tuple[Instance, ...]
     conditions: tuple[tuple[Any, int], ...]
     types: Mapping[str, Any]
     multipliers: tuple[Any, ...] | None = None
     line: int | None = None
+    owner: Any = None
 
     @property
     def where(self) -> int | None:
-        """The Python line of the step: a link's own, or the ``return``'s."""
-        return self.line if self.line is not None else self.leaf.line
+        """The Python line of the step: a link's own, the ``assert``'s, or the ``yield``'s."""
+        if self.line is not None:
+            return self.line
+        owner = self.owner if self.owner is not None else self.leaf
+        return getattr(owner, "line", None)
+
+    @property
+    def asserted(self) -> Asserted | None:
+        """The ``assert`` the step belongs to, if it is one's."""
+        return self.owner if isinstance(self.owner, Asserted) else None
 
 
 @dataclass(frozen=True, eq=False)
@@ -241,7 +275,7 @@ class Command:
         as_cited: The text a proof that cites this theorem restates, which the
             command proves as ``Lanky.<name>.as_cited``; ``None`` for none.
         audited: The theorems the command's axiom audit asks about.
-        holes: The Python lines of the steps left open, ``by=...``.
+        holes: The Python lines of the steps left open, ``by(...)``.
         outline: The proof's steps as ``lanky check --steps`` prints them:
             ``(line, case, left, relation, term, reason)``.
     """
@@ -543,18 +577,8 @@ def _cited_premises(theorem: Any, mathlib: bool, names: _Names) -> Shape:
 # {{{ the measure
 
 
-def _change(value: Any, name: str) -> int | None:
-    """How much ``value`` is above the variable ``name``: ``-2`` for ``a - 2``; else ``None``."""
-    form = affine(value)
-    if form is None:
-        return None
-    rest = dict(form)
-    if rest.pop(name, 0) != 1:
-        return None
-    if any(key is not None for key in rest):
-        return None
-    constant = rest.get(None, 0)
-    return int(constant) if constant == int(constant) else None
+#: How far a value is above a variable: ``-2`` for ``a - 2`` (:func:`.cases.offset_of`).
+_change = offset_of
 
 
 def _upper_bound(name: str, domain: Any, conditions: Sequence[Any]) -> Any:
@@ -652,8 +676,8 @@ def measure(claim: ClaimDef, calls: Sequence[Citation], conditions: Sequence[Any
         f"{call.text()} is not at smaller values: {which}",
         return_line,
         fix=(
-            "call the claim where one argument is smaller, as a - 2, and stays a natural "
-            "number, or climbs toward a bound"
+            "cite the conclusion where one value is smaller, as a - 2, and stays a natural "
+            "number, or loop over a bounded domain with reversed(...) for one that climbs"
         ),
     )
 
@@ -927,13 +951,29 @@ class _Context:
 
     ``guards`` are the claim's own conditions, the goal's guard at its
     variables; ``conditions`` the case splits on the path, each with the line
-    of its ``if``; ``facts`` everything that holds, for deciding.
+    of its ``if``; ``facts`` everything that holds, for deciding;
+    ``questions`` the splits on the path, for the outline's case labels;
+    ``asserted`` the steps the case asserted so far, each a fact in Lean's
+    context under its name, which every later step of the case may use.
     """
 
     pins: dict[str, Any]
     conditions: list[tuple[Any, int]]
     facts: list[Any]
     guards: tuple[Any, ...] = ()
+    questions: list[Question] = field(default_factory=list)
+    asserted: list[Instance] = field(default_factory=list)
+
+    def branch(self, question: Question, holds: Any) -> _Context:
+        """The context of one branch of a split, its condition known."""
+        return _Context(
+            dict(self.pins),
+            [*self.conditions, (holds, question.line)],
+            [*self.facts, holds],
+            self.guards,
+            [*self.questions, replace(question, answer=holds is question.prop)],
+            list(self.asserted),
+        )
 
 
 class _Compiler:
@@ -945,7 +985,8 @@ class _Compiler:
         self.theorem = proof.theorem
         self.mathlib = mathlib
         theorem = proof.theorem
-        self.goal = theorem.goal
+        # the conclusion as the proof closes it: nested for levels it loops over taken as one
+        self.goal = proof.conclusion
         taken = _mentioned(theorem.term) | {name for name, _ in theorem.variables}
         if proof.claim is not None:
             taken |= set(proof.claim.params)
@@ -967,9 +1008,11 @@ class _Compiler:
         self.steps: list[Step] = []
         self.lines: list[_Line] = []
         self.outline: list[tuple[int | None, str, str, str, str, str]] = []
-        # the case and the fact on the way the next row of the outline is in
+        # the case the next row of the outline is in; whether a step makes a row of its own
         self._case = ""
-        self._label = ""
+        self._outlining = True
+        # the cases lanky was left to close
+        self.routine = 0
 
     def _premises(self, theorems: list[Any]) -> None:
         """Restate the theorems the cited theorems' own proofs cited, after them (:class:`Premise`).
@@ -1166,8 +1209,7 @@ class _Compiler:
         leaves = self.proof.leaves
         cases = len(leaves)
         steps = len(self.steps)
-        routine = sum(1 for leaf in leaves if leaf.facts is None and leaf.chain is None)
-        named = len({id(chain) for leaf in leaves for chain in leaf.named})
+        routine = self.routine
         holes = len(self.proof.holes)
         parts = []
         if measured is not None:
@@ -1176,8 +1218,6 @@ class _Compiler:
             parts.append(f"{cases} cases")
         if steps or not routine:
             parts.append("1 step" if steps == 1 else f"{steps} steps")
-        if named:
-            parts.append("1 named fact" if named == 1 else f"{named} named facts")
         if routine:
             parts.append("1 routine" if routine == 1 else f"{routine} routine")
         if holes:
@@ -1201,18 +1241,23 @@ class _Compiler:
         return [_Line(f"{head} : {statement.goal} := by", origin)]
 
     def _termination(self, measured: Measure, origin: Origin) -> list[_Line]:
-        """``termination_by`` with the measure, and ``decreasing_by`` where it needs one."""
+        """``termination_by`` with the measure, and ``decreasing_by`` where it needs one.
+
+        ``decreasing_by`` gets one goal per citation of the conclusion, all at
+        once: a calculation cites it in each link (#191), and a proof may cite
+        two earlier points. So ``omega`` runs on every goal, not the first.
+        """
         names = [lean_identifier(name) for name in measured.names]
         if measured.kind == "down":
             return [
                 _Line(f"termination_by {names[0]}.toNat", origin),
-                _Line("decreasing_by omega", origin),
+                _Line("decreasing_by all_goals omega", origin),
             ]
         if measured.kind == "up":
             bound = render_term(measured.bound, self.types, self.mathlib, self.shadowed)
             return [
                 _Line(f"termination_by ({bound} - {names[0]}).toNat", origin),
-                _Line("decreasing_by omega", origin),
+                _Line("decreasing_by all_goals omega", origin),
             ]
         return [_Line(f"termination_by ({names[0]}.toNat, {names[1]}.toNat)", origin)]
 
@@ -1247,6 +1292,14 @@ class _Compiler:
             with dialect(self.mathlib):
                 names, _variables, _guards, _naturals, introduced = _goal_intro(main)
             lines.append(_Line(f"intro {' '.join(names)}", origin))
+            taken = {
+                *names,
+                *(name for name, _ in main.binders),
+                *(name for name, _ in main.hypotheses),
+            }
+            more = self._inner_intro(introduced, taken)
+            if more:
+                lines.append(_Line(f"intro {' '.join(more)}", origin))
         arguments = []
         for param in claim_params:
             if param.binder:
@@ -1257,6 +1310,45 @@ class _Compiler:
                 arguments.append("(by assumption)")
         lines.append(_Line(f"exact {self.claim_declared} {' '.join(arguments)}".rstrip(), origin))
         return lines
+
+    def _inner_intro(self, introduced: dict[str, str], taken: set[str]) -> list[str]:
+        """The names ``intro`` gives the nested ``for`` levels the proof loops over, past the first.
+
+        The theorem's goal states them nested, ``∀ i, ... → ∀ a b, ... →``,
+        and the claim takes them flat, so each level's variables are
+        introduced with their domain's guards and the level's own guard
+        after them, as the printer writes them; the claim is applied to the
+        variables, and its guards are found by ``assumption``.
+        """
+        from lanky.lean import domain_guards
+        from lanky.surface import levels
+
+        claim = self.proof.claim
+        depth = len(claim.levels) if claim is not None and claim.levels else 1
+        found = levels(self.theorem.goal)[:depth]
+        names: list[str] = []
+        scope = dict(self.types)
+        used = set(taken)
+
+        def fresh(stem: str) -> str:
+            name, index = stem, 1
+            while name in used:
+                name = f"{stem}_{index}"
+                index += 1
+            used.add(name)
+            return name
+
+        for binders, guard in found[1:]:
+            for var, domain in binders:
+                lean = fresh(lean_identifier(var.name))
+                introduced[var.name] = lean
+                names.append(lean)
+                for _ in domain_guards(var, domain, scope, mathlib=self.mathlib):
+                    names.append(fresh("hd"))
+                scope[var.name] = domain
+            for _ in conjuncts(guard):
+                names.append(fresh("hg"))
+        return names
 
     # {{{ the tree
 
@@ -1271,9 +1363,10 @@ class _Compiler:
         return render_prop(here, self.types, self.mathlib, self.shadowed)
 
     def _node(self, node: Node, context: _Context, claim: Any) -> list[_Line]:
-        """The tactic block of a node of the case tree."""
+        """The tactic block of a node of the case tree: its steps, then its split or its end."""
+        lines = self._items(node.items, context)
         if node.leaf is not None and node.question is None:
-            return self._leaf(node.leaf, context, claim)
+            return lines + self._leaf(node.leaf, context, claim)
         question = node.question
         assert question is not None
         name = self.names.numbered("case")
@@ -1286,22 +1379,18 @@ class _Compiler:
                 f"Lean cannot state the case split {render(question.prop)}: {exc}",
                 question.line,
             ) from None
-        lines = [_Line(f"by_cases {lean_identifier(name)} : {condition}", origin)]
+        lines.append(_Line(f"by_cases {lean_identifier(name)} : {condition}", origin))
         for answer, branch in ((True, node.then), (False, node.otherwise)):
             prop = question.prop
             holds = prop if answer else negated(prop)
-            inner = _Context(
-                dict(context.pins),
-                [*context.conditions, (holds, question.line)],
-                [*context.facts, holds],
-                context.guards,
-            )
+            inner = context.branch(question, holds)
             body: list[_Line] = self._pins(holds, inner, question.line)
             if branch is None:
                 # a path no run took: its condition contradicts the path to it
                 body.append(_Line("exfalso", origin))
                 body.append(_Line("omega", origin))
             else:
+                self._case = _label_of(inner.questions)
                 body += self._node(branch, inner, claim)
             lines += _indented(body, "· ", "  ")
         return lines
@@ -1327,95 +1416,334 @@ class _Compiler:
             context.pins = {
                 key: substitute(term, {name: value}) for key, term in context.pins.items()
             }
+            context.asserted = [
+                replace(instance, body=substitute(instance.body, {name: value}))
+                for instance in context.asserted
+            ]
         return out
+
+    def _items(self, items: Sequence[Any], context: _Context) -> list[_Line]:
+        """What a node holds before its split or its end: the steps asserted, the questions decided.
+
+        A condition the path's facts decided made no split, and an equation
+        among them that fixes integers fixes them here.
+        """
+        lines: list[_Line] = []
+        for item in items:
+            if isinstance(item, Question):
+                lines += self._pins(item.condition, context, item.line)
+                context.facts.append(item.condition)
+            elif isinstance(item, Asserted):
+                lines += self._asserted(item, context)
+        return lines
+
+    # }}}
+
+    # {{{ a step asserted
+
+    def _asserted(self, step: Asserted, context: _Context) -> list[_Line]:
+        """``assert x == y == z, by(f, g)``: a ``have`` of each thing it states, known from then on.
+
+        A chain of one link is that link's step; a longer one is a ``calc``,
+        each link closed from the facts of the ``assert`` that fit it, a fact
+        cited by name alone at the point that fits the link (and left out of
+        a link it fits nowhere). Each is in Lean's context under its name for
+        the rest of the case, as an :class:`Instance` every later step adds
+        to its own facts.
+        """
+        lines: list[_Line] = []
+        first_row = True
+        for part in step.parts:
+            name = self.names.numbered("step")
+            origin = Origin("asserted", step.line, {"step": step})
+            if isinstance(part, TracedChain):
+                try:
+                    statement = (
+                        f"{self._step_term(part.start, context)} "
+                        f"{_LEAN_RELATION[part.relation]} {self._step_term(part.end, context)}"
+                    )
+                except UnsupportedTerm as exc:
+                    raise ProofError(
+                        "unsupported", f"Lean cannot state the step: {exc}", step.line
+                    ) from None
+                lines.append(_Line(f"have {lean_identifier(name)} : {statement} := by", origin))
+                before = len(self.steps)
+                self._outlining = False
+                try:
+                    if len(part.links) == 1:
+                        left, link = next(part.steps())
+                        body = self._link(left, link, step, context)
+                    else:
+                        body = self._calc(part, step, context)
+                finally:
+                    self._outlining = True
+                self._check_every_fact_fits(step, self.steps[before:])
+                lines += _indented(body, "  ", "  ")
+                self._outline_assert(step, part, self.steps[before:], first_row)
+                prop = part.claim
+            else:
+                try:
+                    statement = self._prop(part, context)
+                except UnsupportedTerm as exc:
+                    raise ProofError(
+                        "unsupported", f"Lean cannot state the step: {exc}", step.line
+                    ) from None
+                lines.append(_Line(f"have {lean_identifier(name)} : {statement} := by", origin))
+                goal = substitute(part, context.pins)
+                if step.hole:
+                    body = [_Line("sorry", Origin("hole", step.line, {"claim": goal}))]
+                    self._outline_row(step.line, render(goal), "", "", "left open (by(...))")
+                else:
+                    self._outlining = False
+                    try:
+                        body, made = self._step(goal, step.facts, step, context, step.line)
+                    finally:
+                        self._outlining = True
+                    self._outline_row(
+                        step.line, render(goal), "", "", self._reason_text(made.instances)
+                    )
+                lines += _indented(body, "  ", "  ")
+                prop = part
+            first_row = False
+            citation = Citation(step, None, step.line)
+            context.asserted.append(Instance(citation, 0, (), substitute(prop, context.pins), name))
+            context.facts.append(substitute(prop, context.pins))
+        return lines
+
+    def _check_every_fact_fits(self, step: Asserted, made: Sequence[Step]) -> None:
+        """Refuse a fact of an ``assert`` cited by name alone that fits none of its links."""
+        used = {id(instance.citation) for each in made for instance in each.instances}
+        for citation in step.facts:
+            if citation.values is not None or citation.is_claim or id(citation) in used:
+                continue
+            if isinstance(citation.source, Given):
+                shapes = [shape_of(part) for part in citation.source.parts]
+            else:
+                shapes = [_cited_premises(citation.source, self.mathlib, self.names)]
+            if not any(shape.binders for shape in shapes):
+                continue
+            unknowns = ", ".join(var.name for var, _ in shapes[0].binders)
+            raise ProofError(
+                "no-point",
+                f"{citation.name}: no single point of {citation.name} fits a link of this "
+                f"step; write its point, as {citation.name}({unknowns}) with the values meant",
+                step.line,
+                fix=f"{citation.name}({unknowns})",
+            )
+
+    def _outline_assert(
+        self, step: Asserted, chain: TracedChain, made: Sequence[Step], first: bool
+    ) -> None:
+        """The outline's rows of an asserted chain: the first with reasons, then the rest."""
+        reason = (
+            "left open (by(...))"
+            if step.hole
+            else self._reason_text([instance for each in made for instance in each.instances])
+        )
+        for index, (left, link) in enumerate(chain.steps()):
+            if index == 0:
+                self._outline_row(
+                    step.line if first else None,
+                    render(left),
+                    link.relation,
+                    render(link.term),
+                    reason,
+                )
+            else:
+                self.outline.append((None, "", render(left), link.relation, render(link.term), ""))
+
+    def _outline_row(
+        self, line: int | None, left: str, relation: str, right: str, reason: str
+    ) -> None:
+        """A row of the outline, in the case the next row is in."""
+        self.outline.append((line, self._case, left, relation, right, reason))
+        self._case = ""
 
     # }}}
 
     # {{{ a leaf
 
     def _leaf(self, leaf: Leaf, context: _Context, claim: Any) -> list[_Line]:
-        """The block that closes one case: its facts and the step, a chain, or lanky's closers.
+        """The block that closes one case: its ``yield`` or ``return``, or lanky's closers.
 
-        A condition the path's facts decided made no split, and an equation
-        among them that fixes integers fixes them here. The facts on the way
-        the case cites come first, each proved in a ``have`` of its own.
+        Where a step the case asserted states the claim, that is the case's
+        proof. Where one starts or ends at a side of the claim, the case's
+        ``by(...)`` is asked only for the rest of the way (:meth:`_gap`).
         """
-        lines: list[_Line] = []
-        for question in leaf.questions:
-            if question.forced:
-                lines += self._pins(question.condition, context, question.line)
         here = substitute(claim, context.pins)
-        self._case = self._case_label(leaf)
-        if leaf.facts is None and leaf.chain is None:
-            return lines + self._routine(leaf, context, here)
-        named: dict[int, Instance] = {}
-        for chain in leaf.named:
-            lines += self._named(chain, leaf, context, named)
-        if leaf.chain is not None:
-            return lines + self._chain(leaf.chain, leaf, context, here, named)
-        produced, step = self._step(here, leaf.facts or (), leaf, context, named, None)
-        return lines + produced
+        word = "yield" if leaf.point else "return"
+        if leaf.hole:
+            self._outline_row(leaf.line, *_sides_of(here), f"left open ({word} by(...))")
+            return [_Line("sorry", Origin("hole", leaf.line, {"claim": here}))]
+        whole = self._asserted_claim(here, context)
+        if whole is not None:
+            return whole
+        if leaf.facts is None:
+            return self._finished(leaf, context, here)
+        gap = self._gap(here, context)
+        if gap is None:
+            produced, step = self._step(here, leaf.facts, leaf, context, None)
+            self._outline_leaf(leaf, here, step)
+            return produced
+        goal, finish = gap
+        name = self.names.numbered("rest")
+        origin = Origin("step", leaf.line, {"claim": here})
+        try:
+            statement = self._prop(goal, context)
+        except UnsupportedTerm as exc:
+            raise ProofError(
+                "unsupported", f"Lean cannot state the step: {exc}", leaf.line
+            ) from None
+        produced, step = self._step(goal, leaf.facts, leaf, context, None)
+        self._outline_leaf(leaf, here, step)
+        lines = [_Line(f"have {lean_identifier(name)} : {statement} := by", origin)]
+        lines += _indented(produced, "  ", "  ")
+        lines.append(_Line(finish.format(rest=lean_identifier(name)), origin))
+        return lines
 
-    def _case_label(self, leaf: Leaf) -> str:
-        """The case of a leaf as a person reading the proof aloud says it: ``if a < 2:``.
+    def _outline_leaf(self, leaf: Leaf, claim: Any, step: Step) -> None:
+        """The outline's row of a ``yield`` or ``return``: the case's claim, and its reasons."""
+        left, relation, right = _sides_of(claim)
+        reasons = [
+            instance
+            for instance in step.instances
+            if not isinstance(instance.citation.source, Asserted)
+        ]
+        self._outline_row(leaf.line, left, relation, right, self._reason_text(reasons))
 
-        The outline lists the cases in the order the body has them, as the
-        ``if``s and ``return``s read, so a case says only what the ones
-        before it did not: the splits it went past on the way, their
-        conditions false, are what "if" after them already means. So
-        ``every_box``'s three cases read ``if a + b == 0:``, ``if a < 2:``
-        and ``otherwise:``, and not ``when a + b != 0 and a < 2:``. Under a
-        split that held, a split that did not says its condition the other
-        way round: ``if a < 2 and b >= 2:``. A case past every split, all
-        false, is ``otherwise:``.
+    def _asserted_claim(self, claim: Any, context: _Context) -> list[_Line] | None:
+        """``exact h``, where a step the case asserted states the claim, its sides either way."""
+        for instance in reversed(context.asserted):
+            body = instance.body
+            if not (isinstance(body, Comparison) and isinstance(claim, Comparison)):
+                continue
+            name = lean_identifier(instance.lean_name)
+            origin = Origin("asserted-end", instance.citation.line, {"claim": claim})
+            if (
+                body.operator == claim.operator
+                and self._prints_as(body.left, claim.left, context)
+                and self._prints_as(body.right, claim.right, context)
+            ):
+                return [_Line(f"exact {name}", origin)]
+            if (
+                body.operator == claim.operator == "=="
+                and self._prints_as(body.left, claim.right, context)
+                and self._prints_as(body.right, claim.left, context)
+            ):
+                return [_Line(f"exact {name}.symm", origin)]
+        return None
+
+    def _gap(self, claim: Any, context: _Context) -> tuple[Any, str] | None:
+        """The rest of the way to an equation, from an asserted step that starts or ends at a side.
+
+        ``(goal, finish)``: what the case's facts are asked for, and the Lean
+        that finishes the claim from that and the asserted step, with
+        ``{rest}`` for the name of the first. ``None`` where no asserted
+        equation has a side of the claim's.
         """
-        split = [question for question in leaf.questions if not question.forced]
-        if not split:
-            return ""
-        first = next((index for index, question in enumerate(split) if question.answer), None)
-        if first is None:
-            return "otherwise:"
-        said = " and ".join(render(question.condition) for question in split[first:])
-        return f"if {said}:"
+        if not (isinstance(claim, Comparison) and claim.operator == "=="):
+            return None
+        for instance in reversed(context.asserted):
+            body = instance.body
+            if not (isinstance(body, Comparison) and body.operator == "=="):
+                continue
+            name = lean_identifier(instance.lean_name)
+            if self._prints_as(body.left, claim.left, context):
+                return Comparison(body.right, "==", claim.right), f"exact {name}.trans {{rest}}"
+            if self._prints_as(body.right, claim.left, context):
+                return (
+                    Comparison(body.left, "==", claim.right),
+                    f"exact {name}.symm.trans {{rest}}",
+                )
+            if self._prints_as(body.right, claim.right, context):
+                return Comparison(claim.left, "==", body.left), f"exact {{rest}}.trans {name}"
+            if self._prints_as(body.left, claim.right, context):
+                return (
+                    Comparison(claim.left, "==", body.right),
+                    f"exact {{rest}}.trans {name}.symm",
+                )
+        return None
+
+    def _prints_as(self, first: Any, second: Any, context: _Context) -> bool:
+        """Whether two terms print as the same Lean, in this case."""
+        try:
+            return self._step_term(first, context) == self._step_term(second, context)
+        except UnsupportedTerm:
+            return False
 
     def _step(
         self,
         goal: Any,
         facts: Sequence[Citation],
-        leaf: Leaf,
+        owner: Any,
         context: _Context,
-        named: Mapping[int, Instance],
         line: int | None,
+        lenient: bool = False,
     ) -> tuple[list[_Line], Step]:
-        """One step: the facts at their points, then what closes ``goal`` from them."""
+        """One step: the facts at their points, then what closes ``goal`` from them and the case's.
+
+        The facts written at a point come first, so that the terms they
+        bring are there for the facts cited by name alone to be matched
+        against too. The steps the case asserted before it are facts of the
+        step as well, in Lean's context already. ``lenient`` leaves out a
+        fact cited by name alone that fits no single point of this step, for
+        a link of a chain, whose ``assert`` lists the facts of every link.
+        """
         lines: list[_Line] = []
-        instances: list[Instance] = []
-        for citation in facts:
-            produced, made = self._citation(
-                citation, leaf, context, goal, named, link=line is not None
-            )
+        made: list[tuple[int, list[Instance]]] = []
+        extra: list[Any] = []
+        written = [
+            (index, citation)
+            for index, citation in enumerate(facts)
+            if citation.values is not None or not _needs_a_point(citation)
+        ]
+        alone = [
+            (index, citation)
+            for index, citation in enumerate(facts)
+            if citation.values is None and _needs_a_point(citation)
+        ]
+        for index, citation in [*written, *alone]:
+            try:
+                produced, instances = self._citation(
+                    citation, context, goal, link=line is not None, extra=extra
+                )
+            except ProofError as exc:
+                if lenient and exc.kind == "no-point" and citation.values is None:
+                    continue
+                raise
             lines += produced
-            instances += made
+            made.append((index, instances))
+            for instance in instances:
+                extra.extend(_sides(instance.body))
+        instances_in_order = [
+            instance
+            for _index, group in sorted(made, key=lambda pair: pair[0])
+            for instance in group
+        ]
         step = Step(
-            leaf=leaf,
+            leaf=owner if isinstance(owner, Leaf) else None,
             claim=goal,
-            instances=tuple(instances),
+            instances=(*instances_in_order, *context.asserted),
             conditions=tuple(context.conditions),
             types=dict(self.types),
             line=line,
+            owner=owner,
         )
-        step = replace(step, multipliers=self._multipliers(goal, instances))
+        step = replace(step, multipliers=self._multipliers(goal, step.instances))
         self.steps.append(step)
         origin = Origin("step", step.where, {"step": step})
         lines += self._closer(step, origin, context)
-        self._outline_step(step, goal, line)
+        if self._outlining and line is not None:
+            self._outline_row(line, *_sides_of(goal), self._reason_text(instances_in_order))
         return lines, step
 
-    def _outline_step(self, step: Step, goal: Any, line: int | None) -> None:
-        """A row of the outline ``--steps`` prints: the step, and what it follows from."""
+    def _reason_text(self, instances: Sequence[Instance]) -> str:
+        """``by recurrence, at (a - 2, b) and the claim at (a - 2, b + 2)``: a row's reasons."""
         reasons = []
-        for instance in step.instances:
+        for instance in instances:
             citation = instance.citation
+            if isinstance(citation.source, Asserted):
+                continue
             at = f"({', '.join(_shown(value) for value in instance.values)})"
             if citation.is_claim:
                 reasons.append(("the claim", f" at {at}"))
@@ -1425,80 +1753,31 @@ class _Compiler:
                 reasons.append((citation.name, ""))
         reasons = list(dict.fromkeys(reasons))
         if not reasons:
-            reason = "by algebra"
-        elif len(reasons) == 1:
+            return "by algebra"
+        if len(reasons) == 1:
             name, at = reasons[0]
-            reason = f"by {name}{',' if at and name != 'the claim' else ''}{at}"
-        else:
-            said = [f"{name}{at}" for name, at in reasons]
-            reason = f"by {', '.join(said[:-1])} and {said[-1]}"
-        left, relation, right = render(goal), "", ""
-        if isinstance(goal, Comparison):
-            left, relation, right = render(goal.left), goal.operator, render(goal.right)
-        if self._label:
-            left = f"{self._label}: {left}"
-            self._label = ""
-        self.outline.append((step.where, self._case, left, relation, right, reason))
-        self._case = ""
-
-    def _named(
-        self, chain: TracedChain, leaf: Leaf, context: _Context, named: dict[int, Instance]
-    ) -> list[_Line]:
-        """A fact on the way, ``recurrence = a[n].equals(...)``: ``have recurrence : ... := by``."""
-        name = self.names.fresh(chain.name or "fact")
-        origin = Origin("named", chain.line, {"chain": chain})
-        try:
-            statement = (
-                f"{self._step_term(chain.start, context)} {_LEAN_RELATION[chain.relation]} "
-                f"{self._step_term(chain.end, context)}"
-            )
-        except UnsupportedTerm as exc:
-            raise ProofError(
-                "unsupported", f"Lean cannot state {chain.name or 'the fact'}: {exc}", chain.line
-            ) from None
-        lines = [_Line(f"have {lean_identifier(name)} : {statement} := by", origin)]
-        self._label = chain.name or ""
-        if len(chain.links) == 1:
-            left, link = next(chain.steps())
-            body = self._link(left, link, leaf, context, named)
-        else:
-            body = self._calc(chain, leaf, context, named)
-        lines += _indented(body, "  ", "  ")
-        citation = Citation(Named(chain), None, chain.line)
-        named[id(chain)] = Instance(citation, 0, (), substitute(chain.claim, context.pins), name)
-        return lines
+            return f"by {name}{',' if at and name != 'the claim' else ''}{at}"
+        said = [f"{name}{at}" for name, at in reasons]
+        return f"by {', '.join(said[:-1])} and {said[-1]}"
 
     def _link(
         self,
         left: Any,
         link: LinkStep,
-        leaf: Leaf,
+        step: Asserted,
         context: _Context,
-        named: Mapping[int, Instance],
+        lenient: bool = False,
     ) -> list[_Line]:
         """The block that proves one link of a chain: a step, or ``sorry`` for one left open."""
         goal = Comparison(
             substitute(left, context.pins), link.relation, substitute(link.term, context.pins)
         )
         if link.hole:
-            self.outline.append(
-                (
-                    link.line,
-                    self._case,
-                    render(goal.left),
-                    goal.operator,
-                    render(goal.right),
-                    "left open (by=...)",
-                )
-            )
-            self._case = ""
-            return [_Line("sorry", Origin("hole", link.line, {"claim": goal}))]
-        lines, _step = self._step(goal, link.facts, leaf, context, named, link.line)
+            return [_Line("sorry", Origin("hole", step.line, {"claim": goal}))]
+        lines, _made = self._step(goal, link.facts, step, context, link.line, lenient)
         return lines
 
-    def _calc(
-        self, chain: TracedChain, leaf: Leaf, context: _Context, named: Mapping[int, Instance]
-    ) -> list[_Line]:
+    def _calc(self, chain: TracedChain, step: Asserted, context: _Context) -> list[_Line]:
         """The chain as a ``calc``, a link to a step, each block under its link."""
         origin = Origin("chain", chain.line, {"chain": chain})
         try:
@@ -1516,105 +1795,9 @@ class _Compiler:
             ) from None
         for head, (left, link) in zip(heads, chain.steps(), strict=True):
             lines.append(_Line(head, Origin("link", link.line, {"chain": chain})))
-            body = self._link(left, link, leaf, context, named)
+            body = self._link(left, link, step, context, lenient=True)
             lines += _indented(body, "      ", "      ")
         return lines
-
-    def _chain(
-        self,
-        chain: TracedChain,
-        leaf: Leaf,
-        context: _Context,
-        claim: Any,
-        named: Mapping[int, Instance],
-    ) -> list[_Line]:
-        """A case proved by a chain: the ``calc`` itself, or the claim from it.
-
-        Where the chain's ends print as the claim's sides, with its relation,
-        the ``calc`` is the case's proof. Otherwise it is a fact of the case,
-        ``have chain := calc ...``, and the claim follows from it as it
-        stands, turned round, or up to how the sides print (``-x`` against
-        ``(-1) * x``). A chain of equations about other terms than the claim's
-        sides is refused before Lean is asked.
-        """
-        calc = self._calc(chain, leaf, context, named)
-        if self._ends_print_as(chain, claim, context):
-            return calc
-        self._refuse_another_claim(chain, claim, context)
-        name = self.names.numbered("chain")
-        origin = Origin("chain-end", chain.links[-1].line, {"chain": chain, "claim": claim})
-        lines = [_Line(f"have {lean_identifier(name)} :=", Origin("chain", chain.line))]
-        lines += _indented(calc, "  ", "  ")
-        attempts = [f"exact {name}"]
-        relation = claim.operator if isinstance(claim, Comparison) else None
-        if relation == "==" and chain.relation == "==":
-            attempts.append(f"exact {name}.symm")
-            if self.mathlib:
-                from lanky.oracles.lean import combination_norm
-
-                norm = combination_norm(
-                    LeanStatement(
-                        name="",
-                        binders=(),
-                        hypotheses=(),
-                        goal="",
-                        mathlib=True,
-                        shadowed=self.shadowed,
-                    )
-                )
-                ring = self._ring(claim)
-                attempts.append(f"linear_combination (norm := {norm}) {name}")
-                attempts.append(f"linear_combination (norm := {norm}) (-1 : {ring}) * {name}")
-            else:
-                simp = self._qualified("Int.sub_add_cancel")
-                attempts.append(f"((try simp only [{simp}] at *) <;> omega)")
-        elif self.mathlib:
-            attempts += [f"linarith [{name}]", f"nlinarith [{name}]"]
-        else:
-            attempts.append("omega")
-        lines.append(_Line(f"set_option maxHeartbeats {STEP_HEARTBEATS} in", origin))
-        lines.append(_Line("first", origin))
-        lines += [_Line(f"  | {attempt}", origin) for attempt in attempts]
-        return lines
-
-    def _ends_print_as(self, chain: TracedChain, claim: Any, context: _Context) -> bool:
-        """Whether the chain's ends print as the claim's sides, with the claim's relation."""
-        if not isinstance(claim, Comparison) or claim.operator != chain.relation:
-            return False
-        try:
-            return self._step_term(chain.start, context) == self._step_term(
-                claim.left, context
-            ) and self._step_term(chain.end, context) == self._step_term(claim.right, context)
-        except UnsupportedTerm:
-            return False
-
-    def _refuse_another_claim(self, chain: TracedChain, claim: Any, context: _Context) -> None:
-        """Refuse a chain of equations not about the claim's sides, as far as sympy says."""
-        from lanky.proofs.report import _algebra
-
-        if not (
-            isinstance(claim, Comparison) and claim.operator == "==" and chain.relation == "=="
-        ):
-            return
-        algebra = _algebra(claim, self.types)
-        if algebra is None:
-            return
-        shown = substitute(chain.claim, context.pins)
-        try:
-            claimed = algebra.side(claim, {})
-            said = algebra.side(shown, {})
-        except Exception:  # noqa: BLE001 - terms the algebra cannot read are Lean's to judge
-            return
-        sympy = algebra.sympy
-        if sympy.simplify(claimed - said) == 0 or sympy.simplify(claimed + said) == 0:
-            return
-        raise ProofError(
-            "chain",
-            f"the chain ends at {render(shown.right)}, and it starts at {render(shown.left)}; "
-            f"the claim of this case is {render(claim)}",
-            chain.links[-1].line,
-            fix="end the chain at the claim's other side, or name it and cite it",
-        )
 
     def _ring(self, claim: Any) -> str:
         """The Lean type the claim's sides are numbers of."""
@@ -1640,10 +1823,39 @@ class _Compiler:
         with proof_exponents(scope.natural):
             return render_term(here, self.types, self.mathlib, self.shadowed)
 
-    def _routine(self, leaf: Leaf, context: _Context, claim: Any) -> list[_Line]:
-        """A bare ``return``: lanky's whole-goal closers on the case, its facts in scope."""
-        origin = Origin("routine", leaf.line, {"claim": claim, "conditions": context.conditions})
-        arms = ["omega", "(simp_all; done)", "(simp_all <;> omega)", "decide"]
+    def _finished(self, leaf: Leaf, context: _Context, claim: Any) -> list[_Line]:
+        """A point or a case with no reason given: lanky's whole-goal closers, after its steps.
+
+        The steps the case asserted are in Lean's context, which the closers
+        read; each is tried as the claim, and in a linear combination with
+        the multipliers Python finds, before the closers.
+        """
+        origin = Origin(
+            "routine",
+            leaf.line,
+            {"claim": claim, "conditions": context.conditions, "point": leaf.point},
+        )
+        self.routine += 1
+        arms: list[str] = []
+        known = list(context.asserted)
+        relation = claim.operator if isinstance(claim, Comparison) else None
+        if known and self.mathlib and relation == "==":
+            multipliers = self._multipliers(claim, tuple(known))
+            if multipliers is not None:
+                probe = Step(
+                    leaf=leaf,
+                    claim=claim,
+                    instances=tuple(known),
+                    conditions=tuple(context.conditions),
+                    types=dict(self.types),
+                    multipliers=multipliers,
+                )
+                scope = self._scope(context)
+                with proof_exponents(scope.natural):
+                    combination = self._combination(probe)
+                if combination is not None:
+                    arms.append(combination)
+        arms += ["omega", "(simp_all; done)", "(simp_all <;> omega)", "decide"]
         if self.mathlib:
             arms += [
                 "norm_num",
@@ -1661,29 +1873,20 @@ class _Compiler:
     def _citation(
         self,
         citation: Citation,
-        leaf: Leaf,
         context: _Context,
         claim: Any,
-        named: Mapping[int, Instance] | None = None,
         link: bool = False,
+        extra: Sequence[Any] = (),
     ) -> tuple[list[_Line], list[Instance]]:
         """The ``have`` lines that state a cited fact at its point, one per part.
 
-        A fact on the way is in the context already, under its name.
-        ``claim`` is what the step shows, a link's or the case's.
+        ``claim`` is what the step shows, a link's or the case's; ``extra``
+        the terms the step's facts written at a point bring, which a fact
+        cited by name alone is matched against too.
         """
         source = citation.source
-        if isinstance(source, Named):
-            found = (named or {}).get(id(source.chain))
-            if found is None:
-                raise ProofError(
-                    "cite",
-                    f"{source.name} is cited before it is shown; name the step first, then cite it",
-                    citation.line,
-                )
-            return [], [replace(found, citation=citation)]
         if isinstance(source, ClaimDef):
-            return self._claim_call(citation, context)
+            return self._claim_call(citation, context, claim, link, extra)
         if isinstance(source, Given):
             shapes = [shape_of(part) for part in source.parts]
             leans = self.given[source.name]
@@ -1695,7 +1898,9 @@ class _Compiler:
         for index, (shape, lean) in enumerate(zip(shapes, leans, strict=True)):
             if shape.binders:
                 if citation.values is None:
-                    values = self._point(citation, shape, context, claim, link)
+                    values = self._point(citation, shape, context, claim, link, extra)
+                elif any(value is None for value in citation.values):
+                    values = self._rest_of_point(citation, shape, context, claim, link, extra)
                 else:
                     values = citation.values
             else:
@@ -1908,16 +2113,58 @@ class _Compiler:
             return False
         return kind.endswith("Int")
 
+    def _rest_of_point(
+        self,
+        citation: Citation,
+        shape: Shape,
+        context: _Context,
+        claim: Any,
+        link: bool,
+        extra: Sequence[Any] = (),
+    ) -> tuple:
+        """The point of a fact cited with some of its values: ``gauss(m)``, ``other.conclusion[p]``.
+
+        The values given are put in, and the rest found by matching the fact
+        there against the step, as a fact cited by its name alone is matched.
+        """
+        assert citation.values is not None
+        given = list(citation.values)
+        known = {
+            var.name: value
+            for (var, _), value in zip(shape.binders, given, strict=True)
+            if value is not None
+        }
+        missing = [
+            (var, domain)
+            for (var, domain), value in zip(shape.binders, given, strict=True)
+            if value is None
+        ]
+        reduced = Shape(
+            tuple(missing),
+            tuple(("value", var.name) for var, _ in missing),
+            instantiate(shape.body, known),
+        )
+        found = iter(self._point(citation, reduced, context, claim, link, extra))
+        return tuple(next(found) if value is None else value for value in given)
+
     def _point(
-        self, citation: Citation, shape: Shape, context: _Context, claim: Any, link: bool
+        self,
+        citation: Citation,
+        shape: Shape,
+        context: _Context,
+        claim: Any,
+        link: bool,
+        extra: Sequence[Any] = (),
     ) -> tuple:
         """The point of a fact cited by name alone, by matching it against the step it supports.
 
-        The step is a link of a chain, or a case's claim for a ``return``. The
-        point is the one at which the fact is about the step's terms and
-        nothing else, or where there is none, the one at which it gives one of
-        them (:func:`lanky.matching.single_point`), solving offsets such as
-        ``x + 2 = a``, binding values by type, and a family of the fact to a
+        The step is a link of a chain, or a case's claim for a ``yield`` or a
+        ``return``; its terms are that step's sides, and ``extra``, the sides
+        of the facts the step cites at a point. The point is the one at which
+        the fact is about the step's terms and nothing else, or where there is
+        none, the one at which it gives one of them
+        (:func:`lanky.matching.single_point`), solving offsets such as ``x +
+        2 = a``, binding values by type, and a family of the fact to a
         function by the higher-order rule.
 
         Raises:
@@ -1933,12 +2180,13 @@ class _Compiler:
             raise ProofError(
                 "no-point",
                 f"{name} says {render(shape.body)}, which lines up with no step; write its "
-                f"point, as {name}({', '.join(unknowns)}) with the values meant",
+                f"point, as {_spelled_point(citation, unknowns)} with the values meant",
                 citation.line,
-                fix=f"{name}({', '.join(unknowns)})",
+                fix=_spelled_point(citation, unknowns),
             )
         lemma = Lemma(name, shape.binders, shape.premises, shape.body)
         terms = [claim.left, claim.right] if isinstance(claim, Comparison) else [claim]
+        terms += [term for term in extra if all(term is not seen for seen in terms)]
         try:
             return tuple(single_point(lemma, terms, self.types, context.facts, name))
         except NoSinglePoint as exc:
@@ -1948,20 +2196,17 @@ class _Compiler:
         if not failed.several and _binds_a_family(failed.candidates):
             # the matcher's points bind a family to a function: the fix is one
             # of them, written with a lambda
-            point = ", ".join(_shown(value) for value in failed.candidates[0])
-            raise ProofError(
-                "no-point", f"{name}: {failed}", citation.line, fix=f"{name}({point})"
-            )
+            fix = _spelled_point(citation, None, failed.candidates[0])
+            raise ProofError("no-point", f"{name}: {failed}", citation.line, fix=fix)
         if not failed.several:
             raise ProofError(
                 "no-point",
                 f"{name}: no point of {name} fits a term of {what}, {render(claim)}; write "
-                f"its point, as {name}({', '.join(unknowns)}) with the values meant",
+                f"its point, as {_spelled_point(citation, unknowns)} with the values meant",
                 citation.line,
-                fix=f"{name}({', '.join(unknowns)})",
+                fix=_spelled_point(citation, unknowns),
             )
-        example = ", ".join(_shown(value) for value in failed.candidates[0])
-        fix = f"{name}({example})"
+        fix = _spelled_point(citation, None, failed.candidates[0])
         raise ProofError(
             "no-point",
             f"{name}: no single point of {name} fits {what}, {render(claim)}, since "
@@ -1971,12 +2216,34 @@ class _Compiler:
         )
 
     def _claim_call(
-        self, citation: Citation, context: _Context
+        self,
+        citation: Citation,
+        context: _Context,
+        goal: Any = None,
+        link: bool = False,
+        extra: Sequence[Any] = (),
     ) -> tuple[list[_Line], list[Instance]]:
-        """``have f := Lanky.<name>.claim ...``: the claim at smaller values, the recursive call."""
+        """``have f := Lanky.<name>.claim ...``: the claim at an earlier point, the recursive call.
+
+        A ``claim(...)`` gives the theorem's parameters and leaves the
+        conclusion's variables to lanky, which finds them by matching the
+        claim against the step, as a fact cited by name alone is matched.
+        """
         claim = self.proof.claim
         assert claim is not None and citation.values is not None
         values = dict(zip(claim.params, citation.values, strict=True))
+        missing = [name for name, value in values.items() if value is None]
+        if missing:
+            known = {name: value for name, value in values.items() if value is not None}
+            sorts = dict(zip(claim.params, claim.domains, strict=True))
+            shape = Shape(
+                tuple((Var(name), sorts[name]) for name in missing),
+                tuple(("value", name) for name in missing),
+                self._claim_body(known),
+            )
+            found = self._point(citation, shape, context, goal, link, extra)
+            values.update(zip(missing, found, strict=True))
+            citation = replace(citation, values=tuple(values[name] for name in claim.params))
         changed = {name for name, value in values.items() if not _same_variable(value, name)}
         pieces: list[tuple[str, Origin | None]] = [(self.claim_declared, None)]
         for param in self.claim_params:
@@ -2049,31 +2316,55 @@ class _Compiler:
 
         Kept by the step in the hint cache (:mod:`lanky.proofs.hints`), so
         that a check of an unchanged proof runs no sympy and writes the same
-        Lean source. Lean checks whatever they are.
+        Lean source. Lean checks whatever they are. Only the equations among
+        the instances are combined, the others taking ``0``; and where the
+        search finds nothing with all of them, which a fact the step does
+        not need can cause (a link of an ``assert`` has the facts of all its
+        links), it is asked again with one of them, then two.
         """
         if not (isinstance(claim, prim.Comparison) and claim.operator == "=="):
             return None
-        if not instances or not all(
-            isinstance(instance.body, prim.Comparison) and instance.body.operator == "=="
-            for instance in instances
-        ):
+        equations = [
+            index
+            for index, instance in enumerate(instances)
+            if isinstance(instance.body, prim.Comparison) and instance.body.operator == "=="
+        ]
+        if not equations:
             return None
         from lanky.proofs import hints
         from lanky.proofs.report import combination
 
-        bodies = [instance.body for instance in instances]
+        bodies = [instances[index].body for index in equations]
         cache = hints.HintCache(hints.default_hint_dir())
-        key = hints.hint_key(claim, bodies, self.types)
+        key = hints.hint_key(claim, [instance.body for instance in instances], self.types)
         kept = cache.get(key)
         if kept is not hints.MISSING:
             return kept
         found = combination(claim, bodies, self.types)
+        chosen: Sequence[int] = range(len(bodies))
+        if found is None and len(bodies) > 1:
+            from itertools import combinations
+
+            for size in range(1, min(len(bodies), 3)):
+                for subset in combinations(range(len(bodies)), size):
+                    found = combination(claim, [bodies[index] for index in subset], self.types)
+                    if found is not None:
+                        chosen = subset
+                        break
+                if found is not None:
+                    break
+        multipliers: tuple[Any, ...] | None = None
+        if found is not None:
+            full: list[Any] = [0] * len(instances)
+            for position, multiplier in zip(chosen, found, strict=True):
+                full[equations[position]] = multiplier
+            multipliers = tuple(full)
         from lanky.induction import _sympy
 
-        if found is not None or _sympy() is not None:
+        if multipliers is not None or _sympy() is not None:
             # no multipliers is an answer only where the search could run
-            cache.put(key, found)
-        return None if found is None else tuple(found)
+            cache.put(key, multipliers)
+        return multipliers
 
     def _closer(self, step: Step, origin: Origin, context: _Context) -> list[_Line]:
         """The step's closing tactic: what turns the facts into the step's claim.
@@ -2098,17 +2389,19 @@ class _Compiler:
                 added += shift_lines(claim, bodies, scope)
             lines += [_Line(text, origin) for text in added]
         arms: list[str] = []
-        if len(names) == 1:
-            arms.append(f"exact {names[0]}")
+        for name in list(dict.fromkeys(names))[:4]:
+            arms.append(f"exact {name}")
             if relation == "==":
-                arms.append(f"exact {names[0]}.symm")
+                arms.append(f"exact {name}.symm")
         if names and relation == "==":
             # a fact that rewrites a part of the step, under a function the
             # step applies to it, as the modulus squared does under log
             joined = ", ".join(dict.fromkeys(names))
             arms.append(f"(rw [{joined}]; done)")
-            if len(names) == 1:
-                arms.append(f"(rw [← {names[0]}]; done)")
+            for name in list(dict.fromkeys(names))[:4]:
+                if len(names) > 1:
+                    arms.append(f"(rw [{name}]; done)")
+                arms.append(f"(rw [← {name}]; done)")
             arms.append(f"(simp only [{joined}]; done)")
         if self.mathlib:
             complex_ = self._ring(claim) == "ℂ" if relation else False
@@ -2117,7 +2410,8 @@ class _Compiler:
                     combination = self._combination(step)
                 if combination is not None:
                     arms.append(combination)
-            if not names and relation == "==":
+            if relation == "==":
+                # algebra alone, for a link of an assert whose facts serve its other links
                 arms.append(f"linear_combination (norm := {self._norm()})")
             if not complex_:
                 if names:
@@ -2127,7 +2421,7 @@ class _Compiler:
                     arms += ["linarith", "nlinarith"]
             if relation in ("<=", "<", ">=", ">", "!="):
                 arms.append("positivity")
-            if not names and relation == "==":
+            if relation == "==":
                 arms += ["ring1", "(field_simp; ring1)"]
         else:
             arms += [
@@ -2207,6 +2501,26 @@ def _ring_of_sort(sort: Any) -> str | None:
     return None
 
 
+def _spelled_point(
+    citation: Citation, unknowns: Sequence[str] | None, found: Sequence[Any] = ()
+) -> str:
+    """A fact at a point as a proof writes it: ``pde[a - 2, b]``, ``gauss(m)``, ``f.conclusion[k]``.
+
+    ``unknowns`` names the values left to write, each by its variable's
+    name; or ``found`` gives them, the values the matcher found.
+    """
+    values = list(found) if unknowns is None else [Var(name) for name in unknowns]
+    filled = iter(values)
+    if citation.values is None:
+        point = tuple(values)
+    else:
+        point = tuple(next(filled, None) if value is None else value for value in citation.values)
+    try:
+        return replace(citation, values=point).text()
+    except Exception:  # noqa: BLE001 - a fact that cannot say itself is written by name
+        return f"{citation.name}[{', '.join(_shown(value) for value in values)}]"
+
+
 def _binds_a_family(points: Sequence[tuple[Any, ...]]) -> bool:
     """Whether some point gives a family of the fact a function as its value."""
     from lanky.matching import FamilyValue
@@ -2227,6 +2541,40 @@ def _applied(
         if piece_origin is not None:
             spans.append((start, len(text), piece_origin))
     return _Line(text, origin, tuple(spans))
+
+
+def _needs_a_point(citation: Citation) -> bool:
+    """Whether a citation is a fact cited by name alone, whose point the step gives."""
+    return citation.values is None and not citation.is_claim
+
+
+def _sides_of(claim: Any) -> tuple[str, str, str]:
+    """``(left, relation, right)`` of a claim as the outline prints it; else the claim alone."""
+    if isinstance(claim, Comparison):
+        return render(claim.left), claim.operator, render(claim.right)
+    return render(claim), "", ""
+
+
+def _label_of(questions: Sequence[Question]) -> str:
+    """The case of a path as a person reading the proof aloud says it: ``if a < 2:``.
+
+    The outline lists the cases in the order the body has them, as the
+    ``if``s read, so a case says only what the ones before it did not: the
+    splits it went past on the way, their conditions false, are what "if"
+    after them already means. So ``every_box``'s three cases read ``if a + b
+    == 0:``, ``if a < 2:`` and ``otherwise:``, and not ``when a + b != 0 and
+    a < 2:``. Under a split that held, a split that did not says its
+    condition the other way round: ``if a < 2 and b >= 2:``. A case past
+    every split, all false, is ``otherwise:``.
+    """
+    split = [question for question in questions if not question.forced]
+    if not split:
+        return ""
+    first = next((index for index, question in enumerate(split) if question.answer), None)
+    if first is None:
+        return "otherwise:"
+    said = " and ".join(render(question.condition) for question in split[first:])
+    return f"if {said}:"
 
 
 def _listing(names: Sequence[str]) -> str:

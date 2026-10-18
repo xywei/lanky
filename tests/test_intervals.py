@@ -17,7 +17,7 @@ from fractions import Fraction
 
 import pytest
 
-from lanky import exp, log, sqrt, theorem
+from lanky import claim, exp, log, sqrt
 from lanky.intervals import (
     AGREEMENT,
     EXP_LIMIT,
@@ -308,7 +308,7 @@ def test_on_the_branch_cut_the_complex_log_and_sqrt_decide_nothing() -> None:
 
 
 def _log_of_exp():
-    @theorem
+    @claim
     def log_of_exp(z: Complex & (abs(z) < 1)) -> exp(log(z + 2)) == z + 2:
         """True: ``z + 2`` is off the logarithm's cut."""
 
@@ -316,7 +316,7 @@ def _log_of_exp():
 
 
 def _root_of_square():
-    @theorem
+    @claim
     def root_of_square(z: Complex & (abs(z) < 1)) -> sqrt(z * z) == z:
         """False where the real part of ``z`` is negative: the principal root's is not."""
 
@@ -498,7 +498,7 @@ def test_the_exact_reading_of_a_term() -> None:
 
 
 def _e_above():
-    @theorem
+    @claim
     def e_above(n: Nat) -> exp(1) > 2.718281828459045:
         """True: e is 2.71828182845904523..., above the float nearest it."""
 
@@ -525,19 +525,19 @@ def test_an_elementary_function_of_a_number_in_an_annotation_stays_exact() -> No
     from lanky.oracles.test import TestOracle
     from lanky.terms import Elementary, render, structurally_equal
 
-    claim = _e_above()
-    assert structurally_equal(claim.goal.left, Elementary("exp", 1))
-    assert render(claim.goal) == "exp(1) > 2.718281828459045"
-    tested = TestOracle().establish(claim.fact())
+    stated = _e_above()
+    assert structurally_equal(stated.goal.left, Elementary("exp", 1))
+    assert render(stated.goal) == "exp(1) > 2.718281828459045"
+    tested = TestOracle().establish(stated.fact())
     assert tested.status is Status.TESTED, tested.provenance
     # the file run as a program computes the float, and so does the theorem called
     assert exp(1) == math.e and isinstance(exp(1), float)
-    assert claim(n=0).goal is False
-    assert "Real.exp 1 > " in statement_of(claim.term, mathlib=True).goal
+    assert stated(n=0) is False
+    assert "Real.exp 1 > " in statement_of(stated.term, mathlib=True).goal
     # its reading is faithful: the rerun and the term agree in Python's reading
-    assert claim.faithful_fact().status is Status.TESTED
+    assert stated.faithful_fact().status is Status.TESTED
 
-    @theorem
+    @claim
     def helpers(n: Nat) -> _e_helper() + log(4) - sqrt(4) == _e_helper() + log(4) - 2:
         """True; the helper's ``exp(1)`` is its float, and ``log(4)`` and ``sqrt(4)`` are exact."""
 
@@ -546,7 +546,7 @@ def test_an_elementary_function_of_a_number_in_an_annotation_stays_exact() -> No
     assert TestOracle().establish(helpers.fact()).status is Status.TESTED
     assert helpers.faithful_fact().status is Status.TESTED
 
-    @theorem
+    @claim
     def root_two(n: Nat) -> sqrt(2) * sqrt(2) == 2:
         """True of the square root of two, and false of the float nearest it."""
 
@@ -556,7 +556,7 @@ def test_an_elementary_function_of_a_number_in_an_annotation_stays_exact() -> No
     # Python that asks for a number gets the one Python computes, as a
     # helper does: math.floor and math.isclose of a term raised pymbolic's
     # error, which knows no lanky node, where they read the float before
-    @theorem
+    @claim
     def floored(n: Nat) -> (math.floor(exp(2)) == 7) & math.isclose(exp(1), math.e):
         """True as Python computes it, the only way ``math`` does."""
 
@@ -580,24 +580,24 @@ def test_an_elementary_function_of_a_number_over_a_concrete_domain() -> None:
     from lanky.oracles.test import TestOracle
     from lanky.terms import render
 
-    @theorem
+    @claim
     def above_the_line(n: Nat) -> all(exp(k) >= 1 + k for k in range(4)):
         """True: e ** k is at least 1 + k."""
 
-    @theorem
+    @claim
     def strictly(n: Nat) -> all(exp(k) > 1 + k for k in range(4)):
         """False at k = 0, where both sides are 1."""
 
-    @theorem
+    @claim
     def somewhere(n: Nat) -> any(sqrt(k) > k for k in range(1, 4)):
         """False: the square root of a natural number is at most the number."""
 
     assert render(above_the_line.goal).startswith("exp(0) >= 1 and exp(1) >= 2 and ")
     assert TestOracle().establish(above_the_line.fact()).status is Status.TESTED
     assert above_the_line.faithful_fact().status is Status.TESTED
-    for claim in (strictly, somewhere):
-        assert TestOracle().establish(claim.fact()).status is Status.REFUTED, claim
-        assert claim.faithful_fact().status is Status.TESTED
+    for stated in (strictly, somewhere):
+        assert TestOracle().establish(stated.fact()).status is Status.REFUTED, stated
+        assert stated.faithful_fact().status is Status.TESTED
 
 
 def test_an_equality_of_enclosures_counts_only_where_it_is_asserted() -> None:

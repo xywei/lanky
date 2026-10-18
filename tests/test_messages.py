@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from conftest import claims
-from lanky import conj, real, theorem
+from lanky import claim, conj, real
 from lanky.audit import refusal, screen
 from lanky.check import check_path, import_path
 from lanky.cli import main as lanky_main
@@ -67,7 +67,7 @@ def test_a_refused_script_is_said_with_what_to_write_instead(script, found, fix)
     assert refusal("omega") is None
 
 
-@theorem
+@claim
 def nonneg_square(n: Nat) -> n * n >= 0:
     """A claim a test pins a refused script to."""
 
@@ -120,12 +120,12 @@ REFUSED_FILE = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.oracles.lean import use_tactic
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def square(n: Nat) -> n * n >= 0:
     """A square is not negative."""
 
@@ -143,7 +143,7 @@ def test_lanky_check_names_a_refused_script_under_the_table_and_fails(
     path.write_text(REFUSED_FILE, encoding="utf-8")
     assert lanky_main(["check", str(path)]) == 1
     out = capsys.readouterr().out
-    line = REFUSED_FILE.splitlines().index("@theorem") + 1
+    line = REFUSED_FILE.splitlines().index("@claim") + 1
     assert (
         f"REFUSED square at pinned.py:{line}: the script use_tactic gives it is not sent to "
         "Lean, since it has #exit, a Lean command." in out
@@ -195,11 +195,11 @@ STEPS = '''\
 
 from __future__ import annotations
 
-from lanky import conj, log, real, theorem
+from lanky import by, claim, conj, log, real
 from lanky.prelude import Complex, Fn, Nat, Real
 
 
-@theorem
+@claim
 def without_pde(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -207,17 +207,16 @@ def without_pde(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in without_pde.conclusion.domain:
         if a + b == 0:
-            return stored
-        if a < 2:
-            return stored
-        return recurrence(a - 2, b), claim(a - 2, b + 2)
+            yield by(stored)
+        elif a < 2:
+            yield by(stored)
+        else:
+            yield by(recurrence[a - 2, b], without_pde.conclusion[a - 2, b + 2])
 
-    return claim
 
-
-@theorem
+@claim
 def nested(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -225,25 +224,26 @@ def nested(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in nested.conclusion.domain:
         if a < 2:
             if b < 2:
-                return stored
-            return stored
-        return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)
+                yield by(stored)
+            else:
+                yield by(stored)
+        else:
+            yield by(recurrence[a - 2, b], nested.conclusion[a - 2, b + 2], pde[a - 2, b])
 
-    return claim
 
-
-@theorem
+@claim
 def bare_modulus(alpha: Complex, nonzero: alpha != 0) -> (
     log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
 ):
-    return (
+    assert (
         log(abs(alpha))
-        .equals(log(abs(alpha) ** 2) / 2)
-        .equals(log(real(alpha * conj(alpha))) / 2)
+        == log(abs(alpha) ** 2) / 2
+        == log(real(alpha * conj(alpha))) / 2
     )
+    return by()
 '''
 
 
@@ -281,10 +281,12 @@ def test_a_step_short_of_a_fact_says_which_it_also_needs(steps) -> None:
     command = compile_proof(proof, mathlib=True)
     leaf = proof.leaves[-1]
     failure = _failure_at(proof, command, leaf.line)
-    assert "It also needs pde(a - 2, b), which says D[a, b] + D[a - 2, b + 2] == 0." in (
+    assert "It also needs pde[a - 2, b], which says D[a, b] + D[a - 2, b + 2] == 0." in (
         failure.lines
     )
-    assert failure.fix == "return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)"
+    assert failure.fix == (
+        "yield by(recurrence[a - 2, b], without_pde.conclusion[a - 2, b + 2], pde[a - 2, b])"
+    )
     assert failure.repair[0] == "add"
 
 
@@ -292,7 +294,7 @@ def test_a_step_no_fact_gets_to_names_the_known_facts_of_its_shape(steps) -> Non
     pytest.importorskip("sympy")
     proof = trace_proof(steps.bare_modulus)
     command = compile_proof(proof, mathlib=True)
-    second = proof.leaves[0].chain.links[1].line
+    second = proof.leaves[0].steps[0].parts[0].links[1].line
     failure = _failure_at(proof, command, second)
     assert "No fact the proof cites gets there. What lanky knows of its shape:" in failure.lines
     assert any(
@@ -331,8 +333,8 @@ def test_a_nested_case_says_the_split_it_did_not_take_the_other_way_round(steps)
 
 def _fact(proof: dict | None = None, **provenance) -> Fact:
     return Fact(
-        id="theorem:m.t@3",
-        kind="theorem",
+        id="claim:m.t@3",
+        kind="claim",
         statement="n : Nat |- n + 0 == n",
         status=Status.TESTED,
         decided_by="property-test",
@@ -350,13 +352,14 @@ def test_without_lean_the_line_says_so_in_a_clause(tmp_path, monkeypatch, capsys
             """
             from __future__ import annotations
 
-            from lanky import theorem
+            from lanky import by, claim
             from lanky.prelude import Real
 
 
-            @theorem
+            @claim
             def doubled(x: Real) -> 2 * x == x + x:
-                return (2 * x).equals(x + x)
+                assert 2 * x == x + x
+                return by()
             """
         ),
         encoding="utf-8",
@@ -364,7 +367,7 @@ def test_without_lean_the_line_says_so_in_a_clause(tmp_path, monkeypatch, capsys
     (fact,) = claims(check_path(path))
     proof = fact.provenance["proof"]
     assert proof["closed"] is None
-    line = path.read_text(encoding="utf-8").splitlines().index("    return (2 * x).equals(x + x)")
+    line = path.read_text(encoding="utf-8").splitlines().index("    assert 2 * x == x + x")
     assert proof["said"] == (
         f"without Lean, each step of its proof was tested at drawn points instead (line {line + 1})"
     )
@@ -454,50 +457,47 @@ NAMES = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@theorem
+@claim
 def count_ih(
     f: Fn[Nat, Int],
     ih: f[0] == 0,
     hk: all(f[n + 1] == f[n] + 1 for n in Nat),
 ) -> all(f[n] == n for n in Nat):
-    def claim(n):
+    for n in count_ih.conclusion.domain:
         if n == 0:
-            return ih
-        return hk(n - 1), claim(n - 1)
+            yield by(ih)
+        else:
+            yield by(hk[n - 1], count_ih.conclusion[n - 1])
 
-    return claim
 
-
-@theorem
+@claim
 def count_hn(
     f: Fn[Nat, Int],
     hn: f[0] == 0,
     case_1: all(f[n + 1] == f[n] + 1 for n in Nat),
 ) -> all(f[n] == n for n in Nat):
-    def claim(n):
+    for n in count_hn.conclusion.domain:
         if n == 0:
-            return hn
-        return case_1(n - 1), claim(n - 1)
+            yield by(hn)
+        else:
+            yield by(case_1[n - 1], count_hn.conclusion[n - 1])
 
-    return claim
 
-
-@theorem
+@claim
 def count_pin(
     f: Fn[Nat, Int],
     pin_1: f[0] == 0,
     hstep: all(f[n + 1] == f[n] + 1 for n in Nat),
 ) -> all(f[n] == n for n in Nat):
-    def claim(n):
+    for n in count_pin.conclusion.domain:
         if n == 0:
-            return pin_1
-        return hstep(n - 1), claim(n - 1)
-
-    return claim
+            yield by(pin_1)
+        else:
+            yield by(hstep[n - 1], count_pin.conclusion[n - 1])
 '''
 
 
@@ -513,7 +513,7 @@ def test_a_hypothesis_named_like_a_script_name_keeps_its_name(tmp_path) -> None:
         assert f"have {given} " not in claim and f"by_cases {given} " not in claim, claim
 
 
-@theorem
+@claim
 def conjugate_form(x: Complex, alpha: Complex, hz0: alpha != 0) -> x / alpha == x * conj(alpha) * (
     1 / real(alpha * conj(alpha))
 ):

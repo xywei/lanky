@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from lanky import theorem
+from lanky import claim
 from lanky.induction import (
     Case,
     Lemma,
@@ -39,7 +39,7 @@ from lanky.terms import Comparison, Forall, Var, render, structurally_equal
 # {{{ claims for every order
 
 
-@theorem
+@claim
 def laplace(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -50,7 +50,7 @@ def laplace(
     """The compressed Taylor reconstruction of a harmonic function's derivatives."""
 
 
-@theorem
+@claim
 def helmholtz(
     k: Real,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -62,7 +62,7 @@ def helmholtz(
     """The same for Helmholtz's PDE, whose multipliers mention ``k``."""
 
 
-@theorem
+@claim
 def telescoping(
     f: Fn[Nat, Real],
     start: f(0) == 0,
@@ -71,7 +71,7 @@ def telescoping(
     """A sum of ``1 / ((n + 1)(n + 2))``, whose step is a rational-function identity."""
 
 
-@theorem
+@claim
 def wrong_sign(
     D: Fn[Nat, Fn[Nat, Real]],
     R: Fn[Nat, Fn[Nat, Real]],
@@ -82,7 +82,7 @@ def wrong_sign(
     """False: the recurrence has lost its sign, so ``R(2)(0)`` is ``D(0)(2)``, not ``D(2)(0)``."""
 
 
-@theorem
+@claim
 def helmholtz_from_zero(
     k: Real,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -94,7 +94,7 @@ def helmholtz_from_zero(
     """Helmholtz again, with the goal's left side a literal, which says nothing of its ring."""
 
 
-@theorem
+@claim
 def shadowing(
     a: Nat,
     f: Fn[Nat, Real],
@@ -104,14 +104,14 @@ def shadowing(
     """The goal's ``a`` hides the parameter ``a`` that ``start`` is about, once it is introduced."""
 
 
-@theorem
+@claim
 def increasing(
     f: Fn[Nat, Nat], step: all(f(n + 1) >= f(n) for n in Nat)
 ) -> all(f(n + 1) >= f(n) for n in Nat):
     """An order, not an equation: no linear combination is a proof of it."""
 
 
-@theorem
+@claim
 def shifting(
     f: Fn[Nat, Fn[Nat, Real]],
     start: all(f(a)(0) == a for a in Nat),
@@ -120,7 +120,7 @@ def shifting(
     """Induced on ``n``, whose step takes the hypothesis at ``a + 1``: ``a`` is generalized too."""
 
 
-@theorem
+@claim
 def counting(
     n: Nat,
     f: Fn[Nat, Fn[Nat, Real]],
@@ -130,7 +130,7 @@ def counting(
     """Induced on a point of ``Fin[n]``, whose bound comes before the later ``b``."""
 
 
-@theorem
+@claim
 def triangle(
     p: Nat,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -142,7 +142,7 @@ def triangle(
     """The reconstruction of order ``p``: the recurrence followed inside the triangle alone."""
 
 
-@theorem
+@claim
 def short_of_the_triangle(
     p: Nat,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -407,7 +407,7 @@ def test_what_a_claim_for_every_order_lacks_is_said_piece_by_piece(monkeypatch) 
     assert oracle.missing(fact.with_status(Status.PROVED, "lean")) == ()
 
 
-@theorem
+@claim
 def nothing_to_combine(
     f: Fn[Nat, Real],
     positive: all(f(n) >= 0 for n in Nat),
@@ -613,12 +613,12 @@ def test_decline_names_the_claim_as_use_tactic_does(monkeypatch) -> None:
     oracle = LeanOracle()
     monkeypatch.setattr(registry, "oracles", [oracle])
     decline(laplace, "a reason")
-    fact = Fact(id="theorem:elsewhere@1", kind="theorem", statement="x")
+    fact = Fact(id="claim:elsewhere@1", kind="claim", statement="x")
     decline(fact, "another")
     decline("an:id", "a third")
     assert oracle.declines == {
         laplace.fact_id: "a reason",
-        "theorem:elsewhere@1": "another",
+        "claim:elsewhere@1": "another",
         "an:id": "a third",
     }
     with pytest.raises(TypeError, match="needs the reason"):

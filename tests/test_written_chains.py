@@ -1,15 +1,17 @@
-"""Written proofs that calculate: chains in a body, facts on the way, steps left open.
+"""Written proofs that calculate: asserted steps, chains, steps left open.
 
-A proof's body may return a chain (:mod:`lanky.chains`), the calculation a
-textbook displays, and name a step to cite it later. The trace reads each
-link's reasons as citations, the compile makes the chain a ``calc`` whose
-links are steps of their own, and an uncalled fact in a link is matched at the
-one point that lines it up with the link (:mod:`lanky.matching`). The command
-proves the claim's ``as_cited`` text too, which a proof that cites the claim
-restates (:mod:`lanky.citations`), and it ends with the axiom audit of both
-(:mod:`lanky.audit`). A link written ``by=...`` is left open: Lean accepts the
-proof with holes, and the claim reads as the other oracles left it. Without
-Lean, each link is drawn at points.
+A proof's body states its steps with ``assert``, Python's chained comparison
+for a calculation a textbook displays, ``by(...)`` the reasons after it. The
+trace reads each step by running the body again past it (:mod:`lanky.proofs.trace`),
+the compile makes a chain a ``calc`` whose links are steps of their own, a
+``have`` the rest of the case knows, and a fact cited by name alone is
+matched at the one point that lines it up with the link it fits
+(:mod:`lanky.matching`). The command proves the claim's ``as_cited`` text
+too, which a proof that cites the claim restates (:mod:`lanky.citations`),
+and it ends with the axiom audit of both (:mod:`lanky.audit`). A step
+written ``by(...)`` is left open: Lean accepts the proof with holes, and the
+claim reads as the other oracles left it. Without Lean, each link is drawn
+at points.
 
 The Python half runs everywhere; the cases over the integers are checked with
 core Lean where it is installed, and skip where it is not.
@@ -28,7 +30,7 @@ from lanky.citations import CitedText, Premise, proved_texts
 from lanky.ledger import Status
 from lanky.proofs import ProofError, compile_proof, prove, trace_proof
 from lanky.proofs.report import CLOSED_WITH_HOLES, verdict
-from lanky.proofs.trace import Named
+from lanky.proofs.trace import TracedChain
 
 #: Proofs that calculate, over the integers, which core Lean checks.
 CASES = '''\
@@ -36,11 +38,11 @@ CASES = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@theorem
+@claim
 def ct_chain(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -48,20 +50,20 @@ def ct_chain(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in ct_chain.conclusion.domain:
         if a < 2:
-            return stored
-        return (
-            R[a, b]
-            .equals(-R[a - 2, b + 2], by=recurrence)
-            .equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))
-            .equals(D[a, b], by=pde)
-        )
+            yield by(stored)
+        else:
+            assert (
+                R[a, b]
+                == -R[a - 2, b + 2]
+                == -D[a - 2, b + 2]
+                == D[a, b]
+            ), by(recurrence, ct_chain.conclusion[a - 2, b + 2], pde)
+            yield by()
 
-    return claim
 
-
-@theorem
+@claim
 def ct_open(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -69,20 +71,17 @@ def ct_open(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in ct_open.conclusion.domain:
         if a < 2:
-            return stored
-        return (
-            R[a, b]
-            .equals(-R[a - 2, b + 2], by=recurrence)
-            .equals(-D[a - 2, b + 2], by=...)
-            .equals(D[a, b], by=pde)
-        )
-
-    return claim
+            yield by(stored)
+        else:
+            assert R[a, b] == -R[a - 2, b + 2], by(recurrence)
+            assert -R[a - 2, b + 2] == -D[a - 2, b + 2], by(...)
+            assert -D[a - 2, b + 2] == D[a, b], by(pde)
+            yield by()
 
 
-@theorem
+@claim
 def ct_reversed(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -90,26 +89,23 @@ def ct_reversed(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
-    def claim(a, b):
+    for a, b in ct_reversed.conclusion.domain:
         if a < 2:
-            return stored
-        return (
-            D[a, b]
-            .equals(-D[a - 2, b + 2], by=pde)
-            .equals(-R[a - 2, b + 2], by=claim(a - 2, b + 2))
-            .equals(R[a, b], by=recurrence)
-        )
-
-    return claim
+            yield by(stored)
+        else:
+            assert D[a, b] == -D[a - 2, b + 2] == -R[a - 2, b + 2] == R[a, b], by(
+                pde, ct_reversed.conclusion[a - 2, b + 2], recurrence
+            )
+            yield by()
 
 
-@theorem
+@claim
 def doubled(f: Fn[Nat, Int], h: all(f[k] == 2 * k for k in Nat)) -> f[3] + f[3] == 12:
-    six = f[3].equals(6, by=h)
-    return six
+    assert f[3] == 6, by(h)
+    return by()
 
 
-@theorem
+@claim
 def at_two(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -117,22 +113,31 @@ def at_two(
     stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
     recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
 ) -> R[2, 0] == D[2, 0]:
-    return ct_chain(D, R, 2, 0)
+    return by(ct_chain(D, R).conclusion[2, 0])
 
 
-@theorem
+@claim
 def square(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
-    return (y * y).equals((x + 1) * (x + 1), by=h).equals(x * x + 2 * x + 1)
+    assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1, by(h)
+    return by()
 
 
-@theorem
+@claim
 def square_wrong(x: Int, y: Int, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
-    return (y * y).equals((x + 1) * (x + 1), by=h).equals(x * x + 2 * x + 2)
+    assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 2, by(h)
+    return by()
 
 
-@theorem
+@claim
 def square_positional(x: Int, y: Int, /, h: y == x + 1) -> y * y == x * x + 2 * x + 1:
-    return (y * y).equals((x + 1) * (x + 1), by=h).equals(x * x + 2 * x + 1)
+    assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1, by(h)
+    return by()
+
+
+@claim
+def mixed(x: Int, y: Int, h: y == x + 1) -> y * y >= x * x + 2 * x:
+    assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 1 >= x * x + 2 * x, by(h)
+    return by()
 '''
 
 
@@ -153,34 +158,40 @@ def _line(module: object, text: str) -> int:
 # {{{ the trace
 
 
-def test_a_returned_chain_is_the_case_and_its_links_cite_facts(cases) -> None:
+def test_an_asserted_chain_is_one_step_whose_links_share_its_reasons(cases) -> None:
     proof = trace_proof(cases.ct_chain)
     (base, step) = proof.leaves
-    assert base.chain is None and base.facts[0].name == "stored"
-    chain = step.chain
-    assert chain is not None and step.facts == ()
+    assert base.steps == () and base.facts[0].name == "stored"
+    (asserted,) = step.steps
+    assert step.facts is None  # the point closes with by(): the assert is its proof
+    (chain,) = asserted.parts
+    assert isinstance(chain, TracedChain)
+    assert asserted.line == _line(cases, "            assert (")
+    # each link at the line of the term it reaches
     assert [link.line for link in chain.links] == [
-        _line(cases, ".equals(-R[a - 2, b + 2], by=recurrence)"),
-        _line(cases, ".equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))"),
-        _line(cases, ".equals(D[a, b], by=pde)"),
+        _line(cases, "                == -R[a - 2, b + 2]"),
+        _line(cases, "                == -D[a - 2, b + 2]"),
+        _line(cases, "                == D[a, b]"),
     ]
-    reasons = [[citation.name for citation in link.facts] for link in chain.links]
-    assert reasons == [["recurrence"], ["claim"], ["pde"]]
-    assert [citation.text() for citation in proof.calls] == ["claim(a - 2, b + 2)"]
+    assert [citation.text() for citation in asserted.facts] == [
+        "recurrence",
+        "ct_chain.conclusion[a - 2, b + 2]",
+        "pde",
+    ]
+    assert all(link.facts == asserted.facts for link in chain.links)
+    assert [citation.text() for citation in proof.calls] == ["ct_chain.conclusion[a - 2, b + 2]"]
 
 
-def test_a_named_step_is_a_fact_on_the_way(cases) -> None:
-    proof = trace_proof(cases.doubled)
-    (leaf,) = proof.leaves
-    (named,) = leaf.named
-    assert named.name == "six"
-    (citation,) = leaf.facts
-    assert isinstance(citation.source, Named) and citation.source.chain is named
+def test_a_chain_mixes_relations_as_python_does(cases) -> None:
+    proof = trace_proof(cases.mixed)
+    ((chain,),) = [step.parts for step in proof.leaves[0].steps]
+    assert [link.relation for link in chain.links] == ["==", "==", ">="]
+    assert chain.relation == ">="
 
 
 def test_a_step_left_open_is_a_hole_at_its_line(cases) -> None:
     proof = trace_proof(cases.ct_open)
-    assert proof.holes == [_line(cases, ".equals(-D[a - 2, b + 2], by=...)")]
+    assert proof.holes == [_line(cases, "assert -R[a - 2, b + 2] == -D[a - 2, b + 2], by(...)")]
 
 
 # }}}
@@ -189,51 +200,45 @@ def test_a_step_left_open_is_a_hole_at_its_line(cases) -> None:
 # {{{ the Lean a chain compiles to
 
 
-def test_a_chain_is_a_calc_whose_links_are_steps(cases) -> None:
+def test_a_chain_is_a_have_by_calc_whose_links_are_steps(cases) -> None:
     command = compile_proof(trace_proof(cases.ct_chain), mathlib=False)
     source = command.source
-    assert "  · calc R a b\n        = (-1) * R (a - 2) (b + 2) := by\n" in source
-    assert "      _ = (-1) * D (a - 2) (b + 2) := by\n" in source
-    # uncalled facts matched at the point that lines each up with its link
-    assert "have f_2 := recurrence (a - 2) (by omega) b (by omega)" in source
-    assert "have f_4 := pde (a - 2) (by omega) b (by omega)" in source
+    assert "  · have step_1 : R a b = D a b := by\n      calc R a b\n" in source
+    assert "_ = (-1) * D (a - 2) (b + 2) := by\n" in source
+    # facts cited by name, matched at the point that lines each up with its link
+    assert "recurrence (a - 2) (by omega) b (by omega)" in source
+    assert "pde (a - 2) (by omega) b (by omega)" in source
     assert "termination_by a.toNat" in source
+    # the point closes with by(): the assert states its claim
+    assert "    exact step_1\n" in source
     assert command.summary == "induction on a, 2 cases, 4 steps"
     assert [step.where for step in command.steps] == [
-        _line(cases, "            return stored"),
-        _line(cases, ".equals(-R[a - 2, b + 2], by=recurrence)"),
-        _line(cases, ".equals(-D[a - 2, b + 2], by=claim(a - 2, b + 2))"),
-        _line(cases, ".equals(D[a, b], by=pde)"),
+        _line(cases, "            yield by(stored)"),
+        _line(cases, "                == -R[a - 2, b + 2]"),
+        _line(cases, "                == -D[a - 2, b + 2]"),
+        _line(cases, "                == D[a, b]"),
     ]
 
 
-def test_a_chain_the_other_way_round_gives_the_claim_from_it(cases) -> None:
+def test_a_chain_the_other_way_round_gives_the_claim_turned_round(cases) -> None:
     source = compile_proof(trace_proof(cases.ct_reversed), mathlib=False).source
-    assert "  · have chain_1 :=\n      calc D a b\n" in source
-    assert "      | exact chain_1.symm\n" in source
+    assert "have step_1 : D a b = R a b := by" in source
+    assert "exact step_1.symm\n" in source
 
 
-def test_a_chain_about_other_terms_than_the_claim_is_refused(cases) -> None:
-    """Refused before Lean is asked where sympy can tell; without it, Lean refuses it."""
-    pytest.importorskip("sympy", reason="the refusal compares the ends with sympy")
-    with pytest.raises(ProofError) as raised:
-        compile_proof(trace_proof(cases.square_wrong), mathlib=False)
-    assert raised.value.kind == "chain"
-    assert "the chain ends at x*x + 2*x + 2" in raised.value.message
-
-
-def test_a_named_step_is_proved_in_a_have_and_cited_by_its_name(cases) -> None:
+def test_a_step_the_case_asserted_is_known_to_the_rest_of_it(cases) -> None:
     command = compile_proof(trace_proof(cases.doubled), mathlib=False)
-    assert "  have six : f 3 = 6 := by\n    have f_1 := h 3 (by omega)\n" in command.source
-    assert command.summary == "2 steps, 1 named fact"
-    assert [row[2] for row in command.outline] == ["six: f[3]", "f[3] + f[3]"]
+    assert "  have step_1 : f 3 = 6 := by\n" in command.source
+    assert command.summary == "1 step, 1 routine"
+    assert [row[2] for row in command.outline] == ["f[3]"]
 
 
 def test_a_hole_is_a_sorry_whose_line_is_recorded(cases) -> None:
     command = compile_proof(trace_proof(cases.ct_open), mathlib=False)
     (hole,) = command.hole_lines
     assert command.source.splitlines()[hole - 1].strip() == "sorry"
-    assert command.summary == "2 cases, 3 steps, 1 step left open"
+    # three steps, the point finished from them, no claim cited: no induction
+    assert command.summary == "2 cases, 3 steps, 1 routine, 1 step left open"
     sorry = {"line": hole, "column": 10}
     audit = [
         {"severity": "info", "data": "'Lanky.ct_open' depends on axioms: [sorryAx]"},
@@ -245,29 +250,31 @@ def test_a_hole_is_a_sorry_whose_line_is_recorded(cases) -> None:
     assert said == "failed"
 
 
-def test_a_citation_given_too_many_values_or_one_twice_is_refused(tmp_path) -> None:
-    """``h(a, b, k=c)`` of a fact of one variable is refused, not read as ``h(c)``.
+def test_a_point_given_too_many_values_or_in_parentheses_is_refused(tmp_path) -> None:
+    """``h[a, b]`` of a fact of one variable is refused, not read as ``h[b]``.
 
-    And so is ``h(a, k=c)``, which gives ``k`` twice (Codex, #171).
+    And so is ``h(3)``, how lanky 0.5 gave a point, with the bracket to write.
     """
     path = tmp_path / "surplus_cases.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import by, claim\n"
         "from lanky.prelude import Fn, Int, Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def surplus(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
-        "    return h(1, 2, k=3)\n\n\n"
-        "@theorem\n"
-        "def twice(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
-        "    return h(1, k=3)\n",
+        "    return by(h[1, 3])\n\n\n"
+        "@claim\n"
+        "def parenthesized(f: Fn[Nat, Int], h: all(f[k] == k for k in Nat)) -> f[3] == 3:\n"
+        "    return by(h(3))\n",
         encoding="utf-8",
     )
     module = import_path(path)
-    with pytest.raises(ProofError, match="takes 1 value, its variable k, and is given 3"):
+    with pytest.raises(ProofError, match="takes 1 value, its variable k, and is given 2") as raised:
         trace_proof(module.surplus)
-    with pytest.raises(ProofError, match="is given k twice"):
-        trace_proof(module.twice)
+    assert raised.value.fix == "h[k]"
+    with pytest.raises(ProofError, match=r"h\(3\) is how lanky 0.5 cited a condition") as raised:
+        trace_proof(module.parenthesized)
+    assert raised.value.fix == "h[3]"
 
 
 def test_a_theorem_with_positional_only_parameters_is_traced(cases) -> None:
@@ -275,7 +282,9 @@ def test_a_theorem_with_positional_only_parameters_is_traced(cases) -> None:
     traced = trace_proof(cases.square_positional)
     plain = trace_proof(cases.square)
     assert len(traced.leaves) == len(plain.leaves) == 1
-    assert len(traced.leaves[0].chain.links) == len(plain.leaves[0].chain.links) == 2
+    ((one,),) = [step.parts for step in traced.leaves[0].steps]
+    ((two,),) = [step.parts for step in plain.leaves[0].steps]
+    assert len(one.links) == len(two.links) == 2
 
 
 def test_the_command_proves_the_text_a_citation_restates_and_audits_both(cases) -> None:
@@ -293,14 +302,14 @@ def test_the_command_proves_the_text_a_citation_restates_and_audits_both(cases) 
 def test_a_cited_theorem_is_restated_by_the_text_its_command_proved(cases) -> None:
     """With its premises, the theorems its own proof cited, all the way down."""
     texts = {
-        cases.ct_chain.fact_id: CitedText("ct_chain", "PROVED TEXT", ("theorem:other@1",)),
-        "theorem:other@1": CitedText("other", "OTHER TEXT"),
+        cases.ct_chain.fact_id: CitedText("ct_chain", "PROVED TEXT", ("claim:other@1",)),
+        "claim:other@1": CitedText("other", "OTHER TEXT"),
     }
     with proved_texts(texts):
         command = compile_proof(trace_proof(cases.at_two), mathlib=False)
     assert "(ct_chain : PROVED TEXT)" in command.source
     assert "(other : OTHER TEXT)" in command.source
-    assert command.rests_on == [cases.ct_chain.fact_id, "theorem:other@1"]
+    assert command.rests_on == [cases.ct_chain.fact_id, "claim:other@1"]
     assert isinstance(command.cited[-1], Premise)
     assert command.summary == "1 step, using ct_chain"
 
@@ -315,14 +324,14 @@ def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) 
     from lanky.citations import Proved
     from lanky.proofs.compile import cited_text
 
-    other = {"theorem:other@1": CitedText("other", "OTHER TEXT")}
+    other = {"claim:other@1": CitedText("other", "OTHER TEXT")}
     earlier = Proved(
         cases.ct_chain.fact_id,
         "Lanky.ct_chain",
         "PROVED TEXT",
         False,
         cases.square.term,
-        ("theorem:other@1",),
+        ("claim:other@1",),
     )
     with proved_texts({cases.ct_chain.fact_id: earlier, **other}):
         assert cited_text(cases.ct_chain, False) != "PROVED TEXT"
@@ -336,7 +345,7 @@ def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) 
         "PROVED TEXT",
         False,
         cases.ct_chain.term,
-        ("theorem:other@1",),
+        ("claim:other@1",),
     )
     with proved_texts({cases.ct_chain.fact_id: current, **other}):
         assert cited_text(cases.ct_chain, False) == "PROVED TEXT"
@@ -348,9 +357,8 @@ def test_a_text_proved_for_another_term_is_no_proved_text_of_the_theorem(cases) 
 # {{{ without Lean
 
 
-def test_without_lean_each_link_is_drawn_and_a_false_one_fails_at_its_line(
-    cases, monkeypatch
-) -> None:
+def test_without_lean_a_false_step_fails_at_its_line(cases, monkeypatch) -> None:
+    """The native run finds it at the check's draws, with the two sides, and needs no Lean."""
     import lanky.proofs as proofs
 
     monkeypatch.setattr(proofs, "_lean_oracle", lambda: None)
@@ -364,16 +372,31 @@ def test_without_lean_each_link_is_drawn_and_a_false_one_fails_at_its_line(
     (failure,) = account["failures"]
     assert failure["kind"] == "false"
     assert failure["line"] == _line(
-        cases, "return (y * y).equals((x + 1) * (x + 1), by=h).equals(x * x + 2 * x + 2)"
+        cases, "assert y * y == (x + 1) * (x + 1) == x * x + 2 * x + 2, by(h)"
     )
+    (said,) = failure["lines"]
+    assert said.startswith("At x = ") and "(it needs ==)" not in said
 
 
 def test_without_lean_a_link_over_a_family_that_cannot_be_drawn_says_so(cases, monkeypatch) -> None:
+    """A link over a table over ``Nat`` is not drawn alone; the native run fills the table in.
+
+    So the line says the proof was run at that many draws; with no native
+    run to say so, it says the links could not be drawn.
+    """
     import lanky.proofs as proofs
+    import lanky.proofs.native as native
+    from lanky.proofs.filled import FILLED_DRAWS
 
     monkeypatch.setattr(proofs, "_lean_oracle", lambda: None)
     account = prove(cases.ct_chain, cases.ct_chain.fact()).provenance["proof"]
     assert account["closed"] is None
+    assert account["said"] == (
+        f"without Lean, its proof was not checked by Lean; it was run at {FILLED_DRAWS} drawn "
+        "values instead, and every step held"
+    )
+    monkeypatch.setattr(native, "native_run", lambda theorem, *args, **kwargs: (None, 0))
+    account = prove(cases.ct_chain, cases.ct_chain.fact()).provenance["proof"]
     assert "could not be drawn" in account["reason"]
 
 
@@ -411,7 +434,8 @@ def checked(tmp_path_factory) -> dict:
 
 
 @pytest.mark.parametrize(
-    "owner", ["ct_chain", "ct_reversed", "doubled", "at_two", "square", "square_positional"]
+    "owner",
+    ["ct_chain", "ct_reversed", "doubled", "at_two", "square", "square_positional", "mixed"],
 )
 def test_lean_accepts_the_proofs_that_calculate(checked, owner) -> None:
     fact = checked[owner]
@@ -436,18 +460,18 @@ T4_CASES = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="the design's T4: a printer that dropped a condition")
+@claim(cite="the design's T4: a printer that dropped a condition")
 def every_integer_is_nonnegative(n: Int) -> n >= 0:
     """What a theorem about naturals would say if the printer dropped its condition."""
 
 
-@theorem
+@claim
 def any_two_cells(f: Fn[Nat, Int]) -> f[0] == f[1]:
-    return every_integer_is_nonnegative(-1)
+    return by(every_integer_is_nonnegative(-1))
 '''
 
 
@@ -457,18 +481,18 @@ CIRCLE = '''\
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim
 from lanky.prelude import Int
 
 
-@theorem
+@claim
 def ping(x: Int) -> x + 1 > x:
-    return pong(x)
+    return by(pong(x))
 
 
-@theorem
+@claim
 def pong(x: Int) -> x + 1 > x:
-    return ping(x)
+    return by(ping(x))
 '''
 
 
@@ -499,16 +523,18 @@ def test_a_proof_citing_a_fact_about_reals_is_left_to_mathlib_in_core_lean() -> 
     assert "only Lean with Mathlib can state it" in account["reason"]
 
 
-def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path) -> None:
+def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path, monkeypatch) -> None:
     """The cited statement proves ``-1 >= 0``, and so anything; the proof is refused.
 
     The claim is false and about a table over ``Nat``, which no draw tests, so
     without the question the proof would read proved by Lean, resting on the
     axiom: the design's T4, a citation without a proved text, restated as the
     printer gives it. The oracles are asked whether the cited statements
-    alone prove False, and they do.
+    alone prove False, and they do. The native run, which finds the claim
+    false where its proof ends, is set aside, so that this is Lean's side.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_cases.py"
     path.write_text(T4_CASES, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["any_two_cells"]
@@ -530,32 +556,68 @@ T4_INDUCTION = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="a table that does not change from one cell to the next")
+@claim(cite="a table that does not change from one cell to the next")
 def steady(g: Fn[Nat, Int], m: Nat) -> g[m + 1] == g[m]:
     """Each cell is the one before it."""
 
 
-@axiom(cite="a printer that dropped a condition, inside an induction")
+@claim(cite="a printer that dropped a condition, inside an induction")
 def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
     """What a statement about the cells past the first would say with m >= 1 dropped."""
 
 
-@theorem
+@claim
 def every_cell_is_seven(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
-    def claim(n):
+    for n in every_cell_is_seven.conclusion.domain:
         if n >= 1:
-            return steady(f, n - 1), claim(n - 1)
-        return grows(f, n)
-
-    return claim
+            yield by(steady(f, n - 1), every_cell_is_seven.conclusion[n - 1])
+        else:
+            yield by(grows(f, n))
 '''
 
 
-def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> None:
+def _lean_side_only(monkeypatch) -> None:
+    """Set the native run aside, so that what is tested is Lean's side of the defense.
+
+    The claims of these cases are about a table over ``Nat`` that nothing
+    constrains, and the native run fills one in and finds each false at its
+    first point, before Lean is asked (see
+    :func:`test_t4_claims_are_refuted_natively_too`). What these tests show
+    is that Lean's side refuses the proofs on its own.
+    """
+    import lanky.proofs.native as native
+
+    monkeypatch.setattr(native, "native_run", lambda theorem, *args, **kwargs: (None, 0))
+
+
+def test_t4_claims_are_refuted_natively_too(tmp_path) -> None:
+    """Defense in depth: the native run, at a table it fills in, finds each claim false at 0."""
+    from lanky.proofs.native import native_failure
+
+    for name, source in (("t4_native", T4_INDUCTION), ("t4_unsampled_native", T4_UNSAMPLED)):
+        path = tmp_path / f"{name}.py"
+        path.write_text(source, encoding="utf-8")
+        module = import_path(path)
+        for owner in ("every_cell_is_seven", "threes_are_sevens"):
+            if hasattr(module, owner):
+                failure = native_failure(getattr(module, owner))
+                assert failure is not None, owner
+                assert failure.headline == "its conclusion is false at a point its proof reaches"
+                assert failure.lines[0].startswith("At n = 0: ")
+    # a proof with no loop: its goal, where it ends
+    path = tmp_path / "t4_cases_native.py"
+    path.write_text(T4_CASES, encoding="utf-8")
+    failure = native_failure(import_path(path).any_two_cells)
+    assert failure is not None
+    assert failure.headline == "its conclusion is false where its proof ends"
+    assert failure.lines[0].endswith(": the conclusion, f[0] == f[1], is false.")
+
+
+def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path, monkeypatch) -> None:
     """``grows`` is cited at ``(f, n)`` in the case ``n < 1``, where its statement proves False.
 
     The claim is false, and about a table over ``Nat``, which no draw tests;
@@ -566,6 +628,7 @@ def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> No
     False: the proof is refused, at the line of the case.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_induction_cases.py"
     path.write_text(T4_INDUCTION, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
@@ -580,17 +643,17 @@ def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> No
     assert failure["line"] == 1 + next(
         index
         for index, text in enumerate(T4_INDUCTION.splitlines())
-        if "return grows(f, n)" in text
+        if "yield by(grows(f, n))" in text
     )
     assert fact.provenance.get("tactic") != "its written proof"
 
 
 #: T4 inside an induction, with the citation by name alone: the compiler finds its point.
-T4_BY_NAME = T4_INDUCTION.replace("return grows(f, n)", "return grows")
+T4_BY_NAME = T4_INDUCTION.replace("yield by(grows(f, n))", "yield by(grows)")
 
 
-def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> None:
-    """``return grows`` is taken at ``(f, n)``, matched against ``f[n] == 7`` (Codex, #177).
+def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path, monkeypatch) -> None:
+    """``by(grows)`` is taken at ``(f, n)``, matched against ``f[n] == 7`` (Codex, #177).
 
     The point is written nowhere, so the case's question had no point to
     take ``grows`` at, and was not asked: the false claim read proved by
@@ -598,6 +661,7 @@ def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> 
     1`` is refused as when the point is written.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_by_name_cases.py"
     path.write_text(T4_BY_NAME, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
@@ -611,11 +675,11 @@ def test_t4_by_name_alone_is_asked_at_the_point_the_compiler_found(tmp_path) -> 
 
 #: T4 inside an induction, the citation at a function: ``grows`` at ``(k ↦ f[k] + 1, n)``.
 T4_AT_A_FUNCTION = T4_INDUCTION.replace(
-    "return grows(f, n)", "return grows(lambda k: f[k] + 1, n)"
+    "yield by(grows(f, n))", "yield by(grows(lambda k: f[k] + 1, n))"
 )
 
 
-def test_t4_at_a_function_is_asked_at_that_function(tmp_path) -> None:
+def test_t4_at_a_function_is_asked_at_that_function(tmp_path, monkeypatch) -> None:
     """A point that binds a family to a function is asked about too (Codex, #182).
 
     ``grows`` taken at ``(k ↦ f[k] + 1, n)`` in the case ``n < 1`` says
@@ -624,6 +688,7 @@ def test_t4_at_a_function_is_asked_at_that_function(tmp_path) -> None:
     Lean. The function is now written in the question, as a ``fun``.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_function_cases.py"
     path.write_text(T4_AT_A_FUNCTION, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["every_cell_is_seven"]
@@ -641,53 +706,51 @@ T4_UNSAMPLED = '''\
 
 from __future__ import annotations
 
-from lanky import axiom, theorem
+from lanky import by, claim
 from lanky.prelude import Fn, Int, Nat
 
 
-@axiom(cite="a printer that dropped a condition")
+@claim(cite="a printer that dropped a condition")
 def grows(g: Fn[Nat, Int], m: Nat) -> g[m] < g[m] + m:
     """What a statement about the cells past the first would say with m >= 1 dropped."""
 
 
-@theorem
+@claim
 def cell_one_hundred(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat if n == 100):
-    def claim(n):
-        return grows(f, n - 100)
-
-    return claim
+    for n in cell_one_hundred.conclusion.domain:
+        yield by(grows(f, n - 100))
 
 
-@theorem
+@claim
 def threes_are_sevens(f: Fn[Nat, Int]) -> all(f[n] == 7 for n in Nat):
-    def claim(n):
+    for n in threes_are_sevens.conclusion.domain:
         if f[n] == 3:
-            return grows(f, 0)
-        return grows(f, 0)
+            yield by(grows(f, 0))
+        else:
+            yield by(grows(f, 0))
 
-    return claim
 
-
-@theorem
+@claim
 def past_a_hundred(
     f: Fn[Nat, Int], seven: all(f[m] == 7 for m in Nat if m >= 100)
 ) -> all(f[n] == 7 for n in Nat if n >= 100):
-    def claim(n):
+    for n in past_a_hundred.conclusion.domain:
         if n < 50:
-            return grows(f, n)
-        return seven(n)
-
-    return claim
+            yield by(grows(f, n))
+        else:
+            yield by(seven[n])
 '''
 
 
 @pytest.fixture(scope="module")
 def unsampled(tmp_path_factory) -> dict:
-    """:data:`T4_UNSAMPLED` checked with core Lean, by owner."""
+    """:data:`T4_UNSAMPLED` checked with core Lean, by owner, the native run set aside."""
     _lean_or_skip()
     path = tmp_path_factory.mktemp("t4_unsampled") / "t4_unsampled_cases.py"
     path.write_text(T4_UNSAMPLED, encoding="utf-8")
-    return {fact.owner: fact for fact in claims(check_path(path))}
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _lean_side_only(monkeypatch)
+        return {fact.owner: fact for fact in claims(check_path(path))}
 
 
 @pytest.mark.parametrize("owner", ["cell_one_hundred", "threes_are_sevens"])
@@ -759,7 +822,7 @@ def test_lean_accepts_a_proof_with_a_step_left_open_and_names_it(checked) -> Non
     line = 1 + next(
         index
         for index, text in enumerate(CASES.splitlines())
-        if ".equals(-D[a - 2, b + 2], by=...)" in text
+        if "assert -R[a - 2, b + 2] == -D[a - 2, b + 2], by(...)" in text
     )
     assert account["holes"] == [f"chains_cases.py:{line}"]
     # the proof does not prove the claim: it reads as the other oracles left it
@@ -774,8 +837,8 @@ def test_proofs_names_a_written_proof_where_the_search_found_none() -> None:
     from lanky.outline import proof_lines
 
     fact = Fact(
-        id="theorem:m.t@3",
-        kind="theorem",
+        id="claim:m.t@3",
+        kind="claim",
         statement="t",
         status=Status.PROVED,
         decided_by="lean",

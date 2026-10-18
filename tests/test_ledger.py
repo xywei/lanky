@@ -25,7 +25,7 @@ def make_fact(fact_id: str, status: Status = Status.ASSUMED, **kwargs: object) -
     kwargs.setdefault("owner", fact_id)
     return Fact(
         id=fact_id,
-        kind="theorem",
+        kind="claim",
         statement=f"{fact_id} holds",
         term=Var("n") >= 0,
         status=status,
@@ -166,7 +166,7 @@ def test_a_theorem_too_long_for_one_line_is_printed_a_part_to_a_line() -> None:
     }
     fact = Fact(
         id="compressed_taylor",
-        kind="theorem",
+        kind="claim",
         statement=(
             f"{sequent['variables']} | "
             + ", ".join(text for _, text in sequent["hypotheses"])
@@ -244,7 +244,7 @@ def test_a_fact_a_heuristic_decided_is_marked_beside_its_status() -> None:
         [
             Fact(
                 id="a",
-                kind="theorem",
+                kind="claim",
                 statement="x == x",
                 status=Status.DECIDED,
                 decided_by="simplifier",
@@ -252,7 +252,7 @@ def test_a_fact_a_heuristic_decided_is_marked_beside_its_status() -> None:
             ),
             Fact(
                 id="b",
-                kind="theorem",
+                kind="claim",
                 statement="y == y",
                 status=Status.DECIDED,
                 decided_by="isl",
@@ -320,7 +320,7 @@ def test_to_json_round_trips() -> None:
     assert data == [
         {
             "id": "a",
-            "kind": "theorem",
+            "kind": "claim",
             "statement": "a holds",
             "term": "n >= 0",
             "status": "tested",
@@ -343,7 +343,7 @@ def axiom_fact(fact_id: str, owner: str = "") -> Fact:
     """An axiom, as ``@axiom`` builds one: assumed, on a citation."""
     return Fact(
         id=fact_id,
-        kind="axiom",
+        kind="cited",
         statement=f"{fact_id} holds",
         status=Status.ASSUMED,
         provenance={"cite": "a textbook"},
@@ -430,9 +430,9 @@ def test_resting_on_a_refuted_fact_is_worth_a_refutation() -> None:
 
 def test_an_id_the_ledger_does_not_hold_counts_as_an_assumption() -> None:
     """A claim of another file, or an id written wrong: nothing here established it."""
-    ledger = Ledger([make_fact("t", Status.DECIDED, rests_on=("theorem:helpers.lemma@12",))])
+    ledger = Ledger([make_fact("t", Status.DECIDED, rests_on=("claim:helpers.lemma@12",))])
     assert ledger.support("t") == Support(
-        effective=Status.ASSUMED, under=("theorem:helpers.lemma@12",)
+        effective=Status.ASSUMED, under=("claim:helpers.lemma@12",)
     )
 
 
@@ -504,12 +504,12 @@ def test_the_table_says_what_a_fact_is_under_and_what_it_is_worth() -> None:
     """
     ledger = Ledger(
         [
-            axiom_fact("axiom:demo.jump@3", owner="jump"),
+            axiom_fact("claim:demo.jump@3", owner="jump"),
             make_fact(
                 "t",
                 Status.PROVED,
                 decided_by="lean",
-                rests_on=("axiom:demo.jump@3", "k:post", "elsewhere"),
+                rests_on=("claim:demo.jump@3", "k:post", "elsewhere"),
             ),
             make_fact("k:post", owner="k"),
             make_fact("k:bounds", Status.DECIDED, decided_by="isl", owner="k"),
@@ -517,7 +517,7 @@ def test_the_table_says_what_a_fact_is_under_and_what_it_is_worth() -> None:
     )
     lines = ledger.render().splitlines()
     assert lines[0].split() == ["STATUS", "EFFECTIVE", "BY", "WHERE", "OWNER", "STATEMENT"]
-    assert lines[2].split("  ")[0] == "assumed (axiom)"
+    assert lines[2].split("  ")[0] == "assumed (cited)"
     assert lines[3].startswith("proved under jump, k:post, elsewhere  assumed    lean ")
     assert lines[4].split()[:2] == ["assumed", "assumed"]
     assert lines[5].split()[:3] == ["decided", "decided", "isl"]

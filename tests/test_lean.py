@@ -22,7 +22,7 @@ import pytest
 
 import lanky.oracles.lean as lean_module
 from conftest import ProcessWatch, claims
-from lanky import theorem
+from lanky import claim
 from lanky.check import import_path
 from lanky.lean import (
     LeanStatement,
@@ -97,7 +97,7 @@ def test_a_function_typed_domain_is_bracketed() -> None:
     assert lean_type(Fn[Fn[Fin[n], Nat] & (n > 0), Int]) == "(Int → Nat) → Int"
     assert lean_type(Fn[Fin[n], Fn[Fn[Fin[n], Nat], Nat]]) == "Int → (Int → Nat) → Nat"
 
-    @theorem
+    @claim
     def higher_order(
         m: Nat,
         total: Fn[Fn[Fin[m], Nat], Nat],
@@ -259,17 +259,17 @@ def test_true_division_needs_a_field() -> None:
 # {{{ statements
 
 
-@theorem
+@claim
 def commutes(x: Nat, y: Nat) -> x + y == y + x:
     """Addition on the naturals commutes."""
 
 
-@theorem
+@claim
 def below(m: Nat, j: Fin[m]) -> j < m + 1:
     """A point of an index type is below the next bound."""
 
 
-@theorem
+@claim
 def scan_monotone(
     size: Nat,
     cnt: Fn[Fin[size], Nat],
@@ -280,7 +280,7 @@ def scan_monotone(
     """The offsets of an exclusive scan over counts are monotone."""
 
 
-@theorem
+@claim
 def gauss(size: Nat) -> 2 * sum(k for k in Fin[size + 1]) == size * (size + 1):
     """Gauss's schoolboy sum, which core Lean cannot even state."""
 
@@ -343,12 +343,12 @@ def test_a_reduction_statement_is_declined_by_the_printer() -> None:
         gauss.lean()
 
 
-@theorem
+@claim
 def within_bounds(m: Nat, g: Fn[Fin[m], Nat]) -> all(g(k) >= 0 for k in Fin[m]):
     """A family applied inside its domain, under a quantifier of its own."""
 
 
-@theorem
+@claim
 def _outside_bounds(m: Nat, g: Fn[Fin[m], Nat]) -> g(m) == g(m):
     """A family applied at ``m``, which is one point past its domain.
 
@@ -397,7 +397,7 @@ def test_an_argument_that_could_be_negative_is_declined_too() -> None:
     over the binders rather than a solver, so it declines.
     """
 
-    @theorem
+    @claim
     def signed(size: Nat, k: Int, fam: Fn[Fin[size], Nat]) -> fam(k) == fam(k):
         """An Int index into a Fin domain."""
 
@@ -417,12 +417,12 @@ def test_an_open_term_has_no_domain_to_leave() -> None:
     check_applications(f(n + 100))
 
 
-@theorem
+@claim
 def chained_in_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(0) == grid(0)(0):
     """A family of families, applied twice and in bounds at both levels."""
 
 
-@theorem
+@claim
 def _chained_out_of_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(1) == grid(0)(1):
     """The same shape with the *outer* application one point past its domain.
 
@@ -433,7 +433,7 @@ def _chained_out_of_bounds(grid: Fn[Fin[1], Fn[Fin[1], Nat]]) -> grid(0)(1) == g
     """
 
 
-@theorem
+@claim
 def _applied_more_often_than_its_type(row: Fn[Fin[1], Nat]) -> row(0)(0) == row(0)(0):
     """A family applied twice though its type takes one argument.
 
@@ -469,14 +469,14 @@ def test_a_chained_application_in_bounds_still_prints() -> None:
     )
 
 
-@theorem
+@claim
 def gathered_through(
     nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv]], u: Fn[Fin[nv], Int]
 ) -> all(u[node[p]] * u[node[p]] >= 0 for p in Fin[nf]):
     """A family applied at another's value: a gather through a map into its domain."""
 
 
-@theorem
+@claim
 def _gathered_past_the_end(
     nf: Nat, nv: Nat, node: Fn[Fin[nf], Fin[nv + 1]], u: Fn[Fin[nv], Int]
 ) -> all(u[node[p]] * u[node[p]] >= 0 for p in Fin[nf]):
@@ -570,7 +570,7 @@ def test_a_size_bound_again_inside_is_not_the_one_a_family_type_means() -> None:
     assert "off n * off n ≥ 0" in print_lean(cited)
 
 
-@theorem
+@claim
 def _over_a_refined_domain(fam: Fn[Fin[1] & False, Nat]) -> fam(0) == fam(0):
     """A family over a domain a refinement empties, applied at ``0``.
 
@@ -596,7 +596,7 @@ def test_a_refined_family_domain_is_declined() -> None:
     assert not oracle.can_establish(_over_a_refined_domain.fact())
 
 
-@theorem
+@claim
 def _impossible_refinement(
     m: Nat,
     g: Fn[Fin[m], Nat],
@@ -633,7 +633,7 @@ def test_a_refinement_whose_applications_are_in_bounds_still_prints() -> None:
     it and stands as its antecedent.
     """
 
-    @theorem
+    @claim
     def refined_index(
         m: Nat,
         g: Fn[Fin[m], Nat],
@@ -648,7 +648,7 @@ def test_a_refinement_whose_applications_are_in_bounds_still_prints() -> None:
     )
 
 
-@theorem
+@claim
 def _captured_binder(i: Nat) -> all(i > 0 for i in Fin[i]):
     """A binder whose own domain names the parameter it shadows.
 
@@ -693,7 +693,7 @@ def test_a_binder_that_captures_nothing_still_prints() -> None:
     does not mention the outer one it shadows.
     """
 
-    @theorem
+    @claim
     def fresh(m: Nat) -> all(j >= 0 for j in Fin[m]):
         """The same shape as the captured one, with a name of its own."""
 
@@ -748,7 +748,7 @@ def test_a_binderless_statement_keeps_its_hypotheses() -> None:
 
 
 def _scoped():
-    @theorem
+    @claim
     def scoped(a: Nat, b: Nat) -> a + b == b + a:
         """A true claim under a name that is a Lean keyword."""
 
@@ -756,7 +756,7 @@ def _scoped():
 
 
 def _keyword_binders():
-    @theorem
+    @claim
     def binders(fun: Nat, at: Nat) -> fun + at == at + fun:
         """The same claim over variables whose names are Lean keywords."""
 
@@ -764,7 +764,7 @@ def _keyword_binders():
 
 
 def _named_like_a_hypothesis():
-    @theorem
+    @claim
     def named(h0: Nat, b: Nat) -> h0 + b == b + h0:
         """The same claim over a variable named like the first hypothesis."""
 
@@ -772,7 +772,7 @@ def _named_like_a_hypothesis():
 
 
 def _truth():
-    @theorem
+    @claim
     def truth(true: Bool) -> true == True:  # noqa: E712 - the point of it
         """False at ``true = False``, over a variable named like the Boolean literal."""
 
@@ -780,7 +780,7 @@ def _truth():
 
 
 def _scan_with_keyword_binders():
-    @theorem
+    @claim
     def scan_keywords(
         size: Nat,
         cnt: Fn[Fin[size], Nat],
@@ -933,7 +933,7 @@ def test_a_claim_named_like_a_core_declaration_is_declared_in_a_namespace() -> N
 
 
 def _typed_like_int():
-    @theorem
+    @claim
     def typed(Int: Nat, b: Nat) -> Int + b == b + Int:
         """A variable named like the type a natural is printed as."""
 
@@ -997,7 +997,7 @@ def test_mathlib_names_are_printed_from_the_root_where_a_variable_shadows_them()
 
 
 def _scan_over_rfl():
-    @theorem
+    @claim
     def scan_rfl(
         size: Nat,
         cnt: Fn[Fin[size], Nat],
@@ -1036,7 +1036,7 @@ def test_a_variable_named_rfl_is_introduced_under_a_name_no_pattern_reads() -> N
 
 
 def _scan_over_int():
-    @theorem
+    @claim
     def scan_int(
         Int: Nat,
         cnt: Fn[Fin[Int], Nat],
@@ -1107,7 +1107,7 @@ def _make_truncated():
     module-level theorem is collected and run by lanky's own pytest plugin.
     """
 
-    @theorem
+    @claim
     def truncated(n: Nat) -> n - 1 >= 0:
         """False at n = 0, which Lean has to see as well."""
 
@@ -1117,7 +1117,7 @@ def _make_truncated():
 _truncated = _make_truncated()
 
 
-@theorem
+@claim
 def one_below(m: Nat) -> m - 1 <= m:
     """True in the integer reading, so Lean still proves it."""
 
@@ -1150,7 +1150,7 @@ def test_a_natural_value_is_cast_where_it_is_a_number() -> None:
     and a family nothing binds, in an open term, is left as written.
     """
 
-    @theorem
+    @claim
     def steps(
         size: Nat,
         off: Fn[Fin[size + 1], Nat],
@@ -1164,7 +1164,7 @@ def test_a_natural_value_is_cast_where_it_is_a_number() -> None:
         "(off (r + 1) : Int) - (off r : Int) + shift r ≥ shift r - (off r : Int)"
     )
 
-    @theorem
+    @claim
     def rows(grid: Fn[Fin[2], Fn[Fin[3], Nat]], pick: Fn[Fn[Fin[3], Nat], Nat]) -> (
         pick(grid(1)) >= grid(1)(2)
     ):
@@ -1186,11 +1186,11 @@ def test_a_family_over_the_naturals_is_applied_only_at_naturals() -> None:
     the way an argument into ``Fin`` has to be shown in bounds.
     """
 
-    @theorem
+    @claim
     def _before(n: Nat, f: Fn[Nat, Nat]) -> f(n - 1) == f(n - 1):
         """One point before n, which is -1 at n = 0."""
 
-    @theorem
+    @claim
     def at_n(n: Nat, f: Fn[Nat, Nat]) -> f(n + 1) >= f(n) - f(n):
         """Points the family has, whatever n is."""
 
@@ -1212,13 +1212,13 @@ def test_a_natural_value_is_a_point_of_a_family_over_the_naturals() -> None:
     ``f(i) - 1``, is still declined.
     """
 
-    @theorem
+    @claim
     def composed(n: Nat, f: Fn[Fin[n], Nat], g: Fn[Nat, Nat]) -> all(
         g(f(i)) >= 0 for i in Fin[n]
     ):
         """g is applied at points it has."""
 
-    @theorem
+    @claim
     def _shifted(n: Nat, f: Fn[Fin[n], Nat], g: Fn[Nat, Nat]) -> all(
         g(f(i) - 1) >= 0 for i in Fin[n]
     ):
@@ -1241,14 +1241,14 @@ def test_an_exponent_is_a_natural() -> None:
     a float, and is declined.
     """
 
-    @theorem
+    @claim
     def powers(k: Int, m: Nat, f: Fn[Fin[1], Nat]) -> k**m * k**2 == k ** (m + 2) + 2 ** f(0):
         """Three exponents Lean can take and one it cannot."""
 
     with pytest.raises(UnsupportedTerm, match="exponent"):
         print_lean(powers.term)
 
-    @theorem
+    @claim
     def fine(k: Int, m: Nat, f: Fn[Fin[1], Nat]) -> k**m * k**2 >= 2 ** f(0) - 2 ** f(0):
         """The three it can."""
 
@@ -1267,7 +1267,7 @@ def _make_power_below_one():
     collected and run by lanky's own pytest plugin.
     """
 
-    @theorem
+    @claim
     def power_below_one(m: Nat) -> 1 - 2**m >= 0:
         """Its variable is only in the exponent, so nothing else types the numerals."""
 
@@ -1731,7 +1731,7 @@ def test_the_ladder_stops_when_its_budget_is_spent(monkeypatch) -> None:
     """
     import time
 
-    @theorem
+    @claim
     def plainly_false(x: Nat, y: Nat) -> x <= y:
         """False, and every attempt fails slowly."""
 
@@ -1766,30 +1766,30 @@ def test_the_budget_is_read_when_a_fact_is_offered(monkeypatch) -> None:
     from lanky.check import hypotheses_fact
     from lanky.oracles.lean import DEFAULT_BUDGET, DEFAULT_VACUITY_BUDGET
 
-    @theorem
+    @claim
     def guarded(x: Nat, h: x > 3) -> x > 2:
         """A claim with a hypothesis, so that it has a vacuity question."""
 
-    claim = guarded.fact()
-    question = hypotheses_fact(claim)
+    stated = guarded.fact()
+    question = hypotheses_fact(stated)
     oracle = LeanOracle()
     monkeypatch.delenv("LANKY_LEAN_BUDGET", raising=False)
     monkeypatch.delenv("LANKY_LEAN_VACUITY_BUDGET", raising=False)
     assert (DEFAULT_BUDGET, DEFAULT_VACUITY_BUDGET) == (120, 30)
-    assert oracle._budget(claim) == DEFAULT_BUDGET
+    assert oracle._budget(stated) == DEFAULT_BUDGET
     assert oracle._budget(question) == DEFAULT_VACUITY_BUDGET
     monkeypatch.setenv("LANKY_LEAN_BUDGET", "45")
     monkeypatch.setenv("LANKY_LEAN_VACUITY_BUDGET", "7.5")
-    assert (oracle._budget(claim), oracle._budget(question)) == (45, 7.5)
+    assert (oracle._budget(stated), oracle._budget(question)) == (45, 7.5)
     assert LeanOracle(budget=3, vacuity_budget=2)._budget(question) == 2
     monkeypatch.setenv("LANKY_LEAN_BUDGET", "0")
-    assert oracle._budget(claim) is None
+    assert oracle._budget(stated) is None
     for given in ("a minute", "nan", "inf"):
         monkeypatch.setenv("LANKY_LEAN_BUDGET", given)
         with pytest.raises(ValueError, match="not a finite number of seconds"):
-            oracle._budget(claim)
+            oracle._budget(stated)
     oracle, _server = _slow_oracle(monkeypatch, 0.01)
-    result = oracle.establish(claim)
+    result = oracle.establish(stated)
     assert result.provenance["declined"] == (
         "lean: LANKY_LEAN_BUDGET is 'inf', which is not a finite number of seconds"
     )
@@ -1798,12 +1798,12 @@ def test_the_budget_is_read_when_a_fact_is_offered(monkeypatch) -> None:
     monkeypatch.delenv("LANKY_LEAN_BUDGET")
     for given in (math.nan, math.inf):
         with pytest.raises(ValueError, match="oracle's budget is .*not a finite number"):
-            LeanOracle(budget=given)._budget(claim)
+            LeanOracle(budget=given)._budget(stated)
         with pytest.raises(ValueError, match="oracle's vacuity_budget is"):
             LeanOracle(vacuity_budget=given)._budget(question)
-        assert LeanOracle(vacuity_budget=given)._budget(claim) == DEFAULT_BUDGET
+        assert LeanOracle(vacuity_budget=given)._budget(stated) == DEFAULT_BUDGET
     oracle, _server = _slow_oracle(monkeypatch, 0.01, budget=math.inf)
-    assert oracle.establish(claim).provenance["declined"] == (
+    assert oracle.establish(stated).provenance["declined"] == (
         "lean: the oracle's budget is inf, which is not a finite number of seconds"
     )
 
@@ -1820,7 +1820,7 @@ def test_a_question_whether_a_fact_is_vacuous_gets_the_attempts_that_can_answer_
     """
     from lanky.check import goal_guard_fact, hypotheses_fact
 
-    @theorem
+    @claim
     def scan(
         n: Nat,
         cnt: Fn[Fin[n], Nat],
@@ -1829,10 +1829,10 @@ def test_a_question_whether_a_fact_is_vacuous_gets_the_attempts_that_can_answer_
     ) -> all(off(p) <= off(q) for p in Fin[n + 1] for q in Fin[n + 1] if p <= q):
         """The scan's postcondition, whose ladder ends with an induction."""
 
-    claim = scan.fact()
-    full = tactic_ladder(statement_of(claim.term, claim.owner))
-    assert induction_scripts(statement_of(claim.term, claim.owner))
-    for question in (hypotheses_fact(claim), goal_guard_fact(claim)):
+    stated = scan.fact()
+    full = tactic_ladder(statement_of(stated.term, stated.owner))
+    assert induction_scripts(statement_of(stated.term, stated.owner))
+    for question in (hypotheses_fact(stated), goal_guard_fact(stated)):
         for mathlib in (False, True):
             ladder = tactic_ladder(statement_of(question.term, question.owner, mathlib=mathlib))
             assert ladder[: len(lean_module.BASE_TACTICS)] == list(lean_module.BASE_TACTICS)
@@ -2351,7 +2351,7 @@ def _div_zero_snippet() -> str:
     text = (ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
     found = re.search(r"`(def div_zero\([^`]*)`", text)
     assert found is not None, "docs/quickstart.md no longer shows div_zero"
-    return f'@theorem\n{found.group(1)}:\n    """Total in Lean, an exception in Python."""\n'
+    return f'@claim\n{found.group(1)}:\n    """Total in Lean, an exception in Python."""\n'
 
 
 def _write_gap(directory: Path, snippet: str) -> Path:
@@ -2365,7 +2365,7 @@ def _write_gap(directory: Path, snippet: str) -> Path:
     """
     lines = (ROOT / "examples" / "gauss.py").read_text(encoding="utf-8").splitlines(keepends=True)
     start = next(index for index, line in enumerate(lines) if line.startswith("from __future__"))
-    end = next(index for index, line in enumerate(lines) if line.startswith("@theorem"))
+    end = next(index for index, line in enumerate(lines) if line.startswith("@claim"))
     directory.mkdir()
     path = directory / "gap.py"
     path.write_text("".join(lines[start:end]) + snippet, encoding="utf-8")
@@ -2637,7 +2637,7 @@ def test_the_pytential_demonstrations_arithmetic_is_proved(
 
 
 def test_lean_reports_a_goal_it_cannot_close(lean_oracle: LeanOracle) -> None:
-    @theorem
+    @claim
     def false_claim(x: Nat, y: Nat) -> x <= y:
         """Not a theorem at all, so no tactic closes it."""
 
@@ -2659,16 +2659,16 @@ def test_the_lean_oracle_never_refutes(lean_oracle: LeanOracle, monkeypatch) -> 
     arrived with and the weaker oracles still get their turn.
     """
 
-    @theorem
+    @claim
     def plainly_false(x: Nat, y: Nat) -> x <= y:
         """False at x = 1, y = 0, and Lean will fail to prove it."""
 
-    @theorem
+    @claim
     def true_but_hard(x: Nat, y: Nat) -> (x + y) * (x + y) >= x * x + y * y:
         """True, and nonlinear, so the core-Lean ladder does not close it."""
 
-    for claim in (plainly_false, true_but_hard):
-        result = lean_oracle.establish(claim.fact())
+    for stated in (plainly_false, true_but_hard):
+        result = lean_oracle.establish(stated.fact())
         assert result is not None
         assert result.status is not Status.REFUTED
         assert result.status is Status.ASSUMED
@@ -2734,12 +2734,12 @@ def test_a_session_survives_an_attempt_that_timed_out(lean_oracle: LeanOracle) -
 _SLEEPS_IN_LEAN = '''\
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.oracles.lean import use_tactic
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def sleeps(a: Nat, b: Nat) -> a + b == b + a:
     """True, with a script that sleeps in Lean before it proves it."""
 
@@ -2820,31 +2820,31 @@ def test_a_child_ended_with_the_command_stops_its_lean_repl(
 _KEYWORD_CLAIMS = '''\
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Bool, Fin, Fn, Nat
 
 
-@theorem
+@claim
 def commutes(a: Nat, b: Nat) -> a + b == b + a:
     """A name Lean accepts."""
 
 
-@theorem
+@claim
 def scoped(a: Nat, b: Nat) -> a + b == b + a:
     """The same claim under a name that is a Lean keyword."""
 
 
-@theorem
+@claim
 def binders(fun: Nat, at: Nat) -> fun + at == at + fun:
     """The same claim over variables whose names are Lean keywords."""
 
 
-@theorem
+@claim
 def named(h0: Nat, b: Nat) -> h0 + b == b + h0:
     """The same claim over a variable named like the first hypothesis."""
 
 
-@theorem
+@claim
 def scan(
     size: Nat,
     cnt: Fn[Fin[size], Nat],
@@ -2855,17 +2855,17 @@ def scan(
     """The scan's monotonicity, with its goal's variables named like Lean keywords."""
 
 
-@theorem
+@claim
 def truth(true: Bool) -> true == True:
     """False at true = False."""
 
 
-@theorem
+@claim
 def empty(fun: Nat, at: Nat, h0: fun + at < 0) -> fun == at:
     """Vacuous: no two naturals sum below zero."""
 
 
-@theorem
+@claim
 def unreached(n: Nat) -> all(show == n for show in Fin[n] if show > n + 5):
     """Vacuous: the goal's guard holds nowhere."""
 '''
@@ -2905,21 +2905,21 @@ def test_lean_proves_claims_named_like_keywords(lean_oracle: LeanOracle, tmp_pat
 _WRONG_PROOF_CLAIMS = '''\
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def free_goal() -> x - 1 >= 0:
     """x is bound by nothing, and false at x = 0 for whoever binds it as an integer."""
 
 
-@theorem
+@claim
 def disjunctive_guard(m: Nat) -> any(x == -1 for x in Fin[m] if (x > 5) | (x < 1)):
     """False: the guard admits 0 and the points past 5, and none of them is -1."""
 
 
-@theorem
+@claim
 def rounds_half_up() -> round(0.5) == 1:
     """False in Python, where round(0.5) is 0."""
 '''
@@ -2959,7 +2959,7 @@ from __future__ import annotations
 
 import collections
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
@@ -2967,29 +2967,29 @@ def table(i):
     return {0: 1}.get(i, 0)
 
 
-@theorem
+@claim
 def types_differ(n: Nat) -> (Fin[n] != Fin[3]) | (n == 4):
     \"\"\"#79: False at n = 3.\"\"\"
 
 
-@theorem
+@claim
 def through_helper(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == table(i) for i in Fin[n]):
     \"\"\"#80: False at i = 0.\"\"\"
 
 
-@theorem
+@claim
 def counted(n: Nat, f: Fn[Fin[n], Nat]) -> all(
     f(i) * 0 == collections.Counter([i, 0])[0] - 1 for i in Fin[n]
 ):
     \"\"\"#80: False at i = 0.\"\"\"
 
 
-@theorem
+@claim
 def identity(n: Nat, f: Fn[Fin[n], Nat]) -> all((f(i) * 0 == 1) | (i is not 0) for i in Fin[n]):
     \"\"\"#88: False at i = 0.\"\"\"
 
 
-@theorem
+@claim
 def named(n: Nat, f: Fn[Fin[n], Nat]) -> all(f(i) * 0 == {"i": 0}.get(i.name, 1) for i in Fin[n]):
     \"\"\"#88: a number has no name.\"\"\"
 """
@@ -3023,7 +3023,7 @@ def test_lean_proves_no_claim_whose_reading_is_refuted(lean_oracle: LeanOracle, 
 
 
 def _disjunctive_guard():
-    @theorem
+    @claim
     def disjunctive_guard(m: Nat) -> any(x == -1 for x in Fin[m] if (x > 5) | (x < 1)):
         """False: the guard admits 0 and the points past 5, and none of them is -1."""
 
@@ -3054,7 +3054,7 @@ def test_the_oracle_declines_a_free_name_and_says_why(lean_oracle: LeanOracle) -
     """#64: asked directly, the oracle declines a statement with a free name, naming it."""
     fact = Fact(
         id="free:x",
-        kind="theorem",
+        kind="claim",
         statement="x - 1 >= 0",
         term=Forall((), Var("x") - 1 >= 0),
         owner="free_x",
@@ -3068,7 +3068,7 @@ def test_the_oracle_declines_a_free_name_and_says_why(lean_oracle: LeanOracle) -
     # the same statement with x bound as an integer is false, and not proved
     bound = Fact(
         id="bound:x",
-        kind="theorem",
+        kind="claim",
         statement="x : Int |- x - 1 >= 0",
         term=Forall(((Var("x"), Int),), Var("x") - 1 >= 0),
         owner="bound_x",
@@ -3081,51 +3081,51 @@ def test_the_oracle_declines_a_free_name_and_says_why(lean_oracle: LeanOracle) -
 _ROOT_NAME_CLAIMS = '''\
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
-@theorem
+@claim
 def and_comm(a: Nat, b: Nat) -> a + b == b + a:
     """Named like a root declaration of core Lean."""
 
 
-@theorem
+@claim
 def trivial(a: Nat, b: Nat) -> a + b == b + a:
     """Another."""
 
 
-@theorem
+@claim
 def id(a: Nat, b: Nat) -> a + b == b + a:
     """Another."""
 
 
-@theorem
+@claim
 def absurd(a: Nat, b: Nat) -> a + b == b + a:
     """Another."""
 
 
-@theorem
+@claim
 def congr(a: Nat, b: Nat) -> a + b == b + a:
     """Another."""
 
 
-@theorem
+@claim
 def inferInstanceAs(a: Nat, b: Nat) -> a + b == b + a:
     """A keyword that is also a root declaration."""
 
 
-@theorem
+@claim
 def True_(a: Nat, b: Nat) -> a + b == b + a:
     """Cleaned into True."""
 
 
-@theorem
+@claim
 def typed(Int: Nat, b: Nat) -> Int + b == b + Int:
     """A variable named like the type a natural prints as."""
 
 
-@theorem
+@claim
 def scan_int(
     Int: Nat,
     cnt: Fn[Fin[Int], Nat],
@@ -3136,7 +3136,7 @@ def scan_int(
     """The scan's monotonicity over a size named Int, which the induction names."""
 
 
-@theorem
+@claim
 def scan_rfl(
     size: Nat,
     cnt: Fn[Fin[size], Nat],
@@ -3316,7 +3316,7 @@ def test_lean_does_not_prove_an_integral_fraction_base_by_truncation(
     from lanky.check import establish
 
     fact = Fact(
-        id="fraction_base", kind="theorem", statement="1 - 2**n >= 0", term=_FRACTION_BASE
+        id="fraction_base", kind="claim", statement="1 - 2**n >= 0", term=_FRACTION_BASE
     )
     closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_FRACTION_BASE)}\n")
     assert closed, detail
@@ -3334,7 +3334,7 @@ def test_lean_does_not_prove_a_closed_base_by_truncation(lean_oracle: LeanOracle
     """
     from lanky.check import establish
 
-    fact = Fact(id="closed_base", kind="theorem", statement="(1 - 2)**n >= 0", term=_CLOSED_BASE)
+    fact = Fact(id="closed_base", kind="claim", statement="(1 - 2)**n >= 0", term=_CLOSED_BASE)
     closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(_CLOSED_BASE)}\n")
     assert closed, detail
     assert lean_oracle.establish(fact).status is not Status.PROVED
@@ -3469,9 +3469,9 @@ def test_a_variable_only_in_an_exponent_does_not_make_the_claim_natural(
     path = tmp_path / "power.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def power_below_one(m: Nat) -> 1 - 2**m >= 0:\n"
         '    """False at m = 1."""\n',
         encoding="utf-8",
@@ -3486,7 +3486,7 @@ def test_a_variable_only_in_an_exponent_does_not_make_the_claim_natural(
 def test_lean_proves_a_goal_whose_bound_is_a_power(lean_oracle: LeanOracle) -> None:
     """The ladder used to raise on ``Fin[2 ** n]``, and Lean was never asked."""
 
-    @theorem
+    @claim
     def powered(n: Nat) -> all(i < 2**n for i in Fin[2**n]):
         """Every point of Fin[2 ** n] is below its bound."""
 
@@ -3507,7 +3507,7 @@ def test_hypotheses_with_a_power_are_not_found_inconsistent_by_truncation(
     """
     from lanky.check import hypotheses_fact
 
-    @theorem
+    @claim
     def rare_power(m: Nat, n: Nat, h: (2**m - 5 < 0) & (n == 1000)) -> n > 999:
         """Satisfied at m = 0 and n = 1000, where no draw looks."""
 
@@ -3525,14 +3525,14 @@ def test_lean_reads_floor_division_the_way_python_does(lean_oracle: LeanOracle) 
     claim that it is ``-1`` must not be proved: it is false as the file runs it.
     """
 
-    @theorem
+    @claim
     def halves(k: Int) -> (k // 2) * 2 <= k:
         """Floor division by two rounds down, negative k included."""
 
     proved = lean_oracle.establish(halves.fact())
     assert proved.status is Status.PROVED
 
-    @theorem
+    @claim
     def euclidean(k: Int, h: k == 3) -> k // -2 == -1:
         """True of Euclidean division and false of Python's."""
 
@@ -3547,7 +3547,7 @@ def test_lean_reads_floor_division_the_way_python_does(lean_oracle: LeanOracle) 
 def test_the_printed_integer_reading_elaborates(lean_oracle: LeanOracle) -> None:
     """Casts, ``Int.fdiv``, ``Int.fmod`` and ``.toNat`` exponents are well typed."""
 
-    @theorem
+    @claim
     def everything(
         size: Nat,
         off: Fn[Fin[size + 1], Nat],
@@ -3565,8 +3565,8 @@ def test_the_printed_integer_reading_elaborates(lean_oracle: LeanOracle) -> None
     ):
         assert construct in source
     claims = (everything, _truncated, one_below, scan_monotone, chained_in_bounds, _power_below_one)
-    for claim in claims:
-        closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(claim.term)}\n")
+    for stated in claims:
+        closed, detail = lean_oracle.session.run(f"example : Prop := {print_lean(stated.term)}\n")
         assert closed, detail
 
 
@@ -3578,7 +3578,7 @@ def test_lean_closes_an_existential_over_an_index_type(lean_oracle: LeanOracle) 
     ends with ``simp_all <;> omega``.
     """
 
-    @theorem
+    @claim
     def enumerated(m: Nat) -> any(j == 0 for j in Fin[m + 1]):
         """A witness in the domain, whatever m is."""
 
@@ -3589,9 +3589,9 @@ def test_lean_closes_an_existential_over_an_index_type(lean_oracle: LeanOracle) 
 
 _VACUOUS = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1:\n"
     '    """No natural satisfies the hypotheses, so the goal is never at stake."""\n'
 )
@@ -3622,15 +3622,15 @@ def test_lean_shows_a_vacuous_claim_vacuous(lean_oracle: LeanOracle, tmp_path, c
 
 _CLOSED = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def closed_flipped() -> all(k >= 0 for k in Nat if (k > 5) & (k < 3)):\n"
     '    """No parameters: the goal\'s universal is the goal, not the statement."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def closed_rare() -> all(k >= 0 for k in Nat if k > 100):\n"
     '    """No parameters, and a guard no draw reaches."""\n\n\n'
-    "@theorem\n"
+    "@claim\n"
     "def closed_nested() -> all(all(k >= j for k in Nat if (k > 5) & (k < 3)) for j in Nat):\n"
     '    """No parameters: the guard of the inner universal is not the goal\'s."""\n'
 )
@@ -3685,19 +3685,19 @@ def test_lean_shows_a_vacuous_axiom_vacuous_without_being_shown_the_axiom(
 
     path = tmp_path / "vacuous.py"
     path.write_text(
-        _VACUOUS.replace("import theorem", "import axiom").replace(
-            "@theorem", '@axiom(cite="a textbook, copied down wrong")'
+        _VACUOUS.replace(
+            "@claim", '@claim(cite="a textbook, copied down wrong")'
         ),
         encoding="utf-8",
     )
     (fact,) = claims(check_path(path))
-    assert fact.kind == "axiom"
+    assert fact.kind == "cited"
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
     assert fact.is_vacuous
     assert fact.provenance["vacuous_by"] == "lean"
     assert cli.main(["check", str(path)]) == 1
-    assert "assumed (axiom) (vacuous)  -" in capsys.readouterr().out
+    assert "assumed (cited) (vacuous)  -" in capsys.readouterr().out
 
 
 def test_lean_leaves_hypotheses_the_sampler_misses_to_a_warning(
@@ -3740,9 +3740,9 @@ def test_lean_refutes_hypotheses_under_a_goal_it_cannot_state(
 
 _FLIPPED = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Fn, Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def flipped(\n"
     "    n: Nat,\n"
     "    cnt: Fn[Fin[n], Nat],\n"
@@ -3809,9 +3809,9 @@ def test_lean_leaves_a_goal_guard_the_sampler_misses_to_a_warning(
 
 _SCOPED = (
     "from __future__ import annotations\n\n"
-    "from lanky import theorem\n"
+    "from lanky import claim\n"
     "from lanky.prelude import Fin, Fn, Nat\n\n\n"
-    "@theorem\n"
+    "@claim\n"
     "def below_three(\n"
     "    n: Nat, off: Fn[Fin[n + 1], Nat], h: n < 3\n"
     ") -> all(off(i) >= 0 for i in Fin[n + 1] if i > 5):\n"

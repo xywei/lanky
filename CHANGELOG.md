@@ -6,6 +6,384 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+Proofs read as engineers write checks (the decision of 2026-10-18). A step is
+an `assert` with its reason after it, `assert x == y, by(f, g)`; a
+calculation is Python's own chained comparison; cases are `if`; a claim over
+a domain is a loop over its points, `for n in line_taylor.conclusion.domain:`,
+each case closed with `yield by(...)`, and `line_taylor.conclusion[n - 1]` is
+the conclusion at a point the loop has filled in. The claim's own name is
+spelled out and its parts are addressed through its tree. No function stands
+for a proof, and no claim calls itself. Under `lanky check` the body is also
+run as plain Python at the check's draws, so a false step is caught at its
+line, with its numbers, before Lean is asked. A claim is `@claim` and a claim
+taken on a source `@claim(cite=...)`. A named condition, `@condition`, is
+stated once, and the claims of a `with` block hold under it; `with` also
+assumes another claim's conditions, or a whole claim.
+
+### Breaking
+
+The forms of 0.5 are refused, each with the line to write. The quickstart's
+*Write a proof* has the 0.6 language on one card, and its *Name a condition*
+the CFL story, red then green.
+
+| 0.5 | 0.6 |
+|---|---|
+| `@theorem` | `@claim` |
+| `@axiom(cite=...)` | `@claim(cite=...)` |
+| a shared set of hypotheses restated in each theorem | `@condition` and `with ... as (...)` |
+| `def claim(n): ...` and `return claim` | `for n in name.conclusion.domain:`; a variable you induct on moves into the conclusion's `for` |
+| `return f, g` | `yield by(f, g)` or `return by(f, g)` |
+| `return f` | `yield by(f)` or `return by(f)` |
+| a bare `return` in a proof | `return by()` or `yield by()` |
+| `x.equals(y, by=f)` | `assert x == y, by(f)` |
+| `.at_most`, `.less_than`, `.at_least`, `.more_than` | `<=`, `<`, `>=`, `>` inside the `assert` |
+| `x.equals(y, by=f).equals(z, by=g)` | `assert x == y == z, by(f, g)`, or one `assert` per link |
+| `name = x.equals(y, by=f)` | `assert x == y, by(f)`: known for the rest of the case |
+| `claim(n - 1)` inside `def claim` | `name.conclusion[n - 1]` |
+| a hypothesis at a point, `pde(i, a - 2, b)` | `pde[i, a - 2, b]` (brackets: a point of its domain) |
+| another theorem for inputs, `gauss(n - 1)` | unchanged: `gauss(n - 1)` (parentheses: inputs) |
+| `by=...` | `by(...)` |
+
+- `lanky check` refuses to run under `python -O` (or `PYTHONOPTIMIZE`), which
+  removes every `assert`, and so every step of every proof; it exits 2.
+- A proof's `assert`s in a file pytest rewrites (a test module) are refused,
+  with the fix: `PYTEST_DONT_REWRITE` in the module's docstring.
+- The multipliers kept in the hint cache are kept in a new format: a cache
+  from 0.5 is read as empty, once.
+- **Calling a claim at values answers `True` or `False`**, `gauss(n=4)` or
+  `gauss(4)`, by position or by name, where 0.5 returned a `Verdict`. Where
+  one of the claim's conditions fails at the values, the question does not
+  apply, and `lanky.ConditionNotMet` names the condition: "bounded does not
+  apply at these values: its condition h, k >= n, fails there". In an
+  annotation, at symbolic values, the call is the claim's statement there.
+  Calling a claim never runs its proof.
+- A claim's fact has the kind `"claim"` and the id `claim:module.name@line`
+  (0.5: `"theorem"`, `theorem:...`); a cited claim's kind is `"cited"`, its
+  id `claim:...` too, and its row reads `assumed (cited)` (0.5: `assumed
+  (axiom)`). `Fact.is_cited` says so, and `Fact.is_axiom` stays as its old
+  name. A plugin's fact of kind `"axiom"` still counts as cited.
+- The classes are `lanky.Claim` and `lanky.CitedClaim`; `Theorem` and
+  `Axiom` stay as their 0.5 names, for a plugin that checks a claim's type.
+  The theory registers as `"claim"` (`ClaimTheory`, `TheoremTheory` its old
+  name). `Theorem.conditions`, the conditions a claim holds under, is
+  `Claim.held_under` now: `name.conditions` is the claim's own half.
+- `@claim` with no goal is refused naming `@condition`: "a claim needs a
+  goal ... A named set of assumptions with no goal is a @condition".
+
+### Added
+
+- **`by`, and the claim's tree.** `by(f, g)` is the reason for a step: in an
+  `assert`'s message, which Python reads only when the step fails, after
+  `yield` for the point the loop is at, after `return` for a claim proved
+  without a loop. `by()` adds nothing: the case follows directly, by lanky's
+  strategies, after the steps asserted. `by(...)`, Python's `Ellipsis`,
+  leaves a step open, and the claim's row names its line. Inside its body a
+  claim is spelled by its own name, the decorated claim Python resolves in
+  the module (`MyClass.name` in a class), and addressed through its tree:
+  - `name.conditions` and `name.conclusion`, the claim's two halves;
+    `name.conditions.ode` one condition, in the claim's proof the fact `ode`
+    names there;
+  - `name.conclusion.domain`, the points the conclusion's `for` ranges over,
+    in increasing order, `for i, a, b in name.conclusion.domain:` for several
+    variables of one `for`;
+  - `name.conclusion[p]`, the conclusion at a point of its domain, which
+    inside the claim's proof is the conclusion for that proof's inputs;
+  - a nested domain: for `all(all(... for a in B) for i in A)`,
+    `name.conclusion[i].domain` is the domain at `i`, looped over inside the
+    loop over `name.conclusion.domain`, and `name.conclusion[i][a - 2, b]` a
+    point of it; a `yield` closes the conclusion at the point of the
+    innermost loop over a domain.
+
+  Brackets give a point of a domain (`ode[n - 1]`, `pde[i, a - 2, b]`,
+  `name.conclusion[n - 1]`); parentheses give another claim for inputs, its
+  parameters (`gauss(n - 1)`), and its conclusion's point after,
+  `other(x).conclusion[k]`. `name.domain`, `name[p]` and `.dom` are refused
+  with the tree's spelling, and so is a condition at a point in parentheses,
+  with the brackets written. Outside a proof the parts say what they are, in
+  Python, `<line_taylor.conclusion: all(...)>`, and a domain refuses to be
+  walked.
+- **A claim never calls itself.** `name(...)` inside `name`'s proof is
+  refused: "a claim does not call itself; to argue from an earlier case, put
+  n in the conclusion's for, -> all(... for n in ...), and cite
+  name.conclusion[n - 1]". A variable one inducts on belongs in the
+  conclusion's `for`.
+- **Every case closes.** Each case ends with `yield by(...)` or `return
+  by(...)`. A bare `return`, `continue`, a bare `yield`, or a path that ends
+  is refused at its line, naming the case ("when a < 2 (file.py:12),
+  continue at line 13 ends the case with no closing line: close it with
+  yield by() if it follows directly, or give its reasons, yield by(f, g)"),
+  and so is a proof that mixes `yield` with `return by(...)`.
+- **An `assert` is a step.** The trace answers its question "false" once,
+  reads `by(...)` from the `AssertionError`, and runs the body again with the
+  step answered "true": the per-path re-run an `if` already makes, told from
+  an `if` by the bytecode. `x == y <= z` is one step of two links, each at the
+  line of the term it reaches, `<=`, `<`, `>=` and `>` mixing as in Python. A
+  step is a `have` in Lean, known for the rest of its case: a later `yield` or
+  `return` is asked only for the rest of the way from where the step ended.
+  The facts of a chain's `by(...)` serve the links they fit, each fact cited
+  by name alone matched against its link.
+- **A fact cited by name alone is matched against the terms of the step's
+  other facts too**, so `yield by(recurrence, every_box.conclusion[i, a - 2, b
+  + 2], pde)` finds `recurrence` and `pde` at `(i, a - 2, b)`, where each is
+  about the conclusion's cells and those of the conclusion at the earlier
+  point. A claim called for its inputs, `gauss(m)`, has its conclusion's point
+  found the same way.
+- **Earlier points are earlier in the loop.** A cited
+  `name.conclusion[point]` must come earlier in the loops over its domains:
+  lexicographic in the binders, outer domains first, and strict, so a point
+  smaller in one variable and larger in an earlier one is refused before
+  Lean is asked: "out_of_order.conclusion[a + 1, b - 1] is not filled in yet
+  when the loop is at (a, b)". An argument from the point above, 0.5's climb
+  toward a bound, is `for k in reversed(name.conclusion.domain):` over a
+  bounded domain (`k in Fin[p]`, or `k <= p` in the conclusion's `for`),
+  where "earlier" is earlier in the reversed loop; Lean's measure is the
+  distance to the bound. The refusal of a climbing citation in a forward
+  loop over a bounded domain names the reversed loop as its fix.
+- **The native run.** `lanky check` runs the body as plain Python at the
+  check's draws, exact `Fraction` values and exact complex numbers, with
+  `name.conclusion.domain` giving the conclusion's first points to the draw
+  bound (from the top under `reversed(...)`, and a nested domain at each
+  point of the loop around it), and integers whose quotient is exact. A false
+  `assert` is reported at its line, with the values there and the two sides
+  that differ ("At n = 3, alpha = 2, beta = 1: the left side is -1/24, the
+  right side 1/24."), and so is a point where the conclusion is false; the
+  proof fails without Lean. The run only tests: it never proves a step.
+  `Claim.run_proof(**values)` runs a proof the same way by hand, in a REPL
+  or under pdb.
+- `lanky check --proofs` prints the proofs lanky finds in the new surface,
+  `for a, b in name.conclusion.domain:` with `yield by(...)` in each case,
+  conditions at their points in brackets, and only where the loop's order
+  fits the induction found; where it does not, the strategy is said in
+  words, with the order of the conclusion's `for` a loop would fit.
+  `--steps` prints a row per `assert` and per `yield` at its Python line, a
+  chain's links under its first.
+
+- **Named conditions: `@condition`, and the claims of a `with` block
+  holding under one** (the decision of 2026-10-18 on proofs for engineers,
+  section 6). Results share conditions, and engineers name them: the CFL
+  condition, an expansion point that is not zero. A condition is
+  written like a claim with no goal and no body, and the claims that hold
+  under it go in a `with` block:
+
+  ```python
+  @condition
+  def away_from_zero(alpha: Complex, beta: Complex, nonzero: alpha != 0):
+      """The expansion point alpha is not zero."""
+
+
+  with away_from_zero as (alpha, beta, nonzero):
+
+      @claim
+      def line_taylor(a: Fn[Nat, Complex], first_term: alpha * a[1] == beta, ...) -> ...:
+          ...
+  ```
+
+  - Called at numbers a condition says whether it holds, `cfl(c=1, dt=0.1,
+    h=0.2)`, and in an annotation it is the proposition, so `ok: cfl(c, dt,
+    h)` is a hypothesis of any claim.
+  - `with away_from_zero as (alpha, beta, nonzero):` binds the condition's
+    variables and named conditions, in its signature's order and under its
+    names; another count or another name is refused with the signature
+    shown. Every claim defined in the block holds under the condition: its
+    statement is the condition's variables and conditions, then its own, and
+    natively it takes the condition's variables like its own,
+    `line_taylor(alpha=2, beta=1, a=...)`.
+  - The ledger's row reads `under away_from_zero (nonzero): a : Fn[Nat, Complex] |
+    ...`, the condition first and then the claim's own parts, as the file
+    has them. The property tester and the faithfulness check draw the
+    condition's variables with the claim's, satisfying its conditions, and
+    the check runs the condition's annotations again in the condition's own
+    module; a condition used as a hypothesis is run again too, so a misread
+    condition is refuted either way.
+  - A written proof reads the bound names, `alpha` and `nonzero`, as it reads
+    its own parameters; Lean states the theorem with the condition's
+    variables and hypotheses first, under their names.
+  - Several conditions compose, `with away_from_zero as (...), cfl as (...):`, in
+    Python's parenthesized form, or nested; a variable two conditions declare
+    with one sort is one variable. A claim in a block that declares one of
+    its names is refused, and so is a claim after the block that still
+    uses one: `alpha belongs to away_from_zero; use it inside with away_from_zero as
+    (alpha, beta, nonzero):`.
+  - A claim under a condition is a `Claim` to every consumer, its
+    `variables`, `hypotheses`, `term` and `hypothesis_names` the whole
+    statement, so a plugin cites it as it cites any other. `Claim.under`,
+    `held_under`, `bound`, `own_variables`, `own_hypotheses` and
+    `cited_under` (`"under away_from_zero"`, for a row that cites it) say what came
+    from the block.
+  - **`with` in three forms.** `with cfl as (nu, stable):` assumes a
+    condition; `with line_taylor.conditions as (a, first_term, ode):`
+    another claim's conditions; `with line_taylor as (a, first_term, ode):`
+    a whole claim, whose goal holds in the block under the claim's name. A
+    claim built on a whole claim rests on it, and its row reads `under
+    line_taylor` until line_taylor is proved, so nothing built on an unproved
+    claim passes for proved. A claim's conditions, or a whole claim, are
+    assumed only where what the claim holds under is in force, or the line
+    to write says so: "with moves as (x, small): assumes moves, which holds
+    under forward, and forward is not in force here; write with forward as
+    (h, positive), moves as (x, small):".
+  - **`name.conditions`**, the claim's half before its goal, is one object:
+    `line_taylor.conditions.ode` is one condition, and
+    `line_taylor.conditions(a=...)` says whether they hold at values.
+  - **A sibling inside the block takes its own inputs**: in the proof of a
+    claim under the same conditions, `line_taylor(c)` is line_taylor at the
+    block's `alpha` and `beta` and at `c`, and giving the block's names too is
+    refused with what to write. Inside a block at module level, a call takes
+    the block's names the same way.
+  - **A condition used as a hypothesis brings its variables' sorts** and
+    reads as written: `def courant_number(ok: cfl(c, dt, h)) -> ...` needs
+    no `c: Real`, and its row reads `c : Real, dt : Real, h : Real | cfl(c,
+    dt, h) |- ...`.
+  - **A condition has a row of its own** in the ledger: `can hold: nu : Real
+    | nu >= 0 and nu <= 1`, the check by draws that its conditions can hold
+    at all. It is `tested` where the draws find values that satisfy them,
+    and a condition that can never hold is `vacuous` and fails the check; it
+    is never `proved`, since a condition is assumed, not claimed.
+  - **A refuted claim names the condition that would make it hold.** Its
+    failing draws are tested against each `@condition` of the file, and one
+    false at every failing draw, and true at a passing one, is named under
+    the refutation: "The condition cfl in this file excludes every failing
+    draw: put the claim under with cfl as (nu, stable)."
+  - `cfl.nu` names nothing, and says so: "cfl.nu names nothing: nu is bound
+    by with cfl as (nu, stable):, and a claim outside the block ranges over
+    nu in its own for, or takes it as a parameter".
+  - One hook gives a body the names a `with` statement bound:
+    `lanky.proofs.trace.body_arguments(fn, values)` splits the statement's
+    values into what the function takes as parameters and the names it does
+    not, which the trace and the native run both lay over the namespace the
+    body runs in, at their symbolic or drawn values.
+  - `examples/upwind.py` and the quickstart's "Name a condition" state the
+    CFL condition of an upwind scheme and what holds under it.
+
+- **`max` and `min` of terms** are lanky's own, the larger and the smaller of
+  their arguments (`lanky.terms.Extremum`), as Python's are of numbers: the
+  CFL story's `abs(u0 - nu * (u0 - u1)) <= max(abs(u0), abs(u1))` reads as
+  written, is drawn and evaluated exactly, and Lean's is `max a b` (core
+  Lean's for the integers, Mathlib's for the reals). Complex numbers have no
+  order, as in Python. Anything else, `max` of a list, through a generator
+  or with a `key`, is Python's own, refused where it would compute on a term,
+  as before (#63, #73). `max` and `min` of a variable were refused (#66).
+- **The native run fills in a family over the naturals.** No table of every
+  natural can be drawn, so a written proof about `a: Fn[Nat, Complex]`
+  tested nothing natively. The run now fills such a family in, over the
+  first naturals (and integers, for an `Int` index), from the hypotheses
+  that define it: each hypothesis is taken at each point of its domain
+  there, an equation left one cell short and linear in it gives that cell,
+  and where none is, the first unknown cell is drawn and the filling goes
+  on (`lanky.proofs.filled`). So `line_taylor`'s ODE, `compressed_taylor`'s
+  recurrence and `every_box`'s tables are satisfied at the values the body
+  runs at, and a step written wrong is refuted with its numbers: "At n = 2,
+  alpha = 1 - 7/3j, beta = 2 + 4/3j: the left side is ..., the right side
+  ...". A family the hypotheses do not reach this way (a quantifier over
+  the reals, hypotheses that contradict) is not filled, and the run tests
+  nothing there rather than report a step false at values its hypotheses
+  exclude. Where Lean cannot check the proof (no Lean, or no Mathlib for the
+  reals), the `NOT CHECKED` line says what the run did: "its proof was not
+  checked by Lean; it was run at 8 drawn values instead, and every step
+  held". A family of integers is filled with integers.
+- In the native run, a proposition with no variable left in it answers for
+  its truth (`lanky.terms.closed_truth`): `harmonic`'s step compares sympy's
+  Laplacian, which `from_sympy` hands back as a term of numbers at the drawn
+  `x` and `y`, and a step written wrong there is refuted with its numbers.
+- The design's examples are tests, each run natively and traced
+  (`tests/test_design_examples.py`): `line_taylor` and `reciprocal_taylor`
+  under `with away_from_zero`, `compressed_taylor` and its calculation,
+  `every_box` flat and nested, `nicomachus` citing `gauss(n - 1)` (and the
+  0.5 form, `n` a parameter, refused with `n` moved into the conclusion's
+  `for`), `log_of_the_modulus`, `harmonic`, and the CFL story red with its
+  suggestion and green under `with cfl`.
+- The soundness reproductions of 0.6's surface (`tests/test_soundness.py`,
+  the design's 3.8): a false `assert` step, the conclusion cited at a later
+  point, a `yield` whose reasons do not give the case, a case with no
+  closing line, and a condition dropped (a claim held under a `with` block
+  cited outside it, a bound name declared again, a bound name read after the
+  block). Each is a false claim, and each fails the check without Lean, with
+  Lean and the native run set aside, and with both; the same proofs written
+  right are proved.
+
+### Changed
+
+- The examples `every_box.py`, `nicomachus.py`, `log_of_the_modulus.py`,
+  `line_taylor.py` and `sumpy_recurrence.py`'s `harmonic` are proved in the
+  new surface, as the decision writes them.
+- `name.conditions` is one view, `lanky.Conditions`, the claim's own
+  conditions: `with name.conditions as (...)` assumes them,
+  `name.conditions(...)` says whether they hold, `name.conditions.ode` is the
+  proposition, and inside the claim's own proof it is the fact `ode` names
+  there, which `by(...)` cites. A condition of what the claim holds under is
+  that one's, and is refused with whose it is.
+- The README and the quickstart are written in 0.6's words: claims, cited
+  claims and conditions where they said theorems and axioms, and calling a
+  claim answers `True` or `False`. The quickstart's *Write a proof* is the
+  design's card, with a proof over tables of integers a reader writes
+  (`table.py`), which core Lean proves by its proof, the two runs of one
+  body, a step written wrong with its numbers, a point one cell off with its
+  checked fix, and each refusal at its line. Its *Name a condition* tells
+  the CFL story red then green (`upwind_step.py`), shows the three things a
+  `with` assumes (`between.py`), and has the design's two Taylor claims under
+  `with away_from_zero`. `tests/test_docs.py` writes each of those files from
+  the quickstart's snippets and holds every block shown under it to what
+  `lanky check` prints, with core Lean and without.
+- The README's *Run it* starts with a virtual environment, which Debian's,
+  Ubuntu's and Homebrew's Pythons need before `pip install`, and says that
+  `examples/line_taylor.py` and `examples/sumpy_recurrence.py` need `pip
+  install sumpy`; the quickstart says so where it uses them, and how to
+  check `lanky.known` beside an install from PyPI, where a clone's
+  `src/lanky/known.py` is refused (#184).
+
+### Fixed
+
+- The README's excerpt of loopty's `l2p.py` ledger named `reconstruct` at
+  line 246; loopty 0.5.0 has it at line 263 (#184).
+- `for k in reversed(name.conclusion.domain):` over a domain longer than one
+  native walk takes (200 points) started below the top: the walk took the
+  domain's first 200 points and reversed them, so a proof about `Fin[500]`
+  was never run at its base case, 499. It takes the last 200 now, the top
+  first.
+- A false step that Lean could not show was reported as "the conclusion is
+  not cited at earlier points": Lean leaves the recursion's measure unproved
+  after a failed step, and the report gave the measure alone. Beside a
+  failed step the measure is left out now (the trace refuses a citation at a
+  point that is not earlier before Lean is asked), and the report is of the
+  step, at its line.
+- The design's calculation form of a step (2.2: one chained `assert` with
+  every fact at its point, then `yield by()`) was not proved, with core Lean
+  or with Mathlib, and was reported as the measure (#191, #192). Each link
+  of the calculation cites the conclusion, and Lean has a measure goal for
+  each; `decreasing_by` showed the first. It shows every one now, which a
+  proof citing two earlier points needed too.
+- The native run checks a claim's goal where a proof with no loop over its
+  domain ends, at the `return by(...)` line ("At g[0] = 1: the conclusion,
+  g[0] == 0, is false."); it checked only points of a domain, so a false
+  claim proved by a citation that did not apply passed natively. And a
+  family defined by an equation with a number on one side (`f[0] == 0`) is
+  filled with integers: the cell was solved as a float and the filling
+  dropped, so the run tested nothing.
+- Two refusals say what they mean (#190): a claim called with its own inputs
+  in its proof is told those are this proof's inputs already, and the fix
+  names an earlier point of the domain, not the inputs in brackets; `return
+  by(...)` inside the loop is headed "a return ends the loop at its first
+  point".
+- `with item as (n):` for a claim or condition with one name is one store,
+  and is accepted, binding the name; a claim with no inputs is assumed by
+  `with item:`, and the refusals write that line, not `as ()`. A name a
+  `with` statement bound is told apart by the binding, not by the value, so
+  another name holding the same object (`True`) is not refused as the
+  block's. `max(x, y, y)` prints `max (max x y) y` for Lean. A reversed
+  loop walks each level from the top down, so a large bounded domain is not
+  walked in full first. A filling that leaves a defining hypothesis with no
+  answer in Python (`f[0] % 0 == 0`, which Lean's reading answers) is
+  dropped. A reversed loop over the naturals whose guard gives its top
+  (`k <= n + 100`) starts there, at the tightest of its bounds (one read
+  through a later binder, `a <= b` with `b <= 10`, at that binder's top),
+  not at the top of the tester's window, and a walk examines at most 20,000
+  candidates, so a sparse guard over a large domain is not scanned in full;
+  a draw whose walk runs out is not counted among those the run tested. The
+  filling of a family over the naturals looks at most 50,000 candidate
+  points of its hypotheses too: one over a large domain (`all(f[k] == 0 for
+  k in Fin[n])` at `n = 10**9`) was listed point by point, in memory, before
+  the run began, and a draw whose filling runs out is left unfilled and not
+  counted.
+
 ## [0.5.0] - 2026-10-18
 
 A theorem's body can be its proof, written in Python and checked by Lean. A

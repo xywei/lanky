@@ -13,7 +13,7 @@ from fractions import Fraction
 
 import pytest
 
-from lanky import cli, theorem
+from lanky import claim, cli
 from lanky.lean import statement_of
 from lanky.ledger import Fact, Ledger, Status
 from lanky.oracles.lean import tactic_ladder
@@ -33,7 +33,7 @@ from lanky.terms import Elementary, Var
 # {{{ claims
 
 
-@theorem
+@claim
 def compressed_taylor(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -44,7 +44,7 @@ def compressed_taylor(
     """What sumpy stores of a harmonic table, reconstructed, is the table (loopty's l2p.py)."""
 
 
-@theorem
+@claim
 def line_taylor(
     alpha: Complex,
     beta: Complex,
@@ -56,7 +56,7 @@ def line_taylor(
     """The line-Taylor coefficients of ``log(alpha + tau * beta)``, at every order."""
 
 
-@theorem
+@claim
 def telescoping(
     f: Fn[Nat, Real],
     start: f(0) == 0,
@@ -65,7 +65,7 @@ def telescoping(
     """A sum of ``1 / ((n + 1)(n + 2))``, its base taken at ``n == 0``."""
 
 
-@theorem
+@claim
 def shifting(
     f: Fn[Nat, Fn[Nat, Real]],
     start: all(f(a)(0) == a for a in Nat),
@@ -74,7 +74,7 @@ def shifting(
     """Induced on ``n``, the second of the claim's variables."""
 
 
-@theorem
+@claim
 def helmholtz(
     k: Real,
     D: Fn[Nat, Fn[Nat, Real]],
@@ -86,7 +86,7 @@ def helmholtz(
     """Helmholtz's PDE, whose step takes the claim at ``(a - 2, b)`` times ``-k**2``."""
 
 
-@theorem
+@claim
 def on_every_triangle(
     n: Nat,
     p: Nat,
@@ -121,7 +121,7 @@ def on_every_triangle(
     """The reconstruction on every box, through the copies of what is stored (loopty's l2p.py)."""
 
 
-@theorem
+@claim
 def stored_and_followed(
     D: Fn[Nat, Nat, Real],
     R: Fn[Nat, Nat, Real],
@@ -132,7 +132,7 @@ def stored_and_followed(
     """The reconstruction, with what is stored and the recurrence as one hypothesis."""
 
 
-@theorem
+@claim
 def exchange(
     n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]
 ) -> sum(sum(f[i, j] for j in Fin[m]) for i in Fin[n]) == sum(
@@ -141,14 +141,14 @@ def exchange(
     """Two finite sums exchange."""
 
 
-@theorem
+@claim
 def scaled(n: Nat, s: Real, f: Fn[Fin[n], Real]) -> sum(s * f[i] for i in Fin[n]) == s * sum(
     f[i] for i in Fin[n]
 ):
     """A factor comes out of a sum: no exchange, only the product distributed."""
 
 
-@theorem
+@claim
 def split_hypothesis(
     x: Nat,
     y: Nat,
@@ -192,12 +192,12 @@ def test_the_reconstruction_is_printed_in_hint_form_as_the_design_shows(searchin
         f"PROOF compressed_taylor at {_where(compressed_taylor)}, "
         "by induction on a, two at a time:",
         "",
-        "    def claim(a, b):",
+        "    for a, b in compressed_taylor.conclusion.domain:",
         "        if a < 2:",
-        "            return stored",
-        "        return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)",
-        "",
-        "    return claim",
+        "            yield by(stored)",
+        "        else:",
+        "            yield by(recurrence[a - 2, b], compressed_taylor.conclusion[a - 2, b + 2], "
+        "pde[a - 2, b])",
     ]
 
 
@@ -235,12 +235,11 @@ def test_a_base_the_guard_pins_to_one_order_reads_as_that_order(searching) -> No
     proved, _ = _found(line_taylor)
     record = proved.provenance["found_proof"]
     assert record["body"] == [
-        "def claim(n):",
+        "for n in line_taylor.conclusion.domain:",
         "    if n == 1:",
-        "        return first_term",
-        "    return ode(n - 1), claim(n - 1)",
-        "",
-        "return claim",
+        "        yield by(first_term)",
+        "    else:",
+        "        yield by(ode[n - 1], line_taylor.conclusion[n - 1])",
     ]
     steps = record["steps"]
     assert steps[0] == (
@@ -257,35 +256,39 @@ def test_a_base_taken_one_order_at_a_time(searching) -> None:
     """``f(0) == 0`` says nothing below the step until the order is 0: ``if n == 0``."""
     proved, _ = _found(telescoping)
     assert proved.provenance["found_proof"]["body"] == [
-        "def claim(n):",
+        "for n in telescoping.conclusion.domain:",
         "    if n == 0:",
-        "        return start",
-        "    return step(n - 1), claim(n - 1)",
-        "",
-        "return claim",
+        "        yield by(start)",
+        "    else:",
+        "        yield by(step[n - 1], telescoping.conclusion[n - 1])",
     ]
     assert "if n == 0:  f[0] == 0  " in proved.provenance["found_proof"]["steps"][1]
 
 
-def test_the_claim_takes_its_variables_in_order_whichever_is_induced_on(searching) -> None:
-    """Induced on ``n``, the second variable; the hypothesis there is at ``a + 1``."""
+def test_a_loop_is_printed_only_where_its_order_fits_the_induction(searching) -> None:
+    """Induced on ``n``, the second variable, at ``(a + 1, n - 1)``: no loop over ``(a, n)`` fits.
+
+    The design's 3.5: the conclusion at ``(a + 1, n - 1)`` is later in a loop
+    that walks ``a`` first, so no body is printed; the strategy is said in
+    words, with the order of the conclusion's ``for`` that a loop would fit.
+    """
     proved, _ = _found(shifting)
-    assert proved.provenance["found_proof"]["body"] == [
-        "def claim(a, n):",
-        "    if n == 0:",
-        "        return start",
-        "    return step(a, n - 1), claim(a + 1, n - 1)",
-        "",
-        "return claim",
-    ]
+    record = proved.provenance["found_proof"]
+    assert "body" not in record
+    assert record["how"] == (
+        "by induction on n; write the conclusion's for over n, a in that order, and a loop "
+        "over shifting.conclusion.domain fits it"
+    )
+    assert "by the claim at (a + 1, n - 1)" in record["steps"][-1]
 
 
 def test_a_multiplier_that_is_an_expression_is_said_in_the_steps(searching) -> None:
     """Helmholtz's step takes the claim at ``(a - 2, b)`` too, times ``-k**2``."""
     proved, _ = _found(helmholtz)
     record = proved.provenance["found_proof"]
-    assert record["body"][3] == (
-        "    return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b), claim(a - 2, b)"
+    assert record["body"][4] == (
+        "        yield by(recurrence[a - 2, b], helmholtz.conclusion[a - 2, b + 2], "
+        "pde[a - 2, b], helmholtz.conclusion[a - 2, b])"
     )
     last = record["steps"][-1].strip()
     assert last.startswith("== D[a, b]  ")
@@ -304,12 +307,12 @@ def test_a_fact_that_fits_the_claim_at_one_point_is_cited_by_name(searching) -> 
     proved, _ = _found(on_every_triangle)
     record = proved.provenance["found_proof"]
     assert record["body"] == [
-        "def claim(i, a, b):",
+        "for i, a, b in on_every_triangle.conclusion.domain:",
         "    if a < 2:",
-        "        return copies, stored",
-        "    return recurrence(i, a - 2, b), claim(i, a - 2, b + 2), pde(i, a - 2, b)",
-        "",
-        "return claim",
+        "        yield by(copies, stored)",
+        "    else:",
+        "        yield by(recurrence[i, a - 2, b], on_every_triangle.conclusion[i, a - 2, b + 2], "
+        "pde[i, a - 2, b])",
     ]
     assert record["steps"][0] == (
         "the claim at (i, a, b), for every i in Fin[n] and a, b in Nat with a + b <= p, "
@@ -325,10 +328,12 @@ def test_both_parts_of_a_hypothesis_written_p_and_q_answer_to_its_name(searching
     """``table`` is two conjuncts in Lean; the body cites it by its name in both cases."""
     proved, _ = _found(stored_and_followed)
     record = proved.provenance["found_proof"]
-    assert record["body"][1:4] == [
+    assert record["body"][1:5] == [
         "    if a < 2:",
-        "        return table",
-        "    return table(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)",
+        "        yield by(table)",
+        "    else:",
+        "        yield by(table[a - 2, b], stored_and_followed.conclusion[a - 2, b + 2], "
+        "pde[a - 2, b])",
     ]
     assert "by table, at (a - 2, b)" in record["steps"][2]
 
@@ -345,11 +350,12 @@ def test_an_exchange_of_sums_is_a_chain_through_the_order_found(searching) -> No
     record = proved.provenance["found_proof"]
     assert record["how"] == "by putting the sums in one order"
     assert record["body"] == [
-        "return (",
+        "assert (",
         "    sum(sum(f[i, j] for j in Fin[m]) for i in Fin[n])",
-        "    .equals(sum(f[i, j] for j in Fin[m] for i in Fin[n]))",
-        "    .equals(sum(sum(f[i, j] for i in Fin[n]) for j in Fin[m]))",
+        "    == sum(f[i, j] for j in Fin[m] for i in Fin[n])",
+        "    == sum(sum(f[i, j] for i in Fin[n]) for j in Fin[m])",
         ")",
+        "return by()",
     ]
     assert record["steps"][0].endswith("the sums in the order j, i")
     assert record["steps"][1].endswith("the products distributed into the sums")
@@ -440,12 +446,12 @@ def test_python_source_reads_as_ruff_writes_it() -> None:
 # {{{ the command
 
 
-def _ledger(found: dict | None, status: Status = Status.PROVED, kind: str = "theorem") -> Ledger:
+def _ledger(found: dict | None, status: Status = Status.PROVED, kind: str = "claim") -> Ledger:
     ledger = Ledger()
     provenance = {} if found is None else {"found_proof": found}
     ledger.add(
         Fact(
-            id="theorem:claims.gauss@3",
+            id="claim:claims.gauss@3",
             kind=kind,
             statement="n : Nat |- 2*sum(i for i in Fin(n + 1)) == n*(n + 1)",
             status=status,
@@ -461,7 +467,10 @@ def _ledger(found: dict | None, status: Status = Status.PROVED, kind: str = "the
 def test_proofs_prints_the_body_and_steps_the_outline(capsys) -> None:
     found = {
         "how": "by induction on n",
-        "body": ["def claim(n):", "    return step(n - 1), claim(n - 1)", "", "return claim"],
+        "body": [
+            "for n in gauss.conclusion.domain:",
+            "    yield by(step[n - 1], gauss.conclusion[n - 1])",
+        ],
         "steps": ["the claim at n, for every n in Nat, by induction on n", "  ..."],
     }
     cli.report_proofs(_ledger(found))
@@ -470,10 +479,8 @@ def test_proofs_prints_the_body_and_steps_the_outline(capsys) -> None:
         "",
         "PROOF gauss at claims.py:3, by induction on n:",
         "",
-        "    def claim(n):",
-        "        return step(n - 1), claim(n - 1)",
-        "",
-        "    return claim",
+        "    for n in gauss.conclusion.domain:",
+        "        yield by(step[n - 1], gauss.conclusion[n - 1])",
         "",
         "STEPS gauss at claims.py:3, as lanky found them:",
         "  the claim at n, for every n in Nat, by induction on n",
@@ -499,11 +506,11 @@ def test_proofs_leaves_out_what_was_not_proved_and_what_is_not_a_theorem(capsys)
     cli.report_steps(_ledger({"how": "by algebra"}), "nothing like it")
     assert capsys.readouterr().out.splitlines() == [
         "",
-        "PROOF no theorem was proved",
+        "PROOF no claim was proved",
         "",
-        "PROOF no theorem was proved",
+        "PROOF no claim was proved",
         "",
-        "STEPS no theorem was proved among those matching 'nothing like it'",
+        "STEPS no claim was proved among those matching 'nothing like it'",
     ]
 
 
@@ -512,9 +519,9 @@ def test_a_file_given_to_proofs_is_checked(tmp_path, capsys) -> None:
     path = tmp_path / "claims.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def plus_zero(n: Nat) -> n + 0 == n:\n"
         '    """Adding nothing."""\n',
         encoding="utf-8",
@@ -532,9 +539,9 @@ def test_files_are_checked_in_the_order_the_command_names_them(tmp_path, capsys)
         path = tmp_path / f"{name}.py"
         path.write_text(
             "from __future__ import annotations\n\n"
-            "from lanky import theorem\n"
+            "from lanky import claim\n"
             "from lanky.prelude import Nat\n\n\n"
-            "@theorem\n"
+            "@claim\n"
             f"def {name}_plus_zero(n: Nat) -> n + 0 == n:\n"
             '    """Adding nothing."""\n',
             encoding="utf-8",

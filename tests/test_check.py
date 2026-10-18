@@ -17,16 +17,16 @@ FILE = '''
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def true_claim(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Gauss."""
 
 
-@theorem
+@claim
 def false_claim(n: Nat) -> sum(i for i in Fin[n + 1]) == n:
     """False as soon as n is at least two."""
 '''
@@ -42,9 +42,9 @@ def test_check_path_yields_a_ledger(tmp_path) -> None:
     ledger = check_path(write_file(tmp_path))
     # each claim is followed by the fact that its term reads its annotations (#91)
     assert [(fact.owner, fact.kind) for fact in ledger] == [
-        ("true_claim", "theorem"),
+        ("true_claim", "claim"),
         ("true_claim", "faithful"),
-        ("false_claim", "theorem"),
+        ("false_claim", "claim"),
         ("false_claim", "faithful"),
     ]
 
@@ -86,7 +86,7 @@ def test_cli_exits_one_on_a_refutation(tmp_path, capsys) -> None:
 
 
 def test_cli_exits_zero_when_nothing_is_refuted(tmp_path, capsys) -> None:
-    text = FILE.split("@theorem\ndef false_claim")[0]
+    text = FILE.split("@claim\ndef false_claim")[0]
     code = cli.main(["check", write_file(tmp_path, text), "--verbose"])
     assert code == 0
     printed = capsys.readouterr().out
@@ -140,9 +140,9 @@ def test_subtraction_over_nat_is_refuted_with_or_without_lean(
     path = tmp_path / "truncated.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def truncated(n: Nat) -> n - 1 >= 0:\n"
         '    """True where Nat subtraction truncates; false at n = 0 in integers."""\n',
         encoding="utf-8",
@@ -163,15 +163,15 @@ CLOSED = '''
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 
 
-@theorem
+@claim
 def certainly() -> 1 == 1:
     """True, with no variable to draw and no hypothesis to satisfy."""
 
 
-@theorem
+@claim
 def impossible() -> 1 == 2:
     """False, and nothing in the file says otherwise."""
 '''
@@ -213,7 +213,7 @@ def test_a_true_closed_claim_is_tested_rather_than_assumed(tmp_path, monkeypatch
     """The other side of it, with Lean out of the way so the decider is fixed."""
     monkeypatch.setenv("LANKY_LEAN_DISABLE", "1")
     path = tmp_path / "closed.py"
-    path.write_text(CLOSED.split("@theorem\ndef impossible")[0], encoding="utf-8")
+    path.write_text(CLOSED.split("@claim\ndef impossible")[0], encoding="utf-8")
     ledger = check_path(path)
     (fact,) = claims(ledger)
     assert fact.status is Status.TESTED
@@ -233,9 +233,9 @@ def test_a_division_by_zero_is_a_gap_the_ledger_records(tmp_path) -> None:
     path = tmp_path / "divzero.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def div_zero(n: Nat) -> n // 0 == 0:\n"
         '    """Total in Lean, undefined in Python."""\n',
         encoding="utf-8",
@@ -265,9 +265,9 @@ def test_an_axiom_records_its_division_by_zero_gap_too(tmp_path, capsys) -> None
     path = tmp_path / "divaxiom.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import axiom\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        '@axiom(cite="the division algorithm")\n'
+        '@claim(cite="the division algorithm")\n'
         "def divides(n: Nat, m: Nat) -> (n // m) * m + n % m == n:\n"
         '    """Floor division and remainder put a number back together."""\n',
         encoding="utf-8",
@@ -289,9 +289,9 @@ def test_an_application_outside_its_domain_is_never_proved(tmp_path, capsys) -> 
     path = tmp_path / "outside.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Fin, Fn, Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def outside(n: Nat, f: Fn[Fin[n], Nat]) -> f(n) == f(n):\n"
         '    """One point past the domain f declares."""\n',
         encoding="utf-8",
@@ -338,9 +338,9 @@ def test_a_file_that_raises_on_import_fails_the_check(tmp_path, capsys) -> None:
     path = tmp_path / "boom.py"
     path.write_text(
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def fine(n: Nat) -> n + 0 == n:\n"
         '    """Registered before the file blows up."""\n\n\n'
         "raise RuntimeError('boom')\n",
@@ -484,11 +484,11 @@ HELPER = '''
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def helper_claim(n: Nat) -> n + 0 == n:
     """Collected when the file that imports this module is checked."""
 '''
@@ -613,7 +613,7 @@ def test_the_check_verb_reads_a_namespace_with_one_file(tmp_path, capsys) -> Non
     """``loopty check`` builds a namespace with ``file`` and hands it to the verb."""
     import argparse
 
-    text = FILE.split("@theorem\ndef false_claim")[0]
+    text = FILE.split("@claim\ndef false_claim")[0]
     namespace = argparse.Namespace(file=write_file(tmp_path, text), json=None, verbose=False)
     assert cli.CheckVerb().run(namespace) == 0
     printed = capsys.readouterr().out
@@ -683,21 +683,21 @@ def _package(tmp_path, name: str, init: str = "") -> tuple:
     (root / "sub" / "__init__.py").write_text("", encoding="utf-8")
     header = (
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n"
     )
     mod = root / "mod.py"
     mod.write_text(
         header
         + "\nfrom . import helpers\nfrom .helpers import VALUE, helper_claim  # noqa: F401\n\n\n"
-        "@theorem\ndef mod_claim(n: Nat) -> n * helpers.VALUE == n + n:\n"
+        "@claim\ndef mod_claim(n: Nat) -> n * helpers.VALUE == n + n:\n"
         '    """Uses what a relative import brought in."""\n',
         encoding="utf-8",
     )
     deep = root / "sub" / "deep.py"
     deep.write_text(
         header + "\nfrom ..helpers import VALUE\n\n\n"
-        "@theorem\ndef deep_claim(n: Nat) -> n + VALUE > n:\n"
+        "@claim\ndef deep_claim(n: Nat) -> n + VALUE > n:\n"
         '    """Two levels down."""\n',
         encoding="utf-8",
     )
@@ -774,10 +774,10 @@ def test_a_package_init_is_checked_in_its_own_package(tmp_path) -> None:
     name = "lanky_test_pkg_init"
     init = (
         "from __future__ import annotations\n\n"
-        "from lanky import theorem\n"
+        "from lanky import claim\n"
         "from lanky.prelude import Nat\n\n"
         "from .helpers import VALUE\n\n\n"
-        "@theorem\n"
+        "@claim\n"
         "def init_claim(n: Nat) -> n + VALUE > n:\n"
         '    """Written in the package itself."""\n'
     )
@@ -867,14 +867,14 @@ import sys
 
 import {ROOTS_HELPER} as helpers
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 print("imported in process", os.getpid())
 print("a line on stderr", file=sys.stderr)
 
 
-@theorem
+@claim
 def own_helper(n: Nat) -> n * helpers.VALUE == VALUE * n:
     """True of the helper next to this file, and of no other."""
 '''
@@ -990,11 +990,11 @@ def test_each_root_is_checked_in_one_process_of_its_own(tmp_path, monkeypatch, c
 LONG_CLAIM = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def reordered(a: Nat, b: Nat, c: Nat) -> a + b + c == c + b + a:
     """Fits a line of 100 characters, and not one of 40."""
 '''
@@ -1504,25 +1504,24 @@ from __future__ import annotations
 
 import sys
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 print("child options:", sys.flags.optimize, sys.warnoptions, sorted(sys._xoptions.items()))
 
 
-@theorem
+@claim
 def reflexive(n: Nat) -> n == n:
     """True."""
 '''
 
 
 def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
-    """#28: ``-O``, ``-W`` and ``-X`` given to the command's interpreter reach each child.
+    """#28: ``-W`` and ``-X`` given to the command's interpreter reach each child.
 
     A child was started as ``python -P -c ...``, so only the environment
-    variables that mirror some of the options reached it: under ``python -O``
-    a checked file ran with its assertions on in a child, and off where its
-    root was the only one.
+    variables that mirror some of the options reached it. ``-O`` is refused
+    before any child starts (see the next test).
     """
     import subprocess
 
@@ -1530,7 +1529,7 @@ def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
     flags.parent.mkdir()
     flags.write_text(FLAGS, encoding="utf-8")
     good = _rooted(tmp_path / "b", 2)
-    options = ("-O", "-W", "always::UserWarning", "-X", "int_max_str_digits=5000")
+    options = ("-W", "always::UserWarning", "-X", "int_max_str_digits=5000")
     command = _lanky_check(
         tmp_path, flags, good, options=options, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
@@ -1538,8 +1537,29 @@ def test_a_child_is_started_with_this_interpreters_options(tmp_path) -> None:
     assert command.returncode == 0, (out, err)
     printed = [line for line in out.decode().splitlines() if line.startswith("child options:")]
     assert printed == [
-        "child options: 1 ['always::UserWarning'] [('int_max_str_digits', '5000')]"
+        "child options: 0 ['always::UserWarning'] [('int_max_str_digits', '5000')]"
     ]
+
+
+def test_check_refuses_to_run_under_python_o(tmp_path) -> None:
+    """``python -O`` removes every ``assert``, so every step of every written proof: refused.
+
+    The refusal is the command's, before any file is imported, with exit
+    code 2, as for a file that is not there; ``check_path`` refuses too.
+    """
+    import subprocess
+
+    flags = tmp_path / "a" / "flags.py"
+    flags.parent.mkdir()
+    flags.write_text(FLAGS, encoding="utf-8")
+    command = _lanky_check(
+        tmp_path, flags, options=("-O",), stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    out, err = command.communicate(timeout=120)
+    assert command.returncode == 2, (out, err)
+    text = out.decode()
+    assert "python -O removes every assert" in text
+    assert "child options:" not in text
 
 
 #: A checked file that writes its process's pid and sleeps. The pid is written
@@ -1772,8 +1792,8 @@ def test_check_path_imports_into_the_calling_process(tmp_path, monkeypatch) -> N
 def _refuted(**provenance) -> Fact:
     """A refuted fact carrying exactly this provenance."""
     return Fact(
-        id="theorem:claim",
-        kind="theorem",
+        id="claim:claim",
+        kind="claim",
         statement="n : Nat |- n == n + 1",
         status=Status.REFUTED,
         decided_by="an-oracle",
@@ -1893,10 +1913,10 @@ def test_an_empty_witness_is_not_printed(capsys) -> None:
 # {{{ what is printed under a DECLINED line
 
 
-def _left(status: Status = Status.ASSUMED, kind: str = "theorem", **provenance) -> Fact:
+def _left(status: Status = Status.ASSUMED, kind: str = "claim", **provenance) -> Fact:
     """A fact an oracle left at ``status``, carrying exactly this provenance."""
     return Fact(
-        id="theorem:claim",
+        id="claim:claim",
         kind=kind,
         statement="verdict(eta*I + D)",
         status=status,
@@ -1953,7 +1973,7 @@ def test_only_a_fact_left_assumed_gets_a_declined_line(capsys) -> None:
     """
     assert _declined_block(capsys, _left(Status.TESTED, declined="rules: no")) is None
     assert _declined_block(capsys, _left(Status.REFUTED, declined="rules: no")) is None
-    assert _declined_block(capsys, _left(kind="axiom", declined="rules: no")) is None
+    assert _declined_block(capsys, _left(kind="cited", declined="rules: no")) is None
     assert _declined_block(capsys, _left(declined="")) is None
     assert _declined_block(capsys, _left()) is None
     assert cli.decline_lines(_left(declined=[])) == []
@@ -1962,11 +1982,11 @@ def test_only_a_fact_left_assumed_gets_a_declined_line(capsys) -> None:
 DECLINES = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
-@theorem
+@claim
 def opaque(f: Fn[Nat, Nat]) -> f(0) == f(0):
     """A family over Nat, which no sampler draws, so the tester leaves it assumed."""
 '''
@@ -2043,41 +2063,41 @@ def test_each_oracle_that_declined_is_named_under_the_table(tmp_path, monkeypatc
 FREE_NAMES = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
-@theorem
+@claim
 def typo(n: Nat) -> n + m >= n:
     """m was meant to be n."""
 
 
-@theorem
+@claim
 def short_circuited(n: Nat) -> (n >= 0) | (m > 0):
     """The tester never asked for m, and passed it."""
 
 
-@theorem
+@claim
 def misspelt(n: Nat, f: Fn[Fin[n], Flaot]) -> all(f(i) >= 0 for i in Fin[n]):
     """False for a family of floats, and Flaot is no sort."""
 
 
-@theorem
+@claim
 def drawn_later(f: Fn[Fin[n], Nat], n: Nat) -> all(f(i) >= 0 for i in Fin[n]):
     """A size written after the family it sizes is a variable all the same."""
 
 
-@theorem
+@claim
 def listed(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f([m]) == 0):
     """m is in a list, which the walk for free names stopped at."""
 
 
-@theorem
+@claim
 def tupled(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f((0, (m, 1))) == 0):
     """m is in a tuple inside a tuple."""
 
 
-@theorem
+@claim
 def mapped(n: Nat, f: Fn[Fin[n], Nat]) -> (n >= 0) | (f({"slot": [m]}) == 0):
     """m is in a list a dict holds as a value."""
 '''
@@ -2135,11 +2155,11 @@ def test_a_free_name_is_declined_by_the_tester_and_named(tmp_path, capsys) -> No
 UNDRAWABLE = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Fin, Fn, Nat
 
 
-@theorem
+@claim
 def families(n: Nat, f: Fn[Fin[n], Fn[Nat, Nat]]) -> all(f(i)(0) == 0 for i in Fin[n]):
     """False: a family of families is not zero at zero for nothing."""
 '''
@@ -2182,7 +2202,7 @@ class _Crashing:
         return "kernel"
 
     def can_establish(self, fact, /) -> bool:
-        return fact.kind == "theorem"
+        return fact.kind == "claim"
 
     def establish(self, fact, /):
         raise AttributeError("'Var' object has no attribute 'free_variables'")
@@ -2243,8 +2263,8 @@ def test_show_lean_says_that_lean_raised_over_a_claim(capsys) -> None:
     ledger = Ledger()
     ledger.add(
         Fact(
-            id="theorem:succ@1",
-            kind="theorem",
+            id="claim:succ@1",
+            kind="claim",
             statement="n : Nat |- n + 1 > n",
             term=Forall(((n, Nat),), n + 1 > n),
             status=Status.TESTED,
@@ -2302,11 +2322,11 @@ def test_an_oracle_that_raises_over_a_question_of_vacuity_is_named(
 PRINTER_DECLINES = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Real
 
 
-@theorem
+@claim
 def floor_below(x: Real) -> x // 1 >= x - 1:
     """The floor of x, written as a term, which Python computes in floating point."""
 '''
@@ -2363,10 +2383,10 @@ def test_a_claim_the_lean_printer_declines_says_that_lean_was_not_asked(
     from lanky.terms import Forall
 
     n = Var("n")
-    stated = Fact(id="succ", kind="theorem", statement="s", term=Forall(((n, Nat),), n + 1 > n))
+    stated = Fact(id="succ", kind="claim", statement="s", term=Forall(((n, Nat),), n + 1 > n))
     assert oracle.can_establish(stated)
     assert oracle.not_taken(stated) == {}
-    assert oracle.not_taken(Fact(id="none", kind="theorem", statement="s")) == {}
+    assert oracle.not_taken(Fact(id="none", kind="claim", statement="s")) == {}
 
 
 def test_an_oracle_may_say_why_it_does_not_take_a_fact(monkeypatch) -> None:
@@ -2482,21 +2502,21 @@ CITED = '''
 
 from __future__ import annotations
 
-from lanky import axiom, theorem
+from lanky import claim
 from lanky.prelude import Fin, Nat
 
 
-@theorem
+@claim
 def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Gauss."""
 
 
-@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
+@claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
 def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """The sum of the first cubes is the square of the sum of the first numbers."""
 
 
-@theorem(uses=[nicomachus, gauss])
+@claim(uses=[nicomachus, gauss])
 def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
     """The sum of the cubes, in closed form."""
 '''
@@ -2511,7 +2531,7 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
     path = write_file(tmp_path, CITED)
     ledger = check_path(path)
     gauss, gauss_reading, nicomachus, nicomachus_reading, cubes, cubes_reading = ledger
-    assert nicomachus.kind == "axiom"
+    assert nicomachus.kind == "cited"
     assert nicomachus.status is Status.ASSUMED
     assert nicomachus.decided_by is None
     assert nicomachus.provenance["cite"] == "Nicomachus of Gerasa, Introduction to Arithmetic"
@@ -2541,7 +2561,7 @@ def test_a_theorem_resting_on_an_axiom_is_worth_the_axiom(tmp_path, capsys) -> N
     assert lines[0].split()[:3] == ["STATUS", "EFFECTIVE", "BY"]
     assert lines[2].startswith("tested                   tested     property-test")
     assert lines[3].startswith("tested                   tested     python")
-    assert lines[4].startswith("assumed (axiom)          assumed    -")
+    assert lines[4].startswith("assumed (cited)          assumed    -")
     assert lines[6].startswith("tested under nicomachus  assumed    property-test")
     assert lines[9] == "6 facts: 1 assumed, 5 tested"
     assert lines[-2:] == [
@@ -2578,7 +2598,7 @@ def test_an_axiom_false_as_written_is_refuted(tmp_path, capsys) -> None:
 
     assert cli.main(["check", path]) == 1
     printed = capsys.readouterr().out
-    assert "\nrefuted (axiom)  " in printed
+    assert "\nrefuted (cited)  " in printed
     assert "tested under nicomachus  refuted    property-test" in printed
     assert "REFUTED nicomachus at claims.py:" in printed
     assert "  counterexample: {'n': " in printed
@@ -2616,8 +2636,8 @@ def test_an_axiom_is_never_offered_to_a_stronger_oracle(tmp_path, monkeypatch) -
     _gauss, nicomachus, cubes = claims(ledger)
     assert nicomachus.status is Status.ASSUMED
     assert cubes.status is Status.PROVED
-    assert "axiom" not in shown
-    assert shown.count("theorem") >= 2
+    assert "cited" not in shown
+    assert shown.count("claim") >= 2
     # nor is any claim's reading of its annotations, which the rerun settled (#91)
     assert "faithful" not in shown
     assert all(fact.status is Status.TESTED for fact in ledger if fact.is_reading)
@@ -2647,7 +2667,7 @@ SPELLED = (
     CITED
     + '''
 
-@theorem(uses=[cubes, "theorem:helpers.lemma@12", "theorem:helpers.lemma@12"])
+@claim(uses=[cubes, "claim:helpers.lemma@12", "claim:helpers.lemma@12"])
 def spelled(n: Nat) -> n + 0 == n:
     """Rests on a fact of this file, and on an id no fact here has."""
 '''
@@ -2670,7 +2690,7 @@ def test_an_id_no_fact_in_the_ledger_has_is_named_under_the_table(tmp_path, caps
     (index,) = [i for i, line in enumerate(printed) if line.startswith("UNRESOLVED")]
     assert printed[index].startswith("UNRESOLVED spelled at claims.py:")
     assert printed[index].endswith(
-        ": rests on theorem:helpers.lemma@12, which this ledger does not hold"
+        ": rests on claim:helpers.lemma@12, which this ledger does not hold"
     )
     assert printed[index + 1] == (
         "  counted as an assumption; a fact of another file is in that file's ledger, "
@@ -2678,8 +2698,8 @@ def test_an_id_no_fact_in_the_ledger_has_is_named_under_the_table(tmp_path, caps
     )
     rows = claims(json.loads(out.read_text(encoding="utf-8")))
     nicomachus = rows[1]["id"]
-    assert rows[-1]["rests_on"][:2] == [rows[2]["id"], "theorem:helpers.lemma@12"]
-    assert rows[-1]["under"] == [nicomachus, "theorem:helpers.lemma@12"]
+    assert rows[-1]["rests_on"][:2] == [rows[2]["id"], "claim:helpers.lemma@12"]
+    assert rows[-1]["under"] == [nicomachus, "claim:helpers.lemma@12"]
     assert rows[-1]["effective"] == "assumed"
     # a file whose facts rest on facts it holds prints no such line
     assert cli.main(["check", write_file(tmp_path, CITED)]) == 0
@@ -2693,11 +2713,11 @@ LEMMA = '''
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def lemma(n: Nat) -> n + 0 == n:
     """Named by id in the ledger of the file that uses it."""
 '''
@@ -2707,13 +2727,13 @@ USES_LEMMA = '''
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 {imports}
 
 
-@theorem(uses=[lemma])
+@claim(uses=[lemma])
 def user(n: Nat) -> n * 1 == n:
     """Rests on the imported lemma."""
 '''
@@ -2722,7 +2742,7 @@ def user(n: Nat) -> n * 1 == n:
 def _decorated_at(text: str) -> int:
     """The line of a file's first decorator, which is the line its theorem's id names."""
     lines = text.splitlines()
-    return next(k for k, line in enumerate(lines, 1) if line.startswith("@theorem"))
+    return next(k for k, line in enumerate(lines, 1) if line.startswith("@claim"))
 
 
 def test_module_name_reads_the_path_under_its_source_root(tmp_path, monkeypatch) -> None:
@@ -2788,7 +2808,7 @@ def test_a_theorem_has_one_id_whether_its_file_is_checked_or_imported(
 
     ``lanky check helpers.py`` imported the file under a name of its own, and
     the id was keyed by ``__module__``, so the lemma was
-    ``theorem:lanky_checked_<stem>.lemma@12`` in its own ledger and
+    ``claim:lanky_checked_<stem>.lemma@12`` in its own ledger and
     ``theorem:<stem>.lemma@12`` in the ``rests_on`` of a file that imports it.
     Both are now read off the file's path.
     """
@@ -2802,7 +2822,7 @@ def test_a_theorem_has_one_id_whether_its_file_is_checked_or_imported(
     helper.write_text(LEMMA, encoding="utf-8")
     user = project / "user.py"
     user.write_text(USES_LEMMA.format(imports=f"from {name} import lemma"), encoding="utf-8")
-    expected = f"theorem:{name}.lemma@{_decorated_at(LEMMA)}"
+    expected = f"claim:{name}.lemma@{_decorated_at(LEMMA)}"
     out = tmp_path / "out.json"
     try:
         (own,) = claims(check_path(helper))
@@ -2855,7 +2875,7 @@ def test_a_theorem_in_a_package_has_one_id_however_it_is_reached(tmp_path) -> No
     absolute.write_text(
         USES_LEMMA.format(imports=f"from {helpers} import lemma"), encoding="utf-8"
     )
-    expected = f"theorem:{package}.{helpers}.lemma@{_decorated_at(LEMMA)}"
+    expected = f"claim:{package}.{helpers}.lemma@{_decorated_at(LEMMA)}"
     try:
         (own,) = claims(check_path(helper))
         (by_relative,) = claims(check_path(relative))
@@ -2866,7 +2886,7 @@ def test_a_theorem_in_a_package_has_one_id_however_it_is_reached(tmp_path) -> No
             sys.modules.pop(key, None)
     assert own.id == expected
     assert by_relative.rests_on[0] == by_absolute.rests_on[0] == expected
-    assert by_relative.id == f"theorem:{package}.relative.user@{_decorated_at(USES_LEMMA)}"
+    assert by_relative.id == f"claim:{package}.relative.user@{_decorated_at(USES_LEMMA)}"
 
 
 def test_a_theorem_with_no_file_behind_it_keeps_its_module() -> None:
@@ -2877,24 +2897,24 @@ def test_a_theorem_with_no_file_behind_it_keeps_its_module() -> None:
     with registry.collecting():
         exec(compile(LEMMA, "<generated>", "exec"), namespace)
     assert namespace["lemma"].fact_id == (
-        f"theorem:lanky_test_generated.lemma@{_decorated_at(LEMMA)}"
+        f"claim:lanky_test_generated.lemma@{_decorated_at(LEMMA)}"
     )
 
 
 FACTORY = """\
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 K = 1
 
 
 def make():
-    @theorem
-    def claim(n: Nat) -> n + K == n:
+    @claim
+    def lemma(n: Nat) -> n + K == n:
         \"\"\"True only for K = 0.\"\"\"
-    return claim
+    return lemma
 
 
 wrong = make()
@@ -2920,7 +2940,7 @@ def test_two_claims_with_one_id_are_refused_and_fail_the_check(
     path.write_text(FACTORY, encoding="utf-8")
     ledger = check_path(path)
     (fact,) = claims(ledger)
-    assert fact.id == "theorem:factory.make.<locals>.claim@10"
+    assert fact.id == "claim:factory.make.<locals>.lemma@10"
     assert fact.statement == "n : Nat |- n + 1 == n"
     assert fact.status is Status.REFUTED
     assert fact.provenance["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
@@ -2929,14 +2949,14 @@ def test_two_claims_with_one_id_are_refused_and_fail_the_check(
     assert cli.main(["check", str(path), "--json", str(out_json)]) == 1
     printed = capsys.readouterr().out
     assert (
-        "DUPLICATE make.<locals>.claim at factory.py:10: 2 claims have the id "
-        "theorem:factory.make.<locals>.claim@10\n"
+        "DUPLICATE make.<locals>.lemma at factory.py:10: 2 claims have the id "
+        "claim:factory.make.<locals>.lemma@10\n"
         "  checked, in the table: n : Nat |- n + 1 == n\n"
         "  not checked: n : Nat |- n + 0 == n\n"
         "  each claim needs an id of its own: a definition of its own, or a "
         "__qualname__ of its own before it is decorated\n"
     ) in printed
-    assert "REFUTED make.<locals>.claim at factory.py:10" in printed
+    assert "REFUTED make.<locals>.lemma at factory.py:10" in printed
     (entry,) = claims(json.loads(out_json.read_text(encoding="utf-8")))
     assert entry["provenance"]["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
 
@@ -2949,7 +2969,7 @@ def test_two_claims_with_one_id_are_refused_and_fail_the_check(
     assert fact.status is Status.TESTED
     assert fact.provenance["duplicate_claims"] == ["n : Nat |- n + 0 == n"]
     assert cli.main(["check", str(path)]) == 1
-    assert "DUPLICATE make.<locals>.claim at factory.py:10" in capsys.readouterr().out
+    assert "DUPLICATE make.<locals>.lemma at factory.py:10" in capsys.readouterr().out
 
 
 def test_a_definition_with_several_duplicated_facts_gets_one_block(capsys) -> None:
@@ -2970,7 +2990,7 @@ def test_a_definition_with_several_duplicated_facts_gets_one_block(capsys) -> No
         )
         for access in ("read:x[i]", "write:y[i]")
     ]
-    ledger = Ledger([*facts, Fact(id="theorem:t", kind="theorem", statement="t", owner="t")])
+    ledger = Ledger([*facts, Fact(id="claim:t", kind="claim", statement="t", owner="t")])
     assert cli.CheckVerb._report_duplicates(ledger) is True
     assert capsys.readouterr().out == (
         "\n"
@@ -2991,7 +3011,7 @@ def test_a_definition_with_several_duplicated_facts_gets_one_block(capsys) -> No
 NAMED_APART = """\
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.plugins import registry
 from lanky.prelude import Nat
 
@@ -2999,10 +3019,10 @@ K = 2
 
 
 def make(name):
-    def claim(n: Nat) -> n + K >= n:
+    def statement(n: Nat) -> n + K >= n:
         \"\"\"True for every K that is not negative.\"\"\"
-    claim.__qualname__ = name
-    return theorem(claim)
+    statement.__qualname__ = name
+    return claim(statement)
 
 
 two = make("claim_two")
@@ -3068,14 +3088,14 @@ def test_the_quickstart_shows_the_ledger_citation_prints(capsys) -> None:
 
 
 def test_lanky_check_prints_each_axioms_citation_under_the_table(tmp_path, capsys) -> None:
-    """The citation is what stands behind an ``assumed (axiom)`` row, so it is shown.
+    """The citation is what stands behind an ``assumed (cited)`` row, so it is shown.
 
     It used to be in the JSON alone. A citation of several lines is indented
     under its first, and a file with no axiom prints no ``CITED`` line.
     """
     text = CITED.replace(
-        '@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic")',
-        '@axiom(cite="Nicomachus of Gerasa, Introduction to Arithmetic,\\nbook II, ch. 20")',
+        '@claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic")',
+        '@claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic,\\nbook II, ch. 20")',
     )
     path = write_file(tmp_path, text)
     _gauss, nicomachus, _cubes = claims(check_path(path))
@@ -3110,7 +3130,7 @@ class Simplifier:
         return "heuristic"
 
     def can_establish(self, fact, /) -> bool:
-        return fact.kind == "theorem"
+        return fact.kind == "claim"
 
     def establish(self, fact, /):
         return fact.with_status(Status.DECIDED, self.name)
@@ -3169,7 +3189,7 @@ class Hasty:
         return "heuristic"
 
     def can_establish(self, fact, /) -> bool:
-        return fact.kind == "theorem"
+        return fact.kind == "claim"
 
     def establish(self, fact, /):
         return fact.with_status(Status.DECIDED, self.name)
@@ -3190,9 +3210,9 @@ class Closed(Rewrite):
 
     def facts(self):
         return (
-            Fact(id="closed:true", kind="theorem", statement="1 - 2 < 0",
+            Fact(id="closed:true", kind="claim", statement="1 - 2 < 0",
                  term=prim.Comparison(prim.Sum((1, -2)), "<", 0), owner="true_closed"),
-            Fact(id="closed:false", kind="theorem", statement="1 - 2 >= 0",
+            Fact(id="closed:false", kind="claim", statement="1 - 2 >= 0",
                  term=prim.Comparison(prim.Sum((1, -2)), ">=", 0), owner="false_closed"),
         )
 
@@ -3240,7 +3260,7 @@ class Flaky:
         return "test"
 
     def can_establish(self, fact, /) -> bool:
-        return fact.kind == "theorem"
+        return fact.kind == "claim"
 
     def establish(self, fact, /):
         self.asked += 1
@@ -3254,11 +3274,11 @@ class Flaky:
 GUARDED = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def guarded(n: Nat, h: n >= 1) -> n + 0 == n:
     """Its hypothesis holds at almost every draw."""
 '''
@@ -3293,7 +3313,7 @@ class Leaning:
         return "heuristic"
 
     def can_establish(self, fact, /) -> bool:
-        return fact.kind == "theorem"
+        return fact.kind == "claim"
 
     def establish(self, fact, /):
         from dataclasses import replace
@@ -3342,11 +3362,11 @@ class RashSimplifier:
 RARE = '''
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import claim
 from lanky.prelude import Nat
 
 
-@theorem
+@claim
 def rare(n: Nat, h: n == 1000) -> n + 0 == n:
     """Its hypothesis holds only where the sampler does not look."""
 '''

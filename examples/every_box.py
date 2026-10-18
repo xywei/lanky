@@ -4,7 +4,8 @@
     Builds a few boxes' tables of a harmonic function's derivatives, stores
     them in sumpy's order, reconstructs every derivative through order 8 by
     the recurrence, and prints how far the reconstruction is from the
-    derivatives: nowhere, in exact arithmetic. The proof is never run.
+    derivatives: nowhere, in exact arithmetic. Running the file runs no
+    proof.
 
 ``uv run lanky check examples/every_box.py``
     The ledger: one claim, that every derivative a box's table reconstructs
@@ -12,7 +13,7 @@
     it reads ``proved``, by the proof written in ``every_box``'s body, and the
     row says so in a line of its own::
 
-        by its proof, every_box.py:106-113: induction on a, 3 cases, 3 steps
+        by its proof, every_box.py:113-119: induction on a, 3 cases, 3 steps
 
     Without them it reads ``assumed``, since the property tester draws no
     family over ``Nat``, and a ``NOT CHECKED`` line under the table says why
@@ -30,35 +31,42 @@ and what is stored above it. lanky's search does not split a case on the
 conditions of the facts it combines (lanky #140), so it does not find this
 proof alone, and the claim read ``assumed``; the body says how.
 
-Read aloud: "The claim at (i, a, b): at order zero, by the centre's copy and
-the centre. If a < 2, by the copies and what is stored. Otherwise by the
-recurrence, the claim at (i, a - 2, b + 2) and the PDE. That proves the
-claim."
+Read aloud: "For each point (i, a, b) of the conclusion: at order zero, by
+the centre's copy and the centre. If a < 2, by the copies and what is
+stored. Otherwise by the recurrence, the conclusion at (i, a - 2, b + 2) and
+the PDE."
 
-- ``def claim(i, a, b)``, returned, is the claim at one box and one order.
-  ``claim(i, a - 2, b + 2)`` inside it is the claim at an order with two
-  fewer ``x``'s, which is the induction: Lean checks that ``a`` gets smaller
-  and stays a natural number.
+- ``for i, a, b in every_box.conclusion.domain:`` is a loop over the points
+  of the conclusion's ``for``, the same loop the kernel runs over its table,
+  and ``yield by(...)`` says why the conclusion holds at the point the loop
+  is at. The proof fills in the table of true and false in order, and each
+  entry may use one the loop filled in before:
+  ``every_box.conclusion[i, a - 2, b + 2]`` is the conclusion at an order
+  with two fewer ``x``'s, which is the induction. lanky checks that the loop
+  has filled it in (``i`` the same and ``a`` smaller, so it comes earlier in
+  the loop), and Lean that ``a`` gets smaller and stays a natural number.
 - ``if a + b == 0`` is a case split. Among naturals it fixes ``a`` and ``b``
-  at ``0``, and lanky substitutes both, so the case's claim is ``R[i, 0, 0]
-  == D[i, 0, 0]``.
-- ``return centre_copy, centre`` cites two hypotheses by name alone. Each is
-  applied at the point found by matching it against the case's claim:
+  at ``0``, and lanky substitutes both, so the case's conclusion is
+  ``R[i, 0, 0] == D[i, 0, 0]``.
+- ``by(centre_copy, centre)`` cites two conditions by name alone. Each is
+  applied at the point found by matching it against the case's conclusion:
   ``centre_copy`` at ``R[i, 0, 0]`` and ``centre`` at ``D[i, 0, 0]``, both at
-  ``i``. So are ``copies`` and ``stored`` in the next case, at ``(i, a, b)``.
-- The last line keeps its points, because they carry the induction. Lean
-  checks each fact's conditions there (``a - 2 >= 0`` follows from the case
-  ``a >= 2``, and ``a - 2 + b + 2 <= p`` from the claim's ``a + b <= p``), and
-  that the three facts give the claim, with the multipliers Python finds.
+  ``i``. So are ``copies`` and ``stored`` in the next case, at ``(i, a, b)``,
+  and ``recurrence`` and ``pde`` in the last, at ``(i, a - 2, b)``, the one
+  point where each is about the conclusion's cells and the cells of the
+  conclusion at ``(i, a - 2, b + 2)``. Lean checks each fact's conditions
+  there (``a - 2 >= 0`` follows from the case ``a >= 2``, and ``a - 2 + b +
+  2 <= p`` from the conclusion's ``a + b <= p``), and that the three facts
+  give the conclusion, with the multipliers Python finds.
 """
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim
 from lanky.prelude import Fin, Fn, Int, Nat, Real
 
 
-@theorem
+@claim
 def every_box(
     n: Nat,
     p: Nat,
@@ -102,19 +110,17 @@ def every_box(
     and ``R`` copies ``c`` where it is stored and follows the recurrence
     everywhere else up to the order ``p``.
     """
-
-    def claim(i, a, b):
+    for i, a, b in every_box.conclusion.domain:
         if a + b == 0:
-            return centre_copy, centre
-        if a < 2:
-            return copies, stored
-        return recurrence(i, a - 2, b), claim(i, a - 2, b + 2), pde(i, a - 2, b)
-
-    return claim
+            yield by(centre_copy, centre)
+        elif a < 2:
+            yield by(copies, stored)
+        else:
+            yield by(recurrence, every_box.conclusion[i, a - 2, b + 2], pde)
 
 
 def tables(boxes: int, order: int) -> tuple[dict, dict, dict]:
-    """``D``, ``c`` and ``R`` for ``boxes`` boxes through ``order``, as dicts keyed as the claim's.
+    """``D``, ``c`` and ``R`` for ``boxes`` boxes through ``order``, keyed as the claim's tables.
 
     Box ``i``'s ``D`` holds the derivatives at the origin of ``Re(exp(z_i * (x
     + 1j * y)))``, which is harmonic, ``Re(z_i ** (a + b) * 1j ** b)``, with

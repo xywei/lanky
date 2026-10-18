@@ -1,14 +1,15 @@
 """What a proof cites: one :class:`Citation` for every fact cited, and how each is restated in Lean.
 
-The design idea. A step of a proof gives its reasons by name: a hypothesis of
-the theorem (``pde``), a theorem (``log_of_a_power``), the claim at a smaller
-point (``claim(a - 2, b + 2)``), or a fact on the way that an earlier line
-named (``recurrence``). A part a plugin states cites theorems the same way, as
+The design idea. A step of a proof gives its reasons by name: a condition of
+the claim (``pde``, or at a point of its domain, ``pde[a - 2, b]``), another
+claim (``log_of_a_power``, or for inputs, ``gauss(n - 1)``), or the claim's
+own conclusion at an earlier point (``compressed_taylor.conclusion[a - 2, b +
+2]``). A part a plugin states cites theorems the same way, as
 hypotheses: loopty's part that applies ``compressed_taylor`` to a kernel's
 postcondition, the series a kernel adds (``line_taylor``), the passes a
 program's postcondition unfolds through (``sum_factorization``). Each is a
 :class:`Citation`: what is cited, and where. In a written proof, where is the
-line and the point, if the proof wrote one; a fact left uncalled, ``by=pde``,
+line and the point, if the proof wrote one; a fact left uncalled, ``by(pde)``,
 has no point, and :mod:`lanky.matching` finds it from the step's own terms. In
 a part, where is the hypothesis of the part that restates the theorem.
 
@@ -89,9 +90,8 @@ class Citation:
         source: What is cited: a hypothesis of the theorem being proved
             (:class:`lanky.proofs.trace.Given`), a theorem
             (:class:`lanky.theory.Theorem`), the claim at a point
-            (:class:`lanky.proofs.trace.ClaimDef`), a fact on the way
-            (:class:`lanky.proofs.trace.Named`), or a theorem known by its
-            proved text alone (:class:`Premise`).
+            (:class:`lanky.proofs.trace.ClaimDef`), or a theorem known by
+            its proved text alone (:class:`Premise`).
         values: The point, a value per variable of the fact, outermost
             first; ``None`` for a fact cited by its name alone, whose point
             the step it supports gives (:mod:`lanky.matching`).
@@ -100,12 +100,15 @@ class Citation:
             that restates the theorem among the conjuncts of the part's guard,
             as an :class:`lanky.obligations.Instance`'s is. The conjunct has
             to be the theorem's term as its theory states it.
+        bracket: Whether the citation gave a point of a domain, in brackets,
+            ``pde[a - 2, b]``, rather than inputs to a claim, ``gauss(n - 1)``.
     """
 
     source: Any
     values: tuple[Any, ...] | None = None
     line: int | None = None
     hypothesis: int | None = None
+    bracket: bool = False
 
     @property
     def name(self) -> str:
@@ -130,11 +133,49 @@ class Citation:
         return isinstance(self.source, ClaimDef)
 
     def text(self, values: tuple[Any, ...] | None = None) -> str:
-        """How the citation is written: ``pde(i, a - 2, b)``, or ``stored`` alone."""
+        """How the citation is written: ``pde[i, a - 2, b]``, ``stored``, ``gauss(n - 1)``.
+
+        A condition at a point takes brackets, another claim its inputs in
+        parentheses and its conclusion's point after, ``other(x).conclusion[k]``,
+        and the claim's own conclusion ``line_taylor.conclusion[n - 1]``.
+        """
         values = self.values if values is None else values
         if values is None:
             return self.name
+        written = getattr(self.source, "written", None)
+        if callable(written):
+            return str(written(tuple(values), self.bracket))
+        if hasattr(self.source, "variables") and hasattr(self.source, "goal"):
+            return _claim_text(self.source, self.name, tuple(values))
+        if self.bracket:
+            return f"{self.name}[{', '.join(_shown(value) for value in values)}]"
         return f"{self.name}({', '.join(_shown(value) for value in values)})"
+
+
+def _claim_text(claim: Any, name: str, values: tuple[Any, ...]) -> str:
+    """Another claim at values: ``gauss(n - 1)``, ``other.conclusion[k]``, or both.
+
+    The first values are the claim's inputs, the rest its conclusion's point,
+    a bracket per nested ``for``; a value lanky is left to find is ``None``,
+    and a part with none given is left out.
+    """
+    from lanky.surface import levels
+
+    count = len(getattr(claim, "variables", ()))
+    inputs, point = values[:count], values[count:]
+    text = name
+    if any(value is not None for value in inputs):
+        text += f"({', '.join('_' if value is None else _shown(value) for value in inputs)})"
+    if any(value is not None for value in point):
+        text += ".conclusion"
+        start = 0
+        for binders, _guard in levels(claim.goal):
+            part = point[start : start + len(binders)]
+            start += len(binders)
+            if not part or all(value is None for value in part):
+                break
+            text += f"[{', '.join('_' if value is None else _shown(value) for value in part)}]"
+    return text
 
 
 def _shown(value: Any) -> str:

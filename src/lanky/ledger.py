@@ -1,7 +1,7 @@
 """The ledger of facts.
 
 The design idea. Everything lanky knows is a :class:`Fact`: a statement, a
-status saying how strongly it is established, and who established it. A theorem
+status saying how strongly it is established, and who established it. A claim
 is a fact. A side condition a decision procedure discharged is a fact. An
 obligation nobody could establish is a fact too, with status ``ASSUMED``, which
 is the point: an unproved obligation is recorded rather than lost.
@@ -17,15 +17,15 @@ oracle has shown inconsistent is *vacuous*, and so is one whose goal is a
 universal whose guard an oracle has shown empty wherever the hypotheses hold:
 ``proved`` is still true of it, and it says nothing, so the table prints
 ``proved (vacuous)`` and the provenance says who showed it (see
-:func:`lanky.check.establish`). An *axiom*, a fact of
-kind ``"axiom"``, is ``assumed`` on a citation rather than for want of an
-oracle, and the table prints ``assumed (axiom)``. A fact settled by an oracle
+:func:`lanky.check.establish`). A cited claim, ``@claim(cite=...)``, a fact of
+kind ``"cited"``, is ``assumed`` on a source rather than for want of an
+oracle, and the table prints ``assumed (cited)``. A fact settled by an oracle
 of the ``heuristic`` trust class, one whose answer is not guaranteed (see
 :data:`lanky.plugins.TRUST_STRENGTH`), prints ``decided (heuristic)``, so that
 it is not read as the answer of a decision procedure.
 
 Facts rest on facts. A fact's ``rests_on`` names the ids of the facts it was
-established from: the lemmas a theorem ``uses``, the axioms a derivation
+established from: the lemmas a claim ``uses``, the cited claims a derivation
 cites, the callee postcondition a plugin restates. A status says how strongly
 a fact is established *given* those, so a proof from an assumption is worth
 no more than the assumption. The ledger reads that off the graph
@@ -98,7 +98,7 @@ def fact_id(
     its own, and a file that does ``from helpers import lemma`` imports it as
     ``helpers``, so one definition would have one id in its own file's ledger
     and another in the ``rests_on`` of every fact that names it. Keyed by the
-    path, ``theorem:helpers.lemma@12`` is the same id wherever it is written,
+    path, ``claim:helpers.lemma@12`` is the same id wherever it is written,
     and a plugin that keys its facts the same way (loopty keys a kernel's
     facts by the kernel's definition) names a fact of another file by the id
     that file's ledger holds.
@@ -156,7 +156,7 @@ class Fact:
     Attributes:
         id: Stable identifier, unique within one ledger. Re-adding the same id
             replaces the entry, which is how an oracle upgrades a fact.
-        kind: What sort of claim this is, such as ``"theorem"``, ``"in-bounds"``
+        kind: What sort of claim this is, such as ``"claim"``, ``"in-bounds"``
             or ``"cast"``. The theory that made the fact chooses the vocabulary.
         statement: The claim rendered as source text, for people to read.
         term: The claim as a term, for oracles to work on. ``None`` when the
@@ -221,14 +221,25 @@ class Fact:
         return self.provenance.get("trust_class") == "heuristic"
 
     @property
-    def is_axiom(self) -> bool:
-        """Whether this fact is assumed on a citation (see :func:`lanky.theory.axiom`).
+    def is_cited(self) -> bool:
+        """Whether this fact is a claim taken on a source, ``@claim(cite=...)``.
 
-        An axiom is not offered to the oracles: it is ``assumed`` because its
-        author takes it on the citation in ``provenance["cite"]``, not because
-        no oracle could establish it.
+        Such a claim is not offered to the oracles: it is ``assumed`` because
+        its author takes it on the source in ``provenance["cite"]``, not
+        because no oracle could establish it. A plugin's fact of kind
+        ``"axiom"``, lanky 0.5's word, is one too.
         """
-        return self.kind == "axiom"
+        return self.kind in ("cited", "axiom")
+
+    @property
+    def is_axiom(self) -> bool:
+        """The same as :attr:`is_cited`, under lanky 0.5's name, which plugins read."""
+        return self.is_cited
+
+    @property
+    def is_condition(self) -> bool:
+        """Whether this fact is a ``@condition``'s row: whether its conditions can hold."""
+        return self.kind == "condition"
 
     @property
     def is_reading(self) -> bool:
@@ -549,8 +560,8 @@ class Ledger:
     def _status_cell(self, fact: Fact, support: Support, owners: Counter) -> str:
         """The status column of one row: the status, its marks, and what it is under."""
         cell = fact.status.value
-        if fact.is_axiom:
-            cell += " (axiom)"
+        if fact.is_cited:
+            cell += " (cited)"
         if fact.is_heuristic:
             cell += " (heuristic)"
         if fact.is_vacuous:
@@ -587,8 +598,8 @@ class Ledger:
         those, grow a parent directory; the full path stays in provenance.
 
         A vacuous fact's status carries the mark, as in ``proved (vacuous)``,
-        and the summary line counts the vacuous facts after the statuses. An
-        axiom's reads ``assumed (axiom)``, and a fact a heuristic settled reads
+        and the summary line counts the vacuous facts after the statuses. A
+        cited claim's reads ``assumed (cited)``, and a fact a heuristic settled reads
         ``decided (heuristic)``.
 
         A fact established under assumptions (see :meth:`support`) says so
@@ -705,6 +716,15 @@ def statement_lines(fact: Fact, width: int = 100) -> list[str]:
         | stored: forall a in Nat, b in Nat where a < 2. R[a, b] == D[a, b]
         |- forall a in Nat, b in Nat. R[a, b] == D[a, b]
 
+    A theorem in a ``with`` block of a condition (:mod:`lanky.conditions`)
+    names the condition first, with its named conditions, and then its own
+    parts, as the file states them::
+
+        under segment (nonzero): a : Fn[Nat, Complex]
+        | first_term: alpha*a[1] == beta
+        | ode: forall n in Nat where n >= 1. (n + 1)*alpha*a[n + 1] + n*beta*a[n] == 0
+        |- forall n in Nat where n >= 1. a[n] == -(-beta / alpha)**n / n
+
     A claim proved by its written proof (:mod:`lanky.proofs`) says so in one
     more line, where the proof is and what it is::
 
@@ -756,7 +776,7 @@ def _printer_line(fact: Fact) -> str | None:
 def _proof_line(fact: Fact) -> str | None:
     """``by its proof, file.py:41-48: ...``, for a claim its written proof proved.
 
-    A proof Lean accepted with steps left open, ``by=...``, names them:
+    A proof Lean accepted with steps left open, ``by(...)``, names them:
     ``its proof, file.py:41-48, ...; left open at file.py:44, assumed there``.
     """
     provenance = fact.provenance if isinstance(fact.provenance, dict) else {}
@@ -805,12 +825,43 @@ def _sequent_parts(fact: Fact) -> list[tuple[str, str]] | None:
         )
     ):
         return None
+    head = sequent.get("head")
+    if isinstance(head, str) and head:
+        # a condition's row: what it says can hold, a part to a line
+        parts = [(f"{head}: {_one_line(variables)}" if variables else f"{head}:", "  ")]
+        parts += [(f"| {name}: {_one_line(text)}", "    ") for name, text in hypotheses]
+        return parts
+    under = sequent.get("under")
+    own = sequent.get("own")
+    if isinstance(under, str) and isinstance(own, dict):
+        # a theorem in a with block: the condition by its name, then its own
+        # parts, as the file states them
+        own_variables = own.get("variables")
+        own_hypotheses = own.get("hypotheses")
+        if isinstance(own_variables, str) and _named_texts(own_hypotheses):
+            head = f"under {_one_line(under)}:"
+            if own_variables:
+                head += f" {_one_line(own_variables)}"
+            parts = [(head, "  ")]
+            parts += [(f"| {name}: {_one_line(text)}", "    ") for name, text in own_hypotheses]
+            parts.append((f"|- {_one_line(goal)}", "    "))
+            return parts
     if not variables and not hypotheses:
         return None
     parts = [(_one_line(variables), "  ")] if variables else []
     parts += [(f"| {name}: {_one_line(text)}", "    ") for name, text in hypotheses]
     parts.append((f"|- {_one_line(goal)}", "    "))
     return parts
+
+
+def _named_texts(entries: Any) -> bool:
+    """Whether ``entries`` is a list of ``[name, text]`` pairs of strings."""
+    return isinstance(entries, list | tuple) and all(
+        isinstance(entry, list | tuple)
+        and len(entry) == 2
+        and all(isinstance(item, str) for item in entry)
+        for entry in entries
+    )
 
 
 #: The narrowest and the widest the statement column is made to fit a terminal

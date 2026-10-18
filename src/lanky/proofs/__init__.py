@@ -1,46 +1,62 @@
-"""Written proofs: a theorem's body says why it holds, and Lean checks it.
+"""Written proofs: a claim's body says why it holds, and Lean checks it.
 
-The design idea. Automation stays the default: a claim that lanky proves alone
-needs no body. Where a proof helps, the theorem's body is the proof, in
-ordinary Python that states facts and gives a reason for each, so that it
-reads like a textbook proof read aloud::
+The design idea (the decision of 2026-10-18: proofs in lanky read as
+engineers write checks). Automation stays the default: a claim that lanky
+proves alone needs no body. Where a proof helps, the claim's body is the
+proof, in the Python an engineer already writes, ``assert``, ``if`` and
+``for``, with the reason for each step after it, so that it reads like a
+textbook proof read aloud::
 
-    @theorem
+    from lanky import by, claim
+
+
+    @claim
     def every_box(..., pde: ..., centre: ..., stored: ..., centre_copy: ...,
                   copies: ..., recurrence: ...) -> all(R[i, a, b] == D[i, a, b] ...):
-        def claim(i, a, b):
+        for i, a, b in every_box.conclusion.domain:
             if a + b == 0:
-                return centre_copy, centre
-            if a < 2:
-                return copies, stored
-            return recurrence(i, a - 2, b), claim(i, a - 2, b + 2), pde(i, a - 2, b)
+                yield by(centre_copy, centre)
+            elif a < 2:
+                yield by(copies, stored)
+            else:
+                yield by(recurrence, every_box.conclusion[i, a - 2, b + 2], pde)
 
-        return claim
+"For each point of the conclusion: at order zero, by the centre's copy and
+the centre. If a < 2, by the copies and what is stored. Otherwise by the
+recurrence, the conclusion at (i, a - 2, b + 2), which the loop has filled
+in, and the PDE."
 
-"The claim at (i, a, b): at order zero, by the centre's copy and the centre.
-If a < 2, by the copies and what is stored. Otherwise by the recurrence, the
-claim at (i, a - 2, b + 2) and the PDE. That proves the claim."
+What each form means (:mod:`lanky.surface` has ``by`` and the claim's tree):
 
-What each form means:
+- no body: lanky finds the proof, as it always has;
+- ``assert x == y, by(f, g)``: a step, ``x == y`` holds by these facts, known
+  for the rest of its case; ``assert x == y``, a step by algebra alone;
+  ``assert x == y == z, by(f, g)``, Python's chained comparison, a chain;
+  ``by(...)``, a step left open;
+- ``if`` / ``elif`` / ``else``: cases;
+- ``for n in name.conclusion.domain:``: for each point the conclusion's
+  ``for`` covers, in increasing order (``reversed(...)`` for a bounded
+  domain from the top down), and ``yield by(f, g)`` the conclusion at that
+  point by these facts; a nested ``for`` is a loop over
+  ``name.conclusion[i].domain`` inside it;
+- ``name.conclusion[n - 1]``: the conclusion at a point the loop filled in
+  earlier, which is induction;
+- ``return by(f, g)``: a claim proved without a loop holds by these facts;
+- ``by()``: the case follows directly, by lanky's strategies, after the
+  steps asserted; every case ends with ``yield by(...)`` or ``return
+  by(...)``;
+- a condition at a point, ``pde[i, a - 2, b]``, or another claim for inputs,
+  ``gauss(n - 1)``, whose conditions are checked; ``stored`` alone, the
+  same fact at the point found by matching it against the step; a condition
+  written ``p & q`` is cited as both parts.
 
-- a body of only a docstring, ``...`` or ``pass``: lanky finds the proof, as
-  it always has;
-- ``return f, g``: this case's claim follows from these facts, combined as
-  lanky finds and Lean checks; a bare ``return``: lanky closes the case;
-- ``pde(i, a - 2, b)``: a fact at a point, a hypothesis or a theorem, whose
-  conditions are checked; ``stored`` alone: the same fact, at the point found
-  by matching it against the case's claim; a hypothesis written ``p & q`` is
-  cited as both parts;
-- ``if`` / ``else``: a case split;
-- ``def claim(i, a, b)``, returned: the claim at a point, and ``claim(i, a -
-  2, b + 2)`` inside it the claim at values closer to a base case, which is
-  induction.
-
-``python file.py`` never calls a body. ``lanky check`` traces it, after every
-run and draw of the check (:mod:`lanky.proofs.trace`), compiles it to one Lean
-command (:mod:`lanky.proofs.compile`), and reads Lean's answer back to the
-Python lines (:mod:`lanky.proofs.report`). A proof Lean accepts adds a line to
-its claim's row, ``by its proof, file.py:41-48: induction on a, 3 cases, 3
+``python file.py`` never calls a body. ``lanky check`` traces it, after
+every run and draw of the check (:mod:`lanky.proofs.trace`), runs it as
+plain Python at the check's draws (:mod:`lanky.proofs.native`), which can
+refute a step but never prove one, compiles it to one Lean command
+(:mod:`lanky.proofs.compile`), and reads Lean's answer back to the Python
+lines (:mod:`lanky.proofs.report`). A proof Lean accepts adds a line to its
+claim's row, ``by its proof, file.py:41-48: induction on a, 3 cases, 3
 steps``, and proves a claim lanky's search did not. One it does not is
 reported at the line that fails, with the fix where one can be named, and
 fails the check, also for a claim lanky proves alone, whose row still reads
@@ -324,12 +340,19 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
         proof = traced if traced is not None else trace_proof(theorem)
     except ProofError as exc:
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
+    from lanky.proofs.native import native_run
+
+    refuted, ran = native_run(theorem)
+    if refuted is not None:
+        return _failed(fact, where, None, [refuted], theorem.path)
     oracle = _lean_oracle()
     if oracle is None:
-        return _without_lean(fact, where, proof, "Lean", "no Lean oracle is registered")
+        return _without_lean(fact, where, proof, "Lean", "no Lean oracle is registered", ran)
     available, reason = oracle.availability()
     if not available:
-        return _without_lean(fact, where, proof, "Lean", f"Lean is not available here ({reason})")
+        return _without_lean(
+            fact, where, proof, "Lean", f"Lean is not available here ({reason})", ran
+        )
     mathlib = oracle.session.mathlib is not None
     from lanky.lean import UnsupportedTerm
     from lanky.oracles.lean import claim_statement
@@ -348,6 +371,7 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
                 proof,
                 "Mathlib",
                 "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
+                ran,
             )
         return _not_checked(fact, where, f"Lean cannot state it: {exc}")
     except ProofError as exc:
@@ -360,6 +384,7 @@ def prove(theorem: Any, fact: Fact, traced: Proof | None = None) -> Fact:
                 proof,
                 "Mathlib",
                 "only Lean with Mathlib can state it (LANKY_LEAN_MATHLIB)",
+                ran,
             )
         return _failed(fact, where, None, [failure_of(exc)], theorem.path)
     texts = getattr(oracle, "proved_texts", None)
@@ -509,7 +534,7 @@ def _vacuity_questions(
         out.append((first, None))
     theorem = proof.theorem
     sorts: dict[str, Any] = dict(theorem.variables)
-    goal = theorem.goal
+    goal = proof.conclusion
     guards: list[Any] = []
     if isinstance(goal, Forall):
         guards = list(conjuncts(goal.guard))
@@ -584,13 +609,27 @@ def _taken_at(proof: Proof, command: Command | None) -> dict[int, list[tuple[str
             if fact_id is not None and citation.values is not None:
                 taken.setdefault(id(leaf), []).append((fact_id, tuple(citation.values)))
     for step in command.steps if command is not None else ():
+        owners = _leaves_of(proof, step)
         for instance in step.instances:
             citation = instance.citation
             fact_id = getattr(citation.source, "fact_id", None)
             if fact_id is None or citation.values is not None:
                 continue
-            taken.setdefault(id(step.leaf), []).append((fact_id, tuple(instance.values)))
+            for leaf in owners:
+                taken.setdefault(id(leaf), []).append((fact_id, tuple(instance.values)))
     return taken
+
+
+def _leaves_of(proof: Proof, step: Any) -> list[Any]:
+    """The cases a compiled step is in: its leaf, or every case that asserts its ``assert``."""
+    from lanky.proofs.trace import Asserted
+
+    owner = getattr(step, "owner", None)
+    if isinstance(owner, Asserted):
+        return [
+            leaf for leaf in proof.leaves if any(item.line == owner.line for item in leaf.steps)
+        ]
+    return [step.leaf] if step.leaf is not None else []
 
 
 def _ruled_out(fact: Fact, variables: list[Any], conditions: list[Any], case: str) -> bool:
@@ -738,7 +777,7 @@ def _closed(fact: Fact, where: str, proof: Proof, command: Command, oracle: Any)
 
 
 def _holes(fact: Fact, where: str, proof: Proof, command: Command) -> Fact:
-    """``fact`` as it was, with a proof Lean accepted but for the steps it left open, ``by=...``.
+    """``fact`` as it was, with a proof Lean accepted but for the steps it left open, ``by(...)``.
 
     The claim is not proved by it: it reads as the other oracles left it,
     assumed where none settled it, and its row names the lines left open.
@@ -757,7 +796,9 @@ def _holes(fact: Fact, where: str, proof: Proof, command: Command) -> Fact:
     return fact.with_status(fact.status, proof=account)
 
 
-def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: str) -> Fact:
+def _without_lean(
+    fact: Fact, where: str, proof: Proof, missing: str, reason: str, ran: int = 0
+) -> Fact:
     """``fact``, its written proof not checked by Lean: each link of its chains drawn instead.
 
     Where the values can be drawn, each link's two sides are compared at
@@ -774,9 +815,19 @@ def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: st
         of its proof was tested at drawn points instead (lines 161 and 162).
 
     ``reason`` is the long form, kept for ``--verbose`` and ``--json``.
+    ``ran`` is how many draws the native run ran the whole body at, every
+    step and point holding (:func:`lanky.proofs.native.native_run`): where
+    the links cannot be drawn alone, a family over ``Nat`` among them, that
+    run, which fills the family in, is what was tested, and the line says so.
     """
     draws = _draw_links(proof)
+    natively = (
+        f"without {missing}, its proof was not checked by Lean; it was run at {ran} drawn "
+        f"value{'' if ran == 1 else 's'} instead, and every step held"
+    )
     if not draws:
+        if ran:
+            return _not_checked(fact, where, f"{reason}; {natively}", natively)
         return _not_checked(fact, where, reason, f"without {missing}, its proof was not checked")
     for line, statement, outcome, detail in draws:
         if outcome == "refuted":
@@ -789,6 +840,8 @@ def _without_lean(fact: Fact, where: str, proof: Proof, missing: str, reason: st
             )
             return _failed(fact, where, None, [failure], proof.path)
     undrawn = [detail for _line, _statement, outcome, detail in draws if outcome == "undrawn"]
+    if undrawn and ran:
+        return _not_checked(fact, where, f"{reason}; {natively}", natively)
     if undrawn:
         return _not_checked(
             fact,
@@ -828,12 +881,11 @@ def _draw_links(proof: Proof, samples: int = 50) -> list[tuple[int | None, str, 
     as a claim is (:func:`lanky.testing.check`), under the theorem's
     hypotheses, the goal's guard and the case's conditions.
     """
-    from lanky.terms import Comparison, Forall, conjuncts, render
-    from lanky.testing import OpenStatement, check
+    from lanky.terms import Forall, conjuncts
 
     theorem = proof.theorem
     variables = list(theorem.variables)
-    goal = theorem.goal
+    goal = proof.conclusion
     guards: list[Any] = []
     if proof.claim is not None:
         names = {name for name, _ in variables}
@@ -844,34 +896,46 @@ def _draw_links(proof: Proof, samples: int = 50) -> list[tuple[int | None, str, 
             guards = list(conjuncts(goal.guard))
     hypotheses = [part for _name, prop in theorem.hypotheses for part in conjuncts(prop)]
     out: list[tuple[int | None, str, str, str]] = []
-    seen: set[int] = set()
+    seen: set[tuple[int, int]] = set()
     for leaf in proof.leaves:
         conditions = [condition for condition, _line in leaf.conditions]
-        chains = (*leaf.named, *((leaf.chain,) if leaf.chain is not None else ()))
-        for chain in chains:
-            if id(chain) in seen:
-                continue
-            seen.add(id(chain))
-            for left, link in chain.steps():
-                prop = Comparison(left, link.relation, link.term)
-                statement = render(prop)
-                try:
-                    report = check(variables, [*hypotheses, *guards, *conditions], prop, samples, 0)
-                except OpenStatement as exc:
-                    out.append((link.line, statement, "undrawn", str(exc)))
+        for step in leaf.steps:
+            # an assert before a split is a step of every case after it: drawn
+            # once, under the conditions of the first
+            for index, chain in enumerate(step.chains):
+                if (step.line, index) in seen:
                     continue
-                except Exception as exc:  # noqa: BLE001 - a draw that cannot run checks nothing
-                    out.append((link.line, statement, "undrawn", f"{type(exc).__name__}: {exc}"))
-                    continue
-                if report.counterexample is not None:
-                    point = ", ".join(
-                        f"{key} = {value}" for key, value in report.counterexample.items()
-                    )
-                    out.append((link.line, statement, "refuted", f"at {point}"))
-                elif report.valid == 0:
-                    out.append((link.line, statement, "undrawn", report.reason or "no draw"))
-                else:
-                    out.append((link.line, statement, "tested", f"{report.valid} draws"))
+                seen.add((step.line, index))
+                out += _drawn(chain, variables, [*hypotheses, *guards, *conditions], samples)
+    return out
+
+
+def _drawn(
+    chain: Any, variables: list[Any], assumed: list[Any], samples: int
+) -> list[tuple[int | None, str, str, str]]:
+    """Each link of one chain, drawn under ``assumed`` (see :func:`_draw_links`)."""
+    from lanky.terms import Comparison, render
+    from lanky.testing import OpenStatement, check
+
+    out: list[tuple[int | None, str, str, str]] = []
+    for left, link in chain.steps():
+        prop = Comparison(left, link.relation, link.term)
+        statement = render(prop)
+        try:
+            report = check(variables, assumed, prop, samples, 0)
+        except OpenStatement as exc:
+            out.append((link.line, statement, "undrawn", str(exc)))
+            continue
+        except Exception as exc:  # noqa: BLE001 - a draw that cannot run checks nothing
+            out.append((link.line, statement, "undrawn", f"{type(exc).__name__}: {exc}"))
+            continue
+        if report.counterexample is not None:
+            point = ", ".join(f"{key} = {value}" for key, value in report.counterexample.items())
+            out.append((link.line, statement, "refuted", f"at {point}"))
+        elif report.valid == 0:
+            out.append((link.line, statement, "undrawn", report.reason or "no draw"))
+        else:
+            out.append((link.line, statement, "tested", f"{report.valid} draws"))
     return out
 
 
@@ -945,53 +1009,66 @@ def _checked_fix(
 
 
 def _with_added(proof: Proof, step: Any, new: Citation) -> Proof | None:
-    """``proof`` with one more fact cited at one step: in its link of a chain, or in its return.
+    """``proof`` with one more fact at one step: in its ``assert``'s ``by(...)``, or its leaf's."""
+    from lanky.proofs.trace import Asserted
 
-    ``None`` for a link of a fact on the way, whose chain the citations of it
-    name, and which is kept as it is.
-    """
+    owner = getattr(step, "owner", None)
+    if isinstance(owner, Asserted):
+
+        def asserted(item: Asserted) -> Asserted:
+            if item.line != owner.line:
+                return item
+            return _with_facts(item, (*item.facts, new))
+
+        return _rebuilt(proof, lambda leaf: leaf, asserted)
     leaf = step.leaf
-    if step.line is not None and any(
-        link.line == step.line for chain in leaf.named for link in chain.links
-    ):
+    if leaf is None:
         return None
-    in_the_chain = (
-        step.line is not None
-        and leaf.chain is not None
-        and any(link.line == step.line for link in leaf.chain.links)
-    )
-    leaves = []
-    for each in proof.leaves:
-        if each is leaf:
-            if in_the_chain:
-                links = tuple(
-                    replace(link, facts=(*link.facts, new)) if link.line == step.line else link
-                    for link in each.chain.links
-                )
-                each = replace(each, chain=replace(each.chain, links=links))
-            else:
-                each = replace(each, facts=(*(each.facts or ()), new))
-        leaves.append(each)
-    return replace(proof, leaves=tuple(leaves), root=_tree(leaves))
+
+    def at_leaf(each: Any) -> Any:
+        return replace(each, facts=(*(each.facts or ()), new)) if each is leaf else each
+
+    return _rebuilt(proof, at_leaf, lambda item: item)
 
 
 def _with_citation(proof: Proof, leaf: Any, old: Citation, new: Citation) -> Proof:
-    """``proof`` with one citation of one leaf put at another point, in a return or a link."""
+    """``proof`` with one citation put at another point, wherever the proof cites it."""
 
-    def swapped(citations: Any) -> tuple[Citation, ...]:
+    def swapped(citations: Any) -> Any:
+        if citations is None:
+            return None
         return tuple(new if citation is old else citation for citation in citations)
 
-    def chain_with(chain: Any) -> Any:
-        if chain is None:
-            return None
-        links = tuple(replace(link, facts=swapped(link.facts)) for link in chain.links)
-        return replace(chain, links=links)
+    del leaf  # the citation is one object, in every case that cites it
+    return _rebuilt(
+        proof,
+        lambda each: replace(each, facts=swapped(each.facts)),
+        lambda item: _with_facts(item, swapped(item.facts)),
+    )
+
+
+def _with_facts(item: Any, facts: tuple[Citation, ...]) -> Any:
+    """An :class:`~lanky.proofs.trace.Asserted` with other facts, in each link of its chains too."""
+    from lanky.proofs.trace import TracedChain
+
+    parts = tuple(
+        replace(part, links=tuple(replace(link, facts=facts) for link in part.links))
+        if isinstance(part, TracedChain)
+        else part
+        for part in item.parts
+    )
+    return replace(item, facts=facts, parts=parts)
+
+
+def _rebuilt(proof: Proof, at_leaf: Any, at_step: Any) -> Proof:
+    """``proof`` with each leaf and each step asserted on it changed, and its tree built again."""
+    from lanky.proofs.trace import Asserted
 
     leaves = []
     for each in proof.leaves:
-        if each is leaf:
-            facts = None if each.facts is None else swapped(each.facts)
-            # a fact on the way keeps its chain, which the citations of it name
-            each = replace(each, facts=facts, chain=chain_with(each.chain))
-        leaves.append(each)
+        changed = at_leaf(each)
+        order = tuple(
+            at_step(item) if isinstance(item, Asserted) else item for item in changed.order
+        )
+        leaves.append(replace(changed, order=order))
     return replace(proof, leaves=tuple(leaves), root=_tree(leaves))

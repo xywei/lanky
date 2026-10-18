@@ -30,8 +30,8 @@ the refuted one, and a fact resting on an assumption is no more a failure than
 the assumption.
 
 Six more things are printed under the table and do not change the exit code.
-Each axiom is named in a ``CITED`` line with the citation it is taken on,
-which is the one thing that stands behind an ``assumed (axiom)`` row. A fact
+Each cited claim is named in a ``CITED`` line with the source it is taken on,
+which is the one thing that stands behind an ``assumed (cited)`` row. A fact
 left ``assumed`` that an oracle looked at and declined, saying why, gets a
 ``DECLINED`` line with that reason, the standard provenance key ``declined``
 (see :func:`decline_lines`): an ``assumed`` row is otherwise read as "no oracle
@@ -175,8 +175,10 @@ class CheckVerb:
         when a file itself cannot be imported, because a file that does not
         import is a broken claim too. Exit code 2 when there is no such file,
         which is a mistake in the command rather than in the file, and then
-        nothing is checked. An axiom's citation, the reason an oracle declined
-        a fact left assumed, an oracle that raised, a semantics disagreement, a warning about
+        nothing is checked; and 2 under ``python -O``, which removes every
+        ``assert``, and so every step of every written proof. An axiom's
+        citation, the reason an oracle declined a fact left assumed, an
+        oracle that raised, a semantics disagreement, a warning about
         hypotheses no draw satisfied or a pass on thin evidence, and an id a
         fact rests on that the ledger does not hold are printed but do not
         fail the check.
@@ -224,6 +226,11 @@ class CheckVerb:
         files = getattr(args, "files", None)
         files = [*(files if files is not None else [args.file]), *_files_given_as_text(args)]
         files = _in_the_order_given(files, getattr(args, "argv", None))
+        if not __debug__ or sys.flags.optimize:
+            from lanky.check import OPTIMIZED
+
+            print(f"lanky check: {OPTIMIZED}")
+            return 2
         if not files:
             print("lanky check: name a file to check, as in lanky check examples/gauss.py")
             return 2
@@ -535,12 +542,12 @@ class CheckVerb:
     def _report_citations(ledger: Ledger) -> None:
         """Name each axiom under the table, with the citation it is taken on.
 
-        An axiom is ``assumed`` on its author's word that a reference says
-        what it says, so the citation is what a reader of its row needs, and
-        it used to be in the JSON alone. The lines come right under the table,
-        one per axiom in the table's order, because they explain rows of it:
-        the ``assumed (axiom)`` ones, and every ``under`` that names one. A
-        refuted axiom keeps its line, since the reference is where to look
+        A cited claim is ``assumed`` on its author's word that a reference
+        says what it says, so the citation is what a reader of its row needs,
+        and it used to be in the JSON alone. The lines come right under the
+        table, one per cited claim in the table's order, because they explain
+        rows of it: the ``assumed (cited)`` ones, and every ``under`` that
+        names one. A refuted cited claim keeps its line, since the reference is where to look
         for what was copied down wrong. A citation of several lines is
         indented under its first.
         """
@@ -829,6 +836,8 @@ def report_missing(ledger: Ledger) -> None:
         if not callable(getattr(oracle, "missing", None)):
             continue
         for fact in ledger:
+            if fact.is_condition:
+                continue  # a condition is assumed, and never proved by anyone
             try:
                 pieces = oracle.missing(fact)
             except Exception:  # noqa: BLE001 - a line under the table must not stop the check
@@ -1009,12 +1018,12 @@ def report_written(ledger: Ledger) -> bool:
 
         UNPROVED every_box at every_box.py:30: a step of its proof does not follow.
 
-          every_box.py:52    return recurrence(i, a - 2, b), claim(i, a - 2, b + 3), ...
+          every_box.py:52    yield by(recurrence, every_box.conclusion[i, a - 2, b + 3], pde)
 
           When a + b != 0 and a >= 2 (every_box.py:48, 50), the step needs
           R[i, a, b] == D[i, a, b]
           ...
-          Fix: claim(i, a - 2, b + 2) makes the step follow (checked).
+          Fix: every_box.conclusion[i, a - 2, b + 2] makes the step follow (checked).
 
     A claim lanky proved alone keeps its row, proved by lanky's own proof,
     and the block says so instead: ``WARNING every_box at every_box.py:30:
@@ -1022,7 +1031,7 @@ def report_written(ledger: Ledger) -> bool:
     Either fails the check, since a broken proof is a failing test. A proof
     not checked, on a machine without Lean, or without Mathlib for a claim
     only Mathlib states, gets a ``NOT CHECKED`` line, which does not, and so
-    does a proof Lean accepted with steps left open, ``by=...``, whose
+    does a proof Lean accepted with steps left open, ``by(...)``, whose
     ``LEFT OPEN`` line names them.
     """
     broken = False
@@ -1045,7 +1054,7 @@ def report_written(ledger: Ledger) -> bool:
             print()
             print(
                 f"LEFT OPEN {fact.owner} at {fact.where}: its proof, {proof.get('where')}, "
-                f"holds but for the steps left open at {holes} (by=...); until they are "
+                f"holds but for the steps left open at {holes} (by(...)); until they are "
                 "written, the claim reads as the other oracles leave it"
             )
             continue
@@ -1102,11 +1111,11 @@ def report_known(ledger: Ledger) -> None:
     found: list[tuple[Fact, list[Any]]] = []
     settled = (Status.PROVED, Status.CERTIFIED, Status.REFUTED)
     for fact in ledger:
-        if fact.kind != "theorem" or fact.status in settled or fact.term is None:
+        if fact.kind != "claim" or fact.status in settled or fact.term is None:
             continue
         if not fact.provenance.get("lean_tried") or fact.provenance.get("lean_parts"):
             continue
-        own = fact.owner if fact.id.startswith("theorem:lanky.known.") else None
+        own = fact.owner if fact.id.startswith("claim:lanky.known.") else None
         try:
             from lanky.suggest import suggestions
 
@@ -1216,7 +1225,7 @@ def report_proofs(ledger: Ledger, text: str = "") -> None:
 
     The body is in the surface a written proof uses, in the theorem's own
     names, and pastes under the theorem's docstring: for an induction over
-    families, ``def claim(a, b):`` with a case per base and the facts each
+    families, ``for a, b in name.conclusion.domain:`` with a case per base and the facts each
     case rests on, at the points the search found, written as the user
     writes them; for an exchange of sums, the chain through the left side
     with its sums put in order. For a proof by any other rung of the
@@ -1243,7 +1252,7 @@ def _report_found(ledger: Ledger, text: str, word: str, lines_of: Any) -> None:
     """Print ``lines_of`` each proved theorem whose name, id or statement contains ``text``."""
     blocks = []
     for fact in ledger:
-        if fact.kind != "theorem":
+        if fact.kind != "claim":
             continue
         proof = fact.provenance.get("proof")
         written = word == "STEPS" and isinstance(proof, dict) and proof.get("outline")
@@ -1256,7 +1265,7 @@ def _report_found(ledger: Ledger, text: str, word: str, lines_of: Any) -> None:
     if not blocks:
         print()
         among = f" among those matching {text!r}" if text else ""
-        print(f"{word} no theorem was proved{among}")
+        print(f"{word} no claim was proved{among}")
         return
     for block in blocks:
         print()
@@ -1836,6 +1845,11 @@ def refutation_lines(fact: Fact) -> list[str]:
         lines.extend(str(reason).splitlines())
     if not lines:
         lines.append("no witness recorded")
+    suggestion = provenance.get("suggestion")
+    if isinstance(suggestion, str):
+        suggestion = [suggestion]
+    if isinstance(suggestion, list | tuple):
+        lines.extend(str(line) for line in suggestion if str(line).strip())
     checked = provenance.get("lean_counterexample")
     if _recorded(checked):
         lines.extend(str(checked).splitlines())

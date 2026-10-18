@@ -71,6 +71,7 @@ from lanky.terms import (
     Comparison,
     Elementary,
     Exists,
+    Extremum,
     Forall,
     Power,
     Product,
@@ -275,6 +276,11 @@ def _translate(expr: Any, symbols: Mapping[str, Any], sympy: Any) -> Any:
     if isinstance(expr, Abs):
         operand = _translate(expr.operand, symbols, sympy)
         return None if sympy is None else sympy.Abs(operand)
+    if isinstance(expr, Extremum):
+        arguments = [_translate(argument, symbols, sympy) for argument in expr.arguments]
+        if sympy is None:
+            return None
+        return (sympy.Max if expr.function == "max" else sympy.Min)(*arguments)
     if isinstance(expr, prim.Call):
         what = "a family applied to an argument"
     elif isinstance(expr, prim.Subscript):

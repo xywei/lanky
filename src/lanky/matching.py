@@ -1,8 +1,9 @@
 """Matching: the point at which a fact left uncalled supports a step.
 
 The design idea. A proof writes a point only where it carries the argument,
-``claim(a - 2, b + 2)``, and leaves it out where the step already shows it:
-``.equals(-R[a - 2, b + 2], by=recurrence)``. lanky finds the point the same
+``compressed_taylor.conclusion[a - 2, b + 2]``, and leaves it out where the
+step already shows it:
+``assert R[a, b] == -R[a - 2, b + 2], by(recurrence)``. lanky finds the point the same
 way a reader does, by lining the fact up with the step. ``recurrence`` says
 ``R[x + 2, y] == -R[x, y + 2]``; the step is about ``R[a, b]`` and ``R[a - 2,
 b + 2]``; solving ``x + 2 = a`` and ``y = b`` gives the point ``(a - 2, b)``,
@@ -1169,7 +1170,7 @@ def single_point(
 
     Raises:
         NoSinglePoint: If no candidate fits, or several do, naming the fix:
-            write the point, as ``by=pde(a - 2, b)``.
+            write the point, as ``by(pde(a - 2, b))``.
     """
     candidates = candidate_points(lemma, terms, types)
     fitting = [point for point in candidates if fits(lemma, point, terms, types)]
@@ -1204,12 +1205,12 @@ def single_point(
         tried = f"; the points tried were {', '.join(shown[:4])}" if shown else ""
         raise NoSinglePoint(
             f"no single point of {name} fits this step{tried}; write it, as "
-            f"by={name}({arguments}) with the values meant",
+            f"by({name}({arguments})) with the values meant",
             candidates,
         )
     raise NoSinglePoint(
         f"{name} fits this step at {len(fitting)} points, {', '.join(shown)}; write the "
-        f"one meant, as by={name}{shown[0]}",
+        f"one meant, as by({name}{shown[0]})",
         fitting,
         several=True,
     )

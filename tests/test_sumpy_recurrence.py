@@ -255,7 +255,7 @@ def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order
     assert [row[:3] for row in rows] == [
         ["tested", "tested", "mpmath"],
         ["decided (heuristic)", "decided (heuristic)", "cas"],
-        ["assumed (axiom)", "assumed", "-"],
+        ["assumed (cited)", "assumed", "-"],
         ["assumed under harmonic at every order", "assumed", "-"],
         ["assumed under harmonic at every order", "assumed", "-"],
     ]
@@ -275,7 +275,7 @@ def test_lanky_check_prints_the_claim_tested_decided_and_assumed_for_every_order
     )
     assert re.search(
         r"^NOT CHECKED harmonic at sumpy_recurrence\.py:\d+: without (Lean|Mathlib), each step "
-        r"of its proof was tested at drawn points instead \(lines \d+ and \d+\)\.$",
+        r"of its proof was tested at drawn points instead \(line \d+\)\.$",
         printed,
         re.M,
     )
@@ -316,7 +316,7 @@ def test_the_pde_at_every_order_is_cited_and_the_claim_for_every_order_rests_on_
     ledger = check_path(DEMO)
     harmonic, sampled, symbolic, cited, every_order, triangle = claims(ledger)
     assert not harmonic.is_axiom
-    assert harmonic.kind == "theorem"
+    assert harmonic.kind == "claim"
     assert harmonic.statement.startswith("x : Real, y : Real | x**2 + y**2 > 0 |- ")
     assert harmonic.statement.endswith(" == 0")
     assert cited.is_axiom
@@ -630,7 +630,7 @@ def test_with_mathlib_the_claim_for_every_order_is_proved_under_the_pde_at_every
     assert [re.split(r"\s{2,}", row)[:3] for row in rows] == [
         ["tested", "tested", "mpmath"],
         ["decided (heuristic)", "decided (heuristic)", "cas"],
-        ["assumed (axiom)", "assumed", "-"],
+        ["assumed (cited)", "assumed", "-"],
         ["proved under harmonic at every order", "assumed", "lean"],
         ["proved under harmonic at every order", "assumed", "lean"],
     ]

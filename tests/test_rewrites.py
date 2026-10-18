@@ -39,7 +39,7 @@ def test_a_rewrite_is_the_pair_its_function_returns() -> None:
 def test_a_rewrite_is_one_fact_of_one_shape() -> None:
     with registry.collecting():
 
-        @rewrite(obligation="unrolled", uses=["theorem:elsewhere.lemma@3"])
+        @rewrite(obligation="unrolled", uses=["claim:elsewhere.lemma@3"])
         def unrolled():
             return "for i in range(2): x += a[i]", "x += a[0]; x += a[1]"
 
@@ -57,7 +57,7 @@ def test_a_rewrite_is_one_fact_of_one_shape() -> None:
     assert fact.term.obligation == "unrolled"
     assert fact.status is Status.ASSUMED
     assert fact.decided_by is None
-    assert fact.rests_on == ("theorem:elsewhere.lemma@3",)
+    assert fact.rests_on == ("claim:elsewhere.lemma@3",)
     assert fact.provenance == {"path": __file__, "line": unrolled.line}
     assert fact.where == f"test_rewrites.py:{unrolled.line}"
     assert fact.owner.endswith("unrolled")
@@ -108,7 +108,7 @@ def test_a_rewrite_term_compares_by_identity() -> None:
 
 def test_the_rewrite_theory_is_built_in() -> None:
     theories = {theory.name: theory for theory in registry.theories}
-    assert list(theories)[:2] == ["theorem", "rewrite"]
+    assert list(theories)[:2] == ["claim", "rewrite"]
     assert theories["rewrite"].facts(object()) == ()
     assert lanky.rewrite is rewrite
     assert lanky.Rewrite is Rewrite

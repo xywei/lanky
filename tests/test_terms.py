@@ -213,6 +213,38 @@ def _any_and_abs(n: Nat) -> any(abs(i - n) == 1 for i in Fin[n]):
     """A signature using the two remaining replaced builtins."""
 
 
+def _bounded_step(nu: Real, u0: Real, u1: Real) -> abs(u0 - nu * (u0 - u1)) <= max(
+    abs(u0), abs(u1)
+):
+    """The CFL story's claim: one upwind step stays within the larger of its two values."""
+
+
+def test_max_and_min_of_terms_are_one_node_every_reading_reads() -> None:
+    """An annotation's ``max`` and ``min`` of terms, as Python's of numbers (design 2.7)."""
+    from fractions import Fraction
+
+    from lanky.lean import UnsupportedTerm, render_term
+    from lanky.terms import Extremum, max_, min_
+
+    goal = evaluate_annotations(_bounded_step)["return"]
+    assert render(goal) == "abs(u0 - nu*(u0 - u1)) <= max(abs(u0), abs(u1))"
+    assert evaluate(goal, {"nu": Fraction(1, 2), "u0": 1, "u1": -1}) is True
+    assert evaluate(goal, {"nu": 2, "u0": 1, "u1": -1}) is False
+    x, y = Var("x"), Var("y")
+    smaller = min_(x, y, 0)
+    assert isinstance(smaller, Extremum) and render(smaller) == "min(x, y, 0)"
+    assert evaluate(smaller, {"x": -3, "y": 2}) == -3
+    assert max_(1, 4, 2) == 4 and min_([3, 1]) == 1 and max_(k for k in range(3)) == 2
+    with pytest.raises(TypeError, match=r"applies Python's max to a symbolic value"):
+        max_([x, y])
+    assert render_term(max_(x, y, 0), {"x": Int, "y": Int}) == "max (max x y) 0"
+    # the last argument by position: both y are one term (Codex, #187)
+    assert render_term(max_(x, y, y), {"x": Int, "y": Int}) == "max (max x y) y"
+    assert render_term(min_(y, x, y, y), {"x": Int, "y": Int}) == "min (min (min y x) y) y"
+    with pytest.raises(UnsupportedTerm, match="complex numbers, which have no order"):
+        render_term(max_(x, y), {"x": Complex, "y": Complex}, mathlib=True)
+
+
 def _mixed(
     n: Nat, g: Fn[Fin[3], Fin[n], Real], t: Fn[Fin[3], Fin[n], Real]
 ) -> all(t(x, i) == sum(g(d, c) for d in Fin[3] for c in Fin[n]) for x in Fin[3] for i in Fin[n]):
@@ -591,13 +623,16 @@ def _prints(n: Nat) -> print(n) == 0:
 
 
 def test_a_builtin_of_a_symbolic_value_is_refused() -> None:
-    """``min(x, y)`` is refused, naming ``min``, where it applied a free name (#63)."""
-    with pytest.raises(TypeError, match=r"min\(x, y\) applies Python's min to a symbolic"):
-        evaluate_annotations(_uses_min)
+    """``complex(x, 1)`` is refused, naming ``complex``, where it applied a free name (#63).
+
+    ``max`` and ``min`` of terms are lanky's own now, the larger and the
+    smaller of their arguments (:class:`lanky.terms.Extremum`); anything else
+    is still Python's, refused where it would compute on a term.
+    """
+    assert render(evaluate_annotations(_uses_min)["return"]) == "min(x, y) <= x"
     with pytest.raises(TypeError, match=r"complex\(x, 1\) applies Python's complex"):
         evaluate_annotations(_uses_complex)
-    with pytest.raises(TypeError, match=r"max\(i, j\) applies Python's max"):
-        evaluate_annotations(_pairwise)
+    assert "max(i, j) >= i" in render(evaluate_annotations(_pairwise)["return"])
     # a generator is not looked into, and what the builtin does with it is
     # refused where it asks a proposition for its truth value
     with pytest.raises(SymbolicBoolError, match=r"max\(\(\.\.\. for \.\.\.\)\) asks"):

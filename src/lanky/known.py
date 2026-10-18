@@ -10,16 +10,13 @@ fact by its Python name, as it cites a hypothesis or a theorem of its own::
     from lanky.known import log_of_a_power, modulus_squared
 
 
-    @theorem
+    @claim
     def log_of_the_modulus(alpha: Complex, nonzero: alpha != 0) -> (
         log(abs(alpha)) == log(real(alpha * conj(alpha))) / 2
     ):
         \"\"\"log|alpha| with no square root: half the log of alpha times its conjugate.\"\"\"
-        return (
-            log(abs(alpha))
-            .equals(log(abs(alpha) ** 2) / 2, by=log_of_a_power)
-            .equals(log(real(alpha * conj(alpha))) / 2, by=modulus_squared)
-        )
+        assert log(abs(alpha)) == log(abs(alpha) ** 2) / 2, by(log_of_a_power)
+        return by(modulus_squared)
 
 Each fact's Lean proof is written once, against the statement as lanky
 prints it (the integer reading of :mod:`lanky.lean`: a natural is an ``Int``
@@ -43,8 +40,13 @@ fact at that point is stated over the integers, as the step reads it, and
 Lean shows it from the fact over the reals through the cast, which is
 injective. So ``examples/nicomachus.py``'s proof cites it as it stands::
 
-    sum(i**3 for i in Fin[n + 1])
-    .equals(sum(i**3 for i in Fin[n]) + n**3, by=one_more_term)
+    assert (
+        sum(i**3 for i in Fin[n + 1])
+        == sum(i**3 for i in Fin[n]) + n**3
+        == sum(i for i in Fin[n]) ** 2 + n**3
+        == (sum(i for i in Fin[n]) + n) ** 2
+        == sum(i for i in Fin[n + 1]) ** 2
+    ), by(one_more_term, nicomachus.conclusion[n - 1], gauss(n - 1))
 
 A fact here has no hypothesis it does not need. ``log_of_a_power`` holds for
 every real ``x``, ``0`` and the negative numbers included, because Lean's
@@ -63,7 +65,7 @@ from __future__ import annotations
 
 from lanky.prelude import Complex, Fin, Fn, Nat, Real
 from lanky.terms import conj, exp, log, real, sqrt
-from lanky.theory import theorem
+from lanky.theory import claim
 
 __all__ = [
     "abs_of_negative",
@@ -91,12 +93,12 @@ __all__ = [
 # {{{ logarithms, exponentials and roots
 
 
-@theorem
+@claim
 def log_of_a_power(x: Real, n: Nat) -> log(x**n) == n * log(x):
     """The log of a power is the exponent times the log (Mathlib: Real.log_pow)."""
 
 
-@theorem
+@claim
 def log_of_a_product(x: Real, y: Real, x_positive: x > 0, y_positive: y > 0) -> (
     log(x * y) == log(x) + log(y)
 ):
@@ -104,12 +106,12 @@ def log_of_a_product(x: Real, y: Real, x_positive: x > 0, y_positive: y > 0) -> 
     (Mathlib: Real.log_mul)."""
 
 
-@theorem
+@claim
 def exp_of_a_sum(x: Real, y: Real) -> exp(x + y) == exp(x) * exp(y):
     """The exponential of a sum is the product of the exponentials (Mathlib: Real.exp_add)."""
 
 
-@theorem
+@claim
 def square_root_squared(x: Real, nonnegative: x >= 0) -> sqrt(x) ** 2 == x:
     """The square root of a number that is not negative, squared, is the number
     (Mathlib: Real.sq_sqrt)."""
@@ -121,34 +123,34 @@ def square_root_squared(x: Real, nonnegative: x >= 0) -> sqrt(x) ** 2 == x:
 # {{{ absolute values and moduli
 
 
-@theorem
+@claim
 def abs_of_positive(x: Real, positive: x > 0) -> abs(x) == x:
     """A positive number is its own absolute value (Mathlib: abs_of_pos)."""
 
 
-@theorem
+@claim
 def abs_of_negative(x: Real, negative: x < 0) -> abs(x) == -x:
     """A negative number's absolute value is its negation (Mathlib: abs_of_neg)."""
 
 
-@theorem
+@claim
 def modulus_squared(z: Complex) -> real(z * conj(z)) == abs(z) ** 2:
     """z times its conjugate is |z| squared, a real number
     (Mathlib: Complex.mul_conj, Complex.normSq_eq_norm_sq)."""
 
 
-@theorem
+@claim
 def modulus_of_a_product(z: Complex, w: Complex) -> abs(z * w) == abs(z) * abs(w):
     """The modulus of a product is the product of the moduli (Mathlib: norm_mul)."""
 
 
-@theorem
+@claim
 def triangle_inequality(x: Real, y: Real) -> abs(x + y) <= abs(x) + abs(y):
     """The absolute value of a sum is at most the sum of the absolute values
     (Mathlib: abs_add_le)."""
 
 
-@theorem
+@claim
 def complex_triangle_inequality(z: Complex, w: Complex) -> abs(z + w) <= abs(z) + abs(w):
     """The modulus of a sum is at most the sum of the moduli (Mathlib: norm_add_le)."""
 
@@ -159,14 +161,14 @@ def complex_triangle_inequality(z: Complex, w: Complex) -> abs(z + w) <= abs(z) 
 # {{{ finite sums
 
 
-@theorem
+@claim
 def one_more_term(f: Fn[Nat, Real], n: Nat) -> (
     sum(f[k] for k in Fin[n + 1]) == sum(f[k] for k in Fin[n]) + f[n]
 ):
     """The sum to n + 1 is the sum to n plus its last term (Mathlib: Finset.sum_range_succ)."""
 
 
-@theorem
+@claim
 def shifted_sum(m: Nat, n: Nat, f: Fn[Nat, Real]) -> (
     sum(f[k] for k in Fin[n] if k >= m) == sum(f[k + m] for k in Fin[n - m])
 ):
@@ -177,31 +179,31 @@ def shifted_sum(m: Nat, n: Nat, f: Fn[Nat, Real]) -> (
     """
 
 
-@theorem
+@claim
 def geometric_sum(r: Real, n: Nat) -> (r - 1) * sum(r**k for k in Fin[n]) == r**n - 1:
     """The first n powers of r, summed, times r - 1 (Mathlib: geom_sum_mul)."""
 
 
-@theorem
+@claim
 def sum_of_a_constant(c: Real, n: Nat) -> sum(c for k in Fin[n]) == n * c:
     """n terms that are all c add up to n times c (Mathlib: Finset.sum_const)."""
 
 
-@theorem
+@claim
 def distribute(c: Real, f: Fn[Nat, Real], n: Nat) -> (
     c * sum(f[k] for k in Fin[n]) == sum(c * f[k] for k in Fin[n])
 ):
     """A factor of every term comes out of the sum (Mathlib: Finset.mul_sum)."""
 
 
-@theorem
+@claim
 def sum_of_sums(f: Fn[Nat, Real], g: Fn[Nat, Real], n: Nat) -> (
     sum(f[k] + g[k] for k in Fin[n]) == sum(f[k] for k in Fin[n]) + sum(g[k] for k in Fin[n])
 ):
     """The sum of two terms, summed, is the two sums added (Mathlib: Finset.sum_add_distrib)."""
 
 
-@theorem
+@claim
 def triangle_inequality_for_sums(f: Fn[Nat, Real], n: Nat) -> (
     abs(sum(f[k] for k in Fin[n])) <= sum(abs(f[k]) for k in Fin[n])
 ):
@@ -209,7 +211,7 @@ def triangle_inequality_for_sums(f: Fn[Nat, Real], n: Nat) -> (
     (Mathlib: Finset.abs_sum_le_sum_abs)."""
 
 
-@theorem
+@claim
 def sum_exchange(n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]) -> (
     sum(sum(f[i, j] for j in Fin[m]) for i in Fin[n])
     == sum(sum(f[i, j] for i in Fin[n]) for j in Fin[m])
@@ -217,7 +219,7 @@ def sum_exchange(n: Nat, m: Nat, f: Fn[Fin[n], Fin[m], Real]) -> (
     """Two finite sums exchange (Mathlib: Finset.sum_comm)."""
 
 
-@theorem
+@claim
 def triangle_exchange(q: Nat, f: Fn[Fin[q], Fin[q], Real]) -> (
     sum(f[a, b] for a in Fin[q] for b in Fin[q - a])
     == sum(f[a, b] for b in Fin[q] for a in Fin[q - b])
@@ -229,7 +231,7 @@ def triangle_exchange(q: Nat, f: Fn[Fin[q], Fin[q], Real]) -> (
     """
 
 
-@theorem
+@claim
 def fiber_exchange(n: Nat, m: Nat, c: Fn[Fin[n], Fin[m]], y: Fn[Fin[n], Real]) -> (
     sum(sum(y[i] for i in Fin[n] if c[i] == j) for j in Fin[m]) == sum(y[i] for i in Fin[n])
 ):

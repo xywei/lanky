@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from lanky import theorem
+from lanky import claim
 from lanky.audit import TRUSTED_AXIOMS, audit_failure, audit_lines, audited, screen
 from lanky.citations import Citation, Proved, ProvedTexts, restatements
 from lanky.lean import LeanStatement, statement_of
@@ -50,7 +50,7 @@ from lanky.terms import Forall, LogicalAnd, Var
 # {{{ claims
 
 
-@theorem
+@claim
 def compressed_taylor(
     D: Fn[Nat, Nat, Int],
     R: Fn[Nat, Nat, Int],
@@ -61,39 +61,39 @@ def compressed_taylor(
     """The l2p claim, its hypotheses named as the file names them."""
 
 
-@theorem
+@claim
 def both(n: Nat, m: Nat, bounds: (n < 10) & (m < 10)) -> n + m < 20:
     """A hypothesis written ``p & q`` is two hypotheses of the Lean theorem."""
 
 
-@theorem
+@claim
 def guarded(n: Nat, h0: n > 3) -> n - 1 > 2:
     """A hypothesis named like the ones lanky names: lanky's take another name."""
 
 
-@theorem
+@claim
 def keyworded(n: Nat, fun: n > 0) -> n - 1 >= 0:
     """A hypothesis named like a Lean keyword is quoted."""
 
 
-@theorem
+@claim
 def rooted(n: Nat, m: Nat, Int: m > 0) -> n // m >= 0:
     """A hypothesis named like a root name has that name printed from the root."""
 
 
-@theorem
+@claim
 def nonneg(n: Nat) -> n >= 0:
     """The core Lean analogue of the design's ``log_of_a_power``: its condition is ``0 ≤ n``."""
 
 
-@theorem
+@claim
 def picks_a_cell(nc: Nat, nv: Nat, cell: Fn[Fin[nc], Fin[nv]]) -> all(
     cell(c) < nv for c in Fin[nc]
 ):
     """A family whose values are cells: its bound is a hypothesis of the Lean theorem."""
 
 
-@theorem
+@claim
 def bounded_by_goal(k: Nat, n: Nat, k_small: k < n) -> all(k < n + j for j in Nat if j > 0):
     """A goal binder that is not named like a hypothesis keeps its name."""
 
@@ -144,7 +144,7 @@ def test_a_keyword_is_quoted_and_a_root_name_is_printed_from_the_root() -> None:
 def test_a_goal_variable_named_like_a_hypothesis_is_introduced_apart() -> None:
     from lanky.oracles.lean import _goal_intro
 
-    @theorem
+    @claim
     def shadowing(n: Nat, j: n > 0) -> all(n + j > 0 for j in Nat):
         """The hypothesis j and the goal's j."""
 
@@ -632,11 +632,11 @@ _SOURCES = textwrap.dedent(
     """
     from __future__ import annotations
 
-    from lanky import theorem
+    from lanky import claim
     from lanky.oracles.lean import claim_statement, tactic_ladder
     from lanky.prelude import Fin, Fn, Nat
 
-    @theorem
+    @claim
     def scan(
         size: Nat,
         cnt: Fn[Fin[size], Nat],

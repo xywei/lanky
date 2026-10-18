@@ -49,7 +49,18 @@ import pymbolic.primitives as prim
 
 from lanky.induction import substitute, substitute_domain
 from lanky.prelude import FinType
-from lanky.terms import Abs, Elementary, Exists, Forall, Product, Quotient, Sum, Var, init_args
+from lanky.terms import (
+    Abs,
+    Elementary,
+    Exists,
+    Extremum,
+    Forall,
+    Product,
+    Quotient,
+    Sum,
+    Var,
+    init_args,
+)
 
 __all__ = ["DISTRIBUTE", "MAX_SUMS", "Spread", "mentioned", "orders", "spread"]
 
@@ -308,6 +319,9 @@ def _to_sympy(sympy: Any, expr: Any, functions: dict[str, Any]) -> Any:
         return function(_to_sympy(sympy, expr.argument, functions))
     if isinstance(expr, Abs):
         return sympy.Abs(_to_sympy(sympy, expr.operand, functions))
+    if isinstance(expr, Extremum):
+        arguments = [_to_sympy(sympy, argument, functions) for argument in expr.arguments]
+        return (sympy.Max if expr.function == "max" else sympy.Min)(*arguments)
     raise _Unreadable(type(expr).__name__)
 
 

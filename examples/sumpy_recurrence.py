@@ -40,12 +40,14 @@ equals the derivative it stands for. The constant factor ``-1/(2 pi)`` of the
 kernel is left out, since the reconstruction is linear.
 
 The harmonicity is a theorem here, ``harmonic``. sympy takes the kernel's
-second derivatives, and the proof in its body adds them, read aloud: "Let r2
-be x**2 + y**2. The Laplacian equals 2 / r2 minus 2 (x**2 + y**2) / r2**2,
-which equals 0." Each step is algebra, once ``r2`` is not zero, which
-``away`` says. lanky's search finds the proof alone too, clearing the
-denominators and then by algebra, so the body is for the reader: it says
-where the calculation goes.
+second derivatives, and the proof in its body adds them, one ``assert`` of a
+chained comparison, read aloud: "Let r2 be x**2 + y**2. The Laplacian equals
+2 / r2 minus 2 (x**2 + y**2) / r2**2, which equals 0." Each step is algebra,
+once ``r2`` is not zero, which ``away`` says: the ``assert`` gives no reason,
+and its ends are the claim, so it closes with ``return by()``, nothing to add.
+lanky's search finds the proof alone too, clearing the denominators and then
+by algebra, so the body is for the reader: it says where the calculation
+goes.
 
 The first two rows do not rest on it: each checks the reconstruction against
 the derivatives themselves, one order at a time. The third does. For every
@@ -108,7 +110,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
-from lanky import theorem
+from lanky import by, claim
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, Status, fact_id
@@ -148,7 +150,7 @@ def laplacian(kernel: Any, x: Var, y: Var) -> Any:
     return from_sympy(kernel_term.diff(sx, 2) + kernel_term.diff(sy, 2), {"x": x, "y": y})
 
 
-@theorem
+@claim
 def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) == 0:
     """The 2-D Laplace kernel is harmonic away from the origin: ``G_xx + G_yy == 0``.
 
@@ -156,11 +158,8 @@ def harmonic(x: Real, y: Real, away: x**2 + y**2 > 0) -> laplacian(log_r, x, y) 
     of ``G_xx = 1 / r2 - 2 x**2 / r2**2`` and ``G_yy``, the same in ``y``.
     """
     r2 = x**2 + y**2
-    return (
-        laplacian(log_r, x, y)
-        .equals(2 / r2 - 2 * (x**2 + y**2) / r2**2)
-        .equals(0)
-    )
+    assert laplacian(log_r, x, y) == 2 / r2 - 2 * (x**2 + y**2) / r2**2 == 0
+    return by()
 
 
 # {{{ the claim
@@ -864,7 +863,7 @@ def reconstructs(
     where it is decorated, and the claim is read off what it returns: the
     coefficients through ``order``, the ones the wrangler stores, and the
     combination of those it reconstructs each of the others by. ``uses``
-    names what the claim for every order rests on, as ``@theorem(uses=...)``
+    names what the claim for every order rests on, as ``@claim(uses=...)``
     does: the kernel's harmonicity. ``cite`` is where the step from it to
     every derivative is taken from, which the claim then rests on instead
     (see :meth:`Reconstruction.facts`).
