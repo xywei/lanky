@@ -523,16 +523,18 @@ def test_a_proof_citing_a_fact_about_reals_is_left_to_mathlib_in_core_lean() -> 
     assert "only Lean with Mathlib can state it" in account["reason"]
 
 
-def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path) -> None:
+def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path, monkeypatch) -> None:
     """The cited statement proves ``-1 >= 0``, and so anything; the proof is refused.
 
     The claim is false and about a table over ``Nat``, which no draw tests, so
     without the question the proof would read proved by Lean, resting on the
     axiom: the design's T4, a citation without a proved text, restated as the
     printer gives it. The oracles are asked whether the cited statements
-    alone prove False, and they do.
+    alone prove False, and they do. The native run, which finds the claim
+    false where its proof ends, is set aside, so that this is Lean's side.
     """
     _lean_or_skip()
+    _lean_side_only(monkeypatch)
     path = tmp_path / "t4_cases.py"
     path.write_text(T4_CASES, encoding="utf-8")
     fact = {fact.owner: fact for fact in claims(check_path(path))}["any_two_cells"]
@@ -606,6 +608,13 @@ def test_t4_claims_are_refuted_natively_too(tmp_path) -> None:
                 assert failure is not None, owner
                 assert failure.headline == "its conclusion is false at a point its proof reaches"
                 assert failure.lines[0].startswith("At n = 0: ")
+    # a proof with no loop: its goal, where it ends
+    path = tmp_path / "t4_cases_native.py"
+    path.write_text(T4_CASES, encoding="utf-8")
+    failure = native_failure(import_path(path).any_two_cells)
+    assert failure is not None
+    assert failure.headline == "its conclusion is false where its proof ends"
+    assert failure.lines[0].endswith(": the conclusion, f[0] == f[1], is false.")
 
 
 def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path, monkeypatch) -> None:
