@@ -1,18 +1,19 @@
 # Quickstart
 
-One file, four commands, and the output each one prints, then a second file
-with an axiom in it, and a third in which a rule engine checks a derivation.
+One file, four commands, and the output each one prints. Then named
+conditions, claims taken on a citation, a rule engine that checks a
+derivation, the proofs lanky finds, and proofs you write in Python.
 Everything below was run in this repository with `uv run`, the `lanky check`
-tables last on 2026-10-11; the numbers and the Lean source are copied from the
+tables last on 2026-10-18; the numbers and the Lean source are copied from the
 terminal, not written from memory. The one thing that drifts
 is a timing, which is a property of the machine and not of the claim. The
 `lanky check` tables are held to more than that: the test suite compares them
 with a real run, `gauss.py`'s as it stands where Lean is installed (CI has a
 job for that) and with its `proved` row read as `tested` where it is not, and
-the demonstration's the other way round. That holds for the `gap.py` blocks in
-[One reading of arithmetic](#one-reading-of-arithmetic) too: the suite writes
-`gap.py` from the snippet shown there and checks it both ways, and for
-`misread.py` in [Check the reading](#check-the-reading).
+the demonstration's the other way round. That holds for the files you are
+asked to write as well: the suite writes `gap.py`, `misread.py`,
+`upwind_step.py`, `between.py` and `table.py` from the snippets shown here,
+and checks what each prints.
 
 To use lanky in a project of your own, `pip install lanky`; the README's
 [Install](../README.md#install) section has the extras, Lean and Mathlib. To
@@ -22,11 +23,16 @@ follow along here, clone the repository, which has the examples:
 git clone https://github.com/xywei/lanky.git
 cd lanky
 uv sync --group dev              # add --extra lean for the Lean oracle, --extra cas for the CAS one
+uv pip install sumpy             # for examples/line_taylor.py and examples/sumpy_recurrence.py
 ```
+
+`examples/line_taylor.py` and `examples/sumpy_recurrence.py` check sumpy's own
+code, so they import sumpy, which no extra installs; without it, `lanky
+check` says so and names the command.
 
 ## The file
 
-`examples/gauss.py` holds two theorems. The first is Gauss's schoolboy sum:
+`examples/gauss.py` holds two claims. The first is Gauss's schoolboy sum:
 
 ```python
 @claim
@@ -34,7 +40,7 @@ def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
     """Twice the sum of ``0 .. n`` is ``n * (n + 1)``."""
 ```
 
-The second is the theorem a sparse matrix layout needs:
+The second is the fact a sparse matrix layout needs:
 
 ```python
 @claim
@@ -60,12 +66,15 @@ as `from numpy import abs` does, is refused; call that one by another name,
 `np.abs`. A file like this needs `from __future__ import annotations` so the
 annotations are not evaluated by Python first.
 
-The bodies are docstrings. A theorem's body is never executed by lanky.
+The bodies are docstrings, so these claims have no proof written out, and
+lanky's strategies try to prove them. A body can also be the proof, written
+in Python ([Write a proof](#write-a-proof)). Importing or running the file
+never runs a proof.
 
 Notice that `off` is a parameter and not a return value. That is deliberate and
 it is the same convention a kernel uses: a kernel writes its output into an array
 its caller allocated, so the claim about the output is a claim about a parameter.
-That is what lets this theorem be the postcondition of a kernel somewhere else.
+That is what lets this claim be the postcondition of a kernel somewhere else.
 
 ## Run it as a program
 
@@ -81,10 +90,13 @@ scan_monotone: n : Nat, cnt : Fn[Fin(n), Nat], off : Fn[Fin(n + 1), Nat] | off(0
   ok after 50 valid draws of 50
 ```
 
-A theorem is callable: `gauss(n=4)` evaluates the hypotheses and the goal on
-concrete values and reports what it found. `.report(n=50)` samples. Both
-evaluate the term lanky built from the annotations, and neither checks that
-the term is what the annotations say; `lanky check` and `pytest` do, as
+A claim is callable: `gauss(n=4)`, or `gauss(4)`, answers whether it holds
+at those values, `True` or `False`. Where one of a claim's conditions fails
+at the values, the question does not apply, and the call raises
+`lanky.ConditionNotMet`, naming the condition. Calling a claim never runs
+its proof. `.report(n=50)` samples. Both evaluate the term lanky built from
+the annotations, and neither checks that the term is what the annotations
+say; `lanky check` and `pytest` do, as
 [Check the reading](#check-the-reading) shows
 ([#96](https://github.com/xywei/lanky/issues/96)).
 
@@ -104,7 +116,7 @@ $ uv run pytest examples/gauss.py -q
 ```
 
 lanky registers a pytest plugin under the `pytest11` entry point, so each
-theorem in a collected module becomes a test item.
+claim in a collected module becomes a test item.
 
 ## Check it
 
@@ -126,12 +138,12 @@ WITHOUT MATHLIB: gauss is not proved, since only Lean with Mathlib can state it.
 ```
 
 This is the command the project exists for. It imported the file, read the
-registry the decorators filled, turned each theorem into a `Fact`, and offered
-each fact to the oracles strongest first. Each theorem is two rows: the claim,
+registry the decorators filled, turned each claim into a `Fact`, and offered
+each fact to the oracles strongest first. Each claim is two rows: the claim,
 and under it its reading, which [Check the reading](#check-the-reading) below
 is about.
 
-The table holds the claims defined in `gauss.py` itself. A theorem the file
+The table holds the claims defined in `gauss.py` itself. A claim the file
 imports from another module is not in it, whether or not that module was
 imported before, so checking a file twice gives the same table twice. To check
 the other module's claims, list its file as well: `lanky check a.py b.py`
@@ -187,7 +199,7 @@ extra. A Lean that is installed and cannot be started has no command to
 give: its line names the reason instead, as `--verbose` does below.
 
 A statement too long for its column is printed whole, on the lines under its
-row: a theorem a part to a line, its variables, each hypothesis under the
+row: a claim a part to a line, its variables, each hypothesis under the
 name of its parameter, and `|-` before the goal, as `scan_monotone`'s is
 above; any other statement wrapped outside the brackets where it can be, and
 indented under a bracket where it cannot.
@@ -437,7 +449,7 @@ reading is refuted, with the draw, the annotation as written and both
 answers; the claim is offered to no oracle, Lean included, and stays
 `assumed` under its refuted reading, worth `refuted`; and `lanky check` exits
 1. That is the output with Lean and without it. `pytest misread.py` fails the
-theorem with the same draw.
+claim with the same draw.
 
 - **The draws.** Six of small values and domain ends come first, every
   natural the tester draws and a domain's first and last points, smallest
@@ -498,11 +510,279 @@ theorem with the same draw.
 ## Name a condition
 
 Results often share their conditions, and engineers give those conditions a
-name: the CFL condition, a segment that does not pass through zero, a
-conforming mesh. `@condition` states one once, like a theorem with no
-conclusion and no body, and a `with` block holds the theorems that hold
-under it. `examples/upwind.py` names the CFL condition of the upwind scheme
-for `u_t + c u_x = 0`:
+name: the CFL condition, an expansion point that is not zero, a conforming
+mesh. lanky has a word for one, `@condition`. It is stated once, and the
+claims that hold under it are written in a `with` block. You find one the
+way you fix a failing test: red, then green.
+
+### Red, then green
+
+One step of the upwind scheme for `u_t + c u_x = 0` moves each value toward
+its upwind neighbour by the Courant number `nu`, which is `c * dt / h`. Put
+this in `upwind_step.py`:
+
+```python
+from __future__ import annotations
+
+from lanky import claim, condition
+from lanky.prelude import Real
+
+
+@condition
+def cfl(nu: Real, stable: (0 <= nu) & (nu <= 1)):
+    """The CFL condition: the Courant number is between 0 and 1."""
+
+
+@claim
+def upwind_bounded() -> all(
+    abs(u0 - nu * (u0 - u1)) <= max(abs(u0), abs(u1))
+    for nu in Real for u0 in Real for u1 in Real
+):
+    """One upwind step does not grow the solution."""
+```
+
+`cfl` is a condition: a typed variable, a named condition on it and a
+docstring, with no goal and no body. `upwind_bounded` is a claim with no
+proof. It says that one step is never larger than the larger of the two
+values it mixes, whatever the Courant number. That is false, and the check
+shows where:
+
+```console
+$ uv run lanky check upwind_step.py
+STATUS   BY             WHERE              OWNER           STATEMENT
+-------  -------------  -----------------  --------------  ------------------------------------------------------------------------------------------
+tested   property-test  upwind_step.py:7   cfl             can hold: nu : Real | nu >= 0 and nu <= 1
+refuted  property-test  upwind_step.py:12  upwind_bounded  forall nu in Real, u0 in Real, u1 in Real. abs(u0 - nu*(u0 - u1)) <= max(abs(u0), abs(u1))
+tested   python         upwind_step.py:12  upwind_bounded  the term computes what the annotations compute
+
+3 facts: 1 refuted, 2 tested
+
+REFUTED upwind_bounded at upwind_step.py:12: forall nu in Real, u0 in Real, u1 in Real. abs(u0 - nu*(u0 - u1)) <= max(abs(u0), abs(u1))
+  counterexample: {'nu': Fraction(-7, 3), 'u0': Fraction(2, 1), 'u1': Fraction(1, 4)}
+  the goal is false at this assignment
+  The condition cfl in this file excludes every failing draw: put the claim under with cfl as (nu, stable).
+```
+
+The claim is red, as a failing test is, and `lanky check` exits 1. At
+`nu = -7/3` the step runs against the wind and the value grows. The last
+line is the one to read. lanky tried each `@condition` in the file on the
+draws that failed: `cfl` is false at every one of them, and true at a draw
+that passed. So put the claim under it, as the line says, and take `nu` out
+of the claim's own `for`, since the condition binds it now:
+
+```python
+with cfl as (nu, stable):
+
+    @claim
+    def upwind_bounded() -> all(
+        abs(u0 - nu * (u0 - u1)) <= max(abs(u0), abs(u1)) for u0 in Real for u1 in Real
+    ):
+        """One upwind step does not grow the solution."""
+```
+
+```console
+$ uv run lanky check upwind_step.py
+STATUS  BY             WHERE              OWNER           STATEMENT
+------  -------------  -----------------  --------------  --------------------------------------------------------------------------------------------------
+tested  property-test  upwind_step.py:7   cfl             can hold: nu : Real | nu >= 0 and nu <= 1
+tested  property-test  upwind_step.py:14  upwind_bounded  under cfl (stable): forall u0 in Real, u1 in Real. abs(u0 - nu*(u0 - u1)) <= max(abs(u0), abs(u1))
+tested  python         upwind_step.py:14  upwind_bounded  the term computes what the annotations compute
+
+3 facts: 3 tested
+```
+
+Read it aloud: *"Assume the CFL condition: nu is between 0 and 1. Then one
+upwind step is never larger than the larger of the two values."* The claim
+is green: it held at every draw, and `lanky check` exits 0. The table reads
+the same with Lean and without it; under it, a `WITHOUT MATHLIB` line says
+that Lean needs Mathlib to state a claim about real numbers. With Mathlib,
+lanky's strategies find no proof alone, and say what might help:
+
+```text
+NOT PROVED upwind_bounded at upwind_step.py:14: under cfl (stable): forall u0 in Real, u1 in Real. abs(u0 - nu*(u0 - u1)) <= max(abs(u0), abs(u1))
+  Lean found no proof alone. What lanky knows of its shape:
+    abs_of_negative rewrites abs(x); here abs(u0 - nu*(u0 - u1)), at x = u0 - nu*(u0 - u1)
+    abs_of_positive rewrites abs(x); here abs(u0 - nu*(u0 - u1)), at x = u0 - nu*(u0 - u1)
+    triangle_inequality bounds abs(x + y) from above; here abs(u0 - nu*(u0 - u1)), at x = u0, y = -nu*(u0 - u1)
+  A proof cites them by name: from lanky.known import abs_of_negative, abs_of_positive, triangle_inequality
+```
+
+That is where a written proof starts ([Write a proof](#write-a-proof)).
+
+That is the whole loop. A claim that fails at its draws is a red test, with
+the values that fail it, and lanky names any condition in the file that rules
+those values out. Adding the condition makes the claim green. A proof, yours
+or one lanky's strategies find, makes it proved.
+
+### What `with` does
+
+- `with cfl as (nu, stable):` binds every name in `cfl`'s signature, in
+  order: its variables and its named conditions. Another count, or another
+  name, is refused, and the message shows the signature.
+- Every claim defined in the block holds under the condition. Its statement
+  is the condition's variables and conditions, then its own, and its row in
+  the ledger says so first: `under cfl (stable): ...`. A row that cites the
+  claim says `under cfl`.
+- The condition has a row of its own, `can hold: ...`, which checks by draws
+  that its conditions can hold at all. A condition is assumed, not claimed,
+  so this row is never `proved`. A condition that can never hold is
+  `vacuous`, and fails the check.
+- A `with` block is not a Python scope. The claims in it keep their
+  module-level names, and are cited, called and tested by those names.
+- A claim in the block that declares a bound name as its own parameter is
+  refused. So is a claim after the block that still uses one: `nu belongs to
+  cfl; use it inside with cfl as (nu, stable):`.
+- Several conditions compose: in one `with` statement, `with cfl as (...),
+  mesh as (...):`, or in Python's parenthesized form over several lines, or
+  one `with` inside another. A variable that two conditions both declare,
+  with one sort, is one variable.
+
+### Three things to assume
+
+`with` assumes one of three things:
+
+| You write | It assumes |
+|---|---|
+| `with cfl as (nu, stable):` | a condition |
+| `with between.conditions as (u0, u1, rising):` | another claim's conditions, without its goal |
+| `with between as (u0, u1, rising):` | a whole claim, its goal included |
+
+Put this in `between.py`:
+
+```python
+from __future__ import annotations
+
+from lanky import claim, condition
+from lanky.prelude import Real
+
+
+@condition
+def cfl(nu: Real, stable: (0 <= nu) & (nu <= 1)):
+    """The CFL condition: the Courant number is between 0 and 1."""
+
+
+with cfl as (nu, stable):
+
+    @claim
+    def between(u0: Real, u1: Real, rising: u0 <= u1) -> (
+        (u0 <= u0 - nu * (u0 - u1)) & (u0 - nu * (u0 - u1) <= u1)
+    ):
+        """With u0 <= u1, one upwind step lands between them."""
+
+
+with cfl as (nu, stable), between.conditions as (u0, u1, rising):
+
+    @claim
+    def no_overshoot() -> u0 - nu * (u0 - u1) <= u1:
+        """Under the same conditions, the step does not pass its upwind neighbour."""
+
+
+with cfl as (nu, stable), between as (u0, u1, rising):
+
+    @claim
+    def bounded() -> abs(u0 - nu * (u0 - u1)) <= max(abs(u0), abs(u1)):
+        """Given that it lands between them, the step is no larger than either."""
+```
+
+```console
+$ uv run lanky check between.py
+STATUS  BY             WHERE          OWNER         STATEMENT
+------  -------------  -------------  ------------  ----------------------------------------------------------------------------
+tested  property-test  between.py:7   cfl           can hold: nu : Real | nu >= 0 and nu <= 1
+tested  property-test  between.py:14  between       under cfl (stable): u0 : Real, u1 : Real
+                                                    | rising: u0 <= u1
+                                                    |- u0 <= u0 - nu*(u0 - u1) and u0 - nu*(u0 - u1) <= u1
+tested  python         between.py:14  between       the term computes what the annotations compute
+tested  property-test  between.py:23  no_overshoot  under cfl (stable), between.conditions (rising): u0 - nu*(u0 - u1) <= u1
+tested  python         between.py:23  no_overshoot  the term computes what the annotations compute
+tested  property-test  between.py:30  bounded       under cfl (stable), between: abs(u0 - nu*(u0 - u1)) <= max(abs(u0), abs(u1))
+tested  python         between.py:30  bounded       the term computes what the annotations compute
+
+7 facts: 7 tested
+```
+
+- `no_overshoot` holds under the same conditions as `between`: `between`'s
+  own `rising`, and `cfl`, which `between` holds under. Its `with` names
+  `cfl` too, because `between`'s conditions only make sense where `cfl` is
+  in force. Leave `cfl` out and lanky refuses the block, with the line to
+  write.
+- `bounded` assumes `between` whole, its goal included, so a proof of
+  `bounded` can cite `between` by name. A claim built on another rests on
+  it: its row reads `under ... between`, and it is worth no more than
+  `between` is. Nothing built on an unproved claim passes for proved.
+
+### Two claims under one condition
+
+In loopty's `examples/layer_potential.py`, the series of a logarithm and of
+a reciprocal share their expansion point `alpha`, which must not be zero.
+That is a condition, and both claims hold under it:
+
+```python
+@condition
+def away_from_zero(alpha: Complex, beta: Complex, nonzero: alpha != 0):
+    """The expansion point alpha is not zero."""
+
+
+with away_from_zero as (alpha, beta, nonzero):
+
+    @claim
+    def line_taylor(
+        a: Fn[Nat, Complex],
+        first_term: alpha * a[1] == beta,
+        ode: all((n + 1) * alpha * a[n + 1] + n * beta * a[n] == 0 for n in Nat if n >= 1),
+    ) -> all(a[n] == coefficient(-beta / alpha, n) for n in Nat if n >= 1):
+        """The Taylor coefficients of log(alpha + tau * beta), from the ODE they satisfy."""
+        for n in line_taylor.conclusion.domain:
+            if n == 1:
+                yield by(first_term)
+            else:
+                assert a[n] == (n - 1) / n * (-beta / alpha) * a[n - 1], by(ode[n - 1])
+                yield by(line_taylor.conclusion[n - 1])
+
+    @claim
+    def reciprocal_taylor(
+        b: Fn[Nat, Complex],
+        first_term: b[0] == 1,
+        ode: all(alpha * b[n + 1] + beta * b[n] == 0 for n in Nat),
+    ) -> all(b[n] == (-beta / alpha) ** n for n in Nat):
+        """The Taylor coefficients of alpha / (alpha + tau * beta)."""
+        for n in reciprocal_taylor.conclusion.domain:
+            if n == 0:
+                yield by(first_term)
+            else:
+                assert b[n] == (-beta / alpha) * b[n - 1], by(ode[n - 1])
+                yield by(reciprocal_taylor.conclusion[n - 1])
+```
+
+Read aloud: *"Assume alpha is not zero. line_taylor: for each n, in order.
+At n = 1, by the first term. Otherwise the ODE at n − 1 gives a[n] from
+a[n − 1], and it holds by line_taylor at n − 1."* `coefficient(r, n)` is a
+helper in the file, `-(r ** n) / n`. The bodies are proofs, which
+[Write a proof](#write-a-proof) explains. Checked with Mathlib, each row
+names the condition first, and its last line says how the proof went:
+
+```text
+proved  tested     lean           taylor.py:19  line_taylor        under away_from_zero (nonzero): a : Fn[Nat, Complex]
+                                                                   | first_term: alpha*a[1] == beta
+                                                                   | ode: forall n in Nat where n >= 1. (n + 1)*alpha*a[n + 1] + n*beta*a[n] == 0
+                                                                   |- forall n in Nat where n >= 1. a[n] == -(-beta / alpha)**n / n
+                                                                   by its proof, taylor.py:26-31: induction on n, 2 cases, 3 steps
+...
+proved  tested     lean           taylor.py:33  reciprocal_taylor  under away_from_zero (nonzero): b : Fn[Nat, Complex]
+                                                                   | first_term: b[0] == 1
+                                                                   | ode: forall n in Nat. alpha*b[n + 1] + beta*b[n] == 0
+                                                                   |- forall n in Nat. b[n] == (-beta / alpha)**n
+                                                                   by its proof, taylor.py:40-45: induction on n, 2 cases, 3 steps
+```
+
+A claim elsewhere that cites `line_taylor` reads `under away_from_zero`, so
+the condition is never lost on the way.
+
+### A condition in the scheme's own variables
+
+`examples/upwind.py` states the CFL condition in the scheme's own variables,
+the wave speed `c`, the time step `dt` and the mesh width `h`, and claims two
+things under it:
 
 ```python
 @condition
@@ -537,15 +817,19 @@ def courant_number(ok: cfl(c, dt, h)) -> 0 <= c * dt / h:
 
 Read it aloud: *"The CFL condition is c, dt and h with c not negative, dt
 and h positive, and c dt at most h. Under it, the Courant number is at most
-one, and an upwind step makes no new extremum."* The names in the `with`
-statement are the condition's, in its order, so `c * dt <= h` in a theorem
-under it is the condition's `c`, `dt` and `h`; other names, or another count,
-are refused with the condition's signature. Each theorem's statement is the
-condition's variables and conditions, then its own, and it is cited, run
-and tested by its own name: `no_new_extremum(c=1, dt=..., h=..., u_left=0,
-u=1)` takes the condition's variables like its own. Called at numbers, the
-condition says whether it holds, and in an annotation it is the proposition,
-as `ok: cfl(c, dt, h)` is in `courant_number`:
+one, and an upwind step makes no new extremum."*
+
+Parentheses give a claim or a condition for inputs. Called at numbers, a
+condition says whether it holds, and so does a claim. A claim under a
+condition takes the condition's variables like its own: with `dt` and `h`
+the fractions `1/10` and `1/5`, `courant(c=1, dt=dt, h=h)` is `True`. Where
+one of its conditions fails, the question does not apply, and the call says
+so instead of answering: `courant(c=3, dt=dt, h=h)` raises
+`lanky.ConditionNotMet`, *"courant does not apply at these values: its
+condition stable of cfl, c*dt <= h, fails there"*. Calling a claim never
+runs its proof. In an annotation, a condition called at
+symbolic values is the proposition, as `ok: cfl(c, dt, h)` is in
+`courant_number`, where it also gives `c`, `dt` and `h` their sorts.
 
 ```console
 $ uv run python examples/upwind.py
@@ -555,7 +839,7 @@ courant at them: True
 no_new_extremum at u_left = 0, u = 1: True
 ```
 
-The ledger names the condition before each theorem's own variables and
+The ledger names the condition before each claim's own variables and
 hypotheses, as the file does:
 
 ```console
@@ -575,37 +859,26 @@ tested  python         upwind.py:58  courant_number   the term computes what the
 7 facts: 7 tested
 ```
 
-The first row is the condition's own: whether its conditions can hold at all,
-which the draws show by finding values where they do. A condition is assumed,
-not claimed, so its row is never `proved`; one that can never hold is
-`vacuous`, and fails the check. In `courant_number`, `cfl(c, dt, h)` gives `c`,
-`dt` and `h` their sorts, and the ledger prints it as it is written.
-
-The property tester draws the condition's variables with each theorem's own,
-and satisfies the condition's conditions as it does a theorem's hypotheses;
-the reading of each claim runs the condition's annotations again at the same
-draws. A first version of `cfl` had no `positive: dt > 0`, and the tester
-refuted `no_new_extremum` at `dt = -7/3`: a step back in time is no upwind
-step. Lean, with Mathlib, is handed each theorem with the condition's
+In `courant_number`, `cfl(c, dt, h)` is printed as it is written. The
+property tester draws the condition's variables with each claim's own, and
+satisfies the condition's conditions as it satisfies a claim's hypotheses;
+the check of each claim's reading runs the condition's annotations again at
+the same draws. A first version of `cfl` had no `positive: dt > 0`, and the
+tester refuted `no_new_extremum` at `dt = -7/3`: a step back in time is no
+upwind step. Lean, with Mathlib, is handed each claim with the condition's
 conditions as hypotheses, and a written proof cites them by name, `stable`
 or `positive`, as it cites its own.
-
-Several conditions compose: `with cfl as (...), mesh as (...):`, Python's
-parenthesized form over several lines, or one `with` inside another. A
-variable two conditions both declare, with one sort, is one variable. A
-theorem in a block that declares one of the block's names itself is refused,
-and so is a theorem after the block that still uses one: `c belongs to cfl;
-use it inside with cfl as (c, dt, h, forward, positive, stable):`.
 
 ## Take a result on a citation
 
 Some results lanky cannot establish. A sum needs Mathlib in Lean, and a theorem
 from a textbook may need a great deal more. Such a result enters the ledger on
-the word of a reference, as an axiom, and what is derived from it says so.
-`examples/citation.py` holds Gauss's sum again, Nicomachus's theorem as an
-axiom, and the closed form of the sum of cubes, which follows from the two.
-(`examples/nicomachus.py` proves Nicomachus's theorem, by a chain through a
-fact lanky knows; see [A fact over a family](#a-fact-over-a-family).)
+the word of a reference, as a claim taken on a source, and what is derived
+from it says so. `examples/citation.py` holds Gauss's sum again, Nicomachus's
+theorem taken on a citation, and the closed form of the sum of cubes, which
+follows from the two. (`examples/nicomachus.py` proves Nicomachus's theorem,
+by a chain through a fact lanky knows; see
+[A fact over a family](#a-fact-over-a-family).)
 
 ```python
 @claim(cite="Nicomachus of Gerasa, Introduction to Arithmetic")
@@ -618,10 +891,12 @@ def cubes(n: Nat) -> 4 * sum(i**3 for i in Fin[n + 1]) == (n * (n + 1)) ** 2:
     """Four times the sum of the cubes of ``0 .. n`` is ``(n * (n + 1)) ** 2``."""
 ```
 
-An axiom is written like a theorem, and `cite=` is required: `@axiom` without
-it raises `TypeError` where it is written, because an axiom with nothing behind
-it is what an `assumed` theorem already is. `uses=` takes theorems, axioms,
-facts or fact ids, and becomes the `rests_on` of the theorem's fact.
+A cited claim is written like any claim, with `cite=` naming the source. An
+empty source raises `TypeError` where it is written, because a claim with
+nothing behind it is what an `assumed` claim already is. `uses=` takes
+claims, cited claims, facts or fact ids, and becomes the `rests_on` of the
+claim's fact. (lanky 0.5 wrote `@axiom(cite=...)`, which is refused now with
+the line to write.)
 
 ```console
 $ uv run lanky check examples/citation.py
@@ -646,16 +921,16 @@ The same with Lean and without it, since every statement has a sum in it
 MATHLIB` line, which core Lean prints and a machine without Lean does not.
 Four things in that output are new.
 
-- `assumed (cited)`. The axiom is taken on its citation, which the `CITED`
+- `assumed (cited)`. The claim is taken on its citation, which the `CITED`
   line under the table shows and `--json` carries as `cite` in its provenance,
   and no oracle is asked to establish it. It is still sampled for a
   counterexample, because a citation copied down wrong states something the
   reference does not.
 - `tested under nicomachus`. `cubes` survived its draws, and the status names
   the assumptions it rests on: whatever it rests on, directly or through other
-  facts, that nothing here established. That is an axiom, another `assumed`
+  facts, that nothing here established. That is a cited claim, another `assumed`
   fact, a `refuted` one, a fact on a circle of facts that rest on each other,
-  or an id this ledger does not hold: a theorem of another file, since each
+  or an id this ledger does not hold: a claim of another file, since each
   file checked has a ledger of its own, or an id written wrong. `lanky check`
   names such an id in an `UNRESOLVED` line under the table, since in the row it
   reads like any other assumption. `gauss` is not among them, because it is
@@ -666,28 +941,29 @@ Four things in that output are new.
   when some fact is worth less than its own status says: in `gauss.py`'s
   ledger where Lean proves `scan_monotone`, whose proof is worth the
   `tested` reading it rests on, and not where it does not.
-- The `CITED` line. Each axiom is named under the table with the citation it
-  is taken on, one line per axiom in the table's order, since that is what
+- The `CITED` line. Each cited claim is named under the table with the
+  citation it is taken on, one line per claim in the table's order, since that is what
   stands behind its row and behind every `under` that names it.
 
-An axiom has a reading too, `tested` here. Nothing about the axiom rests on
-it, since the axiom is `assumed` on its citation whatever its reading is
-worth, but a refuted one would fail the check, and leave everything that rests
-on the axiom worth `refuted`.
+A cited claim has a reading too, `tested` here. Nothing about the cited
+claim rests on it, since the claim is `assumed` on its citation whatever its
+reading is worth, but a refuted one would fail the check, and leave
+everything that rests on the claim worth `refuted`.
 
 The status column is still each fact's own. `tested` says how strongly `cubes`
 is established given what it uses; the oracles decide it as they decide any
-theorem, and are not handed the statements it uses. `--json` carries
+claim, and are not handed the statements it uses. `--json` carries
 `rests_on`, `effective`, `effective_heuristic` and `under` for every fact, and
 the exit code depends on none of them: it is 0 here, since nothing is refuted.
 
-Copy the axiom down wrong, with `i**2` for `i**3` on the left, and the property
-tester refutes it. The row reads `refuted (axiom)`, `cubes` is worth `refuted`
-in the `EFFECTIVE` column, the counterexample is printed under the table, and
-`lanky check` exits 1. So does an axiom whose hypotheses were copied down so
-that nothing satisfies them, once Lean shows them inconsistent: it reads
-`assumed (cited) (vacuous)`, as a theorem would read `proved (vacuous)`.
-`pytest examples/citation.py` samples the axiom as a test item too.
+Copy the cited claim down wrong, with `i**2` for `i**3` on the left, and the
+property tester refutes it at `n = 3`. The row reads `refuted (cited)`,
+`cubes` is worth `refuted` in the `EFFECTIVE` column, the counterexample is
+printed under the table, and `lanky check` exits 1. So does a cited claim whose hypotheses were copied
+down so that nothing satisfies them, once Lean shows them inconsistent: it
+reads `assumed (cited) (vacuous)`, as a proved claim would read `proved
+(vacuous)`. `pytest examples/citation.py` samples the cited claim as a test
+item too.
 
 A plugin's facts rest on facts the same way: it sets `rests_on` on the facts
 it builds, naming other facts by id.
@@ -696,7 +972,7 @@ An id names a definition: `claim:citation.gauss@34` is the kind, the
 module, the qualified name and the line. The module is the name the file's
 path gives it under its source root, `citation` for `examples/citation.py`
 and `pkg.helpers` for `root/pkg/helpers.py`, and not the name it was imported
-under. So a theorem that `main.py` imports with `from helpers import lemma`
+under. So a claim that `main.py` imports with `from helpers import lemma`
 and names in `uses=` has the id there that it has in `helpers.py`'s own
 ledger, `claim:helpers.lemma@12` in both. `lanky check main.py helpers.py`
 still gives each file its own ledger, so `main.py`'s names the id in an
@@ -752,7 +1028,7 @@ The axioms are taken on a citation: `lanky check examples/pytential_skie.py` lis
 
 Each claim is a rewrite from the trace of a representation to the operator it
 is said to give, under the obligation `jump relations`, together with a
-verdict about that operator. The rules are eight axioms, each with its
+verdict about that operator. The rules are eight claims taken on a
 citation: the four jump relations, `compact(S)`, `compact(D)`, `compact(S')`,
 and `~scalar_plus_compact(D')`, which says that `D'`, being hypersingular, is
 no multiple of the identity plus a compact operator. The engine reads its
@@ -808,7 +1084,7 @@ CITED compact_Sp at pytential_skie.py:124: R. Kress, Linear Integral Equations, 
 CITED hypersingular_Dp at pytential_skie.py:129: D. Colton and R. Kress, Inverse Acoustic and Electromagnetic Scattering Theory, 4th ed., Springer, 2019, ch. 3
 ```
 
-That is the output without Lean. Each axiom's reading is `assumed`: no
+That is the output without Lean. Each cited claim's reading is `assumed`: no
 boundary can be drawn, so its annotations cannot be run again at a point, and
 nothing rests on it, so no `DECLINED` line says so. With the `lean` extra
 the three coefficient rows read `proved  lean`: `coefficient of I: -1/2 != 0` goes to Lean as
@@ -825,7 +1101,7 @@ column it is worth what they are.
   that fragment it answers every claim by exact polynomial arithmetic, and it
   declines everything outside it with the reason (a verdict that depends on a
   parameter's value, two operators that are not a multiple of the identity
-  plus a compact one, two kernels, a trace no axiom gives). A decider that can
+  plus a compact one, two kernels, a trace no cited claim gives). A decider that can
   fail to answer inside its own fragment, or whose answers are not
   guaranteed, such as a computer-algebra simplifier, declares the class
   `heuristic`, which ranks between `test` and `decision-procedure`. The table
@@ -962,9 +1238,9 @@ mpmath, decided by the CAS oracle where sympy is installed, and proved for every
 order by Lean where Mathlib is, under the kernel's harmonicity at every order.
 ```
 
-The ledger has the kernel's harmonicity, a theorem, and the one claim four
-times, with the evidence for each, and before the last two the one step the
-claim takes on a citation:
+The ledger has the kernel's harmonicity, a claim with a proof, and the one
+claim four times, with the evidence for each, and before the last two the one
+step the claim takes on a citation:
 
 ```console
 $ uv run lanky check examples/sumpy_recurrence.py
@@ -974,15 +1250,15 @@ decided (heuristic)                    tested               cas     sumpy_recurr
                                                                                                                 | away: x**2 + y**2 > 0
                                                                                                                 |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
 tested                                 tested               python  sumpy_recurrence.py:153  harmonic           the term computes what the annotations compute
-tested                                 tested               mpmath  sumpy_recurrence.py:893  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-decided (heuristic)                    decided (heuristic)  cas     sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
+tested                                 tested               mpmath  sumpy_recurrence.py:894  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
+decided (heuristic)                    decided (heuristic)  cas     sumpy_recurrence.py:894  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                                                                   == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-assumed (cited)                        assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
+assumed (cited)                        assumed              -       sumpy_recurrence.py:894  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
                                                                                                                   diff(G, x, a + 2, y, b) + diff(G, x, a, y, b + 2) == 0 for every a, b,
                                                                                                                   with G = log(sqrt(x**2 + y**2)): harmonic differentiated a times in x and b times in y
-assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:893  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
+assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:894  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
                                                                                                                   by reconstructed(a + 2, b) == -reconstructed(a, b + 2)
-assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:893  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
+assumed under harmonic at every order  assumed              -       sumpy_recurrence.py:894  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
                                                                                                                   by reconstructed(a + 2, b) == -reconstructed(a, b + 2) inside it
 
 7 facts: 3 assumed, 2 decided, 2 tested
@@ -990,12 +1266,12 @@ assumed under harmonic at every order  assumed              -       sumpy_recurr
 WITHOUT LEAN: harmonic and compressed_taylor are not proved. To have Lean prove what it can: pip install "lanky[lean]", and Lean v4.29.1 from elan (elan default leanprover/lean4:v4.29.1).
 WITHOUT MATHLIB: harmonic and compressed_taylor are not proved, since only Lean with Mathlib can state them. To have Lean prove them: python -m lanky.mathlib ~/mathlib (about 7 GB), then export LANKY_LEAN_MATHLIB=~/mathlib.
 
-CITED compressed_taylor at sumpy_recurrence.py:893: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+CITED compressed_taylor at sumpy_recurrence.py:894: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 
 NOT CHECKED harmonic at sumpy_recurrence.py:153: without Lean, each step of its proof was tested at drawn points instead (line 161).
 ```
 
-- **The harmonicity.** `harmonic` is a theorem: `G_xx + G_yy == 0` away from
+- **The harmonicity.** `harmonic` is a claim with a proof: `G_xx + G_yy == 0` away from
   the origin, with the second derivatives sympy's. It is the PDE the
   wrangler's recurrence comes from. Its body is its proof, a calculation of
   two steps, read aloud: "Let r2 be x**2 + y**2. The Laplacian equals 2 / r2
@@ -1153,7 +1429,7 @@ for `linarith`. The provenance records the script, the Mathlib revision as
 The same variable makes `examples/citation.py` read `proved` for `gauss` and
 `proved under nicomachus` for `cubes`, which the induction proves on its own.
 It is still worth `assumed`, because `uses=` says what it rests on. In
-`examples/nicomachus.py`, whose `nicomachus` is a theorem with a proof (see
+`examples/nicomachus.py`, whose `nicomachus` is a claim with a proof (see
 [A fact over a family](#a-fact-over-a-family)), all three read `proved`.
 
 What the Mathlib dialect adds, in brief (`src/lanky/lean.py` has the whole
@@ -1222,22 +1498,22 @@ STATUS                                EFFECTIVE            BY      WHERE        
 proved                                tested               lean    sumpy_recurrence.py:153  harmonic           x : Real, y : Real
                                                                                                                | away: x**2 + y**2 > 0
                                                                                                                |- (1 - 2*x**2 / (x**2 + y**2)) / (x**2 + y**2) + (1 - 2*y**2 / (x**2 + y**2)) / (x**2 + y**2) == 0
-                                                                                                               by its proof, sumpy_recurrence.py:160-161: 2 steps
+                                                                                                               by its proof, sumpy_recurrence.py:160-162: 2 steps
 tested                                tested               python  sumpy_recurrence.py:153  harmonic           the term computes what the annotations compute
-tested                                tested               mpmath  sumpy_recurrence.py:893  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-decided (heuristic)                   decided (heuristic)  cas     sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
+tested                                tested               mpmath  sumpy_recurrence.py:894  compressed_taylor  at 20 points: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
+decided (heuristic)                   decided (heuristic)  cas     sumpy_recurrence.py:894  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- reconstructed(a, b)
                                                                                                                  == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= 6
-assumed (cited)                       assumed              -       sumpy_recurrence.py:893  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
+assumed (cited)                       assumed              -       sumpy_recurrence.py:894  compressed_taylor  x : Real, y : Real | x**2 + y**2 > 0 |- every order:
                                                                                                                  diff(G, x, a + 2, y, b) + diff(G, x, a, y, b + 2) == 0 for every a, b,
                                                                                                                  with G = log(sqrt(x**2 + y**2)): harmonic differentiated a times in x and b times in y
-proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:893  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
+proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:894  compressed_taylor  every order: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for every a, b,
                                                                                                                  by reconstructed(a + 2, b) == -reconstructed(a, b + 2)
-proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:893  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
+proved under harmonic at every order  assumed              lean    sumpy_recurrence.py:894  compressed_taylor  every order p: reconstructed(a, b) == diff(log(sqrt(x**2 + y**2)), x, a, y, b) for a + b <= p,
                                                                                                                  by reconstructed(a + 2, b) == -reconstructed(a, b + 2) inside it
 
 7 facts: 1 assumed, 1 decided, 3 proved, 2 tested
 
-CITED compressed_taylor at sumpy_recurrence.py:893: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
+CITED compressed_taylor at sumpy_recurrence.py:894: R. Kress, Linear Integral Equations, 3rd ed., Springer, 2014, ch. 6
 ```
 
 The claim is over two tables, `D` and `R` (see the
@@ -1345,7 +1621,7 @@ def sum_factorization(
 A matrix is a family with two indices, `Fn[Fin[n], Fin[n], Real]`, which is
 `Fn[Fin[n], Fn[Fin[n], Real]]`, and its entry is `F[a, p]`, as numpy writes
 it; `F(a, p)` and `F(a)(p)` are the same entry, to the tester, to the check of
-the reading and to Lean, which writes `F a p`. Called as a function, a theorem
+the reading and to Lean, which writes `F a p`. Called as a function, a claim
 takes a nested list, a numpy array or a function for such a family
 (`F=lambda a, p: ...`), and a value of another shape is refused with the shape
 it takes. A hypothesis may define a matrix entry by entry, `all(F[i, j] == ...
@@ -1353,7 +1629,7 @@ for i in Fin[n] for j in Fin[n])`, and the tester then fills in its entries
 rather than waiting for a random draw to meet it. `kron` is a helper in the
 file that returns the entry of `H (x) G (x) F`, and the reading of the
 annotation expands it. The row `(a, b, c)` is a parameter rather than a
-quantifier in the goal: the statement is the same, a theorem's parameters are
+quantifier in the goal: the statement is the same, a claim's parameters are
 universal, and the tester draws a row rather than walking all `n**3` of them,
 each a sum of `n**3` terms (#125). Run as a program, the file applies grudge's weak
 derivative both ways at orders 1 to 7 (`python examples/sum_factorization.py`);
@@ -1431,7 +1707,9 @@ potential on its own surface with: sumpy's line-Taylor expansion of the 2-D
 Laplace kernel, `log |alpha + tau * beta|` expanded in `tau` along the line
 from a center through a target. Read as complex numbers, its coefficients are
 the real parts of those of `log(alpha + tau * beta)`, and the claim for every
-order is
+order is below. The file reads sumpy's own expansion, so it needs sumpy, as
+`examples/sumpy_recurrence.py` does: `uv pip install sumpy` in a checkout,
+`pip install sumpy` beside an install from PyPI.
 
 ```python
 @claim
@@ -1454,7 +1732,7 @@ def line_taylor(
 
 `first_term` and `ode` are the differential equation the logarithm solves
 along the line, `(alpha + tau * beta) * f'(tau) == beta`, read on its
-coefficients at `tau ** 0` and at `tau ** n`. The equation is the theorem
+coefficients at `tau ** 0` and at `tau ** n`. The equation is the claim
 `line_ode`: sympy differentiates the logarithm, `beta / (alpha + tau *
 beta)`, and what is left is algebra, which lanky proves alone. Comparing the
 coefficients is the one step taken on a citation, as differentiating the PDE
@@ -1541,15 +1819,15 @@ itself, and the combination splits the power `(-beta / alpha) ** (k + 2)`
 before it clears the denominators. Python finds the multipliers, as it does
 for every order of the sumpy recurrence, and Lean checks them. The CAS row is
 sumpy's own expansion through order 6, compared with the closed form, which
-ties the theorem to the code pytential runs. Without Mathlib the claim for
+ties the claim to the code pytential runs. Without Mathlib the claim for
 every order reads `assumed`: the property tester draws no family over `Nat`.
 `line_ode` reads `decided (heuristic)`, by the CAS oracle.
 
 ### The proof lanky found
 
 What the search found can be read back in Python. After the ledger,
-`--proofs` prints the proof of each proved theorem as a body, in the
-theorem's own names, ready to paste under its docstring. For `line_taylor`,
+`--proofs` prints the proof of each proved claim as a body, in the
+claim's own names, ready to paste under its docstring. For `line_taylor`,
 whose body is a chain, it is the proof lanky's search found on its own, in
 the shorter form a proof takes when every step is routine algebra:
 
@@ -1578,7 +1856,7 @@ strategy in words, with the order of the conclusion's `for` that a loop would
 fit.
 
 `--steps` prints the outline of a proof in lanky's notation: of the proof as
-written, where the theorem has one, a row per step at its Python line, with
+written, where the claim has one, a row per step at its Python line, with
 the case it is in and the facts it follows from at the points lanky found;
 and otherwise of the proof the search found, each case a chain of equations
 from the claim's left side to its right, with the fact, the point and the
@@ -1606,95 +1884,165 @@ term off the sum`.
 
 ## Write a proof
 
-lanky finds a proof where it can, and a claim it proves alone needs no
-body. Where it cannot, or where a proof helps the reader, the claim's body
-is the proof: the checks an engineer already writes, `assert`, `if` and
-`for`, with the reason for each step after it. `examples/every_box.py` is
-sumpy's compressed Taylor table, box by box, in sumpy's storage order, where
-the base case rests on two pairs of hypotheses, the centre at order zero and
-the stored derivatives above it. lanky's search does not split a case on the
-conditions of the facts it combines (#140), so the claim read `assumed`. The
-body says how:
+lanky finds a proof where it can, and a claim it proves alone needs no body.
+Where it cannot, or where a proof helps the reader, the claim's body is the
+proof. It is written with the checks an engineer already writes, `assert`,
+`if` and `for`, and the reason for each step comes after it, in `by(...)`.
+
+### The whole language, on one card
 
 ```python
-@claim
-def every_box(
-    n: Nat, p: Nat, c: Fn[Nat, Int, Real], D: Fn[Nat, Nat, Nat, Real], R: Fn[Nat, Nat, Nat, Real],
-    pde: all(D[i, a + 2, b] + D[i, a, b + 2] == 0 for i in Fin[n] for a in Nat for b in Nat),
-    centre: all(c[i, 0] == D[i, 0, 0] for i in Fin[n]),
-    stored: all(c[i, 2 * (a + b) - 1 + a] == D[i, a, b] for i in Fin[n] for a in Nat for b in Nat
-                if a < 2 if a + b >= 1 if a + b <= p),
-    centre_copy: all(R[i, 0, 0] == c[i, 0] for i in Fin[n]),
-    copies: all(R[i, a, b] == c[i, 2 * (a + b) - 1 + a] for i in Fin[n] for a in Nat for b in Nat
-                if a < 2 if a + b >= 1 if a + b <= p),
-    recurrence: all(R[i, a + 2, b] == -R[i, a, b + 2] for i in Fin[n] for a in Nat for b in Nat
-                    if a + b + 2 <= p),
-) -> all(R[i, a, b] == D[i, a, b] for i in Fin[n] for a in Nat for b in Nat if a + b <= p):
-    for i, a, b in every_box.conclusion.domain:
-        if a + b == 0:
-            yield by(centre_copy, centre)
-        elif a < 2:
-            yield by(copies, stored)
-        else:
-            yield by(recurrence, every_box.conclusion[i, a - 2, b + 2], pde)
+from __future__ import annotations          # every lanky file: annotations are read by lanky, not run on import
+from lanky import by, claim, condition
 ```
-
-Read it aloud: "For each point (i, a, b) of the conclusion, in order: at
-order zero, by the centre's copy and the centre. If a < 2, by the copies and
-what is stored. Otherwise by the recurrence, the conclusion at (i, a − 2,
-b + 2) and the PDE."
-
-For an engineer the claim is a table of true and false over its domain, and
-the proof is a loop that fills it in, in order, as the kernel fills its
-table: each entry may use entries already filled. That is the induction,
-with no function standing for a proof.
 
 | You write | It means |
 |---|---|
-| no body (a docstring, `...` or `pass`) | lanky finds the proof, as it always has |
-| `assert x == y, by(f, g)` | a step: `x == y` holds by these facts, known for the rest of its case; chains (`x == y == z`) and `<=`, `<`, `>=`, `>` work as in Python |
-| `assert x == y` | a step lanky closes by itself, by algebra |
-| `for i, a, b in every_box.conclusion.domain:` | each point the conclusion's `for` ranges over, in increasing order |
-| `yield by(f, g)` | closes the case at this point: the conclusion there follows from these facts |
+| `@condition def cfl(nu: Real, stable: (0 <= nu) & (nu <= 1)): """..."""` | a named set of assumptions: typed variables and named conditions, a docstring, no goal, no body |
+| `@claim def name(variables, named conditions) -> goal:` | a claim. With no body, lanky's strategies try to prove it; with a body, the body is its proof. |
+| `@claim(cite="Ahlfors 1979, ch. 5")` | a claim taken on a source |
+| `with cfl as (nu, stable):` | assuming cfl. `as` binds every name of its signature, in order. Every claim defined in the block holds under it. |
+| `with some_claim.conditions as (...)` | assuming another claim's conditions |
+| `with some_claim as (...)` | assuming a whole claim, its goal included |
+| `cfl(nu=0.5)`, `gauss(n - 1)` | parentheses give a claim or condition for given inputs (its typed parameters): natively `True` or `False`, in `by(...)` a fact, in a conclusion a statement to prove. Calling a claim evaluates its statement; it never runs its proof. |
+| `assert x == y, by(f, g)` | a step: `x == y` holds by these facts. It is known for the rest of its case. Chains (`x == y == z`) and `<=`, `<`, `>=`, `>` work as in Python. |
+| `assert x == y` | a step that lanky closes by itself (algebra and its strategies) |
+| `line_taylor.conditions`, `line_taylor.conclusion` | the two halves of a claim; `line_taylor.conditions.ode` is one condition |
+| `for n in line_taylor.conclusion.domain:` | each point the conclusion's `for` ranges over, in increasing order; `for i, a, b in ...domain:` for several variables of one `for` |
+| `every_box.conclusion[i].domain` | a nested domain: the conclusion at a point is itself a `for` |
+| `yield by(f, g)` | closes the case at this point |
 | `return by(f, g)` | closes a claim proved without a loop over its conclusion's domain |
-| `by()` | nothing to add: the case follows directly, by lanky's strategies, after the steps asserted |
-| `by(...)` | a step or case left open: the proof holds but for it, and the claim's row names the line |
-| `if` / `elif` / `else` | a case split; each branch proves the case with its condition true |
-| `every_box.conclusion[i, a - 2, b + 2]` | the conclusion at an earlier point of the loop: induction, checked to be earlier |
-| `pde[i, a - 2, b]` | a condition at a point of its domain; its conditions are checked for you |
-| `stored`, alone | the same fact, at the point lanky finds by matching it against the case; where no single point fits, lanky asks you to write it |
-| `gauss(n - 1)` | another claim for given inputs, its parameters |
-| `every_box.conditions.pde`, `every_box.conclusion` | the two halves of the claim, addressed through its tree |
-| `from lanky.known import log_of_a_power` | a fact lanky knows, under a plain name, cited like any other |
+| `by()` | nothing to add: it follows directly (lanky's strategies, with the steps asserted) |
+| `by(...)` | a step or case left open: the proof holds but for it, and the row names the line |
+| a fact by name: `ode`, `pde`, `gauss` | lanky finds the point or inputs at which it applies |
+| `ode[n - 1]`, `pde[i, a - 2, b]`, `every_box.conclusion[i][a, b]` | brackets give a statement at a point of its domain |
+| `line_taylor.conclusion[n - 1]` inside `line_taylor`'s proof | the claim's own conclusion at an earlier point: induction. It is checked to be earlier. |
 
-Four rules hold the table together:
+Four rules hold the card together:
 
-- **Brackets give a point of a domain; parentheses give a claim its
-  inputs.** These are Python's own index and call.
-- **Everything is addressed through the claim's tree:** `name.conditions`,
-  `name.conclusion`, `name.conclusion.domain`, `name.conclusion[p]`. A
-  conclusion that nests a `for`, `all(all(... for a in B for b in C) for i
-  in A)`, has a domain at each point: loop over
-  `every_box.conclusion[i].domain` inside the loop over `i`, cite
-  `every_box.conclusion[i][a - 2, b + 2]`, and a `yield` closes the
-  conclusion at the point of the innermost loop. `name.domain`, `name[p]` and
-  `.dom` are refused, with the tree's spelling as the fix.
+- **Parentheses give a claim for inputs; brackets give a statement at a
+  point of its domain.** These are Python's own call and index.
+- **Everything is addressed through the tree:** `name.conditions`,
+  `name.conclusion`, `name.conclusion.domain`, `name.conclusion[p]`,
+  `name.conclusion[p].domain`. A claim has no `.domain` of its own, and
+  lanky refuses one with the fix shown.
 - **Every case of a proof ends with a closing line**, `yield by(...)` or
-  `return by(...)`. A bare `return`, `continue`, or a path that ends is
-  refused at its line: `when a < 2 (cases.py:12), continue at line 13 ends
-  the case with no closing line: close it with yield by() if it follows
-  directly, or give its reasons, yield by(f, g)`.
-- **The claim's own name is spelled out** in its proof, with no `this` and
-  no `self` (in a class, `MyClass.name`). A claim refers to itself only
-  through its conclusion's points, so it never calls itself: a variable you
-  induct on belongs in the conclusion's `for`.
+  `return by(...)`, and `by()` when nothing is needed. No case is left
+  looking skipped.
+- **The claim's own name is spelled out** in its proof. There is no `this`
+  and no `self` (in a class, write `MyClass.name`, as Python requires). A
+  claim refers to itself only through its conclusion's points, so it never
+  calls itself. A variable you induct on belongs in the conclusion's `for`.
 
-A cited point must come earlier in the loop: lexicographic in the binders of
-the conclusion's `for`, outer domains first, and strict. A point smaller in
-one variable and larger in an earlier one is refused before Lean is asked,
-`out_of_order.conclusion[a + 1, b - 1] is not filled in yet when the loop is
-at (a, b)`. An argument from the point above, toward a bound, walks a
-bounded domain from the top down:
+**Inputs and points.** A claim's inputs are its typed parameters; its
+conditions are never passed. Inside its own proof, `name.conclusion` is the
+conclusion for this proof's inputs. A cited `other.conclusion[p]` finds the
+other claim's inputs by matching, or takes them from a call,
+`other(x, y).conclusion[p]`. A conclusion `all(... for i in A for a in B
+for b in C if g)` has one domain, whose points are `(i, a, b)` where the
+guard holds. A conclusion `all(all(... for a in B) for i in A)` has a domain
+over `i`, and `conclusion[i]` has its own domain over `a`.
+
+### A proof is a loop that fills in a table
+
+Put this in `table.py`:
+
+```python
+from __future__ import annotations
+
+from lanky import by, claim
+from lanky.prelude import Fn, Int, Nat
+
+
+@claim
+def compressed_taylor(
+    D: Fn[Nat, Nat, Int],
+    R: Fn[Nat, Nat, Int],
+    pde: all(D[a + 2, b] + D[a, b + 2] == 0 for a in Nat for b in Nat),
+    stored: all(R[a, b] == D[a, b] for a in Nat for b in Nat if a < 2),
+    recurrence: all(R[a + 2, b] == -R[a, b + 2] for a in Nat for b in Nat),
+) -> all(R[a, b] == D[a, b] for a in Nat for b in Nat):
+    """What sumpy stores of a harmonic table, reconstructed, is the table."""
+    for a, b in compressed_taylor.conclusion.domain:
+        if a < 2:
+            yield by(stored)
+        else:
+            yield by(recurrence, compressed_taylor.conclusion[a - 2, b + 2], pde)
+```
+
+It is the claim of the [sumpy demonstration](#decide-an-identity-with-a-computer-algebra-system)
+over tables of integers, so that core Lean checks it. `D` is any table that
+satisfies Laplace's equation at every order, as a harmonic kernel's
+derivatives do. `R` agrees with `D` where sumpy stores (`a < 2`), and
+follows the recurrence everywhere else. `examples/every_box.py` is the same
+proof over tables of reals, box by box in sumpy's storage order, where the
+base case rests on two pairs of hypotheses. lanky's search does not split a
+case on the conditions of the facts it combines (#140), so it does not find
+that proof alone; with Mathlib, the written one reads `by its proof,
+every_box.py:113-119: induction on a, 3 cases, 3 steps`.
+
+Read it aloud: *"For each point (a, b) of the conclusion, in order. If a <
+2, by what is stored. Otherwise by the recurrence, the conclusion at (a − 2,
+b + 2), and the PDE."* The point (a − 2, b + 2) comes earlier in the loop
+than (a, b), because `a`, the outer variable, is smaller there.
+
+For an engineer, the claim is a table of true and false over its domain,
+and the proof is a loop that fills it in, in order. Each entry may use
+entries already filled. That is induction, with no function standing for a
+proof. It reads like the kernel that fills the table itself, here
+`examples/every_box.py`'s claim beside loopty's kernel:
+
+```python
+# loopty kernel                                 # lanky proof
+for box, a, b in R.dom:                         for i, a, b in every_box.conclusion.domain:
+    if a < 2:                                       if a + b == 0:
+        R[box, a, b] = C[box, a, b]                     yield by(centre_copy, centre)
+    else:                                           elif a < 2:
+        R[box, a, b] = -R[box, a - 2, b + 2]            yield by(copies, stored)
+                                                    else:
+                                                        yield by(recurrence, every_box.conclusion[i, a - 2, b + 2], pde)
+```
+
+- `stored`, `recurrence` and `pde` are cited by name alone, and lanky finds
+  the point at which each applies by matching it against the case: `stored`
+  at `(a, b)`, `recurrence` and `pde` at `(a - 2, b)`. Write the point
+  yourself where you want to say it, in brackets: `recurrence[a - 2, b]`.
+- `yield by(...)` closes the case at the point the loop is at. A `yield`
+  serves the innermost loop over a domain.
+- The step can be written out as a calculation, Python's own chained
+  comparison in one `assert`, with the facts it uses after it. Its two ends
+  are the case's two sides, so the case then closes with `yield by()`:
+
+  ```python
+          else:
+              assert R[a, b] == -R[a - 2, b + 2] == -D[a - 2, b + 2] == D[a, b], by(
+                  recurrence[a - 2, b], compressed_taylor.conclusion[a - 2, b + 2], pde[a - 2, b]
+              )
+              yield by()
+  ```
+
+  Each link is a step at the line of the term it reaches, and each fact
+  serves the links it fits.
+
+A conclusion can nest its domains. `examples/every_box.py`'s claim over every
+box `i` could read `all(all(... for a in Nat for b in Nat if a + b <= p) for
+i in Fin[n])`, and its proof is then two loops:
+
+```python
+    for i in every_box.conclusion.domain:
+        for a, b in every_box.conclusion[i].domain:
+            if a + b == 0:
+                yield by(centre_copy, centre)
+            elif a < 2:
+                yield by(copies, stored)
+            else:
+                yield by(recurrence, every_box.conclusion[i][a - 2, b + 2], pde)
+```
+
+A cited point must come earlier in the loops: lexicographic in the binders,
+outer domains first, and strict. An argument from the point above, toward a
+bound, walks a bounded domain from the top down, and "earlier" then means
+earlier in that reversed loop:
 
 ```python
 @claim
@@ -1708,58 +2056,125 @@ def climb(
             yield by(step[k], climb.conclusion[k + 1])
 ```
 
-A hypothesis written `p & q` is cited as both parts. Hypotheses are always in
-scope, for the conditions of the facts you cite. `python examples/every_box.py`
-never runs the proof: `lanky check` traces the body, after every run and draw
-of the check, on the symbolic terms the annotations were read with, and has
-Lean check it in one command. It also runs the body as plain Python at the
-check's draws, exact fractions and exact complex numbers, so a false step is
-caught at its line, with its numbers, before Lean is asked: `At n = 3, alpha =
-2, beta = 1: the left side is -1/24, the right side 1/24.` With Mathlib the
-claim reads `proved`, and its row says how, in a line of its own:
+A claim with no `for` in its conclusion has no loop, and closes with
+`return by(...)`, as `log_of_the_modulus` does in
+[What lanky knows](#what-lanky-knows).
 
-```text
-$ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check examples/every_box.py
-STATUS  EFFECTIVE  BY      WHERE            OWNER      STATEMENT
-...
-proved  tested     lean    every_box.py:69  every_box  n : Nat, p : Nat, c : Fn[Nat, Int, Real], D : Fn[Nat, Nat, Nat, Real], R : Fn[Nat, Nat, Nat, Real]
-                                                       | pde: forall i in Fin(n), a in Nat, b in Nat. D[i, a + 2, b] + D[i, a, b + 2] == 0
-                                                       ...
-                                                       |- forall i in Fin(n), a in Nat, b in Nat where a + b <= p. R[i, a, b] == D[i, a, b]
-                                                       by its proof, every_box.py:113-119: induction on a, 3 cases, 3 steps
+### Two runs of one body
+
+Running or importing the file runs no proof: `python table.py` prints
+nothing, and `pytest` tests the statement. The body runs only under `lanky
+check`, in two ways.
+
+- **Natively**, at the check's draws, as plain Python. The values are exact,
+  `Fraction`s and exact complex numbers, never floats.
+  `compressed_taylor.conclusion.domain` gives the domain's first points, and
+  a table over the naturals, such as `D` and `R`, is filled in from the
+  hypotheses that define it. Each `assert`, and the conclusion at each point
+  where its case closes, is checked at those values. A failure is reported
+  at its line, with its numbers, and needs no Lean. The native run only
+  tests: it never proves.
+- **Traced**, on symbolic values, once per path through the body. The loop
+  gives one symbolic point, with the domain's guard known, and Lean proves
+  each step and each case. The conclusion over its points is a theorem of
+  its own in Lean, and a cited earlier point is a call of it, with the
+  measure lanky finds: an argument that gets smaller at every call, one that
+  climbs toward a bound under `reversed(...)`, or a pair. `--show-lean`
+  prints it.
+
+With core Lean, the claim reads `proved`, and its row says how, on a line
+of its own:
+
+```console
+$ uv run lanky check table.py
+STATUS  EFFECTIVE  BY      WHERE       OWNER              STATEMENT
+------  ---------  ------  ----------  -----------------  --------------------------------------------------------------------
+proved  tested     lean    table.py:7  compressed_taylor  D : Fn[Nat, Nat, Int], R : Fn[Nat, Nat, Int]
+                                                          | pde: forall a in Nat, b in Nat. D[a + 2, b] + D[a, b + 2] == 0
+                                                          | stored: forall a in Nat, b in Nat where a < 2. R[a, b] == D[a, b]
+                                                          | recurrence: forall a in Nat, b in Nat. R[a + 2, b] == -R[a, b + 2]
+                                                          |- forall a in Nat, b in Nat. R[a, b] == D[a, b]
+                                                          by its proof, table.py:16-20: induction on a, 2 cases, 2 steps
+tested  tested     python  table.py:7  compressed_taylor  the term computes what the annotations compute
+
+2 facts: 1 proved, 1 tested
 ```
 
-The proof is Lean's to check and Python's to find the details of. The
-conclusion over its points is a theorem of its own, `Lanky.every_box.claim`,
-and a citation of `every_box.conclusion[i, a - 2, b + 2]` is a call of it,
-with `termination_by a.toNat`, the measure lanky finds: an argument that gets
-smaller at every call, one that climbs toward a bound under `reversed(...)`,
-or a pair. `if a + b == 0` is a case split, and among naturals it fixes `a`
-and `b` at `0`, so lanky substitutes both. `centre_copy` and `centre`, cited
-by name, are matched against the case's conclusion, `R[i, 0, 0] == D[i, 0,
-0]`, at `i`. Each fact's conditions are shown by `omega`, and `yield by(f,
-g)` is closed by `linear_combination` with the multipliers Python finds, the
-same search as lanky's own induction's. `--show-lean` prints the command,
-with each hypothesis under its Python name.
-
-A proof that does not hold is reported at the line that fails, in lanky's
-notation, with the fix where lanky can name one. Here the induction is at the
-wrong cells, `ct.conclusion[a - 2, b + 3]`, in the sumpy demonstration's
-claim over two tables, `R` and `D`, written over the integers so that core
-Lean checks it:
+Without Lean the row reads `assumed`, since the property tester draws no
+table over `Nat`, and a line under the table says what the native run did
+instead:
 
 ```text
-UNPROVED ct at cases.py:25: a step of its proof does not follow.
+NOT CHECKED compressed_taylor at table.py:7: without Lean, its proof was not checked by Lean; it was run at 8 drawn values instead, and every step held.
+```
 
-  cases.py:36    yield by(recurrence[a - 2, b], ct.conclusion[a - 2, b + 3], pde[a - 2, b])
+`--steps` prints the proof's outline, a row per step at its Python line,
+with the points lanky found for the facts cited by name:
 
-  When a >= 2 (cases.py:34), the step needs   R[a, b] == D[a, b]
-    recurrence[a - 2, b]        says   R[a, b] == -R[a - 2, b + 2]
-    ct.conclusion[a - 2, b + 3] says   R[a - 2, b + 3] == D[a - 2, b + 3]
-    pde[a - 2, b]               says   D[a, b] + D[a - 2, b + 2] == 0
+```text
+$ uv run lanky check --steps compressed_taylor table.py
+...
+STEPS compressed_taylor at table.py:7, as its proof says them:
+  the claim, induction on a, 2 cases, 2 steps
+  table.py:18  if a < 2:   R[a, b] == D[a, b]  by stored, at (a, b)
+  table.py:20  otherwise:  R[a, b] == D[a, b]  by recurrence at (a - 2, b), the claim at (a - 2, b + 2) and pde at (a - 2, b)
+```
+
+`lanky check` refuses to run under `python -O`, which removes every
+`assert`, and with them every step: *"lanky check reads each assert of a
+written proof as a step, and python -O removes every assert; run it without
+-O (and without PYTHONOPTIMIZE)"*. To run a proof by hand, in a REPL or
+under pdb, call `compressed_taylor.run_proof(D=..., R=...)` with the tables.
+Floats compare exactly there, so give it `Fraction`s.
+
+### When a step fails
+
+Write the last case as a calculation, and drop a sign in the middle:
+
+```python
+        else:
+            assert R[a, b] == -R[a - 2, b + 2] == D[a - 2, b + 2] == D[a, b], by(
+                recurrence[a - 2, b], compressed_taylor.conclusion[a - 2, b + 2], pde[a - 2, b]
+            )
+            yield by()
+```
+
+The native run finds it before Lean is asked, with Lean or without:
+
+```console
+$ uv run lanky check table.py
+...
+UNPROVED compressed_taylor at table.py:7: a step of its proof is false.
+
+  table.py:20    assert R[a, b] == -R[a - 2, b + 2] == D[a - 2, b + 2] == D[a, b], by(
+
+  At a = 2, b = 0: the left side is 5, the right side -5.
+```
+
+A step can also be true and still not follow from what it cites. Cite the
+conclusion one cell off, with each fact at its point:
+
+```python
+            yield by(recurrence[a - 2, b], compressed_taylor.conclusion[a - 2, b + 3], pde[a - 2, b])
+```
+
+Every step holds at the draws, so the native run passes it, and Lean does
+not:
+
+```console
+$ uv run lanky check table.py
+...
+UNPROVED compressed_taylor at table.py:7: a step of its proof does not follow.
+
+  table.py:20    yield by(recurrence[a - 2, b], compressed_taylor.conclusion[a - 2, b + 3], pde[a - 2, b])
+
+  When a >= 2 (table.py:17), the step needs   R[a, b] == D[a, b]
+    recurrence[a - 2, b]                       says   R[a, b] == -R[a - 2, b + 2]
+    compressed_taylor.conclusion[a - 2, b + 3] says   R[a - 2, b + 3] == D[a - 2, b + 3]
+    pde[a - 2, b]                              says   D[a, b] + D[a - 2, b + 2] == 0
   Left over:
       D[a - 2, b + 2] + R[a - 2, b + 3] - D[a - 2, b + 3] - R[a - 2, b + 2] == 0
-  Fix: ct.conclusion[a - 2, b + 2] makes the step follow (checked).
+  Fix: compressed_taylor.conclusion[a - 2, b + 2] makes the step follow (checked).
 ```
 
 Python computes what is left over, from the facts at their points; Lean only
@@ -1767,16 +2182,11 @@ says that the step failed. The fix is the fact at another point, and
 `(checked)` means Lean accepted the proof with it. Where no fact the step
 cites works at any point, the report looks for one the proof can cite and
 did not, a hypothesis, the conclusion at an earlier point or a claim the
-proof cites elsewhere, and names it with the step as it would be written:
-
-```text
-  It also needs pde[a - 2, b], which says D[a, b] + D[a - 2, b + 2] == 0.
-  Fix: yield by(recurrence[a - 2, b], ct.conclusion[a - 2, b + 2], pde[a - 2, b]) (checked).
-```
-
-And where nothing in the proof gets there, it names the facts of
-`lanky.known` whose shape the step has, the term each fits and its values
-there, as for a claim with no proof (see below):
+proof cites elsewhere, and names it with the step as it would be written,
+`Fix: yield by(...) (checked)`. And where nothing in the proof gets there,
+it names the facts of `lanky.known` whose shape the step has, the term each
+fits and its values there, as for a claim with no proof (see
+[What lanky knows](#what-lanky-knows)):
 
 ```text
   No fact the proof cites gets there. What lanky knows of its shape:
@@ -1784,24 +2194,110 @@ there, as for a claim with no proof (see below):
     modulus_squared rewrites real(z*conj(z)); here real(alpha*conj(alpha)), at z = alpha
   Fix: cite one of them, after from lanky.known import log_of_a_power, modulus_squared; or split the step in two.
 ```
- A condition that is not
-met says `stored, at (a, b) needs a < 2, and this case has a >= 2.`; the
-conclusion cited below zero, `ct.conclusion[a - 2, b + 2] is at a negative a
-when a = 1: split off a < 2 first.`; a point the loop has not filled in, a
-claim that calls itself (`a claim does not call itself; to argue from an
-earlier case, put n in the conclusion's for, -> all(... for n in ...), and
-cite nicomachus.conclusion[n - 1]`), a case with no closing line, a form of
-lanky 0.5's proofs, and a fact cited by name that no single point fits each
-say so at their line, with the line to write, before Lean is asked. A broken
-proof fails the check, also for a claim lanky proves alone, whose row still
-reads `proved`, by lanky's own proof, with `WARNING ct at cases.py:25: your
-proof fails at cases.py:36; lanky proved the claim without it`. Without
-Lean, or without Mathlib for a claim only Mathlib can state, the proof is not
-checked, a `NOT CHECKED` line says so in a clause (`without Lean, each step of
-its proof was tested at drawn points instead (lines 161 and 162)`), and
-nothing fails. The multipliers each step is closed with are kept, by the
-step, beside the proof cache, so a check of a proof that has not changed runs
-no sympy and sends Lean the same text; Lean checks them whatever they are.
+
+Where Lean is installed, lanky also reads each citation as it compiles the
+proof, and names one that cannot apply before Lean is asked. A fact cited
+where its condition does not hold is named, with the case:
+
+```text
+  table.py:20    yield by(stored[a, b], recurrence[a - 2, b], compressed_taylor.conclusion[a - 2, b + 2], pde[a - 2, b])
+
+  stored[a, b] needs a < 2, and this case has a >= 2.
+  Fix: cite stored in a case where a < 2, or split that case off first.
+```
+
+So is the conclusion cited below zero, here with the first case written `if
+a < 1:`, which leaves `a = 1` to the recurrence:
+
+```text
+  table.py:20    yield by(recurrence, compressed_taylor.conclusion[a - 2, b + 2], pde)
+
+  compressed_taylor.conclusion[a - 2, b + 2] is at a negative a when a = 1: split off a < 2 first.
+  Fix: split off a < 2 first.
+```
+
+A broken proof fails the check, even for a claim lanky could prove alone.
+Its row still reads `proved`, by lanky's own proof, and a `WARNING` line
+says that your proof fails at its line and that lanky proved the claim
+without it. The multipliers each step is closed with are kept, by the step,
+beside the proof cache, so a check of a proof that has not changed runs no
+sympy and sends Lean the same text; Lean checks them whatever they are.
+
+### What lanky refuses
+
+lanky refuses a proof it would have to guess at, at its line and before
+Lean is asked, with the line to write:
+
+- **A case with no closing line.** `continue`, a bare `return` or a path that
+  just ends reads as "skipped":
+
+  ```text
+  UNPROVED compressed_taylor at table.py:7: a case of the proof has no closing line.
+
+    table.py:18    continue
+
+    when a < 2 (table.py:17), continue at line 18 ends the case with no closing line: close it with yield by() if it follows directly, or give its reasons, yield by(f, g)
+    Fix: yield by().
+  ```
+
+- **A point the loop has not reached:**
+
+  ```text
+  UNPROVED compressed_taylor at table.py:7: the conclusion is cited where the loop has not reached.
+
+    table.py:20    yield by(recurrence, compressed_taylor.conclusion[a + 1, b], pde)
+
+    compressed_taylor.conclusion[a + 1, b] is not filled in yet when the loop is at (a, b)
+    Fix: cite the conclusion at a point the loop has filled in, as compressed_taylor.conclusion[a - 1, b].
+  ```
+
+- **A part of the claim not addressed through its tree**, such as
+  `compressed_taylor.domain`, `compressed_taylor[a, b]` or `.dom`:
+
+  ```text
+  UNPROVED compressed_taylor at table.py:7: the claim's tree is not used as lanky reads it.
+
+    table.py:16    for a, b in compressed_taylor.domain:
+
+    compressed_taylor.domain: a claim has no domain of its own; its conclusion has, addressed through the claim's tree as compressed_taylor.conclusion.domain
+    Fix: compressed_taylor.conclusion.domain.
+  ```
+
+- **A claim that calls itself.** Recursion is not how lanky spells
+  induction. Here `nicomachus` keeps `n` as a parameter, as lanky 0.5 had
+  it, and calls itself at `n - 1`:
+
+  ```text
+  UNPROVED nicomachus at nicomachus.py:13: the claim calls itself in its own proof.
+
+    nicomachus.py:19    return by(nicomachus(n - 1), gauss(n - 1))
+
+    nicomachus(n - 1) at nicomachus.py:19 calls the claim in its own proof, and a claim does not call itself; to argue from an earlier case, put n in the conclusion's for, -> all(... for n in ...), and cite nicomachus.conclusion[n - 1]
+    Fix: nicomachus.conclusion[n - 1].
+  ```
+
+  [A fact over a family](#a-fact-over-a-family) has the claim with `n` in
+  its conclusion's `for`.
+
+- **`return` in a proof that loops.** `return by(...)` would end the loop at
+  its first point, so each case of a loop closes with `yield by(...)`.
+- **A form of lanky 0.5**, each with the line to write: `@theorem` (*"write
+  @claim"*), `@axiom`, a tuple returned as reasons, `x.equals(y, by=f)`, and a
+  condition at a point in parentheses:
+
+  ```text
+  UNPROVED compressed_taylor at table.py:7: the proof is written in a form of lanky 0.5.
+
+    table.py:20    yield by(recurrence(a - 2, b), compressed_taylor.conclusion[a - 2, b + 2], pde)
+
+    recurrence(a - 2, b) is how lanky 0.5 cited a condition at a point; brackets give a point of its domain, and parentheses inputs to a claim
+    Fix: recurrence[a - 2, b].
+  ```
+
+  The [CHANGELOG](../CHANGELOG.md) has the whole table, from 0.5 to 0.6.
+- **A claim with no goal**, which is a condition: *"a claim needs a goal;
+  write the proposition it claims as the return annotation, as in `-> n + 0
+  == n`. A named set of assumptions with no goal is a @condition"*.
 
 ### What lanky knows
 
@@ -1829,7 +2325,7 @@ the proof, so `return by(modulus_squared)` is asked only for the rest of the
 way, from where the step ended to the claim's other side. The claim has no
 `for`, so it is proved without a loop, and closes with `return by(...)`. The
 two facts come from `lanky.known`, under plain names. Each is a
-theorem stated in Python, like any other, with a docstring that cites the
+claim stated in Python, like any other, with a docstring that cites the
 Mathlib lemma it is:
 
 ```python
@@ -1853,13 +2349,22 @@ proved:
 $ LANKY_LEAN_MATHLIB=~/mathlib uv run lanky check src/lanky/known.py
 STATUS  EFFECTIVE  BY      WHERE         OWNER                         STATEMENT
 ------  ---------  ------  ------------  ----------------------------  ------------------------------------------
-proved  tested     lean    known.py:84   log_of_a_power                x : Real, n : Nat |- log(x**n) == n*log(x)
-tested  tested     python  known.py:84   log_of_a_power                the term computes what the annotations ...
+proved  tested     lean    known.py:96   log_of_a_power                x : Real, n : Nat |- log(x**n) == n*log(x)
+tested  tested     python  known.py:96   log_of_a_power                the term computes what the annotations ...
 ...
-proved  tested     lean    known.py:124  modulus_squared               z : Complex |- real(z*conj(z)) == abs(z)**2
+proved  tested     lean    known.py:136  modulus_squared               z : Complex |- real(z*conj(z)) == abs(z)**2
 ...
 
 40 facts: 20 proved, 20 tested
+```
+
+That is the command in a clone of the repository. Beside a lanky installed
+from PyPI, a clone's `src/lanky/known.py` is refused, since the `lanky` it
+sits in is not the `lanky` the command imported; check the installed file
+instead:
+
+```sh
+lanky check "$(python -c 'import lanky.known; print(lanky.known.__file__)')"
 ```
 
 `log_of_a_power` has no hypothesis that `x` is positive, because Lean's
@@ -1890,7 +2395,7 @@ tested  tested     python  lanky.known               modulus_squared     the ter
 6 facts: 3 proved, 3 tested
 ```
 
-A cited theorem is restated in the citing proof's Lean by the text its own
+A cited claim is restated in the citing proof's Lean by the text its own
 command proved, `Lanky.log_of_a_power.as_cited`, byte for byte, never printed
 again for the citation. Where a claim has no proof and Lean found none alone,
 `lanky check` names the known facts whose shape occurs in the claim, the term
@@ -1982,7 +2487,7 @@ integers. An equation between integers holds where its cast into the reals
 does, so lanky states the fact at its point over the integers, as the step
 reads it, and Lean shows it from the fact over the reals through the cast:
 `one_more_term`, `geometric_sum` and the other sums apply to sums of `Nat`s
-and `Int`s as they are. With Mathlib all three theorems of the file read
+and `Int`s as they are. With Mathlib all three claims of the file read
 `proved`, `gauss` and `cubes` by lanky's own induction:
 
 ```text
@@ -2005,7 +2510,7 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
 
 ## What to try next
 
-- Write a false theorem and check it. The status is `refuted`, the
+- Write a false claim and check it. The status is `refuted`, the
   counterexample is in the provenance, `lanky check` repeats the fact under
   the table with the counterexample and the reason, and it exits 1. The block
   under a `REFUTED` line is built from three standard provenance keys, read
@@ -2018,8 +2523,9 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
   `False`, and the row still reads `refuted`, with the reason (the statement
   is the constant `False`) printed where a counterexample would be. The JSON
   keeps the empty counterexample.
-- Leave off a theorem's return annotation. `@claim` raises `TypeError`
-  where the function is defined, because a theorem needs a goal, and
+- Leave off a claim's return annotation. `@claim` raises `TypeError`
+  where the function is defined, because a claim needs a goal, and names
+  `@condition`, which is what a named set of assumptions with no goal is.
   `lanky check` reports the file as one that does not import.
 - Call one of Python's builtins in a claim. At numbers it is Python's:
   `def half() -> round(0.5) == 1` is `0 == 1`, answered while the annotation
@@ -2035,7 +2541,7 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
   all(f(i) * 0 == {0: 1}.get(i, 0) for i in Fin[n])`. A dict finds a key by
   its hash, and a term's hash is its structure's, so the lookup would answer
   `0`, as if `i` were never `0`, and the claim would be `f(i)*0 == 0`. A term
-  is unhashable to an annotation's own code instead, so the theorem is
+  is unhashable to an annotation's own code instead, so the claim is
   refused where it is defined (`i was hashed by the annotation, as a dict or
   a set lookup or display there hashes its keys`), and so is `i in {0, 1}`.
   A table indexed by a point is a family, with hypotheses that give its
@@ -2053,10 +2559,10 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
   ```
 
   A misspelt sort, `f: Fn[Fin[n], Flaot]`, is named the same way. Under
-  `pytest` such a theorem fails, naming the name.
+  `pytest` such a claim fails, naming the name.
 - Choose a branch inside a quantifier: `all((f(i) if i < 3 else -1) >= 0 for
   i in Fin[n])`. The conditional asks `i < 3` for a truth value, which lanky
-  has only where it records a guard, so it is refused where the theorem is
+  has only where it records a guard, so it is refused where the claim is
   defined, as `not` in a body and a comparison of two tuples are. A
   condition on the points goes in the generator's `if` clause, written with
   `&`, `|` and `~`.
@@ -2066,7 +2572,7 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
   `lanky check` names the others in a `DUPLICATE` block under it, unchecked,
   and exits 1. A factory that wants several claims gives each function a
   `__qualname__` of its own before it decorates it.
-- Write a theorem whose hypotheses no sample can satisfy, such as
+- Write a claim whose hypotheses no sample can satisfy, such as
   `def vacuous(n: Nat, h: (n > 2) & (n < 1)) -> n == n + 1`. Without Lean the
   fact comes back `assumed`, rather than passing vacuously; its provenance
   carries `untested` with the reason and `valid: 0`, and under the table:
@@ -2098,7 +2604,7 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
   of inconsistency. Hypotheses that hold only where the sampler does not look,
   `h: n == 1000` with naturals drawn up to five, get the warning on both
   machines: Lean proves the claim and cannot prove `False`, and the exit code
-  is 0. Under `pytest` a theorem with unsatisfiable hypotheses is reported as
+  is 0. Under `pytest` a claim with unsatisfiable hypotheses is reported as
   skipped.
 - A goal's own guard can be vacuous too. Flip the one in `scan_monotone`'s
   goal in `examples/gauss.py`, `if (a < b) & (a > b)` for `if a <= b`. The
@@ -2121,7 +2627,7 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
   `Fin[n]` is at `n = 0`, gets through at some draw and is never flagged. A
   guard that holds only where the sampler does not look, such as `a == 7`, gets
   the warning with Lean too, since Lean cannot show it empty. Under `pytest`
-  such a theorem is skipped, with the guard in the reason.
+  such a claim is skipped, with the guard in the reason.
 - Write `def unwitnessed() -> any(x == 100 for x in Nat)` and check it with
   `LANKY_LEAN_DISABLE=1`, so that the property tester is the only oracle. `Nat`
   is sampled rather than enumerated, so no draw witnesses the statement, and no
@@ -2171,7 +2677,9 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
 | sorts, `Fin`, `Fn`, refinement | `src/lanky/prelude.py` |
 | `Status`, `Fact`, `Ledger`, and what a fact rests on | `src/lanky/ledger.py` |
 | the four plugin protocols and the registry | `src/lanky/plugins.py` |
-| `@claim`, `@axiom`, `Theorem` and `Axiom` | `src/lanky/theory.py` |
+| `@claim`, `@claim(cite=...)`, `Claim` and `CitedClaim`, and the refusals of lanky 0.5's `@theorem` and `@axiom` | `src/lanky/theory.py` |
+| `@condition`, `with` in its three forms, `name.conditions` and `ConditionNotMet` | `src/lanky/conditions.py` |
+| `by(...)`, the claim's tree (`name.conclusion`, `.domain`, a point) and the refusals of lanky 0.5's proof forms | `src/lanky/surface.py` |
 | `@rewrite`, `Rewrite`, `RewriteTerm` and `rewrite_fact` | `src/lanky/rewrites.py` |
 | samplers and the property tester | `src/lanky/testing.py` |
 | a claim's reading, checked by running its annotations again at drawn values | `src/lanky/faithful.py` |
@@ -2183,8 +2691,10 @@ tested  tested     python  lanky.known       one_more_term  the term computes wh
 | the proof lanky found, said back in Python: `--proofs` and `--steps` | `src/lanky/outline.py` |
 | the oracles | `src/lanky/oracles/` |
 | `check_path` and the CLI | `src/lanky/check.py`, `src/lanky/cli.py` |
-| written proofs: the trace, the Lean they compile to, and the report at the Python line | `src/lanky/proofs/` |
+| written proofs: the trace, the native run, the Lean they compile to, and the report at the Python line | `src/lanky/proofs/` |
+| a family over the naturals filled in from its hypotheses, for the native run | `src/lanky/proofs/filled.py` |
 | a written proof, lanky #140's `every_box` | `examples/every_box.py` |
+| the CFL condition, named once, and what holds under it | `examples/upwind.py` |
 | the pytential demonstration, and its rule engine | `examples/pytential_skie.py`, `examples/layer_potentials.py` |
 | the bridge to sympy, and the CAS oracle | `src/lanky/cas.py`, `src/lanky/oracles/cas.py` |
 | the sumpy demonstration, and its `mpmath` oracle | `examples/sumpy_recurrence.py` |
