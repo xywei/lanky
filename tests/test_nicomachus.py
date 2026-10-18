@@ -195,6 +195,7 @@ def test_a_lambda_at_a_familys_place_is_the_familys_value(cases) -> None:
 
 def test_the_fact_over_the_reals_is_restated_over_the_integers(example) -> None:
     """The family is a ``fun`` ascribed the reals, and the fact is shown through the cast."""
+    pytest.importorskip("sympy")  # the multipliers are found by sympy
     command = compile_proof(trace_proof(example.nicomachus), mathlib=True)
     source = command.source
     assert "one_more_term (fun i => (i ^ 3 : ℝ)) n (by omega)" in source
@@ -229,6 +230,7 @@ def test_a_real_family_needs_no_cast(cases) -> None:
 
 def test_a_steps_multipliers_see_its_sums() -> None:
     """``gauss(n - 1)`` at a step about ``sum(i for i in Fin(n))`` has the multiplier ``-n``."""
+    pytest.importorskip("sympy")  # the multipliers are found by sympy
     part = Sum(((i, Fin[n]),), i)
     step = Comparison(part**2 + n**3, "==", (part + n) ** 2)
     fact = Comparison(2 * Sum(((i, Fin[n - 1 + 1]),), i), "==", (n - 1) * (n - 1 + 1))

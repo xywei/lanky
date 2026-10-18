@@ -413,6 +413,7 @@ def test_same_reads_indices_as_integers() -> None:
 
 def test_the_chain_of_compressed_taylor_is_a_calc() -> None:
     """1.1's chain prints as the check's T3: a ``calc``, each link with its fact at its point."""
+    pytest.importorskip("sympy")  # the multipliers are found by sympy
     command = compile_proof(trace_proof(compressed_taylor), mathlib=True)
     text = command.source
     assert "  · calc R a b\n        = (-1) * R (a - 2) (b + 2) := by\n" in text
@@ -443,6 +444,7 @@ def test_the_outline_reads_as_the_design_prints_it() -> None:
 
 def test_a_named_step_and_the_return_that_cites_it() -> None:
     """1.2: ``have recurrence : ...``, then the shift, the nonzero facts and one combination."""
+    pytest.importorskip("sympy")  # the multipliers are found by sympy
     command = compile_proof(trace_proof(line_taylor), mathlib=True)
     text = command.source
     assert "  · have recurrence : a n = " in text
