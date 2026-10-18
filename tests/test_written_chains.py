@@ -524,6 +524,87 @@ def test_t4_a_proof_from_citations_that_prove_false_fails(tmp_path) -> None:
     assert fact.provenance.get("tactic") != "its written proof"
 
 
+#: The design's T4 inside an induction: the citation is at the claim's own ``n``.
+T4_INDUCTION = '''\
+"""A proof that takes its citation at a point with a variable, inside an induction."""
+
+from __future__ import annotations
+
+from lanky import axiom, theorem
+from lanky.prelude import Fn, Int, Nat
+
+
+@axiom(cite="a printer that dropped a condition, inside an induction")
+def nothing_above_zero(m: Nat) -> m <= 0:
+    """What a statement about an empty range would say with its range dropped."""
+
+
+@theorem
+def all_cells_agree(f: Fn[Nat, Int]) -> all(f[n] == f[0] for n in Nat):
+    def claim(n):
+        if n == 0:
+            return
+        return nothing_above_zero(n), claim(n - 1)
+
+    return claim
+'''
+
+
+def test_t4_inside_an_induction_is_asked_at_the_claims_own_point(tmp_path) -> None:
+    """The citation is at ``n`` in the case ``n != 0``, where its statement proves False.
+
+    No point of the proof is a number, so the question at numbers alone has
+    no instance to take. In the case, with ``n`` bound and ``n != 0``
+    assumed, the statement at ``n`` says ``n <= 0``, and ``omega`` finds
+    False: the proof is refused, at the line of the case.
+    """
+    _lean_or_skip()
+    path = tmp_path / "t4_induction_cases.py"
+    path.write_text(T4_INDUCTION, encoding="utf-8")
+    fact = {fact.owner: fact for fact in claims(check_path(path))}["all_cells_agree"]
+    account = fact.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["headline"] == "the theorem its proof cites without a proved text proves False"
+    assert failure["line"] == 1 + next(
+        index
+        for index, text in enumerate(T4_INDUCTION.splitlines())
+        if "return nothing_above_zero(n), claim(n - 1)" in text
+    )
+    assert fact.provenance.get("tactic") != "its written proof"
+
+
+def test_a_restated_text_other_than_the_kept_one_is_refused_before_lean(cases) -> None:
+    """The design's 3.5: a citation is compared with the text the cited command closed with.
+
+    The oracle keeps one text for ``ct_chain``, and the proof of ``at_two``
+    is compiled against another: the check refuses it before Lean is asked,
+    and before the proof cache is read, warm or not.
+    """
+    _lean_or_skip()
+    from lanky.citations import Proved
+    from lanky.proofs import _lean_oracle
+
+    oracle = _lean_oracle()
+    texts = oracle.proved_texts
+    kept = Proved(cases.ct_chain.fact_id, "Lanky.ct_chain", "KEPT", False, cases.ct_chain.term)
+    texts.record(kept)
+    try:
+        with proved_texts({cases.ct_chain.fact_id: "RESTATED"}):
+            checked = prove(cases.at_two, cases.at_two.fact())
+    finally:
+        texts.forget(cases.ct_chain.fact_id)
+    account = checked.provenance["proof"]
+    assert account["closed"] is False, account
+    (failure,) = account["failures"]
+    assert failure["kind"] == "cite"
+    assert failure["headline"] == (
+        "a theorem its proof cites is restated other than as Lean proved it"
+    )
+    assert "(ct_chain : RESTATED)" in account["lean_source"]
+
+
 def test_lean_accepts_a_proof_with_a_step_left_open_and_names_it(checked) -> None:
     fact = checked["ct_open"]
     account = fact.provenance["proof"]
