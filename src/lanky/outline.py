@@ -13,12 +13,11 @@ cannot, the rung of the ladder that closed the claim is named in words.
 Two views read the same record. ``--proofs`` prints a body, ready to paste
 under the theorem's docstring::
 
-    def claim(a, b):
+    for a, b in claim.dom:
         if a < 2:
-            return stored
-        return recurrence(a - 2, b), claim(a - 2, b + 2), pde(a - 2, b)
-
-    return claim
+            yield by(stored)
+        else:
+            yield by(recurrence(a - 2, b), claim[a - 2, b + 2], pde(a - 2, b))
 
 and ``--steps`` prints its outline in lanky's notation, a chain of equations
 for each case, with the point and the reason of every link. Nothing is read
@@ -318,20 +317,23 @@ def _family_record(plan: FamilyPlan, names: Mapping[str, str]) -> dict[str, Any]
         cases.append((condition, case, uses))
     cases.append((None, *plan.inductive))
 
-    body = [f"def claim({', '.join(variables)}):"]
+    body = [f"for {', '.join(variables)} in claim.dom:"]
     outline: list[tuple[str, list[tuple[str, str]]]] = []
-    for condition, case, uses in cases:
+    for index, (condition, case, uses) in enumerate(cases):
         cited = _citations(plan, case, uses, names)
         # the two conjuncts of p & q at one point are one citation
         texts = list(dict.fromkeys(text for text, _ in cited))
-        returned = f"return {', '.join(texts)}" if texts else "return"
-        if condition is None:
-            body.append(f"    {returned}")
+        # a point that yields nothing is lanky's to finish
+        closed = f"yield by({', '.join(texts)})" if texts else "pass"
+        if condition is None and index == 0:
+            body.append(f"    {closed}")
+        elif condition is None:
+            body += ["    else:", f"        {closed}"]
         else:
-            body += [f"    if {condition}:", f"        {returned}"]
+            keyword = "if" if index == 0 else "elif"
+            body += [f"    {keyword} {condition}:", f"        {closed}"]
         label = "otherwise:" if condition is None else f"if {condition}:"
         outline.append((label, _case_chain(plan, case, cited)))
-    body += ["", "return claim"]
 
     point = variables[0] if len(variables) == 1 else f"({', '.join(variables)})"
     head = f"the claim at {point}, for every {_binders_words(plan.goal)}, {_family_how(plan)}"
@@ -400,7 +402,7 @@ def _citations(
         if use.lemma == plan.hypothesis:
             # the hypothesis takes the smaller order first; the claim, its variables in order
             values = (*values[1 : index + 1], values[0], *values[index + 1 :])
-            text = f"claim({', '.join(python_source(value) for value in values)})"
+            text = f"claim[{', '.join(python_source(value) for value in values)}]"
         else:
             name = names.get(use.lemma, use.lemma)
             alone = not lemma.binders or (
@@ -577,8 +579,8 @@ def _together(plan: FamilyPlan, cited: list[tuple[str, Any]], lemmas: Mapping[st
 
 
 def _point_of_call(text: str) -> str:
-    """The point of a citation ``claim(a - 2, b + 2)``: ``(a - 2, b + 2)``, or ``n - 1``."""
-    inside = text[len("claim(") : -1]
+    """The point of a citation ``claim[a - 2, b + 2]``: ``(a - 2, b + 2)``, or ``n - 1``."""
+    inside = text[len("claim[") : -1]
     return f"({inside})" if "," in inside else inside
 
 
@@ -760,18 +762,13 @@ def _sum_record(plan: SumPlan) -> dict[str, Any]:
             "steps": [*head, f"{indent}{first} == {python_source(right)}  {why}"],
         }
     order = ", ".join(renaming.get(var.name, var.name) for var, _ in binders)
-    chain = [first, f".equals({python_source(middle)})", f".equals({python_source(right)})"]
-    returned = ["return (", *(f"    {line}" for line in chain), ")"]
+    chain = [first, f"== {python_source(middle)}", f"== {python_source(right)}"]
+    asserted = ["assert (", *(f"    {line}" for line in chain), ")"]
     if isinstance(goal, Forall):
         signature = ", ".join(var.name for var, _ in goal.binders)
-        body = [
-            f"def claim({signature}):",
-            *(f"    {line}" for line in returned),
-            "",
-            "return claim",
-        ]
+        body = [f"for {signature} in claim.dom:", *(f"    {line}" for line in asserted)]
     else:
-        body = returned
+        body = asserted
     steps = [
         f"{indent}{first} == {python_source(middle)}",
         f"{indent}{' ' * (len(first) + 1)}== {python_source(right)}",

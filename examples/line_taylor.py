@@ -49,16 +49,17 @@ No row claims more than it proves for that. ``line_taylor``'s statement is
 about any table that satisfies the two hypotheses, and the third row checks
 sumpy's own coefficients against the closed form, order by order.
 
-The theorem's body is its proof, read aloud: "Let ratio be -beta / alpha.
-The claim at n: if n is 1, it is the first term. Otherwise, the recurrence:
-a[n] equals (n - 1) / n times ratio times a[n - 1], by the ODE. By the
-recurrence and the claim at n - 1." ``claim`` calling itself at ``n - 1`` is
-the induction; ``by=ode`` is the ODE at the one point that lines it up with
-the step, ``n - 1``; the multiplier of the claim at ``n - 1`` is Python's to
-find (see :mod:`lanky.induction`), and Lean checks every step. lanky also
-finds this proof alone, an induction two orders at a time, so the body is
-for the reader: it fixes the proof's shape, and only the multipliers are
-searched for. ``python`` never runs it.
+The theorem's body is its proof, read aloud: "For each n of the claim: at n
+= 1, by the first term. Otherwise the ODE gives a[n] from a[n - 1], and the
+claim at n follows by the claim at n - 1." ``claim[n - 1]`` is the claim at
+the point before, which the loop has filled in: the induction. ``by(ode)``
+is the ODE at the one point that lines it up with the step, ``n - 1``; the
+guard ``n >= 1`` comes with ``claim.dom``, so in the ``else`` case ``n >= 2``
+and ``n - 1`` is inside the domain. The multiplier of the claim at ``n - 1``
+is Python's to find (see :mod:`lanky.induction`), and Lean checks every
+step. lanky also finds this proof alone, an induction two orders at a time,
+so the body is for the reader: it fixes the proof's shape, and only the
+multipliers are searched for. ``python`` never runs it.
 
 The third row ties the theorem to sumpy's code. sumpy's ``k``-th
 coefficient, divided by ``k!``, is the real part of ``a[k]``, which is
@@ -77,7 +78,7 @@ import math
 import os
 from typing import Any
 
-from lanky import log, theorem
+from lanky import by, claim, log, theorem
 from lanky.cas import from_sympy
 from lanky.check import module_name
 from lanky.ledger import Fact, fact_id
@@ -143,15 +144,12 @@ def line_taylor(
     ``first_term`` and ``ode`` are ``line_ode`` read on the coefficients, at
     ``tau ** 0`` and at ``tau ** n``.
     """
-    ratio = -beta / alpha
-
-    def claim(n):
+    for n in claim.dom:
         if n == 1:
-            return first_term
-        recurrence = a[n].equals((n - 1) / n * ratio * a[n - 1], by=ode)
-        return recurrence, claim(n - 1)
-
-    return claim
+            yield by(first_term)
+        else:
+            assert a[n] == (n - 1) / n * (-beta / alpha) * a[n - 1], by(ode)
+            yield by(claim[n - 1])
 
 
 # {{{ sumpy's coefficients, through ORDER

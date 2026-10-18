@@ -136,7 +136,7 @@ where its domain was empty, it passed a claim on those draws alone.
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -183,6 +183,7 @@ __all__ = [
     "thin_pass_reason",
     "totalized_value",
     "truth_value",
+    "valid_draws",
 ]
 
 #: Largest natural number drawn. Small on purpose: quantifiers are enumerated.
@@ -1046,6 +1047,40 @@ def statement_free_names(variables: Any, hypotheses: Any, goal: Any) -> list[str
     for prop in (*hypotheses, goal):
         found |= free_names(prop)
     return sorted(found - {name for name, _ in variables})
+
+
+def valid_draws(
+    variables: Any, hypotheses: Any, samples: int = 200, seed: int = 0
+) -> Iterator[dict[str, Any]]:
+    """The draws the hypotheses admit, made as :func:`check` makes them, one context at a time.
+
+    The same sampler from the same seed: each variable drawn in
+    :func:`sampling_order`, the definitional hypotheses satisfied by
+    construction, and a draw kept when the hypotheses hold at it for certain.
+    No goal is evaluated, so the draws after the first can differ from the
+    check's, whose goal draws from the same generator. Written proofs are run
+    at these (:mod:`lanky.proofs.native`). The caller evaluates in the exact
+    reading (:func:`~lanky.terms.exact_reading`), as :func:`check` does.
+    """
+    rng = random.Random(seed)
+    variables = sampling_order(variables)
+    sorts = dict(variables)
+    found = 0
+    for _ in range(samples * REJECTION_FACTOR):
+        if found >= samples:
+            return
+        context: dict[str, Any] = {}
+        sampler = sort_sampler(rng, context)
+        try:
+            for name, sort in variables:
+                context[name] = sample_value(sort, rng, context, name)
+            satisfy_hypotheses(hypotheses, context, sorts, sampler)
+            if not _hypotheses_hold(hypotheses, context, sampler):
+                continue
+        except (SkipSample, Undecided, *_GAPS):
+            continue
+        found += 1
+        yield context
 
 
 def _sample(

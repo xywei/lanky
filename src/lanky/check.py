@@ -1182,6 +1182,23 @@ def _recorded_in(fact: Fact, path: Path) -> bool:
     return recorded is None or Path(str(recorded)).resolve() == path
 
 
+#: Why ``lanky check`` does not run under ``python -O``.
+OPTIMIZED = (
+    "lanky check reads each assert of a written proof as a step, and python -O removes "
+    "every assert; run it without -O (and without PYTHONOPTIMIZE)"
+)
+
+
+def refuse_optimized() -> None:
+    """Refuse to check under ``python -O``, which would remove every step of every proof.
+
+    Raises:
+        RuntimeError: Under ``-O`` or ``PYTHONOPTIMIZE``.
+    """
+    if not __debug__ or sys.flags.optimize:
+        raise RuntimeError(OPTIMIZED)
+
+
 def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     """Check one file and return the ledger of the claims it defines.
 
@@ -1237,6 +1254,7 @@ def check_path(path: str | Path, verbose: bool = False) -> Ledger:
     """
     import lanky.oracles  # noqa: F401 - registers the built-in oracles
 
+    refuse_optimized()
     registry.load_entry_points()
     path = Path(path).resolve()
     from lanky.oracles.lean import forget_scripts, refused_scripts

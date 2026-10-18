@@ -17,21 +17,26 @@ Check it and test it as ``gauss.py`` is checked and tested.
 
 ``nicomachus`` is Nicomachus's theorem: the sum of the first cubes is the
 square of the sum of the first numbers (Nicomachus of Gerasa, Introduction to
-Arithmetic). The proof is the induction a textbook writes, read aloud: "The
-claim at n: if n is 0, it is routine. Otherwise, the cubes to n + 1 sum to the
-cubes to n plus n cubed, by one more term; that is the square of the sum to n,
-plus n cubed, by the claim at n - 1; that is the square of the sum to n plus
-n, by Gauss at n - 1; and that is the square of the sum to n + 1, by one more
-term."
+Arithmetic). The proof is the induction a textbook writes, read aloud: "If n
+is 0, it is routine. Otherwise, the cubes to n + 1 sum to the cubes to n plus
+n cubed; that is the square of the sum to n, plus n cubed; that is the
+square of the sum to n plus n; and that is the square of the sum to n + 1:
+by one more term, the theorem at n - 1, and Gauss at n - 1."
 
-``one_more_term`` is cited by its name alone, twice. It says that a sum to
-``n + 1`` is the sum to ``n`` plus its last term, for any family ``f``, and
-lanky finds the family and the point from the link it supports: ``f = i ↦
-i**3`` at ``n`` for the first link, ``f = i ↦ i`` at ``n`` for the last. It is
-stated over the reals, and these sums are of integers; Lean reads the integer
-sums through the cast into the reals, where the fact holds, and the cast is
-injective. ``gauss(n - 1)`` and ``claim(n - 1)`` keep their points, the second
-because it is the induction.
+The calculation is one ``assert`` of Python's own chained comparison, its
+reasons after it, ``by(...)``. Its two ends are the claim's two sides, so
+there is nothing to return. ``n`` is a parameter of the theorem, not a
+variable of its conclusion, so the earlier case is the theorem at a smaller
+argument, ``claim(n - 1)``, cited the way ``gauss(n - 1)`` cites ``gauss``.
+
+``one_more_term`` is cited by its name alone. It says that a sum to ``n +
+1`` is the sum to ``n`` plus its last term, for any family ``f``, and lanky
+finds the family and the point from each link it fits: ``f = i ↦ i**3`` at
+``n`` for the first link, ``f = i ↦ i`` at ``n`` for the last. It is stated
+over the reals, and these sums are of integers; Lean reads the integer sums
+through the cast into the reals, where the fact holds, and the cast is
+injective. ``gauss(n - 1)`` and ``claim(n - 1)`` keep their points, the
+second because it is the induction.
 
 ``cubes`` is the closed form of the sum of cubes. It follows from
 ``nicomachus`` and ``gauss``, and says so with ``uses=``, which becomes the
@@ -42,7 +47,7 @@ result enters the ledger before its proof is written.
 
 from __future__ import annotations
 
-from lanky import theorem
+from lanky import by, claim, theorem
 from lanky.known import one_more_term
 from lanky.prelude import Fin, Nat
 
@@ -55,19 +60,15 @@ def gauss(n: Nat) -> 2 * sum(i for i in Fin[n + 1]) == n * (n + 1):
 @theorem
 def nicomachus(n: Nat) -> sum(i**3 for i in Fin[n + 1]) == sum(i for i in Fin[n + 1]) ** 2:
     """The sum of the first cubes is the square of the sum of the first numbers."""
-
-    def claim(n):
-        if n == 0:
-            return
-        return (
-            sum(i**3 for i in Fin[n + 1])
-            .equals(sum(i**3 for i in Fin[n]) + n**3, by=one_more_term)
-            .equals(sum(i for i in Fin[n]) ** 2 + n**3, by=claim(n - 1))
-            .equals((sum(i for i in Fin[n]) + n) ** 2, by=gauss(n - 1))
-            .equals(sum(i for i in Fin[n + 1]) ** 2, by=one_more_term)
-        )
-
-    return claim
+    if n == 0:
+        return
+    assert (
+        sum(i**3 for i in Fin[n + 1])
+        == sum(i**3 for i in Fin[n]) + n**3
+        == sum(i for i in Fin[n]) ** 2 + n**3
+        == (sum(i for i in Fin[n]) + n) ** 2
+        == sum(i for i in Fin[n + 1]) ** 2
+    ), by(one_more_term, claim(n - 1), gauss(n - 1))
 
 
 @theorem(uses=[nicomachus, gauss])

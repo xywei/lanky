@@ -13,11 +13,13 @@ piece it is about says which report it is:
   follow, when there is one (:func:`fix_for`);
 - a condition that is not met: ``stored needs a < 2, and this case has a >=
   2``;
-- a call of the claim at a negative argument: ``claim(a - 2, b + 2) is at a
+- a call of the claim at a negative argument: ``claim[a - 2, b + 2] is at a
   negative a when a = 1: split off a < 2 first``;
 - and what lanky refuses before Lean is asked (:class:`lanky.proofs.trace.ProofError`):
-  a claim that is not called at smaller values, a theorem that calls itself,
-  a fact cited by name that no single point fits.
+  the claim cited at a point the loop has not filled in, a theorem that
+  cites itself by name, a form of lanky 0.5's proofs, a fact cited by name
+  that no single point fits; and a step the native run finds false at drawn
+  values (:mod:`lanky.proofs.native`).
 
 The axiom audit is read positively (:func:`audit`): exactly one answer, naming
 exactly the theorem, with no axiom outside Lean's own three.
@@ -27,7 +29,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pymbolic.primitives as prim
@@ -35,7 +37,7 @@ import pymbolic.primitives as prim
 from lanky.audit import TRUSTED_AXIOMS, audit_failure
 from lanky.citations import Citation
 from lanky.proofs.cases import Shape, affine, from_affine, shape_of
-from lanky.proofs.trace import ClaimDef, Given, Leaf, Proof, ProofError, shown
+from lanky.proofs.trace import Asserted, ClaimDef, Given, Leaf, Proof, ProofError, shown
 from lanky.terms import Forall, Var, init_args, render
 
 __all__ = [
@@ -98,11 +100,16 @@ class Failure:
 def failure_of(error: ProofError) -> Failure:
     """The report of a proof lanky refused before Lean was asked."""
     headlines = {
-        "self-reference": "the theorem calls itself",
+        "self-reference": "the theorem cites itself by name",
+        "removed": "the proof is written in a form of lanky 0.5",
+        "later": "the claim is cited where the proof has not reached",
         "no-point": "a fact cited by its name fits no single point",
-        "measure": "the claim is not called at smaller values",
-        "claim": "the claim is not defined as lanky reads it",
-        "return": "a return gives something that is no fact",
+        "measure": "the claim is not cited at smaller values",
+        "claim": "claim is not used as lanky reads it",
+        "return": "a return gives something that is no reason",
+        "yield": "a yield is not where a point of claim.dom is",
+        "assert": "an assert is not a step lanky reads",
+        "false": "a step of its proof is false",
         "question": "the proof asks a question lanky does not split on",
         "raised": "the proof raised",
         "paths": "the proof does not run the same way on every path",
@@ -406,7 +413,7 @@ def fix_for(step: Any, proof: Proof, measure: Any = None) -> tuple[int, Citation
             tried.add(key)
             body = instantiate(shape.body, dict(zip(unknowns, values, strict=True)))
             if combination(claim, [*others, body], step.types) is not None:
-                return index, Citation(citation.source, tuple(values), citation.line)
+                return index, replace(citation, values=tuple(values))
     return None
 
 
@@ -505,7 +512,13 @@ def also_needs(step: Any, proof: Proof, measure: Any = None) -> Citation | None:
                 solution = dict(zip(unknowns, values, strict=True))
                 extra = [each.at(solution)[0] for each in shapes]
                 if combination(step.claim, [*bodies, *extra], step.types) is not None:
-                    return Citation(source, tuple(values), step.where)
+                    return Citation(
+                        source,
+                        tuple(values),
+                        step.where,
+                        bracket=isinstance(source, ClaimDef)
+                        and len(source.generalized) < len(source.params),
+                    )
     return None
 
 
@@ -532,16 +545,16 @@ def _candidates(proof: Proof) -> list[Any]:
 
 
 def written_with(step: Any, citation: Citation) -> str:
-    """The step written to cite ``citation`` too: ``return f, g, h``, or ``by=(f, g)``."""
-    leaf: Leaf = step.leaf
-    if step.line is not None:
-        for chain in (*leaf.named, *((leaf.chain,) if leaf.chain is not None else ())):
-            for link in chain.links:
-                if link.line == step.line:
-                    texts = [*(fact.text() for fact in link.facts), citation.text()]
-                    return f"by={texts[0]}" if len(texts) == 1 else f"by=({', '.join(texts)})"
-    texts = [*(fact.text() for fact in leaf.facts or ()), citation.text()]
-    return f"return {', '.join(texts)}"
+    """The step written to cite ``citation`` too: its ``assert``'s or ``yield``'s ``by(...)``."""
+    owner = getattr(step, "owner", None)
+    if isinstance(owner, Asserted):
+        texts = [*(fact.text() for fact in owner.facts), citation.text()]
+        return f"assert ..., by({', '.join(texts)})"
+    leaf: Leaf | None = step.leaf
+    facts = leaf.facts if leaf is not None else ()
+    texts = [*(fact.text() for fact in facts or ()), citation.text()]
+    word = "yield" if leaf is not None and leaf.point else "return"
+    return f"{word} by({', '.join(texts)})"
 
 
 def known_lines(
@@ -575,7 +588,7 @@ def known_lines(
 ALLOWED_AXIOMS = TRUSTED_AXIOMS
 
 #: What a proof's verdict is when every ``sorry`` Lean found is at a step the
-#: proof left open, ``by=...``, and nothing else is wrong: the claim reads
+#: proof left open, ``by(...)``, and nothing else is wrong: the claim reads
 #: assumed there, and the ledger names the lines.
 CLOSED_WITH_HOLES = "closed with holes"
 
@@ -604,7 +617,7 @@ def verdict(proof: Proof, command: Any, record: Mapping[str, Any]) -> tuple[str,
 
     Closed is no error, no ``sorry`` and a positive audit. Closed with holes
     is the same, except that Lean found a ``sorry`` at each step the proof
-    left open, ``by=...``, and nowhere else (:data:`CLOSED_WITH_HOLES`). A
+    left open, ``by(...)``, and nowhere else (:data:`CLOSED_WITH_HOLES`). A
     ``sorry`` anywhere else fails the proof, as an error does.
     """
     messages = list(record.get("messages") or ())
@@ -681,7 +694,8 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
         case = case_text(detail.get("conditions") or (), proof.path)
         lead = f"{case}, the" if case else "The"
         lines = [f"{lead} case's claim is {render(claim)}, and lanky could not show it alone."]
-        fix = "cite the facts it needs, as return f, g"
+        word = "yield" if detail.get("point") else "return"
+        fix = f"give the facts it needs, as {word} by(f, g)"
         known, names = known_lines(claim, _case_types(proof), exclude=(proof.theorem.__name__,))
         if known:
             lines.append("What lanky knows of its shape:")
@@ -700,12 +714,12 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
         return Failure(
             "measure",
             origin.line,
-            "the claim is not called at smaller values",
+            "the claim is not cited at smaller values",
             (
-                f"Lean could not show that each call of {claim.name if claim else 'claim'} is "
-                f"at smaller values than ({params}).",
+                f"Lean could not show that each citation of the claim is at smaller values "
+                f"than ({params}).",
             ),
-            "call the claim where one argument is smaller and stays a natural number",
+            "cite the claim where one value is smaller and stays a natural number",
         )
     if origin.kind in ("cite", "call"):
         citation = detail.get("citation")
@@ -716,18 +730,7 @@ def _failure(proof: Proof, command: Any, origin: Any) -> Failure:
             f"Lean could not apply {named}",
             ("--show-lean shows what Lean said",),
         )
-    if origin.kind == "chain-end":
-        chain = detail.get("chain")
-        claim = detail.get("claim")
-        ends = f"{render(chain.start)} {chain.relation} {render(chain.end)}" if chain else "it"
-        return Failure(
-            "chain",
-            origin.line,
-            "the chain does not give the claim",
-            (f"The chain shows {ends}; the claim of this case is {render(claim)}.",),
-            "end the chain at the claim's other side",
-        )
-    if origin.kind in ("chain", "link", "named"):
+    if origin.kind in ("chain", "link", "asserted", "asserted-end"):
         return Failure(
             "lean",
             origin.line,
@@ -778,7 +781,7 @@ def _condition(proof: Proof, origin: Any) -> Failure:
             return Failure(
                 "negative",
                 origin.line,
-                "the claim is called at a negative argument",
+                "the claim is cited at a negative value",
                 (
                     f"{citation.text()} is at a negative {negative} when {negative} = {at}: "
                     f"split off {negative} < {int(drop)} first.",
@@ -788,7 +791,7 @@ def _condition(proof: Proof, origin: Any) -> Failure:
         return Failure(
             "negative",
             origin.line,
-            "the claim is called at a negative argument",
+            "the claim is cited at a negative value",
             (
                 f"{citation.text()} may be at a negative {negative} in this case: split off "
                 f"the cases where {render(value)} < 0 first.",
