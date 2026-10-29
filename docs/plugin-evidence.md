@@ -51,3 +51,12 @@ Missing canonical claim IDs have readable display names in the table, qualified
 when names collide. This is only presentation: `under` and `rests_on` retain the
 full IDs in JSON, and a missing fact remains unresolved. Plugin-specific IDs
 keep their original spelling unless an actual fact supplies a label.
+
+A test oracle that counts coverage of a universal goal should record
+`goal_reached` as a nonnegative integer, including positive counts. Zero means
+no sampled draw reached the guarded body; an absent count means coverage was
+not measured. If a tester settles a fact without this count, lanky asks later
+testers for it while preserving the first verdict, decider and sample counts.
+A later counterexample is recorded as a semantics disagreement. Zero coverage
+triggers the existing guard-emptiness check and warning; it is not by itself a
+proof that the goal is vacuous.

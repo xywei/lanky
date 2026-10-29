@@ -24,6 +24,8 @@ A goal that is a universal is watched for one more thing: whether its
 quantifier got through to any point of its guarded domain at any draw. When it
 never did, a pass says nothing about the goal's body, and the provenance
 records ``goal_reached: 0`` for :func:`lanky.check.establish` to examine.
+Positive counts are also retained, distinguishing measured coverage from a
+plugin tester that did not count it.
 
 A pass whose draws mostly decided nothing, or whose valid draws are all at a
 few assignments, is still ``TESTED``, and its ``reason`` says that the
@@ -105,7 +107,10 @@ class TestOracle:
         # A goal whose quantifier got through to no point at any draw is
         # recorded as such, whatever else the report says, so that the check
         # can ask whether its guard is empty (see lanky.check.goal_guard_fact).
-        goal = {"goal_reached": 0} if report.goal_reached == 0 else {}
+        goal = (
+            {"goal_reached": report.goal_reached}
+            if report.goal_reached is not None else {}
+        )
         if report.valid == 0:
             # A pass over no valid draw is not evidence, so the status must not
             # improve. Returning the fact with the reason rather than ``None``
@@ -126,7 +131,7 @@ class TestOracle:
                 **goal,
             )
         extra = {"undecided": report.undecided} if report.undecided else {}
-        if report.reason and not goal:
+        if report.reason and report.goal_reached != 0:
             # A pass on thin evidence says so (#55); a goal whose guard no draw
             # got through is said by the check instead, as goal_unreached.
             extra["reason"] = report.reason

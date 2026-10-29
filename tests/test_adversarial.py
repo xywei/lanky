@@ -2185,7 +2185,7 @@ def test_a_guard_empty_only_for_some_outer_values_is_never_flagged(
     (fact,) = claims(check_path(path))
     assert shown == ["claim"]
     assert not fact.is_vacuous
-    assert "goal_reached" not in fact.provenance
+    assert fact.provenance["goal_reached"] > 0
     assert "goal_unreached" not in fact.provenance
     assert cli.main(["check", path]) == 0
     printed = capsys.readouterr().out
@@ -2213,12 +2213,12 @@ def test_a_guard_a_point_got_through_at_an_undecided_draw_is_not_empty(
     oracles(_recording(shown), TestOracle())
     (fact,) = claims(check_path(path))
     assert shown == ["claim"]
-    assert "goal_reached" not in fact.provenance
+    assert fact.provenance["goal_reached"] > 0
     oracles(TestOracle())
     (fact,) = claims(check_path(path))
     assert fact.status is Status.TESTED
     assert fact.provenance["undecided"] > 0
-    assert "goal_reached" not in fact.provenance
+    assert fact.provenance["goal_reached"] > 0
     assert cli.main(["check", path]) == 0
     assert "WARNING" not in capsys.readouterr().out
 
@@ -2582,7 +2582,7 @@ def test_a_parameterless_theorems_empty_goal_guard_is_the_goals(tmp_path, oracle
     nested = facts["closed_nested"]
     assert nested.status is Status.PROVED
     assert not nested.is_vacuous
-    assert "goal_reached" not in nested.provenance
+    assert nested.provenance["goal_reached"] > 0
     assert "hypotheses" not in shown
     assert shown.count("goal-guard") == 2
     assert cli.main(["check", path]) == 1
@@ -3010,3 +3010,116 @@ def test_an_ordinary_pass_says_nothing_about_thin_evidence(tmp_path, oracles, ca
 
 
 # }}}
+
+
+@pytest.mark.parametrize("reachable", [False, True])
+def test_a_settling_plugin_tester_gets_missing_goal_coverage(
+    tmp_path, oracles, reachable
+) -> None:
+    """#106: a second sample counts coverage without replacing the first verdict."""
+    calls = []
+
+    class Quiet(PassesQuietly):
+        def establish(self, fact, /):
+            calls.append(fact.kind)
+            return super().establish(fact)
+
+    oracles(Quiet(), TestOracle())
+    source = SCAN_GUARD
+    if reachable:
+        source = source.replace("(p < q) & (p > q)", "p <= q")
+    (fact,) = claims(check_path(_write(tmp_path, source)))
+    from lanky.check import establish
+
+    calls.clear()
+    fact = establish(Fact("coverage", "claim", "universal goal", term=fact.term))
+    assert calls == ["claim"]
+    assert fact.status is Status.TESTED
+    assert fact.decided_by == "quiet-test"
+    assert fact.provenance["samples"] == fact.provenance["valid"] == 1
+    assert (fact.provenance["goal_reached"] > 0) is reachable
+    assert ("goal_unreached" in fact.provenance) is not reachable
+
+
+def test_a_settling_plugin_tester_can_reveal_a_provably_empty_guard(tmp_path, oracles):
+    class GuardOnly(ProvesEverything):
+        def can_establish(self, fact, /):
+            return fact.kind == "goal-guard"
+
+    oracles(GuardOnly(), PassesQuietly(), TestOracle())
+    (fact,) = claims(check_path(_write(tmp_path, SCAN_GUARD)))
+    assert fact.status is Status.TESTED
+    assert fact.decided_by == "quiet-test"
+    assert fact.is_vacuous
+
+
+@pytest.mark.parametrize("count", [0, 1])
+def test_a_settling_tester_with_a_count_is_not_sampled_again(tmp_path, oracles, count):
+    class Counts(PassesQuietly):
+        def establish(self, fact, /):
+            return super().establish(fact).with_status(Status.TESTED, goal_reached=count)
+
+    calls = []
+
+    class Later(PassesQuietly):
+        name = "later-test"
+
+        def establish(self, fact, /):
+            calls.append(fact.kind)
+            return super().establish(fact)
+
+    oracles(Counts(), Later())
+    (fact,) = claims(check_path(_write(tmp_path, SCAN_GUARD)))
+    assert "claim" not in calls
+    assert fact.provenance["goal_reached"] == count
+
+
+def test_missing_coverage_records_a_later_counterexample(tmp_path, oracles):
+    class Refutes(PassesQuietly):
+        name = "later-test"
+
+        def establish(self, fact, /):
+            return fact.with_status(Status.REFUTED, self.name, counterexample={"n": 2})
+
+    oracles(PassesQuietly(), Refutes())
+    (fact,) = claims(check_path(_write(tmp_path, SCAN_GUARD)))
+    assert fact.status is Status.TESTED
+    assert fact.decided_by == "quiet-test"
+    assert fact.provenance["semantics_counterexample"] == {"n": 2}
+    assert "later-test" in fact.provenance["semantics_disagreement"]
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_missing_coverage_continues_past_a_tester_that_cannot_count(
+    tmp_path, oracles, raises
+):
+    class CannotCount(PassesQuietly):
+        name = "cannot-count"
+
+        def establish(self, fact, /):
+            if raises:
+                raise RuntimeError("coverage failed")
+            return None
+
+    oracles(PassesQuietly(), CannotCount(), TestOracle())
+    (fact,) = claims(check_path(_write(tmp_path, SCAN_GUARD)))
+    assert fact.status is Status.TESTED
+    assert fact.decided_by == "quiet-test"
+    assert fact.provenance["goal_reached"] == 0
+    assert "goal_unreached" in fact.provenance
+    assert bool(fact.provenance.get("raised")) is raises
+
+
+def test_later_goal_count_does_not_borrow_the_settling_testers_valid_draws(tmp_path, oracles):
+    class EmptySample(PassesQuietly):
+        name = "empty-sample"
+
+        def establish(self, fact, /):
+            return fact.with_status(fact.status, goal_reached=0, valid=0)
+
+    oracles(PassesQuietly(), EmptySample())
+    (fact,) = claims(check_path(_write(tmp_path, SCAN_GUARD)))
+    assert fact.provenance["valid"] == 1
+    assert fact.provenance["goal_valid"] == 0
+    assert fact.provenance["goal_reached"] == 0
+    assert "goal_unreached" not in fact.provenance
