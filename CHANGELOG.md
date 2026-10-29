@@ -6,6 +6,10 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+- Document and test the existing plugin evidence contract: identity and scope
+  validation, prerequisite strength, unsupported evidence and checker failures.
+  Compiler-specific evidence needs no new core dependency or status.
+
 ## [0.6.0] - 2026-10-18
 
 Proofs read as engineers write checks (the decision of 2026-10-18). A step is
