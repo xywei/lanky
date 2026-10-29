@@ -377,7 +377,9 @@ def establish(fact: Fact, verbose: bool = False) -> Fact:
         result = _with_raised(result, _declines(fact.provenance.get("raised")))
         if _settles(oracle, fact, result):
             result = result.with_status(result.status, trust_class=oracle.trust_class())
-            fact = _cross_check(result, gaps, handed=fact, verbose=verbose)
+            fact = _cross_check(
+                result, gaps, handed=fact, verbose=verbose, settled_by=oracle
+            )
             break
         fact = _keep_declines(fact, result)
     fact = _examine_goal_guard(_examine_vacuity(fact, verbose=verbose), verbose=verbose)
@@ -734,6 +736,7 @@ def _cross_check(
     gaps: tuple[str, ...],
     handed: Fact | None = None,
     verbose: bool = False,
+    settled_by: Any = None,
 ) -> Fact:
     """Sample a fact a stronger oracle established, and record what sampling says.
 
@@ -754,6 +757,11 @@ def _cross_check(
     sample could come out otherwise the second time, and a counterexample
     found only then would only be recorded. Nothing is done for a heuristic's
     refutation, which a sample cannot overturn.
+
+    A settling tester that did not count coverage of a universal goal is
+    followed by later testers for that count only. Its verdict, decider and
+    sample counts stand; a later counterexample is recorded as a disagreement.
+    An explicit positive count stops this coverage search too.
 
     Three things are worth recording. A counterexample is the loud one: the
     Python reading is false where a stronger oracle established the statement,
@@ -788,7 +796,14 @@ def _cross_check(
     walk at once, and is recorded alone: the draw that refutes the statement
     satisfied its hypotheses, whatever an earlier tester's draws did.
     """
-    if fact.status in (Status.REFUTED, Status.TESTED, Status.ASSUMED):
+    if fact.status in (Status.REFUTED, Status.ASSUMED):
+        return fact
+    coverage_only = fact.status is Status.TESTED
+    if coverage_only and (
+        settled_by is None
+        or _goal_quantifier(fact.term) is None
+        or _goal_marks(fact.provenance, fact.term)
+    ):
         return fact
     heuristic = fact.is_heuristic
     if (
@@ -801,7 +816,13 @@ def _cross_check(
     sampled = fact if handed is None else handed
     hypotheses: dict[str, Any] | None = None
     goal: dict[str, Any] = {}
+    # A settling tester has already sampled once. Only later testers supply
+    # missing coverage; their results do not replace its verdict or draw counts.
+    after_settler = not coverage_only
     for oracle in registry.sorted_oracles():
+        if not after_settler:
+            after_settler = oracle is settled_by
+            continue
         if TRUST_STRENGTH.get(oracle.trust_class(), 0) != TRUST_STRENGTH["test"]:
             continue
         available, _reason = oracle_availability(oracle)
@@ -825,10 +846,12 @@ def _cross_check(
                     print(f"  {oracle.name} refutes what {answer}")
                 return _overruled(fact, result, oracle.name)
             return _record_refutation(fact, result, oracle.name, verbose=verbose)
-        if hypotheses is None:
+        if hypotheses is None and not coverage_only:
             hypotheses = _hypotheses_marks(result, oracle.name, gaps, verbose=verbose)
         if not goal:
             goal = _goal_marks(result.provenance, fact.term)
+            if goal:
+                goal["goal_counted_by"] = oracle.name
             if verbose and goal.get("goal_unreached"):
                 print(f"  {oracle.name}: {goal['goal_unreached']}")
         # After a heuristic every tester is asked for a counterexample;
@@ -966,21 +989,22 @@ def _goal_quantifier(term: Any) -> Forall | None:
 
 
 def _goal_marks(provenance: dict, term: Any) -> dict[str, Any]:
-    """What a property test's record says about the goal's guard, if it held nowhere.
+    """The explicit count of draws reaching the goal, including positive counts.
 
-    Empty unless the record has ``goal_reached: 0``, which the property-test
-    oracle leaves when the goal's quantifier got through to no point of its
-    guarded domain at any draw the hypotheses admitted. Then ``goal_reached``
-    is kept, and when there were valid draws ``goal_unreached`` says how many,
+    Missing counts mean the tester did not count, not that the guard held.
+    When the count is zero and there were valid draws, ``goal_unreached`` says how many,
     which is the warning ``lanky check`` prints. With no valid draw there is
     nothing to warn about that the record does not already say, but the
     question whether the guard is empty is still worth asking (see
     :func:`_examine_goal_guard`).
     """
-    if provenance.get("goal_reached") != 0:
+    reached = provenance.get("goal_reached")
+    if type(reached) is not int or reached < 0:
         return {}
-    marks: dict[str, Any] = {"goal_reached": 0}
-    valid = provenance.get("valid") or 0
+    valid = provenance.get("goal_valid", provenance.get("valid")) or 0
+    marks: dict[str, Any] = {"goal_reached": reached, "goal_valid": valid}
+    if reached:
+        return marks
     goal = _goal_quantifier(term)
     if valid and goal is not None:
         marks["goal_unreached"] = goal_unreached_reason(goal, valid)
