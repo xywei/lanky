@@ -1082,6 +1082,9 @@ changes what the code means.
 
 ## Documentation
 
+- [Plugin evidence](docs/plugin-evidence.md): how plugins bind evidence to claims,
+  preserve prerequisite strength, and distinguish decisions from proofs.
+
 - [docs/quickstart.md](https://github.com/xywei/lanky/blob/main/docs/quickstart.md):
   the worked file, end to end, with the output the commands actually print;
   named conditions and the CFL story, red then green; a claim taken on a
