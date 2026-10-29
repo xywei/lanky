@@ -6,6 +6,10 @@ All notable changes to lanky are recorded here. The format follows
 
 ## [Unreleased]
 
+- Render missing claim prerequisites by their names, disambiguating module and
+  definition line when needed. Full IDs and unresolved effective strength remain
+  unchanged in support and JSON. Unknown plugin IDs are not guessed.
+
 - Document and test the existing plugin evidence contract: identity and scope
   validation, prerequisite strength, unsupported evidence and checker failures.
   Compiler-specific evidence needs no new core dependency or status.

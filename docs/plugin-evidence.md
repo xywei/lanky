@@ -46,3 +46,8 @@ contract, covering multiple prerequisites, stale evidence, unsupported schemas,
 exceptions and preservation of scope through a stronger oracle. The fake prover
 tests dispatch only and supplies no mathematical proof. A real plugin must test
 its independent statement construction and checker against corrupted evidence.
+
+Missing canonical claim IDs have readable display names in the table, qualified
+when names collide. This is only presentation: `under` and `rests_on` retain the
+full IDs in JSON, and a missing fact remains unresolved. Plugin-specific IDs
+keep their original spelling unless an actual fact supplies a label.

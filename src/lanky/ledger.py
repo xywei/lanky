@@ -48,6 +48,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import re
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -504,7 +505,7 @@ class Ledger:
             weakest, heuristic = Status.ASSUMED, False
         return Support(effective=weakest, under=tuple(under), heuristic=heuristic)
 
-    def _label(self, fact_id: str, owners: Counter) -> str:
+    def _label(self, fact_id: str, owners: Counter, missing: dict[str, str]) -> str:
         """How the table names a fact another one rests on.
 
         By its owner when that names one fact in the ledger, which is the
@@ -512,7 +513,9 @@ class Ledger:
         provenance where a plugin gave one, which a kernel's many facts need,
         such as loopty's ``assume('n % 4 == 0')`` for the assumption a
         schedule's casts rest on; and by its id otherwise, which an id the
-        ledger does not hold falls back to too. A claim's ``faithful`` fact
+        ledger does not hold falls back to too, except that a recognized missing
+        claim ID has a short, disambiguated display name. Its identity and
+        unresolved strength remain unchanged. A claim's ``faithful`` fact
         (:attr:`Fact.is_reading`) is counted apart from the claim it belongs to,
         and named
         ``faithful:owner``, so that ``proved under harmonic`` still names the
@@ -520,7 +523,7 @@ class Ledger:
         """
         fact = self._facts.get(fact_id)
         if fact is None:
-            return fact_id
+            return missing.get(fact_id, fact_id)
         if not fact.owner or owners[(fact.is_reading, fact.owner)] != 1:
             # a plugin may name such a fact shortly, ``assume('n % 4 == 0')``
             provenance = fact.provenance if isinstance(fact.provenance, dict) else {}
@@ -557,7 +560,9 @@ class Ledger:
         """The ledger as JSON text: :meth:`to_dicts`, dumped."""
         return json.dumps(self.to_dicts(), indent=indent, default=str)
 
-    def _status_cell(self, fact: Fact, support: Support, owners: Counter) -> str:
+    def _status_cell(
+        self, fact: Fact, support: Support, owners: Counter, missing: dict[str, str]
+    ) -> str:
         """The status column of one row: the status, its marks, and what it is under."""
         cell = fact.status.value
         if fact.is_cited:
@@ -567,7 +572,9 @@ class Ledger:
         if fact.is_vacuous:
             cell += " (vacuous)"
         if support.under:
-            cell += " under " + ", ".join(self._label(entry, owners) for entry in support.under)
+            cell += " under " + ", ".join(
+                self._label(entry, owners, missing) for entry in support.under
+            )
         return cell
 
     def render(self, width: int = 100, *, columns: int | None = None) -> str:
@@ -616,13 +623,17 @@ class Ledger:
         locations = _locations(facts)
         owners = Counter((fact.is_reading, fact.owner) for fact in facts)
         supports = [self.support(fact) for fact in facts]
+        missing = _missing_claim_labels(
+            {entry for support in supports for entry in support.under if entry not in self._facts},
+            {self._label(fact.id, owners, {}) for fact in facts},
+        )
         weaker = any(
             support.effective is not fact.status or support.heuristic is not fact.is_heuristic
             for fact, support in zip(facts, supports, strict=True)
         )
         cells = [
             (
-                self._status_cell(fact, support, owners),
+                self._status_cell(fact, support, owners, missing),
                 *((support.text,) if weaker else ()),
                 fact.decided_by or "-",
                 locations[index] or "-",
@@ -639,8 +650,7 @@ class Ledger:
             "statement",
         )
         widths = [
-            max(len(headers[i]), max(len(row[i]) for row in cells))
-            for i in range(len(headers) - 1)
+            max(len(headers[i]), max(len(row[i]) for row in cells)) for i in range(len(headers) - 1)
         ]
         if columns is not None:
             left = columns - sum(widths) - 2 * len(widths)
@@ -656,8 +666,9 @@ class Ledger:
         indent = sum(widths[:-1]) + 2 * len(widths[:-1])
         for row, (first, *more) in zip(cells, statements, strict=True):
             lines.append(
-                "  ".join(cell.ljust(w) for cell, w in zip((*row, first), widths, strict=True))
-                .rstrip()
+                "  ".join(
+                    cell.ljust(w) for cell, w in zip((*row, first), widths, strict=True)
+                ).rstrip()
             )
             lines += [" " * indent + line for line in more]
         summary = ", ".join(f"{n} {name}" for name, n in sorted(self.counts().items()))
@@ -694,6 +705,34 @@ def _locations(facts: list[Fact]) -> list[str]:
         else:
             out.append(fact.where)
     return out
+
+
+def _missing_claim_labels(identifiers: set[str], occupied: set[str]) -> dict[str, str]:
+    """Shorten only canonical claim IDs; never guess plugin-specific IDs.
+
+    Keep qualified names and then definition lines where names collide. The
+    underlying IDs remain in support and JSON; this is presentation only.
+    """
+    pattern = r"claim:([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)@([1-9][0-9]*)"
+    parsed = {
+        key: match.groups()
+        for key in identifiers
+        if (match := re.fullmatch(pattern, key)) is not None
+    }
+    occupied = occupied | (identifiers - parsed.keys())
+    names = Counter(name.rsplit(".", 1)[-1] for name, _line in parsed.values())
+    qualified = Counter(name for name, _line in parsed.values())
+    result = {}
+    for key, (name, line) in parsed.items():
+        short = name.rsplit(".", 1)[-1]
+        if names[short] == 1 and short not in occupied:
+            label = short
+        elif qualified[name] == 1 and name not in occupied:
+            label = name
+        else:
+            label = f"{name}@{line}"
+        result[key] = label if label not in occupied else key
+    return result
 
 
 def statement_lines(fact: Fact, width: int = 100) -> list[str]:
@@ -937,8 +976,10 @@ def _structure(text: str) -> tuple[list[int], list[bool]]:
         if char in "([{":
             depth += 1
         word_start = char == " "
-        if char == "." and depth in open_at and (
-            position + 1 == len(text) or text[position + 1] == " "
+        if (
+            char == "."
+            and depth in open_at
+            and (position + 1 == len(text) or text[position + 1] == " ")
         ):
             open_at.discard(depth)
     return depths, guarded
@@ -963,9 +1004,7 @@ def _break_at(
     """
     end = len(text)
     spaces = [
-        (position, depths[position])
-        for position in range(start + 1, end)
-        if text[position] == " "
+        (position, depths[position]) for position in range(start + 1, end) if text[position] == " "
     ]
     fitting = [(p, depth) for p, depth in spaces if p - start <= room]
     if not fitting:
